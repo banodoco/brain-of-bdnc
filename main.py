@@ -127,9 +127,7 @@ async def check_connection_health(bot):
                 bot.logger.warning(f"Connection check failed ({consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})")
                 
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    bot.logger.error("Connection deemed unhealthy, initiating reconnect")
-                    await bot.close()
-                    await bot.start(bot.http.token)
+                    bot.logger.error("Connection deemed unhealthy. Relying on discord.py's built-in reconnect mechanism.")
                     consecutive_failures = 0
             else:
                 consecutive_failures = 0
