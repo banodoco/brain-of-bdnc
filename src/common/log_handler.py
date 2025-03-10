@@ -107,11 +107,12 @@ class LogHandler:
             
             # Production file handler - log INFO and above for important operational logs
             try:
-                prod_handler = RotatingFileHandler(
+                prod_handler = LineCountRotatingFileHandler(
                     self.prod_log_file,
-                    maxBytes=1024 * 1024,
+                    maxBytes=1024 * 1024,  # 1MB per file
                     backupCount=5,
-                    encoding='utf-8'
+                    encoding='utf-8',
+                    max_lines=1000  # Keep last 1000 lines
                 )
                 prod_handler.setLevel(logging.INFO)  # Changed to INFO to capture important operational logs
                 prod_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')

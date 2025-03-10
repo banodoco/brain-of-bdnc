@@ -131,6 +131,9 @@ class MessageArchiver(BaseDiscordBot):
         self.db_thread = threading.Thread(target=self._db_worker, daemon=True)
         self.db_thread.start()
 
+        # Insert after the super().__init__(...) call
+        self._connection_history = []  # Initialize connection history to prevent shutdown errors
+
     def _db_worker(self):
         """Worker thread for database operations."""
         db = get_db(self.db_path)

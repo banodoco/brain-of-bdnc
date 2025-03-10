@@ -56,6 +56,9 @@ async def run_summarizer(bot, token, run_now):
                 await asyncio.sleep(1)
                 
             bot.logger.info("Summarizer bot is ready and fully connected")
+            
+            # Start health monitoring
+            health_monitor = asyncio.create_task(check_connection_health(bot))
                 
             if run_now:
                 bot.logger.info("Running immediate summary generation...")
@@ -65,16 +68,17 @@ async def run_summarizer(bot, token, run_now):
                 await bot.cleanup()  # Clean up resources
                 await bot.close()  # Close the bot
                 bot_task.cancel()  # Cancel the bot task
-                await cleanup_tasks([bot_task])
+                health_monitor.cancel()  # Cancel health monitor
+                await cleanup_tasks([bot_task, health_monitor])
             else:
                 bot.logger.info("Starting scheduled mode...")
                 bot._shutdown_flag = False  # Ensure shutdown flag is False for scheduled mode
                 # Create and start the scheduler task
                 scheduler_task = asyncio.create_task(schedule_daily_summary(bot))
                 
-                # Wait for either the bot task or scheduler task to complete
+                # Wait for any task to complete
                 done, pending = await asyncio.wait(
-                    [bot_task, scheduler_task],
+                    [bot_task, scheduler_task, health_monitor],
                     return_when=asyncio.FIRST_COMPLETED
                 )
                 
@@ -106,6 +110,32 @@ async def run_summarizer(bot, token, run_now):
             bot.logger.info(f"Retrying in {wait_time/3600:.1f} hours")
             await asyncio.sleep(wait_time)
 
+async def check_connection_health(bot):
+    """Monitor bot connection health and attempt reconnection if needed"""
+    consecutive_failures = 0
+    MAX_CONSECUTIVE_FAILURES = 3
+    
+    while not bot._shutdown_flag:
+        try:
+            # Check if bot is connected and responding
+            if not bot.is_ready() or not bot.latency:
+                consecutive_failures += 1
+                bot.logger.warning(f"Connection check failed ({consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})")
+                
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    bot.logger.error("Connection deemed unhealthy, initiating reconnect")
+                    await bot.close()
+                    await bot.start(bot.http.token)
+                    consecutive_failures = 0
+            else:
+                consecutive_failures = 0
+                
+        except Exception as e:
+            bot.logger.error(f"Error in connection health check: {e}")
+            consecutive_failures += 1
+        
+        await asyncio.sleep(HEARTBEAT_CHECK_INTERVAL)
+
 async def run_curator(bot, token):
     """Run the curator bot"""
     retry_count = 0
@@ -123,9 +153,12 @@ async def run_curator(bot, token):
                 
             bot.logger.info("Curator bot is ready and fully connected")
             
+            # Start health monitoring
+            health_monitor = asyncio.create_task(check_connection_health(bot))
+            
             # Create done, pending sets for task management
             done, pending = await asyncio.wait(
-                [bot_task],
+                [bot_task, health_monitor],
                 return_when=asyncio.FIRST_COMPLETED
             )
             
@@ -227,9 +260,12 @@ async def run_logger(bot, token):
                 
             bot.logger.info("Logger bot is ready and fully connected")
             
+            # Start health monitoring
+            health_monitor = asyncio.create_task(check_connection_health(bot))
+            
             # Create done, pending sets for task management
             done, pending = await asyncio.wait(
-                [bot_task],
+                [bot_task, health_monitor],
                 return_when=asyncio.FIRST_COMPLETED
             )
             

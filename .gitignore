@@ -1,5 +1,6 @@
 # Environment variables
 .env
+.env.*
 
 # macOS system files
 .DS_Store
@@ -13,7 +14,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-env/
 build/
 develop-eggs/
 dist/
@@ -34,21 +34,24 @@ wheels/
 # Virtual Environment
 venv/
 ENV/
+env/
+.env/
 
 # IDE specific files
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
 
 # Logs
 *.log
-logs/
-archive_discord.log
-files/
+*.log.*
 
 # db
 *.db
+*.sqlite3
+*.sqlite
 
 # cache
 cache/
@@ -85,8 +88,7 @@ data/
 data/*
 
 # OS
-.DS_Store?
-._*
+.DS_Store
 .Spotlight-V100
 .Trashes
 ehthumbs.db

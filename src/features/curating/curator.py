@@ -192,6 +192,28 @@ class ArtCurator(BaseDiscordBot):
                                 # Get member's notifications from database
                                 db = DatabaseHandler(dev_mode=self.dev_mode)
                                 member_data = db.get_member(member.id)
+                                
+                                # Create member if they don't exist
+                                if not member_data:
+                                    role_ids = json.dumps([role.id for role in member.roles]) if member.roles else None
+                                    guild_join_date = member.joined_at.isoformat() if member.joined_at else None
+                                    db.create_or_update_member(
+                                        member.id,
+                                        member.name,
+                                        member.display_name,
+                                        member.global_name,
+                                        str(member.avatar.url) if member.avatar else None,
+                                        member.discriminator,
+                                        member.bot,
+                                        member.system,
+                                        member.accent_color,
+                                        str(member.banner.url) if getattr(member, 'banner', None) else None,
+                                        member.created_at.isoformat() if member.created_at else None,
+                                        guild_join_date,
+                                        role_ids
+                                    )
+                                    member_data = db.get_member(member.id)
+                                
                                 notifications = json.loads(member_data.get('notifications', '[]')) if member_data else []
                                 
                                 if 'no_art_share_link' not in notifications:
