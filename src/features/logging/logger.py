@@ -60,6 +60,7 @@ class MessageLogger(BaseDiscordBot):
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         ))
         logger.addHandler(handler)
+        self._shutdown_flag = False
         
     async def setup_hook(self):
         """Setup hook to initialize any necessary resources."""
