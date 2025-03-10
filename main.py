@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import traceback
 import time
 import discord
+from multiprocessing import Process
 
 from src.features.curating.curator import ArtCurator
 from src.features.summarising.summariser import ChannelSummarizer
@@ -295,61 +296,6 @@ async def run_logger(bot, token):
             bot.logger.debug(traceback.format_exc())
             raise
 
-async def run_all_bots(curator_bot, summarizer_bot, logger_bot, token, run_now, logger):
-    """Run all bots concurrently with improved error handling"""
-    bot_tasks = []
-    try:
-        # Create tasks for all bots
-        curator_task = asyncio.create_task(
-            run_curator(curator_bot, token)
-        )
-        summarizer_task = asyncio.create_task(
-            run_summarizer(summarizer_bot, token, run_now)
-        )
-        logger_task = asyncio.create_task(
-            run_logger(logger_bot, token)
-        )
-        
-        bot_tasks = [curator_task, summarizer_task, logger_task]
-        
-        # Log startup
-        logger.info("Starting all bots...")
-        curator_bot.logger.info("Starting curator bot")
-        summarizer_bot.logger.info("Starting summarizer bot")
-        logger_bot.logger.info("Starting logger bot")
-        
-        # Wait for any task to complete (or fail)
-        done, pending = await asyncio.wait(
-            bot_tasks,
-            return_when=asyncio.FIRST_COMPLETED
-        )
-        
-        # Check for exceptions and log appropriately
-        for task in done:
-            try:
-                await task
-            except Exception as e:
-                logger.error(f"Bot task failed: {str(e)}")
-                logger.debug(traceback.format_exc())
-                # Cancel remaining tasks
-                await cleanup_tasks(pending)
-                raise
-                
-        # Clean up any remaining tasks
-        await cleanup_tasks(pending)
-        
-    except Exception as e:
-        logger.error(f"Critical error in bot operation: {str(e)}")
-        logger.debug(traceback.format_exc())
-        # Ensure all tasks are cleaned up
-        for task in bot_tasks:
-            if not task.done():
-                task.cancel()
-        raise
-    finally:
-        # Log shutdown
-        logger.info("All bots shutting down...")
-
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Discord Bots')
@@ -364,40 +310,44 @@ def main():
     logger = setup_logging(args.dev)
     logger.info("Starting bot initialization")
     
-    # Create and configure all bots with shared logger and dev mode
-    curator_bot = ArtCurator(logger=logger, dev_mode=args.dev)
-    summarizer_bot = ChannelSummarizer(logger=logger, dev_mode=args.dev)
-    logger_bot = MessageLogger(dev_mode=args.dev)
-    logger_bot.logger = logger  # Use shared logger
-    
-    # Set dev mode if specified
-    if args.dev:
-        curator_bot.dev_mode = True
-        summarizer_bot.dev_mode = True
-        logger.info("Running in DEVELOPMENT mode")
-    else:
-        logger.info("Running in PRODUCTION mode")
-    
-    # Load configuration for summarizer
-    summarizer_bot.load_config()
-    
     try:
         # Get bot token
         token = os.getenv('DISCORD_BOT_TOKEN')
         if not token:
             raise ValueError("Discord bot token not found in environment variables")
         
-        logger.info("Configuration loaded successfully, starting bots")
-        
-        # Run all bots
-        asyncio.run(run_all_bots(
-            curator_bot,
-            summarizer_bot,
-            logger_bot,
-            token,
-            args.summary_now,
-            logger
-        ))
+        logger.info("Configuration loaded successfully, starting bots in separate processes")
+
+        def start_curator():
+            local_logger = setup_logging(dev_mode=args.dev)
+            from src.features.curating.curator import ArtCurator
+            curator_bot = ArtCurator(logger=local_logger, dev_mode=args.dev)
+            asyncio.run(run_curator(curator_bot, token))
+
+        def start_summarizer():
+            local_logger = setup_logging(dev_mode=args.dev)
+            from src.features.summarising.summariser import ChannelSummarizer
+            summarizer_bot = ChannelSummarizer(logger=local_logger, dev_mode=args.dev)
+            asyncio.run(run_summarizer(summarizer_bot, token, args.summary_now))
+
+        def start_logger():
+            local_logger = setup_logging(dev_mode=args.dev)
+            from src.features.logging.logger import MessageLogger
+            logger_bot_inst = MessageLogger(dev_mode=args.dev)
+            logger_bot_inst.logger = local_logger
+            asyncio.run(run_logger(logger_bot_inst, token))
+
+        curator_process = Process(target=start_curator)
+        summarizer_process = Process(target=start_summarizer)
+        logger_process = Process(target=start_logger)
+
+        curator_process.start()
+        summarizer_process.start()
+        logger_process.start()
+
+        curator_process.join()
+        summarizer_process.join()
+        logger_process.join()
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt, shutting down...")
     except Exception as e:

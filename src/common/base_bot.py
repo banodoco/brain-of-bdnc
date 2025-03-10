@@ -27,6 +27,9 @@ class BaseDiscordBot(commands.Bot):
         self._last_session_id: Optional[str] = None
         self._session_start_time: Optional[datetime] = None
         self._failed_session_count: int = 0
+        # Initialize connection attempt history for reconnection logic
+        self._connection_history: Deque[datetime] = deque()
+        self._connection_window: timedelta = timedelta(seconds=60)
 
     async def __aenter__(self):
         """Async context manager entry."""
