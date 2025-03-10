@@ -35,9 +35,9 @@ def setup_logging(dev_mode=False):
 
 # Constants
 MAX_RETRIES = 3
-READY_TIMEOUT = 120  # Increased from 60 to 120 seconds
-INITIAL_RETRY_DELAY = 3600  # 1 hour
-MAX_RETRY_WAIT = 24 * 3600  # 24 hours in seconds
+READY_TIMEOUT = 30  # Reduced timeout to 30 seconds for faster failure detection
+INITIAL_RETRY_DELAY = 5  # 5 seconds initial delay for retry attempts
+MAX_RETRY_WAIT = 300  # Maximum wait of 300 seconds (5 minutes) between retries
 HEARTBEAT_CHECK_INTERVAL = 30  # Check connection every 30 seconds
 
 async def run_summarizer(bot, token, run_now):
@@ -107,7 +107,10 @@ async def run_summarizer(bot, token, run_now):
             
             # Wait before retrying, with exponential backoff
             wait_time = min(INITIAL_RETRY_DELAY * (2 ** retry_count), MAX_RETRY_WAIT)
-            bot.logger.info(f"Retrying in {wait_time/3600:.1f} hours")
+            if wait_time < 60:
+                bot.logger.info(f"Retrying in {wait_time} seconds")
+            else:
+                bot.logger.info(f"Retrying in {wait_time/3600:.1f} hours")
             await asyncio.sleep(wait_time)
 
 async def check_connection_health(bot):
