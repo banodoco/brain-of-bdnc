@@ -93,7 +93,7 @@ class BaseDiscordBot(commands.Bot):
         while not self.is_closed():
             try:
                 await asyncio.sleep(30)
-                # Simple check if we’ve had a heartbeat recently
+                # Simple check if we've had a heartbeat recently
                 if not await self._is_connection_healthy():
                     self.logger.warning(
                         "Connection appears unhealthy. Relying on discord.py's built-in reconnect mechanism."
@@ -128,7 +128,7 @@ class BaseDiscordBot(commands.Bot):
                 self._connection_history.popleft()
 
     async def _get_connection_count(self) -> int:
-        """Count how many connection attempts we’ve made in the rolling window."""
+        """Count how many connection attempts we've made in the rolling window."""
         async with self._state_lock:
             now = datetime.now()
             return sum(1 for t in self._connection_history if now - t <= self._connection_window)
@@ -217,3 +217,7 @@ class BaseDiscordBot(commands.Bot):
                 self.logger.info(f"Successfully connected and can notify admin: {admin_user.name}")
             except Exception as e:
                 self.logger.error(f"Failed to verify admin notification capability: {e}")
+
+    async def cleanup(self) -> None:
+        """Perform any necessary cleanup. Default implementation does nothing."""
+        pass
