@@ -1,18 +1,24 @@
-from discord.ext import commands
-from datetime import datetime, timedelta
+# src/common/base_bot.py
+
 import asyncio
 import logging
 from collections import deque
+from datetime import datetime, timedelta
+from typing import Optional, Any, Dict
+
+import discord
+from discord.ext import commands
 import traceback
-from typing import Optional, Deque, Any, Dict
 import os
 
 class BaseDiscordBot(commands.Bot):
     """Base class for all Discord bots with connection monitoring."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(self, *args, **kwargs) -> None:
         self.logger = kwargs.get('logger') or logging.getLogger(__name__)
+        self.dev_mode = kwargs.get('dev_mode', False)
+
+        super().__init__(*args, **kwargs)
 
         # Connection health monitoring
         self._last_heartbeat: Optional[datetime] = None
@@ -29,17 +35,14 @@ class BaseDiscordBot(commands.Bot):
         self._failed_session_count: int = 0
 
         # Connection attempt history
-        self._connection_history: Deque[datetime] = deque()
+        self._connection_history: deque[datetime] = deque()
         self._connection_window: timedelta = timedelta(seconds=60)
 
-        # Used by the summarizer scheduling to know when to shut down
+        # Summarizer or other cogs might set this if needed
         self._shutdown_flag: bool = False
 
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
+        # For Summarizer Cog to track if we've run the immediate summary
+        self.summarizer_ready = False
 
     async def setup_hook(self):
         """Called before the bot starts running."""
@@ -93,7 +96,6 @@ class BaseDiscordBot(commands.Bot):
         while not self.is_closed():
             try:
                 await asyncio.sleep(30)
-                # Simple check if we've had a heartbeat recently
                 if not await self._is_connection_healthy():
                     self.logger.warning(
                         "Connection appears unhealthy. Relying on discord.py's built-in reconnect mechanism."
@@ -206,15 +208,19 @@ class BaseDiscordBot(commands.Bot):
             self._connection_healthy = True
             self._last_heartbeat = datetime.now()
 
-            # Initialize error handler (if you use one)
-            from src.common.error_handler import ErrorHandler
-            self.error_handler = ErrorHandler(self)
+            # Initialize error handler (if you have a custom one)
+            try:
+                from src.common.error_handler import ErrorHandler
+                self.error_handler = ErrorHandler(self)
+            except ImportError:
+                self.logger.warning("No custom error_handler found or import failed.")
 
             # Attempt to verify admin user
             try:
-                admin_id = int(os.getenv('ADMIN_USER_ID'))
-                admin_user = await self.fetch_user(admin_id)
-                self.logger.info(f"Successfully connected and can notify admin: {admin_user.name}")
+                admin_id = int(os.getenv('ADMIN_USER_ID', "0"))
+                if admin_id != 0:
+                    admin_user = await self.fetch_user(admin_id)
+                    self.logger.info(f"Successfully connected and can notify admin: {admin_user.name}")
             except Exception as e:
                 self.logger.error(f"Failed to verify admin notification capability: {e}")
 
