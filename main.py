@@ -30,23 +30,19 @@ def setup_logging(dev_mode=False):
 
 # Constants
 MAX_RETRIES = 3
-READY_TIMEOUT = 30       # Reduced timeout to 30s for faster failure detection
-INITIAL_RETRY_DELAY = 5  # 5s initial delay
-MAX_RETRY_WAIT = 300     # 5 minutes max backoff
+READY_TIMEOUT = 30
+INITIAL_RETRY_DELAY = 5
+MAX_RETRY_WAIT = 300  # 5 minutes
 
 async def run_summarizer(bot, token, run_now):
-    """
-    Run the summarizer bot with optional immediate summary generation.
-    Removed the extra 'health_monitor' concurrency that was causing 
-    possible multi-reads from the websocket.
-    """
+    """Run the summarizer bot with optional immediate summary generation."""
     retry_count = 0
     while retry_count < MAX_RETRIES:
         try:
-            # Create task for bot startup
+            # Start the bot
             bot_task = asyncio.create_task(bot.start(token))
 
-            # Wait for bot to be "ready" or time out
+            # Wait for the bot to become "ready" or time out
             start_time = time.time()
             while not bot.is_ready():
                 if time.time() - start_time > READY_TIMEOUT:
@@ -58,66 +54,56 @@ async def run_summarizer(bot, token, run_now):
             if run_now:
                 try:
                     bot.logger.info("Running immediate summary generation...")
-                    await asyncio.sleep(2)  # slight delay
+                    await asyncio.sleep(2)  # small delay
                     await bot.generate_summary()
                 finally:
-                    # Cleanup even if summary generation fails
+                    # Even if generation fails, we clean up
                     await bot.cleanup()
                     await bot.close()
                     bot_task.cancel()
                     await cleanup_tasks([bot_task])
             else:
                 bot.logger.info("Starting scheduled mode...")
-                bot._shutdown_flag = False  # ensure shutdown flag is reset
+                bot._shutdown_flag = False
 
-                # Create and start the scheduler task
                 scheduler_task = asyncio.create_task(schedule_daily_summary(bot))
 
-                # Wait for either the bot to end or the scheduler to end
+                # Wait for the bot to end or the scheduler to end
                 done, pending = await asyncio.wait(
                     [bot_task, scheduler_task],
                     return_when=asyncio.FIRST_COMPLETED
                 )
 
-                # If we get here, something ended
                 bot._shutdown_flag = True
-
-                # Cancel any leftover tasks
                 await cleanup_tasks(pending)
 
-                # If it ended due to an exception, re-raise
                 for task in done:
                     if task.exception():
                         raise task.exception()
 
-            # If no errors, break out of retry loop
+            # If no error occurred, break out of the retry loop
             break
 
         except Exception as e:
             bot.logger.error(f"Error in run_summarizer: {e}")
             bot.logger.debug(traceback.format_exc())
             retry_count += 1
+
             if retry_count >= MAX_RETRIES:
                 bot.logger.error(f"Failed after {MAX_RETRIES} retries - giving up")
                 raise
 
-            # Exponential backoff
             wait_time = min(INITIAL_RETRY_DELAY * (2 ** retry_count), MAX_RETRY_WAIT)
-            if wait_time < 60:
-                bot.logger.info(f"Retrying in {wait_time} seconds")
-            else:
-                bot.logger.info(f"Retrying in {wait_time/3600:.1f} hours")
+            bot.logger.info(f"Retrying in {wait_time} seconds...")
             await asyncio.sleep(wait_time)
 
 async def run_curator(bot, token):
-    """
-    Run the curator bot.
-    Removed the separate health monitor to avoid concurrency conflicts.
-    """
+    """Run the curator bot."""
     retry_count = 0
     while retry_count < MAX_RETRIES:
         try:
             bot_task = asyncio.create_task(bot.start(token))
+
             start_time = time.time()
             while not bot.is_ready():
                 if time.time() - start_time > READY_TIMEOUT:
@@ -130,21 +116,25 @@ async def run_curator(bot, token):
                 [bot_task],
                 return_when=asyncio.FIRST_COMPLETED
             )
-
             await cleanup_tasks(pending)
 
-            # Check for exceptions
             for task in done:
                 if task.exception():
                     raise task.exception()
-            return  # success
+
+            return  # If we reach here, it connected successfully
+
         except (TimeoutError, discord.errors.DiscordServerError) as e:
             retry_count += 1
             if retry_count >= MAX_RETRIES:
                 bot.logger.error(f"Failed to connect after {MAX_RETRIES} attempts")
                 raise
+
             wait_time = min(INITIAL_RETRY_DELAY * (2 ** retry_count), MAX_RETRY_WAIT)
-            bot.logger.warning(f"Connection attempt {retry_count} failed: {e}. Retrying in {wait_time/3600:.1f} hours")
+            bot.logger.warning(
+                f"Connection attempt {retry_count} failed: {e}. "
+                f"Retrying in {wait_time} seconds..."
+            )
             await asyncio.sleep(wait_time)
         except Exception as e:
             bot.logger.error(f"Error running curator bot: {e}")
@@ -152,14 +142,12 @@ async def run_curator(bot, token):
             raise
 
 async def run_logger(bot, token):
-    """
-    Run the message logger bot.
-    Removed the separate health monitor to avoid concurrency conflicts.
-    """
+    """Run the message logger bot."""
     retry_count = 0
     while retry_count < MAX_RETRIES:
         try:
             bot_task = asyncio.create_task(bot.start(token))
+
             start_time = time.time()
             while not bot.is_ready():
                 if time.time() - start_time > READY_TIMEOUT:
@@ -172,20 +160,25 @@ async def run_logger(bot, token):
                 [bot_task],
                 return_when=asyncio.FIRST_COMPLETED
             )
-
             await cleanup_tasks(pending)
 
             for task in done:
                 if task.exception():
                     raise task.exception()
+
             return  # success
+
         except (TimeoutError, discord.errors.DiscordServerError) as e:
             retry_count += 1
             if retry_count >= MAX_RETRIES:
                 bot.logger.error(f"Failed to connect after {MAX_RETRIES} attempts")
                 raise
+
             wait_time = min(INITIAL_RETRY_DELAY * (2 ** retry_count), MAX_RETRY_WAIT)
-            bot.logger.warning(f"Connection attempt {retry_count} failed: {e}. Retrying in {wait_time/3600:.1f} hours")
+            bot.logger.warning(
+                f"Connection attempt {retry_count} failed: {e}. "
+                f"Retrying in {wait_time} seconds..."
+            )
             await asyncio.sleep(wait_time)
         except Exception as e:
             bot.logger.error(f"Error running logger bot: {e}")
@@ -195,21 +188,23 @@ async def run_logger(bot, token):
 async def schedule_daily_summary(bot):
     """
     Run daily summaries on schedule. Only exits on error or explicit shutdown.
-    This remains mostly unchanged, but no extra concurrency that reads from the socket.
     """
     try:
         while not bot._shutdown_flag:
             retry_count = 0
             now = datetime.utcnow()
 
-            # next 10:00 UTC
+            # Next 10:00 UTC
             target = now.replace(hour=10, minute=0, second=0, microsecond=0)
             if now.hour >= 10:
                 target += timedelta(days=1)
 
             delay = (target - now).total_seconds()
             hours_until_next = delay / 3600
-            bot.logger.info(f"Next summary scheduled for {target} UTC ({hours_until_next:.1f} hours from now)")
+            bot.logger.info(
+                f"Next summary scheduled for {target} UTC "
+                f"({hours_until_next:.1f} hours from now)"
+            )
 
             try:
                 await asyncio.sleep(delay)
@@ -223,20 +218,23 @@ async def schedule_daily_summary(bot):
                 bot.logger.info("Summary schedule cancelled - shutting down")
                 break
             except Exception as e:
-                if isinstance(e, RuntimeError) and "Concurrent call to receive() is not allowed" in str(e):
+                if ("Concurrent call to receive()" in str(e)):
                     bot.logger.warning(
-                        "Concurrent call to receive() detected during scheduled summary generation. "
-                        "Skipping summary generation this cycle."
+                        "Concurrent call to receive() was triggered. Skipping summary this cycle."
                     )
                 else:
                     retry_count += 1
-                    bot.logger.error(f"Summary generation attempt {retry_count}/{MAX_RETRIES} failed: {e}")
+                    bot.logger.error(
+                        f"Summary generation attempt {retry_count}/{MAX_RETRIES} failed: {e}"
+                    )
                     if retry_count >= MAX_RETRIES:
-                        bot.logger.error(f"Failed after {MAX_RETRIES} attempts - shutting down scheduler")
+                        bot.logger.error(
+                            f"Failed after {MAX_RETRIES} attempts - shutting down scheduler"
+                        )
                         bot._shutdown_flag = True
                         raise
                     wait_time = min(INITIAL_RETRY_DELAY * (2 ** retry_count), MAX_RETRY_WAIT)
-                    bot.logger.info(f"Retrying in {wait_time/3600:.1f} hours")
+                    bot.logger.info(f"Retrying in {wait_time} seconds...")
                     await asyncio.sleep(wait_time)
 
     except Exception as e:
@@ -254,25 +252,6 @@ async def cleanup_tasks(tasks):
                 await asyncio.wait_for(task, timeout=5.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
-
-def start_curator(dev_mode: bool, token: str):
-    local_logger = setup_logging(dev_mode=dev_mode)
-    from src.features.curating.curator import ArtCurator
-    curator_bot = ArtCurator(logger=local_logger, dev_mode=dev_mode)
-    asyncio.run(run_curator(curator_bot, token))
-
-def start_summarizer(dev_mode: bool, token: str, summary_now: bool):
-    local_logger = setup_logging(dev_mode=dev_mode)
-    from src.features.summarising.summariser import ChannelSummarizer
-    summarizer_bot = ChannelSummarizer(logger=local_logger, dev_mode=dev_mode)
-    asyncio.run(run_summarizer(summarizer_bot, token, summary_now))
-
-def start_logger(dev_mode: bool, token: str):
-    local_logger = setup_logging(dev_mode=dev_mode)
-    from src.features.logging.logger import MessageLogger
-    logger_bot_inst = MessageLogger(dev_mode=dev_mode)
-    logger_bot_inst.logger = local_logger
-    asyncio.run(run_logger(logger_bot_inst, token))
 
 def main():
     parser = argparse.ArgumentParser(description='Discord Bots')
@@ -292,9 +271,28 @@ def main():
 
         logger.info("Configuration loaded successfully, starting bots in separate processes")
 
-        curator_process = Process(target=start_curator, args=(args.dev, token))
-        summarizer_process = Process(target=start_summarizer, args=(args.dev, token, args.summary_now))
-        logger_process = Process(target=start_logger, args=(args.dev, token))
+        def start_curator():
+            local_logger = setup_logging(dev_mode=args.dev)
+            from src.features.curating.curator import ArtCurator
+            curator_bot = ArtCurator(logger=local_logger, dev_mode=args.dev)
+            asyncio.run(run_curator(curator_bot, token))
+
+        def start_summarizer():
+            local_logger = setup_logging(dev_mode=args.dev)
+            from src.features.summarising.summariser import ChannelSummarizer
+            summarizer_bot = ChannelSummarizer(logger=local_logger, dev_mode=args.dev)
+            asyncio.run(run_summarizer(summarizer_bot, token, args.summary_now))
+
+        def start_logger():
+            local_logger = setup_logging(dev_mode=args.dev)
+            from src.features.logging.logger import MessageLogger
+            logger_bot_inst = MessageLogger(dev_mode=args.dev)
+            logger_bot_inst.logger = local_logger
+            asyncio.run(run_logger(logger_bot_inst, token))
+
+        curator_process = Process(target=start_curator)
+        summarizer_process = Process(target=start_summarizer)
+        logger_process = Process(target=start_logger)
 
         curator_process.start()
         summarizer_process.start()
