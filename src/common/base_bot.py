@@ -2,41 +2,31 @@
 
 import asyncio
 import logging
-from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional, Any, Dict
-
-import discord
-from discord.ext import commands
+import random
 import traceback
 import os
 
+import discord
+from discord.ext import commands
+
 class BaseDiscordBot(commands.Bot):
-    """Base class for all Discord bots with connection monitoring."""
+    """
+    Base class for all Discord bots, relying on discord.py's built-in
+    heartbeat and reconnection logic rather than manual heartbeat checks.
+    """
 
     def __init__(self, *args, **kwargs) -> None:
-        self.logger = kwargs.get('logger') or logging.getLogger(__name__)
-        self.dev_mode = kwargs.get('dev_mode', False)
+        self.logger = kwargs.get("logger") or logging.getLogger(__name__)
+        self.dev_mode = kwargs.get("dev_mode", False)
 
         super().__init__(*args, **kwargs)
 
-        # Connection health monitoring
-        self._last_heartbeat: Optional[datetime] = None
-        self._connection_healthy: bool = False
-        self._heartbeat_timeout: float = 60.0
-        self._health_check_task: Optional[asyncio.Task] = None
-        self._last_health_check: datetime = datetime.now()
-        self._health_check_lock: asyncio.Lock = asyncio.Lock()
-        self._state_lock: asyncio.Lock = asyncio.Lock()
-
-        # Session management
+        # Session management (optional, if you want to track session IDs):
         self._last_session_id: Optional[str] = None
         self._session_start_time: Optional[datetime] = None
         self._failed_session_count: int = 0
-
-        # Connection attempt history
-        self._connection_history: deque[datetime] = deque()
-        self._connection_window: timedelta = timedelta(seconds=60)
 
         # Summarizer or other cogs might set this if needed
         self._shutdown_flag: bool = False
@@ -45,14 +35,10 @@ class BaseDiscordBot(commands.Bot):
         self.summarizer_ready = False
 
     async def setup_hook(self):
-        """Called before the bot starts running."""
-        try:
-            loop = asyncio.get_running_loop()
-            if not self._health_check_task:
-                self._health_check_task = loop.create_task(self._run_health_checks())
-        except Exception as e:
-            self.logger.error(f"Error in setup_hook: {e}")
-            raise
+        """
+        Called before the bot starts running. Removed custom health-check tasks.
+        """
+        pass  # Rely on discord.py's internal heartbeat & reconnect logic
 
     async def start(self, *args, **kwargs):
         """Start the bot."""
@@ -60,29 +46,13 @@ class BaseDiscordBot(commands.Bot):
             await super().start(*args, **kwargs)
         except Exception as e:
             self.logger.error(f"Error in bot start: {e}")
-            if self._health_check_task:
-                self._health_check_task.cancel()
             raise
 
     async def close(self):
         """Clean up resources on shutdown."""
         try:
-            async with self._state_lock:
-                self._connection_healthy = False
-                self._connection_history.clear()
-
-            if self._health_check_task and not self._health_check_task.done():
-                self._health_check_task.cancel()
-                try:
-                    await self._health_check_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    self.logger.error(f"Error cancelling health check task: {str(e)}")
-                    self.logger.debug(traceback.format_exc())
-
-            # Ensure HTTP session is cleaned up
-            if hasattr(self.http, '_session') and self.http._session:
+            # Ensure HTTP session is cleaned up (if it's still open).
+            if hasattr(self.http, "_session") and self.http._session:
                 await self.http._session.close()
 
             await super().close()
@@ -91,108 +61,52 @@ class BaseDiscordBot(commands.Bot):
             self.logger.debug(traceback.format_exc())
             raise
 
-    async def _run_health_checks(self):
-        """Run periodic health checks; rely on discord.py's built-in reconnect."""
-        while not self.is_closed():
-            try:
-                await asyncio.sleep(30)
-                if not await self._is_connection_healthy():
-                    self.logger.warning(
-                        "Connection appears unhealthy. Relying on discord.py's built-in reconnect mechanism."
-                    )
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.logger.error(f"Error in health check loop: {str(e)}")
-                self.logger.debug(traceback.format_exc())
-
-    async def _is_connection_healthy(self) -> bool:
-        """Check if the connection is healthy based on last heartbeat."""
-        async with self._state_lock:
-            if not self._last_heartbeat:
-                return False
-            time_since_heartbeat = (datetime.now() - self._last_heartbeat).total_seconds()
-            is_healthy = time_since_heartbeat < self._heartbeat_timeout
-            if not is_healthy and self._connection_healthy:
-                self.logger.warning(
-                    f"Connection appears unhealthy - no heartbeat for {time_since_heartbeat:.1f}s. "
-                    f"Last heartbeat: {self._last_heartbeat.isoformat()}"
-                )
-                self._connection_healthy = False
-            return is_healthy
-
-    async def _add_connection_attempt(self):
-        """Record a connection attempt in the rolling window."""
-        async with self._state_lock:
-            now = datetime.now()
-            self._connection_history.append(now)
-            while self._connection_history and now - self._connection_history[0] > self._connection_window:
-                self._connection_history.popleft()
-
-    async def _get_connection_count(self) -> int:
-        """Count how many connection attempts we've made in the rolling window."""
-        async with self._state_lock:
-            now = datetime.now()
-            return sum(1 for t in self._connection_history if now - t <= self._connection_window)
-
-    async def on_socket_raw_receive(self, msg: str) -> None:
-        """Track heartbeat acknowledgements."""
-        if not isinstance(msg, str):
-            return
-        try:
-            if '"op":11' in msg:  # Heartbeat ACK
-                async with self._state_lock:
-                    self._last_heartbeat = datetime.now()
-                    self._connection_healthy = True
-                    self.logger.debug(f"Heartbeat ACK received at {self._last_heartbeat.isoformat()}")
-        except Exception as e:
-            self.logger.error(f"Error processing socket message: {str(e)}")
-            self.logger.debug(traceback.format_exc())
-
+    # -------------------------------------------------------------------------
+    # The following method is optional. It logs certain gateway events
+    # (op=9, code=4004, etc.), but *no longer* forces reconnections or modifies
+    # your bot's connection state. You can remove this entire method if you
+    # don’t need these logs.
+    # -------------------------------------------------------------------------
     async def on_socket_response(self, msg: Dict[str, Any]) -> None:
         """Handle WebSocket responses for errors/resumptions."""
         if not isinstance(msg, dict):
             return
         try:
-            op_code = msg.get('op')
-            event_type = msg.get('t')
+            op_code = msg.get("op")
+            event_type = msg.get("t")
 
+            # Log invalid session
             if op_code == 9:  # Invalid session
                 self.logger.error(f"Invalid session detected - Full message: {msg}")
-                async with self._state_lock:
-                    self._connection_healthy = False
-                    self._failed_session_count += 1
-                    self._last_session_id = None
+                self._failed_session_count += 1
+                self._last_session_id = None
 
-            elif msg.get('code') == 4004:  # Auth failure
+            # Log auth failure
+            elif msg.get("code") == 4004:  # Auth failure
                 self.logger.critical(
                     "Authentication failed - bot token may be invalid. "
                     "Please check your token and try again."
                 )
-                async with self._state_lock:
-                    self._connection_healthy = False
                 await self.close()
 
-            elif event_type == 'READY':  # New session
-                session_id = msg.get('session_id')
-                async with self._state_lock:
-                    self._last_session_id = session_id
-                    self._session_start_time = datetime.now()
-                    self._failed_session_count = 0
-                    self._connection_healthy = True
+            # Log new session
+            elif event_type == "READY":
+                session_id = msg.get("session_id")
+                self._last_session_id = session_id
+                self._session_start_time = datetime.now()
+                self._failed_session_count = 0
                 self.logger.info(
                     f"New session established - ID: {session_id}, "
                     f"Start time: {self._session_start_time.isoformat()}"
                 )
 
-            elif event_type == 'RESUMED':
-                async with self._state_lock:
-                    self.logger.info(
-                        f"Session resumed successfully - ID: {self._last_session_id}, "
-                        f"Failed attempts: {self._failed_session_count}"
-                    )
-                    self._connection_healthy = True
-                    self._failed_session_count = 0
+            # Log resumed session
+            elif event_type == "RESUMED":
+                self.logger.info(
+                    f"Session resumed successfully - ID: {self._last_session_id}, "
+                    f"Failed attempts: {self._failed_session_count}"
+                )
+                self._failed_session_count = 0
 
         except Exception as e:
             self.logger.error(f"Error processing socket response: {str(e)}")
@@ -202,28 +116,41 @@ class BaseDiscordBot(commands.Bot):
     async def on_ready(self):
         """When the bot is fully connected."""
         self.logger.info(f"Bot {self.user} successfully connected to Discord")
-        async with self._state_lock:
-            if self._last_session_id:
-                self.logger.info(f"Session ID: {self._last_session_id}, Connected since: {self._session_start_time}")
-            self._connection_healthy = True
-            self._last_heartbeat = datetime.now()
+        # Initialize error handler (if you have a custom one)
+        try:
+            from src.common.error_handler import ErrorHandler
+            self.error_handler = ErrorHandler(self)
+        except ImportError:
+            self.logger.warning("No custom error_handler found or import failed.")
 
-            # Initialize error handler (if you have a custom one)
-            try:
-                from src.common.error_handler import ErrorHandler
-                self.error_handler = ErrorHandler(self)
-            except ImportError:
-                self.logger.warning("No custom error_handler found or import failed.")
-
-            # Attempt to verify admin user
-            try:
-                admin_id = int(os.getenv('ADMIN_USER_ID', "0"))
-                if admin_id != 0:
-                    admin_user = await self.fetch_user(admin_id)
-                    self.logger.info(f"Successfully connected and can notify admin: {admin_user.name}")
-            except Exception as e:
-                self.logger.error(f"Failed to verify admin notification capability: {e}")
+        # Attempt to verify admin user
+        try:
+            admin_id = int(os.getenv("ADMIN_USER_ID", "0"))
+            if admin_id != 0:
+                admin_user = await self.fetch_user(admin_id)
+                self.logger.info(f"Successfully connected and can notify admin: {admin_user.name}")
+        except Exception as e:
+            self.logger.error(f"Failed to verify admin notification capability: {e}")
 
     async def cleanup(self) -> None:
         """Perform any necessary cleanup. Default implementation does nothing."""
         pass
+
+    def is_connected(self) -> bool:
+        """
+        Return True if the bot has an active websocket connection.
+        This is a lightweight utility, but note that discord.py
+        handles reconnections automatically, so checking this
+        is usually only for debug or informational purposes.
+        """
+        if not hasattr(self, "ws") or self.ws is None:
+            return False
+        # Try to use the is_closed() method if available
+        is_closed_method = getattr(self.ws, "is_closed", None)
+        if callable(is_closed_method):
+            return not is_closed_method()
+        # Fallback: check a 'close_code' attribute if available
+        if hasattr(self.ws, "close_code"):
+            return self.ws.close_code is None
+        # If no reliable attribute, assume connected
+        return True

@@ -347,9 +347,10 @@ class ChannelSummarizer(BaseDiscordBot):
     @dev_mode.setter
     def dev_mode(self, value):
         """Set development mode and reconfigure logger"""
-        if self._dev_mode != value:
+        if not hasattr(self, '_dev_mode') or self._dev_mode != value:
             self._dev_mode = value
-            self.setup_logger(value)
+            if hasattr(self, 'log_handler'):
+                self.setup_logger(value)
 
     def load_config(self):
         """Load configuration based on mode"""
@@ -939,6 +940,13 @@ class ChannelSummarizer(BaseDiscordBot):
                 self.logger.info("Generating requested summary...")
                 db_handler = DatabaseHandler(dev_mode=self.dev_mode)
                 try:
+                    # Get summary channel first to avoid undefined variable issues
+                    summary_channel_id = int(os.getenv('DEV_SUMMARY_CHANNEL_ID' if self.dev_mode else 'PRODUCTION_SUMMARY_CHANNEL_ID'))
+                    summary_channel = self.get_channel(summary_channel_id)
+                    if not summary_channel:
+                        self.logger.error(f"Could not find summary channel {summary_channel_id}")
+                        return
+
                     def add_columns(db):
                         cursor = None
                         try:
@@ -1147,29 +1155,50 @@ class ChannelSummarizer(BaseDiscordBot):
     async def _get_dev_mode_channels(self, db_handler):
         """Get active channels for dev mode"""
         try:
-            test_channel_ids = [int(cid.strip()) for cid in os.getenv('DEV_CHANNELS_TO_MONITOR', '').split(',') if cid.strip()]
+            # Get source channel (where to pull messages from)
+            test_channel_str = os.getenv('TEST_DATA_CHANNEL', '')
+            if not test_channel_str:
+                self.logger.warning("TEST_DATA_CHANNEL not configured")
+                return []
+                
+            test_channel_ids = [int(cid.strip()) for cid in test_channel_str.split(',') if cid.strip()]
             if not test_channel_ids:
                 self.logger.warning("No test channels configured")
                 return []
+
+            # Get destination channels (where to post summaries)
+            dev_channels_str = os.getenv('DEV_CHANNELS_TO_MONITOR', '')
+            if not dev_channels_str:
+                self.logger.warning("DEV_CHANNELS_TO_MONITOR not configured")
+                return []
+
+            dev_channel_ids = [int(cid.strip()) for cid in dev_channels_str.split(',') if cid.strip()]
+            if not dev_channel_ids:
+                self.logger.warning("No dev channels configured")
+                return []
                 
-            self.logger.debug(f"Test channel IDs: {test_channel_ids}")
+            self.logger.debug(f"Source channel IDs (TEST_DATA_CHANNEL): {test_channel_ids}")
+            self.logger.debug(f"Destination channel IDs (DEV_CHANNELS_TO_MONITOR): {dev_channel_ids}")
             
-            query = """
-                SELECT DISTINCT channel_id, channel_name
-                FROM messages
-                WHERE channel_id IN ({})
-                AND channel_id IN ({})
-            """.format(
-                ",".join(str(cid) for cid in test_channel_ids),
-                ",".join(str(cid) for cid in test_channel_ids))
+            query = (
+                "SELECT DISTINCT channel_id "
+                "FROM messages "
+                "WHERE channel_id IN ({}) "
+                "GROUP BY channel_id "
+                "HAVING COUNT(*) >= 25"
+            ).format(",".join(str(cid) for cid in test_channel_ids))
             
             loop = asyncio.get_running_loop()
             try:
                 def db_operation():
                     try:
-                        cursor = db_handler.execute_query(query)
-                        results = cursor.fetchall()
-                        return [(row[0], row[1]) for row in results]
+                        results = db_handler.execute_query(query)
+                        # For each source channel that has enough messages,
+                        # set its post_channel_id to the first dev channel
+                        if results and dev_channel_ids:
+                            for result in results:
+                                result['post_channel_id'] = dev_channel_ids[0]
+                        return results
                     except Exception as e:
                         self.logger.error(f"Error in dev channel query: {e}")
                         return []
@@ -1178,6 +1207,9 @@ class ChannelSummarizer(BaseDiscordBot):
                     loop.run_in_executor(None, db_operation),
                     timeout=10
                 )
+            except asyncio.TimeoutError:
+                self.logger.error("Timeout while executing database query")
+                return []
             except Exception as e:
                 self.logger.error(f"Error executing query: {e}")
                 return []
@@ -1188,6 +1220,7 @@ class ChannelSummarizer(BaseDiscordBot):
     async def _get_production_channels(self, db_handler):
         """Get active channels for production mode"""
         try:
+            channel_ids = ",".join(str(cid) for cid in self.channels_to_monitor)
             channel_query = (
                 "SELECT c.channel_id, c.channel_name, COALESCE(c2.channel_name, 'Unknown') as source, "
                 "COUNT(m.message_id) as msg_count "
@@ -1195,13 +1228,10 @@ class ChannelSummarizer(BaseDiscordBot):
                 "LEFT JOIN channels c2 ON c.category_id = c2.channel_id "
                 "LEFT JOIN messages m ON c.channel_id = m.channel_id "
                 "AND m.created_at > datetime('now', '-24 hours') "
-                "WHERE c.channel_id IN ({}) OR c.category_id IN ({}) "
+                f"WHERE c.channel_id IN ({channel_ids}) OR c.category_id IN ({channel_ids}) "
                 "GROUP BY c.channel_id, c.channel_name, source "
                 "HAVING COUNT(m.message_id) >= 25 "
                 "ORDER BY msg_count DESC"
-            ).format(
-                ",".join(str(cid) for cid in self.channels_to_monitor),
-                ",".join(str(cid) for cid in self.channels_to_monitor)
             )
             
             loop = asyncio.get_running_loop()

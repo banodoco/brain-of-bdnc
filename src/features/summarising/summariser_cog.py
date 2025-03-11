@@ -1,6 +1,7 @@
 # src/features/summarising/summariser_cog.py
 
 import asyncio
+import os
 import traceback
 from datetime import datetime, timedelta
 import time
@@ -21,6 +22,27 @@ class SummarizerCog(commands.Cog):
         # If your summarizer logic used to store references to e.g. Claude, DB, etc.
         # you can keep them here. For example:
         self.logger.info("Initializing SummarizerCog...")
+        from src.features.summarising.summariser import ChannelSummarizer
+        # Pass the bot instance to use its connection
+        self.channel_summarizer = ChannelSummarizer(logger=logger, dev_mode=dev_mode)
+        # Share the bot's state
+        self.channel_summarizer.http = bot.http
+        self.channel_summarizer._connection = bot._connection
+        self.channel_summarizer.loop = bot.loop
+        # Override the is_ready and wait_for_connection methods
+        self.channel_summarizer.is_ready = lambda: True
+        async def dummy_wait():
+            return
+        self.channel_summarizer._wait_for_connection = dummy_wait
+        # Make sure configuration is loaded
+        self.channel_summarizer.load_config()
+        # Share the bot's channels
+        if self.dev_mode:
+            self.channel_summarizer.summary_channel_id = int(os.getenv('DEV_SUMMARY_CHANNEL_ID'))
+            self.channel_summarizer.channels_to_monitor = [int(chan.strip()) for chan in os.getenv('DEV_CHANNELS_TO_MONITOR', '').split(',') if chan.strip()]
+        else:
+            self.channel_summarizer.summary_channel_id = int(os.getenv('PRODUCTION_SUMMARY_CHANNEL_ID'))
+            self.channel_summarizer.channels_to_monitor = [int(chan.strip()) for chan in os.getenv('CHANNELS_TO_MONITOR', '').split(',') if chan.strip()]
         # Any additional setup code that used to be in ChannelSummarizer.__init__:
         # e.g. your environment-based channel checks, etc.
 
@@ -119,21 +141,9 @@ class SummarizerCog(commands.Cog):
         Copied/adapted from your original ChannelSummarizer code, including
         your logic for searching channels, building summary messages, etc.
         """
-        try:
-            self.logger.info("Generating requested summary...")
-            # ... your original summarization logic ...
-            # e.g. channel lookup, chat with Claude, post final summary
-
-            # (Example snippet) Suppose you had something like:
-            # channel = self.bot.get_channel(summary_channel_id)  # from environment or dev config
-            # if not channel:
-            #     # handle error, log channels, etc.
-            #     ...
-            pass
-
-        except Exception as e:
-            self.logger.error(f"Error generating summary: {e}")
-            self.logger.debug(traceback.format_exc())
+        self.logger.info("Running the full summarization using ChannelSummarizer...")
+        await self.channel_summarizer.generate_summary()
+        self.logger.info("Finished ChannelSummarizer's generate_summary.")
 
     async def cleanup(self):
         """

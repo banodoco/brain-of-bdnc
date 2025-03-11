@@ -39,14 +39,12 @@ async def main_async(args):
         print("=== TOKEN DEBUG ===")
         print(f"Raw token value: {token}")
         print("=================")
-        
-        if not token:
-            raise ValueError("Discord bot token not found in environment variables")
-            
-        # Add debug logging for token
         logger.debug(f"Token length: {len(token) if token else 0}")
         logger.debug(f"Token starts with: {token[:6]}..." if token else "No token found")
-        logger.debug(f"Environment variable name used: DISCORD_BOT_TOKEN")
+        logger.debug("Environment variable name used: DISCORD_BOT_TOKEN")
+
+        if not token:
+            raise ValueError("Discord bot token not found in environment variables")            
 
         # Create a single bot instance
         intents = discord.Intents.all()

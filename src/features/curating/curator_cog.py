@@ -4,6 +4,7 @@ import asyncio
 import traceback
 import os
 from discord.ext import commands
+from src.features.curating.curator import ArtCurator
 
 class CuratorCog(commands.Cog):
     def __init__(self, bot, logger, dev_mode=False):
@@ -23,6 +24,7 @@ class CuratorCog(commands.Cog):
             # ...
             self.logger.info(f"Using production art channel: {self.art_channel_id}")
             # etc.
+        self.art_curator = ArtCurator(logger=logger, dev_mode=dev_mode)
 
     async def cog_load(self):
         """Called once the cog is loaded."""
@@ -38,5 +40,7 @@ class CuratorCog(commands.Cog):
     @commands.command(name='curate')
     async def manual_curate(self, ctx):
         """Forces a curation cycle manually, if appropriate."""
-        # ...
-        await ctx.send("Running a manual curation cycle... [Not Implemented]")
+        self.logger.info("Running manual curation using ArtCurator...")
+        await self.art_curator.manual_curate()
+        self.logger.info("Finished ArtCurator's manual curation.")
+        await ctx.send("Manual curation cycle completed.")
