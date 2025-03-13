@@ -36,9 +36,7 @@ async def main_async(args):
 
     try:
         token = os.getenv('DISCORD_BOT_TOKEN')
-        print("=== TOKEN DEBUG ===")
-        print(f"Raw token value: {token}")
-        print("=================")
+
         logger.debug(f"Token length: {len(token) if token else 0}")
         logger.debug(f"Token starts with: {token[:6]}..." if token else "No token found")
         logger.debug("Environment variable name used: DISCORD_BOT_TOKEN")
@@ -64,11 +62,9 @@ async def main_async(args):
         curator_cog = CuratorCog(bot, logger=logger, dev_mode=args.dev)
         await bot.add_cog(curator_cog)
 
-        # Logger Cog (only add in dev mode)
-        if args.dev:
-            logger_cog = LoggerCog(bot, logger=logger, dev_mode=args.dev)
-            await bot.add_cog(logger_cog)
-        # else: Do not add LoggerCog in production mode
+        # Logger Cog
+        logger_cog = LoggerCog(bot, logger=logger, dev_mode=args.dev)
+        await bot.add_cog(logger_cog)
 
         # ---- RUN ----
         bot.logger.info("All cogs added. Running the bot...")
@@ -87,19 +83,11 @@ def main():
     parser.add_argument('--dev', action='store_true', help='Run in development mode')
     args = parser.parse_args()
 
-    print("=== BEFORE LOADING .ENV ===")
-    print(f"Token before .env: {os.getenv('DISCORD_BOT_TOKEN')}")
-    print("=========================")
-
     # Get the directory containing main.py
     current_dir = os.path.dirname(os.path.abspath(__file__))
     env_path = os.path.join(current_dir, '.env')
     load_dotenv(dotenv_path=env_path, override=True)
     
-    print("=== AFTER LOADING .ENV ===")
-    print(f"Token after .env: {os.getenv('DISCORD_BOT_TOKEN')}")
-    print("=========================")
-
     try:
         asyncio.run(main_async(args))
     except KeyboardInterrupt:
