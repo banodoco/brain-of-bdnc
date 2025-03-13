@@ -18,6 +18,7 @@ class DatabaseHandler:
         try:
             # Use provided path or get appropriate path based on mode
             self.db_path = db_path if db_path else get_database_path(dev_mode)
+            self.dev_mode = dev_mode  # Store dev_mode setting
             
             # Ensure the directory exists
             db_dir = Path(self.db_path).parent
@@ -42,7 +43,8 @@ class DatabaseHandler:
         try:
             # Try to get a connection within 5 seconds
             conn = self.connection_pool.get(timeout=5)
-            logger.debug(f"Retrieved connection from pool, remaining connections: {self.connection_pool.qsize()}")
+            if self.dev_mode:
+                logger.debug(f"Retrieved connection from pool, remaining connections: {self.connection_pool.qsize()}")
             return conn
         except queue.Empty:
             # Pool is exhausted, log a warning and create a new connection
@@ -238,7 +240,8 @@ class DatabaseHandler:
         return self._execute_with_retry(query_operation)
 
     def _store_messages(self, messages: List[Dict]):
-        logger.debug(f"Starting to store {len(messages)} messages")
+        if self.dev_mode:
+            logger.debug(f"Starting to store {len(messages)} messages")
         with self.write_lock:
             def store_operation(conn):
                 cursor = conn.cursor()
@@ -314,7 +317,8 @@ class DatabaseHandler:
                         continue
                 
                 cursor.close()
-                logger.debug(f"Stored {len(messages)} messages")
+                if self.dev_mode:
+                    logger.debug(f"Stored {len(messages)} messages")
             
             self._execute_with_retry(store_operation)
 

@@ -93,3 +93,14 @@ data/*
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Test and utility scripts
+check_db.py
+compare_dbs.py
+dump_good_data.py
+fix_fts.py
+test_art_query.py
+
+# Database files
+*.db-shm
+*.db-wal

@@ -105,7 +105,7 @@ class LogHandler:
             
             # Console handler - show INFO and above in prod for important operational logs
             console_handler = logging.StreamHandler()
-            console_handler.setLevel(log_level)  # Use same level as logger
+            console_handler.setLevel(logging.DEBUG if dev_mode else logging.INFO)  # Only show DEBUG in dev mode
             console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             console_handler.setFormatter(console_formatter)
             logger.addHandler(console_handler)
@@ -119,7 +119,7 @@ class LogHandler:
                     encoding='utf-8',
                     max_lines=1000  # Keep last 1000 lines
                 )
-                prod_handler.setLevel(logging.INFO)  # Changed to INFO to capture important operational logs
+                prod_handler.setLevel(logging.INFO)  # Keep INFO level for production logs
                 prod_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
                 prod_handler.setFormatter(prod_formatter)
                 logger.addHandler(prod_handler)
