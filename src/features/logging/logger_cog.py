@@ -30,6 +30,7 @@ class LoggerCog(commands.Cog):
         if message.author.bot:
             return  # skip bot messages if desired
 
-        # Example: print to console or log to a file
+        # Logging messages regardless of dev mode
+
         self.logger.info(f"Message from {message.author}: {message.content}")
         # Additional logic to store in DB, etc.

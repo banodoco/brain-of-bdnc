@@ -64,9 +64,11 @@ async def main_async(args):
         curator_cog = CuratorCog(bot, logger=logger, dev_mode=args.dev)
         await bot.add_cog(curator_cog)
 
-        # Logger Cog
-        logger_cog = LoggerCog(bot, logger=logger, dev_mode=args.dev)
-        await bot.add_cog(logger_cog)
+        # Logger Cog (only add in dev mode)
+        if args.dev:
+            logger_cog = LoggerCog(bot, logger=logger, dev_mode=args.dev)
+            await bot.add_cog(logger_cog)
+        # else: Do not add LoggerCog in production mode
 
         # ---- RUN ----
         bot.logger.info("All cogs added. Running the bot...")

@@ -80,7 +80,12 @@ class LogHandler:
         """
         try:
             logger = logging.getLogger(self.logger_name)
-            logger.setLevel(logging.DEBUG if dev_mode else logging.INFO)
+            # Get log level from environment, default to INFO
+            env_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+            log_level = getattr(logging, env_level, logging.INFO)
+            if dev_mode:
+                log_level = logging.DEBUG
+            logger.setLevel(log_level)
             
             # Clear any existing handlers
             logger.handlers.clear()
@@ -100,7 +105,7 @@ class LogHandler:
             
             # Console handler - show INFO and above in prod for important operational logs
             console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.DEBUG if dev_mode else logging.INFO)
+            console_handler.setLevel(log_level)  # Use same level as logger
             console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             console_handler.setFormatter(console_formatter)
             logger.addHandler(console_handler)
