@@ -42,7 +42,7 @@ def get_db(db_path):
     return thread_local.db
 
 class MessageArchiver(BaseDiscordBot):
-    def __init__(self, dev_mode=False, order="newest", days=None, batch_size=500, in_depth=False, channel_id=None):
+    def __init__(self, dev_mode=False, order="newest", days=None, batch_size=500, in_depth=False, channel_id=None, fetch_reactions=False):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
@@ -108,6 +108,11 @@ class MessageArchiver(BaseDiscordBot):
         self.in_depth = in_depth
         if in_depth:
             logger.info("Running in in-depth mode - will perform thorough message checks")
+            
+        # Set fetch reactions mode
+        self.fetch_reactions = fetch_reactions
+        if fetch_reactions:
+            logger.info("Will fetch reactions for all messages in range")
             
         # Set specific channel to archive
         self.target_channel_id = channel_id
@@ -216,7 +221,7 @@ class MessageArchiver(BaseDiscordBot):
                     message_exists = await self._db_operation(
                         lambda db: db.message_exists(message.id)
                     )
-                    if self.in_depth or not message_exists:
+                    if self.in_depth or self.fetch_reactions or not message_exists:
                         logger.info(f"Processing reactions for message {message.id}: {len(message.reactions)} types, {reaction_count} total reactions")
                         
                         guild = self.get_guild(self.guild_id)
@@ -570,7 +575,7 @@ class MessageArchiver(BaseDiscordBot):
                                     message_exists = await self._db_operation(
                                         lambda db: db.message_exists(message.id)
                                     )
-                                    if self.in_depth or not message_exists:
+                                    if self.in_depth or self.fetch_reactions or not message_exists:
                                         current_batch.append(message)
                                     
                                     # Store batch when it reaches the threshold
@@ -944,6 +949,8 @@ def main():
                       help='Perform thorough message checks, re-processing all messages in the time range')
     parser.add_argument('--channel', type=int,
                       help='ID of a specific channel to archive')
+    parser.add_argument('--fetch-reactions', action='store_true',
+                      help='Fetch reactions for all messages in range, not just new ones')
     args = parser.parse_args()
     
     if args.dev:
@@ -957,7 +964,7 @@ def main():
         
         bot = MessageArchiver(dev_mode=args.dev, order=args.order, days=args.days, 
                             batch_size=args.batch_size, in_depth=args.in_depth,
-                            channel_id=args.channel)
+                            channel_id=args.channel, fetch_reactions=args.fetch_reactions)
         
         # Start the bot and keep it running until archiving is complete
         async def runner():
