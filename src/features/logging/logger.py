@@ -20,7 +20,17 @@ class MessageLogger(BaseDiscordBot):
         intents.guilds = True
         intents.messages = True
         intents.members = True
-        intents.reactions = True
+        intents.reactions = True  # Explicitly enable reactions
+        intents.emojis = True     # Enable emoji-related events
+        intents.guild_messages = True  # Enable guild message events
+        intents.guild_reactions = True  # Enable guild reaction events
+
+        # Add debug logging for intents
+        logger.info("Initializing bot with intents:")
+        logger.info(f"  reactions: {intents.reactions}")
+        logger.info(f"  guild_reactions: {intents.guild_reactions}")
+        logger.info(f"  messages: {intents.messages}")
+        logger.info(f"  guild_messages: {intents.guild_messages}")
 
         super().__init__(
             command_prefix="!",
@@ -218,16 +228,21 @@ class MessageLogger(BaseDiscordBot):
     async def on_reaction_add(self, reaction: discord.Reaction, user: discord.User):
         """Called when a reaction is added to a message."""
         try:
+            logger.info(f"Reaction add detected - Emoji: {reaction.emoji}, User: {user.name} ({user.id}), Message: {reaction.message.id}")
+            
             # Ignore reactions from the bot itself
             if user == self.user or user.id == self.bot_user_id:
+                logger.debug(f"Ignoring reaction from bot user: {user.id}")
                 return
 
             # Skip configured channels
             if reaction.message.channel.id in self.skip_channels:
+                logger.debug(f"Skipping reaction in excluded channel: {reaction.message.channel.id}")
                 return
 
             # Get current message data from database
             try:
+                logger.debug(f"Querying database for message {reaction.message.id}")
                 results = self.db.execute_query("""
                     SELECT reaction_count, reactors
                     FROM messages
@@ -248,21 +263,27 @@ class MessageLogger(BaseDiscordBot):
                         logger.error(f"Error fetching message from Discord: {fetch_err}")
                     return
 
-                current_count = results[0].get('reaction_count', 0) or 0  # Default to 0 if None
+                logger.debug(f"Database query results: {results[0]}")
+                current_count = results[0].get('reaction_count', 0) or 0
                 current_reactors_json = results[0].get('reactors')
                 current_reactors = json.loads(current_reactors_json) if current_reactors_json else []
+                
+                logger.debug(f"Current reaction state - Count: {current_count}, Reactors: {current_reactors}")
 
                 # Add new reactor if not already in list
                 if user.id not in current_reactors:
                     current_reactors.append(user.id)
+                    logger.debug(f"Added new reactor {user.id} to reactors list")
 
                 # Update database with new count and reactors
                 try:
+                    logger.debug(f"Updating database - New count: {current_count + 1}, New reactors: {current_reactors}")
                     self.db.execute_query("""
                         UPDATE messages
                         SET reaction_count = ?, reactors = ?
                         WHERE message_id = ?
                     """, (current_count + 1, json.dumps(current_reactors), reaction.message.id))
+                    logger.info(f"Successfully updated reaction in database for message {reaction.message.id}")
                 except Exception as db_error:
                     logger.error(f"Database error updating reaction: {db_error}")
                     logger.error(f"Message ID: {reaction.message.id}")
@@ -275,8 +296,6 @@ class MessageLogger(BaseDiscordBot):
                     logger.error(f"Current Reactors: {current_reactors}")
                     logger.error(f"Database Error Traceback:\n{traceback.format_exc()}")
                     raise
-
-                logger.debug(f"Added reaction {reaction.emoji} from {user.name} to message {reaction.message.id}")
 
             except Exception as query_error:
                 logger.error(f"Database query error: {str(query_error)}")
@@ -313,11 +332,15 @@ class MessageLogger(BaseDiscordBot):
     async def on_reaction_remove(self, reaction: discord.Reaction, user: discord.User):
         """Called when a reaction is removed from a message."""
         try:
+            logger.info(f"Reaction remove detected - Emoji: {reaction.emoji}, User: {user.name} ({user.id}), Message: {reaction.message.id}")
+            
             # Ignore reactions from the bot itself
             if user == self.user or user.id == self.bot_user_id:
+                logger.debug(f"Ignoring reaction removal from bot user: {user.id}")
                 return
 
             # Get current message data from database
+            logger.debug(f"Querying database for message {reaction.message.id}")
             results = self.db.execute_query("""
                 SELECT reaction_count, reactors
                 FROM messages
@@ -325,27 +348,37 @@ class MessageLogger(BaseDiscordBot):
             """, (reaction.message.id,))
 
             if not results:
-                logger.warning(f"Message {reaction.message.id} not found in database for reaction update")
+                logger.warning(f"Message {reaction.message.id} not found in database for reaction removal")
                 return
 
-            current_count, current_reactors_json = results[0]
+            logger.debug(f"Database query results: {results[0]}")
+            current_count = results[0].get('reaction_count', 0) or 0
+            current_reactors_json = results[0].get('reactors')
             current_reactors = json.loads(current_reactors_json) if current_reactors_json else []
+            
+            logger.debug(f"Current reaction state - Count: {current_count}, Reactors: {current_reactors}")
 
             # Remove reactor from list if present
             if user.id in current_reactors:
                 current_reactors.remove(user.id)
+                logger.debug(f"Removed reactor {user.id} from reactors list")
 
             # Update database with new count and reactors
-            self.db.execute_query("""
-                UPDATE messages
-                SET reaction_count = ?, reactors = ?
-                WHERE message_id = ?
-            """, (max(0, current_count - 1), json.dumps(current_reactors), reaction.message.id))
-
-            logger.debug(f"Removed reaction from {user.name} on message {reaction.message.id}")
+            try:
+                logger.debug(f"Updating database - New count: {max(0, current_count - 1)}, New reactors: {current_reactors}")
+                self.db.execute_query("""
+                    UPDATE messages
+                    SET reaction_count = ?, reactors = ?
+                    WHERE message_id = ?
+                """, (max(0, current_count - 1), json.dumps(current_reactors), reaction.message.id))
+                logger.info(f"Successfully updated reaction removal in database for message {reaction.message.id}")
+            except Exception as e:
+                logger.error(f"Error updating database for reaction removal: {e}")
+                logger.error(traceback.format_exc())
 
         except Exception as e:
             logger.error(f"Error handling reaction remove: {e}")
+            logger.error(traceback.format_exc())
 
     def run_logger(self):
         """Run the message logger."""

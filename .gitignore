@@ -104,3 +104,6 @@ test_art_query.py
 # Database files
 *.db-shm
 *.db-wal
+
+# Project specific
+/files/
