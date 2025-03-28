@@ -27,7 +27,6 @@ def get_messages_schema() -> List[Column]:
         Column("thread_id", "BIGINT", "ID of thread if message started one", nullable=True),
         Column("message_type", "TEXT", "Type of message (default, reply, etc)"),
         Column("flags", "INTEGER", "Discord message flags"),
-        Column("jump_url", "TEXT", "URL to jump to message in Discord"),
         Column("indexed_at", "TIMESTAMP", "When message was indexed in database", default="CURRENT_TIMESTAMP")
     ]
 

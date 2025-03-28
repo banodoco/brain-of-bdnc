@@ -169,13 +169,13 @@ class DatabaseHandler:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     message_id BIGINT PRIMARY KEY,
-                    channel_id BIGINT NOT NULL,
-                    author_id BIGINT NOT NULL,
+                    channel_id BIGINT,
+                    author_id BIGINT,
                     content TEXT,
                     created_at TEXT,
                     attachments TEXT,
                     embeds TEXT,
-                    reaction_count INTEGER,
+                    reaction_count INTEGER DEFAULT 0,
                     reactors TEXT,
                     reference_id BIGINT,
                     edited_at TEXT,
@@ -183,11 +183,8 @@ class DatabaseHandler:
                     thread_id BIGINT,
                     message_type TEXT,
                     flags INTEGER,
-                    jump_url TEXT,
                     is_deleted BOOLEAN DEFAULT FALSE,
-                    indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (author_id) REFERENCES members(member_id),
-                    FOREIGN KEY (channel_id) REFERENCES channels(channel_id)
+                    indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
@@ -286,7 +283,7 @@ class DatabaseHandler:
                                 (message_id, channel_id, author_id,
                                  content, created_at, attachments, embeds, reaction_count, 
                                  reactors, reference_id, edited_at, is_pinned, thread_id, 
-                                 message_type, flags, jump_url, is_deleted, indexed_at)
+                                 message_type, flags, is_deleted, indexed_at)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, CURRENT_TIMESTAMP)
                             """, (
                                 message_id,
@@ -304,7 +301,7 @@ class DatabaseHandler:
                                 message.get('thread_id'),
                                 message.get('message_type'),
                                 message.get('flags', 0),
-                                message.get('jump_url')
+                                message.get('is_deleted', False)
                             ))
                         except sqlite3.Error as e:
                             logger.error(f"Database error storing message {message_id}: {e}")

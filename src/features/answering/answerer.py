@@ -352,7 +352,8 @@ Return ONLY the list of relevant channel IDs, nothing else."""
             context.append(f"[{timestamp}] #{channel_name} - {msg.author.name}: {msg.content}")
             if msg.attachments:
                 context.append(f"[Attachments: {', '.join(a.filename for a in msg.attachments)}]")
-            context.append(f"Message Link: {msg.jump_url}\n")
+            jump_url = self.generate_jump_url(msg.guild.id, msg.channel.id, msg.id)
+            context.append(f"Message Link: {jump_url}\n")
         return "\n".join(context)
 
     async def get_claude_answer(self, question: str, context: str, search_info: Dict) -> str:

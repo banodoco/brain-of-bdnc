@@ -157,7 +157,9 @@ class TopGenerations:
             
             desc.append(f"🔥 {first_gen['unique_reactor_count']} unique reactions")
             desc.append(video_attachment['url'])
-            desc.append(f"🔗 Original post: {first_gen['jump_url']}")
+            # Generate jump URL dynamically
+            jump_url = f"https://discord.com/channels/{self.bot.guild_id}/{first_gen['channel_id']}/{first_gen['message_id']}"
+            desc.append(f"🔗 Original post: {jump_url}")
             msg_text = "\n".join(desc)
             
             header_message = await self.bot.safe_send_message(summary_channel, msg_text)
@@ -195,7 +197,9 @@ class TopGenerations:
                     
                     desc.append(f"🔥 {gen['unique_reactor_count']} unique reactions")
                     desc.append(video_attachment['url'])
-                    desc.append(f"🔗 Original post: {gen['jump_url']}")
+                    # Generate jump URL dynamically
+                    jump_url = f"https://discord.com/channels/{self.bot.guild_id}/{gen['channel_id']}/{gen['message_id']}"
+                    desc.append(f"🔗 Original post: {jump_url}")
                     msg_text = "\n".join(desc)
                     
                     await self.bot.safe_send_message(thread, msg_text)
@@ -288,7 +292,9 @@ class TopGenerations:
                         desc.append(self._replace_user_mentions(row['content'][:150]))
                     
                     desc.append(video_attachment['url'])
-                    desc.append(f"🔗 Original post: {row['jump_url']}")
+                    # Generate jump URL dynamically
+                    jump_url = f"https://discord.com/channels/{self.bot.guild_id}/{row['channel_id']}/{row['message_id']}"
+                    desc.append(f"🔗 Original post: {jump_url}")
                     msg_text = "\n".join(desc)
                     
                     await self.bot.safe_send_message(thread, msg_text)

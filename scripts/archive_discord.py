@@ -350,8 +350,7 @@ class MessageArchiver(BaseDiscordBot):
                 'is_pinned': message.pinned,
                 'thread_id': thread_id,
                 'message_type': str(message.type),
-                'flags': message.flags.value,
-                'jump_url': message.jump_url
+                'flags': message.flags.value
             }
             
             return processed_message

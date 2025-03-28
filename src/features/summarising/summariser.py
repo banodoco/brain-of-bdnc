@@ -88,14 +88,13 @@ class SummaryError(ChannelSummarizerError):
     pass
 
 class Attachment:
-    def __init__(self, filename: str, data: bytes, content_type: str, reaction_count: int, username: str, content: str = "", jump_url: str = ""):
+    def __init__(self, filename: str, data: bytes, content_type: str, reaction_count: int, username: str, content: str = ""):
         self.filename = filename
         self.data = data
         self.content_type = content_type
         self.reaction_count = reaction_count
         self.username = username
         self.content = content
-        self.jump_url = jump_url  # Add jump_url field
 
 class AttachmentHandler:
     def __init__(self, max_size: int = 25 * 1024 * 1024):
@@ -107,13 +106,10 @@ class AttachmentHandler:
         """Clear the attachment cache"""
         self.attachment_cache.clear()
         
-    async def process_attachment(self, attachment: discord.Attachment, message: discord.Message, session: aiohttp.ClientSession, original_jump_url: str = None) -> Optional[Attachment]:
+    async def process_attachment(self, attachment: discord.Attachment, message: discord.Message, session: aiohttp.ClientSession) -> Optional[Attachment]:
         """Process a single attachment with size and type validation."""
         try:
             cache_key = f"{message.channel.id}:{message.id}"
-            
-            # Use original_jump_url if provided (dev mode), otherwise use message.jump_url
-            jump_url = original_jump_url if original_jump_url else message.jump_url
 
             async with session.get(attachment.url, timeout=300) as response:
                 if response.status != 200:
@@ -139,8 +135,7 @@ class AttachmentHandler:
                     content_type=attachment.content_type,
                     reaction_count=total_reactions,
                     username=author_name,  # Use the determined name
-                    content=message.content,
-                    jump_url=jump_url  # Use the correct jump URL
+                    content=message.content
                 )
 
                 # Ensure the cache key structure is consistent
@@ -523,7 +518,6 @@ class ChannelSummarizer(BaseDiscordBot):
                                 'reactors': reactors,
                                 'reference_id': msg['reference_id'],
                                 'thread_id': msg['thread_id'],
-                                'jump_url': msg['jump_url'],
                                 'author_name': msg['display_name']
                             }
                             formatted_messages.append(formatted_msg)

@@ -46,13 +46,15 @@ Otherwise, respond with ONLY a JSON array in this exact format:
  {
    "title": "BFL ship new Controlnets for FluxText",
    "mainText": "A new ComfyUI analytics node has been developed to track and analyze data pipeline components, including inputs, outputs, and embeddings. This enhancement aims to provide more controllable prompting capabilities:",
-   "mainFile": "https://discord.com/channels/1076117621407223829/1138865343314530324/4532454353425342.mp4, https://discord.com/channels/1076117621407223829/1138865343314530324/4532454353425343.png",
-   "messageLink": "https://discord.com/channels/1076117621407223829/1138865343314530324/4532454353425342",
+   "mainFile": "attachment_url1.mp4, attachment_url2.png",
+   "message_id": "4532454353425342",
+   "channel_id": "1138865343314530324",
    "subTopics": [
      {
        "text": "Here's another example of **Kijai** using it in combination with **Redux** - **Kijai** noted that it worked better than the previous version:",
-       "file": "https://discord.com/channels/1076117621407223829/1138865343314530324/4532454353425342.png",
-       "messageLink": "https://discord.com/channels/1076117621407223829/1138865343314530324/4532454353425342"
+       "file": "attachment_url3.png",
+       "message_id": "4532454353425343",
+       "channel_id": "1138865343314530324"
      }
    ]
  }
@@ -68,10 +70,10 @@ Focus on these types of content:
 7. Don't avoid negative news but try to frame it in a positive way 
 
 IMPORTANT REQUIREMENTS FOR MEDIA AND LINKS:
-1. Each topic MUST have at least one Discord message link (jump_url) and should try to include multiple relevant attachments
+1. Each topic MUST have message_id and channel_id for linking back to the original message
 2. AGGRESSIVELY search for related media - include ALL images, videos, or links that are part of the same discussion. For each topic, try to find at least 2-3 related images/videos/examples if they exist
 3. If you find multiple related pieces of media, include them all in mainFile as a comma-separated list
-4. For each subtopic that references media or a demo, you MUST include both the media link and the Discord message link
+4. For each subtopic that references media or a demo, you MUST include message_id and channel_id
 5. Prioritize messages with reactions or responses when selecting media to include
 6. Be careful not to bias towards just the first messages.
 7. If a topic has interesting follow-up discussions or examples, include those as subtopics even if they don't have media
@@ -81,11 +83,10 @@ IMPORTANT REQUIREMENTS FOR MEDIA AND LINKS:
 
 Requirements for the response:
 1. Must be valid JSON in exactly the above format
-2. Each news item must have all fields: title, mainText, mainFile (can be multiple comma-separated), messageLink, and subTopics
+2. Each news item must have all fields: title, mainText, mainFile (can be multiple comma-separated), message_id, channel_id, and subTopics
 3. subTopics can include:
    - file (can be multiple comma-separated)
-   - link (external links)
-   - messageLink (required for all subtopics)
+   - message_id and channel_id (required for all subtopics)
    - Both file and link can be included if relevant
 4. Always end with a colon if there are attachments or links ":"
 5. All usernames must be in bold with ** (e.g., "**username**") - ALWAYS try to give credit to the creator or state if opinions come from a specific person
@@ -115,8 +116,8 @@ Here are the messages to analyze:
                         conversation += f"- {filename}: {url}\n"
                     else:
                         conversation += f"- {attach}\n"
-            if msg.get('jump_url'):
-                conversation += f"Message link: {msg['jump_url']}\n"
+            conversation += f"Message ID: {msg['message_id']}\n"
+            conversation += f"Channel ID: {msg['channel_id']}\n"
             conversation += "\n"
 
         conversation += "\nRemember: Respond with ONLY the JSON array or '[NO SIGNIFICANT NEWS]'. NO other text."
@@ -240,11 +241,10 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
             main_part = []
             main_part.append(f"## {item.get('title','No Title')}\n")
             # mainText + messageLink
-            # If there's a messageLink, append it
-            if item.get("messageLink") and item["messageLink"] != "unknown":
-                main_part.append(f"{item.get('mainText', '')} {item['messageLink']}")
-            else:
-                main_part.append(item.get('mainText', ''))
+            message_id = int(item['message_id'])
+            channel_id = int(item['channel_id'])
+            jump_url = f"https://discord.com/channels/{self.guild_id}/{channel_id}/{message_id}"
+            main_part.append(f"{item.get('mainText', '')} {jump_url}")
 
             messages_to_send.append({"content": "\n".join(main_part)})
 
@@ -262,8 +262,12 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
                 for sub in subs:
                     text = sub.get("text", "")
                     sub_msg = []
-                    if sub.get("messageLink") and sub["messageLink"] != "unknown":
-                        sub_msg.append(f"• {text} {sub['messageLink']}")
+                    # Generate jump URL for subtopic
+                    if sub.get('message_id') and sub.get('channel_id'):
+                        message_id = int(sub['message_id'])
+                        channel_id = int(sub['channel_id'])
+                        jump_url = f"https://discord.com/channels/{self.guild_id}/{channel_id}/{message_id}"
+                        sub_msg.append(f"• {text} {jump_url}")
                     else:
                         sub_msg.append(f"• {text}")
 

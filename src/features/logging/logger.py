@@ -144,7 +144,6 @@ class MessageLogger(BaseDiscordBot):
                 'thread_id': thread_id,
                 'message_type': str(message.type),
                 'flags': message.flags.value,
-                'jump_url': message.jump_url,
                 'is_deleted': False,  # Messages are not deleted when first created
                 'display_name': display_name,  # Server nickname or display name
                 'global_name': global_name,  # Global display name

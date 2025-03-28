@@ -65,7 +65,7 @@ class BaseDiscordBot(commands.Bot):
     # The following method is optional. It logs certain gateway events
     # (op=9, code=4004, etc.), but *no longer* forces reconnections or modifies
     # your bot's connection state. You can remove this entire method if you
-    # don’t need these logs.
+    # don't need these logs.
     # -------------------------------------------------------------------------
     async def on_socket_response(self, msg: Dict[str, Any]) -> None:
         """Handle WebSocket responses for errors/resumptions."""
@@ -154,3 +154,8 @@ class BaseDiscordBot(commands.Bot):
             return self.ws.close_code is None
         # If no reliable attribute, assume connected
         return True
+
+    @staticmethod
+    def generate_jump_url(guild_id: int, channel_id: int, message_id: int) -> str:
+        """Generate a Discord jump URL for a message."""
+        return f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"

@@ -95,7 +95,8 @@ class TopArtSharing:
                 if not has_video_link or len(top_art['content'].split()) > 1:
                     content_lines.append(attachment_url)
                 
-                content_lines.append(f"🔗 Original post: {top_art['jump_url']}")
+                jump_url = self.bot.generate_jump_url(self.bot.guild_id, top_art['channel_id'], top_art['message_id'])
+                content_lines.append(f"🔗 Original post: {jump_url}")
                 
                 formatted_content = "\n".join(content_lines)
                 await self.bot.safe_send_message(summary_channel, formatted_content)

@@ -28,17 +28,17 @@ def get_table_columns(cursor, table_name: str) -> Dict[str, dict]:
         }
     return columns
 
-def get_desired_schema() -> List[tuple]:
-    """Get the desired schema structure for the messages table."""
+def get_messages_schema():
+    """Define the schema structure for the messages table."""
     return [
         ("message_id", "BIGINT PRIMARY KEY"),
-        ("channel_id", "BIGINT NOT NULL REFERENCES channels(channel_id)"),
-        ("author_id", "BIGINT NOT NULL REFERENCES members(member_id)"),
+        ("channel_id", "BIGINT"),
+        ("author_id", "BIGINT"),
         ("content", "TEXT"),
         ("created_at", "TEXT"),
         ("attachments", "TEXT"),
         ("embeds", "TEXT"),
-        ("reaction_count", "INTEGER"),
+        ("reaction_count", "INTEGER DEFAULT 0"),
         ("reactors", "TEXT"),
         ("reference_id", "BIGINT"),
         ("edited_at", "TEXT"),
@@ -46,8 +46,6 @@ def get_desired_schema() -> List[tuple]:
         ("thread_id", "BIGINT"),
         ("message_type", "TEXT"),
         ("flags", "INTEGER"),
-        ("jump_url", "TEXT"),
-        ("is_deleted", "BOOLEAN DEFAULT FALSE"),
         ("indexed_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     ]
 
@@ -85,7 +83,7 @@ def get_desired_daily_summaries_schema() -> List[tuple]:
 
 def create_messages_table(cursor):
     """Create the messages table if it doesn't exist."""
-    schema = get_desired_schema()
+    schema = get_messages_schema()
     columns_def = ", ".join([f"{name} {type_}" for name, type_ in schema])
     create_sql = f"""
     CREATE TABLE IF NOT EXISTS messages (
@@ -148,7 +146,7 @@ def create_temp_table_and_migrate_data(cursor, desired_schema: List[tuple], exis
             SELECT message_id, channel_id, author_id,
                    content, created_at, attachments, embeds, reaction_count,
                    reactors, reference_id, edited_at, is_pinned, thread_id,
-                   message_type, flags, jump_url, FALSE as is_deleted, indexed_at
+                   message_type, flags, indexed_at
             FROM messages
         """)
         
@@ -178,7 +176,7 @@ def migrate_messages_table(cursor):
     try:
         # Get current columns with their definitions
         existing_columns = get_table_columns(cursor, "messages")
-        desired_schema = get_desired_schema()
+        desired_schema = get_messages_schema()
         
         # Find missing and extra columns
         desired_column_names = {name for name, _ in desired_schema}
@@ -238,7 +236,7 @@ def migrate_messages_table(cursor):
                 SELECT message_id, channel_id, author_id,
                        content, created_at, attachments, embeds, reaction_count,
                        reactors, reference_id, edited_at, is_pinned, thread_id,
-                       message_type, flags, jump_url, FALSE as is_deleted, indexed_at
+                       message_type, flags, indexed_at
                 FROM messages
             """)
             
