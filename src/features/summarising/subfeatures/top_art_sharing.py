@@ -31,13 +31,11 @@ class TopArtSharing:
             query = """
                 SELECT 
                     m.message_id,
+                    m.channel_id,
                     m.content,
                     m.attachments,
-                    m.jump_url,
-                    COALESCE(mem.server_nick, mem.global_name, mem.username) as author_name,
                     m.reactors,
-                    m.embeds,
-                    m.author_id,
+                    COALESCE(mem.server_nick, mem.global_name, mem.username) as author_name,
                     CASE 
                         WHEN m.reactors IS NULL OR m.reactors = '[]' THEN 0
                         ELSE json_array_length(m.reactors)

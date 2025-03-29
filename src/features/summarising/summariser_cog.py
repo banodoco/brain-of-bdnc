@@ -58,27 +58,29 @@ class SummarizerCog(commands.Cog):
     async def on_ready(self):
         """
         Once the bot is connected, run immediate summary if requested,
-        then start the daily summary scheduler.
+        then start the daily summary scheduler. This method is ensured to execute only once.
         """
-        # We only do these once:
-        if not self.bot.summarizer_ready:
-            self.logger.info("SummarizerCog is now handling on_ready...")
-            self.bot.summarizer_ready = True
-
-            # If user requested immediate summary via --summary-now
-            if self.run_now:
-                try:
-                    self.logger.info("Running immediate summary generation...")
-                    await asyncio.sleep(2)  # slight delay
-                    await self.generate_summary()
-                except Exception as e:
-                    self.logger.error(f"Error during immediate summary: {e}")
-                    self.logger.debug(traceback.format_exc())
-
-            # Now that we've done immediate summary, start daily scheduling
-            self._shutdown_flag = False
-            self.logger.info("Starting scheduled daily summary loop...")
-            self.bot.loop.create_task(self.schedule_daily_summary())
+        if getattr(self, '_on_ready_called', False):
+            return
+        self._on_ready_called = True
+        
+        self.logger.info("SummarizerCog on_ready triggered...")
+        
+        # If user requested immediate summary via --summary-now
+        if self.run_now and not getattr(self, '_immediate_summary_run', False):
+            try:
+                self.logger.info("Running immediate summary generation...")
+                await asyncio.sleep(2)  # slight delay
+                await self.generate_summary()
+            except Exception as e:
+                self.logger.error(f"Error during immediate summary: {e}")
+                self.logger.debug(traceback.format_exc())
+            self._immediate_summary_run = True
+        
+        # Start scheduled daily summary loop
+        self._shutdown_flag = False
+        self.logger.info("Starting scheduled daily summary loop...")
+        self.bot.loop.create_task(self.schedule_daily_summary())
 
     async def schedule_daily_summary(self):
         """

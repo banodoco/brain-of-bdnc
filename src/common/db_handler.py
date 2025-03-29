@@ -284,7 +284,7 @@ class DatabaseHandler:
                                  content, created_at, attachments, embeds, reaction_count, 
                                  reactors, reference_id, edited_at, is_pinned, thread_id, 
                                  message_type, flags, is_deleted, indexed_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, CURRENT_TIMESTAMP)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, CURRENT_TIMESTAMP)
                             """, (
                                 message_id,
                                 message.get('channel_id'),
@@ -300,23 +300,17 @@ class DatabaseHandler:
                                 message.get('is_pinned', False),
                                 message.get('thread_id'),
                                 message.get('message_type'),
-                                message.get('flags', 0),
-                                message.get('is_deleted', False)
+                                message.get('flags', 0)
                             ))
                         except sqlite3.Error as e:
                             logger.error(f"Database error storing message {message_id}: {e}")
                             continue
-                    
                     except Exception as e:
                         logger.error(f"Error processing individual message: {e}")
-                        logger.error(f"Problem message ID: {message.get('message_id') or message.get('id')}")
-                        logger.debug(f"Problem message: {json.dumps(message, default=str)}")
                         continue
-                
                 cursor.close()
                 if self.dev_mode:
                     logger.debug(f"Stored {len(messages)} messages")
-            
             self._execute_with_retry(store_operation)
 
     def store_messages(self, messages: List[Dict]):

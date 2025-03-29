@@ -46,6 +46,7 @@ def get_messages_schema():
         ("thread_id", "BIGINT"),
         ("message_type", "TEXT"),
         ("flags", "INTEGER"),
+        ("is_deleted", "BOOLEAN DEFAULT FALSE"),
         ("indexed_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     ]
 
@@ -146,7 +147,7 @@ def create_temp_table_and_migrate_data(cursor, desired_schema: List[tuple], exis
             SELECT message_id, channel_id, author_id,
                    content, created_at, attachments, embeds, reaction_count,
                    reactors, reference_id, edited_at, is_pinned, thread_id,
-                   message_type, flags, indexed_at
+                   message_type, flags, 0, indexed_at
             FROM messages
         """)
         
@@ -236,7 +237,7 @@ def migrate_messages_table(cursor):
                 SELECT message_id, channel_id, author_id,
                        content, created_at, attachments, embeds, reaction_count,
                        reactors, reference_id, edited_at, is_pinned, thread_id,
-                       message_type, flags, indexed_at
+                       message_type, flags, 0, indexed_at
                 FROM messages
             """)
             
@@ -317,10 +318,10 @@ def migrate_members_table(cursor):
         logger.info(f"Created backup table: {backup_name}")
         
         try:
-            # Get original row count
-            cursor.execute("SELECT COUNT(*) FROM members")
-            original_count = cursor.fetchone()[0]
-            
+            # Get count of distinct member_id to account for duplicates
+            cursor.execute("SELECT COUNT(DISTINCT member_id) FROM members")
+            distinct_count = cursor.fetchone()[0]
+
             # Create new table with correct schema
             columns_def = ", ".join([f"{name} {type_}" for name, type_ in desired_schema])
             cursor.execute(f"""
@@ -329,19 +330,33 @@ def migrate_members_table(cursor):
                 )
             """)
             
-            # Copy data, using member_id since we've already migrated from id
+            # Copy data, aggregating duplicates by member_id
             cursor.execute("""
                 INSERT INTO members_new 
-                SELECT member_id, username, global_name, server_nick,
-                       avatar_url, discriminator, bot, system, accent_color,
-                       banner_url, discord_created_at, guild_join_date, role_ids,
-                       created_at, updated_at, '[]' as notifications
+                SELECT 
+                    member_id, 
+                    MIN(username) as username, 
+                    MIN(global_name) as global_name, 
+                    MIN(server_nick) as server_nick,
+                    MIN(avatar_url) as avatar_url, 
+                    MIN(discriminator) as discriminator, 
+                    MIN(bot) as bot, 
+                    MIN(system) as system, 
+                    MIN(accent_color) as accent_color,
+                    MIN(banner_url) as banner_url, 
+                    MIN(discord_created_at) as discord_created_at, 
+                    MIN(guild_join_date) as guild_join_date, 
+                    MIN(role_ids) as role_ids, 
+                    MIN(created_at) as created_at, 
+                    MIN(updated_at) as updated_at, 
+                    '[]' as notifications
                 FROM members
+                GROUP BY member_id
             """)
             
-            # Validate before dropping old table
+            # Validate that the new table has the expected number of unique member rows
             cursor.execute("SELECT COUNT(*) FROM members_new")
-            if cursor.fetchone()[0] != original_count:
+            if cursor.fetchone()[0] != distinct_count:
                 raise ValueError("Row count mismatch before table swap")
             
             # Drop old table and rename new one

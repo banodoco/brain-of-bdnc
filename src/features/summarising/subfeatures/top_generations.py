@@ -90,7 +90,6 @@ class TopGenerations:
                         m.content,
                         m.attachments,
                         m.reactors,
-                        m.jump_url,
                         c.channel_name,
                         COALESCE(mem.server_nick, mem.global_name, mem.username) as author_name,
                         CASE 
@@ -228,7 +227,6 @@ class TopGenerations:
                     m.message_id,
                     m.content,
                     m.attachments,
-                    m.jump_url,
                     COALESCE(mem.server_nick, mem.global_name, mem.username) as author_name,
                     CASE 
                         WHEN m.reactors IS NULL OR m.reactors = '[]' THEN 0

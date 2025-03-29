@@ -28,6 +28,11 @@ class NewsSummarizer:
         self.dev_mode = dev_mode
         self.logger = logger
 
+        if self.dev_mode:
+            self.guild_id = int(os.getenv('DEV_GUILD_ID'))
+        else:
+            self.guild_id = int(os.getenv('GUILD_ID'))
+
         # Initialize Claude client
         api_key = os.getenv('ANTHROPIC_API_KEY')
         if not api_key:
