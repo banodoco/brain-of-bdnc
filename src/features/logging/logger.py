@@ -63,13 +63,18 @@ class MessageLogger(BaseDiscordBot):
             self.skip_channels = {1076117621407223832}  # Welcome channel
             logger.info("Production mode: Monitoring all channels except welcome")
         
-        # Set up logging
-        logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        ))
-        logger.addHandler(handler)
+        # Set up logging depending on dev_mode flag
+        if dev_mode:
+            logger.setLevel(logging.INFO)
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+            logger.addHandler(handler)
+        else:
+            logger.setLevel(logging.WARNING)
+            handler = logging.StreamHandler()
+            handler.setLevel(logging.WARNING)
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+            logger.addHandler(handler)
         self._shutdown_flag = False
         
     async def setup_hook(self):

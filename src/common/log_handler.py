@@ -117,7 +117,7 @@ class LogHandler:
                     maxBytes=1024 * 1024,  # 1MB per file
                     backupCount=5,
                     encoding='utf-8',
-                    max_lines=1000  # Keep last 1000 lines
+                    max_lines=10000  # Keep last 10000 lines
                 )
                 prod_handler.setLevel(logging.INFO)  # Keep INFO level for production logs
                 prod_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
