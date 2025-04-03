@@ -66,21 +66,20 @@ Otherwise, respond with ONLY a JSON array in this exact format:
 ]
 
 Focus on these types of content:
-1. New features or tools that were announced
-2. Demos or images that got a lot of attention (especially messages with many reactions)
+1. New features or tools that were announced or people are excited about
+2. Demos or images that got a lot of attention (especially messages with many reactions) - especially if there are multple examples of people using it that people remarked upon or reacted to.
 3. Focus on the things that people seem most excited about or commented/reacted to on a lot
-4. Focus on AI art and AI art-related tools
-5. Call out notable achievements or demonstrations
-6. Important community announcements
-7. Don't avoid negative news but try to frame it in a positive way 
+4. Focus on AI art and AI art-related tools and open source tools and projects
+5. Call out notable achievements or demonstrations or work that people did
+6. Don't avoid negative news but try to frame it in a positive way 
 
 IMPORTANT REQUIREMENTS FOR MEDIA AND LINKS:
 1. Each topic MUST have message_id and channel_id for linking back to the original message
-2. AGGRESSIVELY search for related media - include ALL images, videos, or links that are part of the same discussion. For each topic, try to find at least 2-3 related images/videos/examples if they exist
+2. AGGRESSIVELY search for related media - include ALL images, videos, or links that are part of the same discussion. For each topic, try to find at least 2-3 related images/videos/examples if they exist - priorise ones that people remarked upon or reacted to.
 3. If you find multiple related pieces of media, include them all in mainFile as a comma-separated list
 4. For each subtopic that references media or a demo, you MUST include message_id and channel_id
 5. Prioritize messages with reactions or responses when selecting media to include
-6. Be careful not to bias towards just the first messages.
+6. Be careful not to bias towards just the first messages about a topic.
 7. If a topic has interesting follow-up discussions or examples, include those as subtopics even if they don't have media
 8. Always end with a colon if there are attachments or links ":"
 9. Don't share the same attachment or link multiple times - even across different subtopics
