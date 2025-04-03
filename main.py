@@ -13,9 +13,15 @@ import discord
 
 from src.common.log_handler import LogHandler
 from src.common.base_bot import BaseDiscordBot
+from src.common.db_handler import DatabaseHandler
+from src.common.claude_client import ClaudeClient
 from src.features.curating.curator_cog import CuratorCog
 from src.features.summarising.summariser_cog import SummarizerCog
 from src.features.logging.logger_cog import LoggerCog
+from src.features.sharing.sharing_cog import SharingCog
+from src.features.sharing.sharer import Sharer
+from src.features.reacting.reactor import Reactor
+from src.features.reacting.reactor_cog import ReactorCog
 
 def setup_logging(dev_mode=False):
     """Setup shared logging configuration for all bots"""
@@ -52,22 +58,69 @@ async def main_async(args):
             dev_mode=args.dev,
             intents=intents
         )
+        # Store the command-line flag on the bot instance so cogs can access it
+        bot.summary_now = args.summary_now
 
-        # ---- ADD COGS ----
+        # ---- BASIC EVENT TEST ----
+        @bot.event
+        async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+            # Log basic payload info
+            logger.debug(f"<<< [MAIN.PY] RAW on_raw_reaction_add event received: Emoji={payload.emoji}, UserID={payload.user_id}, MessageID={payload.message_id}, ChannelID={payload.channel_id} >>>")
+        # ---- END BASIC EVENT TEST ----
+
+        # ---- Initialize Core Components ----
+        logger.info("Initializing core components (DB, Claude, Sharer, Reactor)...")
+
+        # 1. Database Handler
+        bot.db_handler = DatabaseHandler(dev_mode=args.dev)
+        logger.info("DatabaseHandler initialized and attached to bot.")
+
+        # 2. Claude Client
+        bot.claude_client = ClaudeClient()
+        logger.info("ClaudeClient initialized and attached to bot.")
+
+        # 3. Sharing Cog & Sharer Instance
+        await bot.load_extension("src.features.sharing.sharing_cog")
+        sharing_cog_instance = bot.get_cog("SharingCog")
+        if not sharing_cog_instance:
+            logger.error("Failed to load SharingCog!")
+            return
+        # Retrieve the Sharer instance from the cog
+        sharer_instance = sharing_cog_instance.sharer_instance
+        if sharer_instance:
+             logger.info("SharingCog loaded and Sharer instance retrieved.")
+        else:
+             logger.error("Failed to retrieve Sharer instance from SharingCog!")
+             return
+
+        # 4. Reactor Instance
+        reactor_instance = Reactor(logger=logger, sharer_instance=sharer_instance, dev_mode=args.dev)
+        bot.reactor_instance = reactor_instance
+        logger.info("Reactor instance created and attached to bot.")
+
+        # ---- ADD OTHER COGS ----
+        logger.info("Adding remaining cogs...")
+
         # Summarizer Cog
-        summarizer_cog = SummarizerCog(bot, logger=logger, dev_mode=args.dev, run_now=args.summary_now)
-        await bot.add_cog(summarizer_cog)
+        await bot.load_extension("src.features.summarising.summariser_cog")
+        logger.info("SummarizerCog loaded.")
 
         # Curator Cog
-        curator_cog = CuratorCog(bot, logger=logger, dev_mode=args.dev)
-        await bot.add_cog(curator_cog)
+        await bot.load_extension("src.features.curating.curator_cog")
+        logger.info("CuratorCog loaded.")
 
         # Logger Cog
-        logger_cog = LoggerCog(bot, logger=logger, dev_mode=args.dev)
-        await bot.add_cog(logger_cog)
+        await bot.load_extension("src.features.logging.logger_cog")
+        logger.info("LoggerCog loaded.")
+
+        # Reactor Cog (Needs bot.reactor_instance)
+        await bot.load_extension("src.features.reacting.reactor_cog")
+        logger.info("ReactorCog loaded.")
 
         # ---- RUN ----
-        bot.logger.info("All cogs added. Running the bot...")
+        # Log the final intents object being used
+        logger.debug(f"Final bot intents before starting: {bot.intents}")
+        bot.logger.info("All core components initialized and cogs added. Running the bot...")
         await bot.start(token)
 
     except KeyboardInterrupt:

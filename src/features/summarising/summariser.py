@@ -28,6 +28,9 @@ from src.common.rate_limiter import RateLimiter
 from src.common.log_handler import LogHandler
 from src.common.base_bot import BaseDiscordBot
 
+# Import the new shared Claude client
+from src.common.claude_client import ClaudeClient
+
 # Import the new summarizer that handles queries/Claude calls
 from src.features.summarising.subfeatures.news_summary import NewsSummarizer
 from src.features.summarising.subfeatures.top_generations import TopGenerations
@@ -289,10 +292,12 @@ class ChannelSummarizer(BaseDiscordBot):
             self.db = DatabaseHandler(dev_mode=dev_mode)
             self.error_handler = ErrorHandler(self)
             self.log_handler = LogHandler()
+            # --- New: Initialize the shared Claude client --- 
+            self.claude_client = ClaudeClient()
             
-            # --- New: Instantiate the summarizer for queries to Claude, etc. ---
-            # We remove direct Anthropic usage from here. 
-            self.news_summarizer = NewsSummarizer(dev_mode=dev_mode)
+            # --- New: Instantiate the summarizer, passing the client --- 
+            self.news_summarizer = NewsSummarizer(claude_client=self.claude_client, dev_mode=dev_mode)
+            # --- Pass the bot instance, not the client --- 
             self.top_art_sharing = TopArtSharing(self)
             self.top_generations = TopGenerations(self)
             # ---------------------------------------------------------------

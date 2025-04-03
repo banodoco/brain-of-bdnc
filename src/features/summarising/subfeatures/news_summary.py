@@ -6,8 +6,10 @@ import traceback
 from typing import List, Dict, Any, Optional
 import asyncio
 
-import anthropic
 from dotenv import load_dotenv
+
+# Import the shared client
+from src.common.claude_client import ClaudeClient
 
 # We removed direct Discord/bot usage here since SUMMARIZER handles posting logic now.
 # This class now focuses on:
@@ -21,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class NewsSummarizer:
-    def __init__(self, dev_mode=False):
+    def __init__(self, claude_client: ClaudeClient, dev_mode=False):
         logger.info("Initializing NewsSummarizer...")
 
         load_dotenv()
@@ -33,12 +35,9 @@ class NewsSummarizer:
         else:
             self.guild_id = int(os.getenv('GUILD_ID'))
 
-        # Initialize Claude client
-        api_key = os.getenv('ANTHROPIC_API_KEY')
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY not found in environment")
-        self.claude = anthropic.Anthropic(api_key=api_key)
-        logger.info("Claude client initialized")
+        # Store the passed Claude client instead of creating a new one
+        self.claude_client = claude_client
+        logger.info("NewsSummarizer initialized with shared Claude client.")
 
     def format_messages_for_claude(self, messages):
         """Format messages for Claude analysis."""
@@ -156,60 +155,19 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
 {prompt}"""
             
             try:
-                loop = asyncio.get_running_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: self.claude.messages.create(
-                        model="claude-3-5-sonnet-latest",
-                        max_tokens=8192,
-                        messages=[{"role": "user", "content": prompt}]
-                    )
+                text = await self.claude_client.generate_text(
+                    content=prompt,
+                    model="claude-3-5-sonnet-latest",
+                    max_tokens=8192
                 )
-                text = response.content[0].text.strip()
                 if text and text not in ["[NOTHING OF NOTE]", "[NO SIGNIFICANT NEWS]", "[NO MESSAGES TO ANALYZE]"]:
                     chunk_summaries.append(text)
                     if previous_summary:
                         previous_summary = previous_summary + "\n\n" + text
                     else:
                         previous_summary = text
-            except anthropic.BadRequestError as e:
-                # Attempt reduced chunk
-                if "prompt is too long" in str(e):
-                    self.logger.warning("Prompt too long, retrying with last 100 messages.")
-                    reduced_chunk = chunk[-100:]
-                    prompt = self.format_messages_for_claude(reduced_chunk)
-                    if previous_summary:
-                        prompt = f"""Previous summary chunk(s) contained these items:
-{previous_summary}
-
-DO NOT duplicate or repeat any of the topics, ideas, or media from above.
-Only include NEW and DIFFERENT topics from the messages below.
-If all significant topics have already been covered, respond with "[NO SIGNIFICANT NEWS]".
-
-{prompt}"""
-                    try:
-                        loop = asyncio.get_running_loop()
-                        response = await loop.run_in_executor(
-                            None,
-                            lambda: self.claude.messages.create(
-                                model="claude-3-5-sonnet-latest",
-                                max_tokens=8192,
-                                messages=[{"role": "user", "content": prompt}]
-                            )
-                        )
-                        text = response.content[0].text.strip()
-                        if text and text not in ["[NOTHING OF NOTE]", "[NO SIGNIFICANT NEWS]", "[NO MESSAGES TO ANALYZE]"]:
-                            chunk_summaries.append(text)
-                            if previous_summary:
-                                previous_summary = previous_summary + "\n\n" + text
-                            else:
-                                previous_summary = text
-                    except Exception as e2:
-                        self.logger.error(f"Error re-processing reduced chunk: {e2}")
-                else:
-                    raise
             except Exception as e:
-                self.logger.error(f"Error summarizing chunk: {e}")
+                self.logger.error(f"Error during generate_news_summary call via ClaudeClient: {e}")
                 self.logger.debug(traceback.format_exc())
 
         if not chunk_summaries:
@@ -312,18 +270,14 @@ Here are the input summaries:
         prompt += "\nReturn just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')."
 
         try:
-            loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.claude.messages.create(
-                    model="claude-3-5-sonnet-latest",
-                    max_tokens=8192,
-                    messages=[{"role": "user", "content": prompt}]
-                )
+            text = await self.claude_client.generate_text(
+                content=prompt,
+                model="claude-3-5-sonnet-latest",
+                max_tokens=8192
             )
-            return response.content[0].text.strip()
+            return text if text else "[NO SIGNIFICANT NEWS]"
         except Exception as e:
-            self.logger.error(f"Error combining summaries: {e}")
+            self.logger.error(f"Error combining summaries via ClaudeClient: {e}")
             return "[NO SIGNIFICANT NEWS]"
 
     async def generate_short_summary(self, full_summary: str, message_count: int) -> str:
@@ -349,40 +303,17 @@ DO NOT CHANGE THE MESSAGE COUNT LINE. IT MUST BE EXACTLY AS SHOWN ABOVE. DO NOT 
 Full summary to work from:
 {full_summary}"""
 
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                loop = asyncio.get_running_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: self.claude.messages.create(
-                        model="claude-3-5-haiku-latest",
-                        max_tokens=8192,
-                        messages=[{"role": "user", "content": conversation}]
-                    )
-                )
-                return response.content[0].text.strip()
-            except anthropic.APIError as e:
-                self.logger.error(f"Claude API error (attempt {attempt+1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    self.logger.info("Retrying in 5 seconds...")
-                    await asyncio.sleep(5)
-                else:
-                    return f"📨 __{message_count} messages sent__\n• Unable to generate short summary due to API error."
-            except asyncio.TimeoutError:
-                self.logger.error(f"Timeout while generating short summary (attempt {attempt+1}/{max_retries})")
-                if attempt < max_retries - 1:
-                    self.logger.info("Retrying in 5 seconds...")
-                    await asyncio.sleep(5)
-                else:
-                    return f"📨 __{message_count} messages sent__\n• Unable to generate short summary due to timeout."
-            except Exception as e:
-                self.logger.error(f"Error generating short summary: {e}")
-                if attempt < max_retries - 1:
-                    self.logger.info("Retrying in 5 seconds...")
-                    await asyncio.sleep(5)
-                else:
-                    return f"📨 __{message_count} messages sent__\n• Unable to generate short summary due to error: {str(e)}"
+        text = await self.claude_client.generate_text(
+            content=conversation,
+            model="claude-3-5-haiku-latest",
+            max_tokens=8192,
+            max_retries=3
+        )
+
+        if text:
+            return text
+        else:
+            return f"📨 __{message_count} messages sent__\n• Unable to generate short summary due to API error after retries."
 
 
 if __name__ == "__main__":

@@ -160,6 +160,13 @@ class DatabaseHandler:
                     discord_created_at TEXT,
                     guild_join_date TEXT,
                     role_ids TEXT,  /* JSON array of role IDs */
+                    twitter_handle TEXT,
+                    instagram_handle TEXT,
+                    youtube_handle TEXT,
+                    tiktok_handle TEXT,
+                    website TEXT,
+                    sharing_consent BOOLEAN DEFAULT FALSE,
+                    dm_preference BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -584,7 +591,11 @@ class DatabaseHandler:
                               discriminator: Optional[str] = None, bot: bool = False, 
                               system: bool = False, accent_color: Optional[int] = None,
                               banner_url: Optional[str] = None, discord_created_at: Optional[str] = None,
-                              guild_join_date: Optional[str] = None, role_ids: Optional[str] = None) -> bool:
+                              guild_join_date: Optional[str] = None, role_ids: Optional[str] = None,
+                              twitter_handle: Optional[str] = None, instagram_handle: Optional[str] = None,
+                              youtube_handle: Optional[str] = None, tiktok_handle: Optional[str] = None,
+                              website: Optional[str] = None, sharing_consent: Optional[bool] = None,
+                              dm_preference: Optional[bool] = None) -> bool:
         """Create or update a member in the database."""
         def member_operation(conn):
             cursor = conn.cursor()
@@ -635,6 +646,27 @@ class DatabaseHandler:
                 if role_ids is not None:
                     update_fields.append("role_ids = ?")
                     update_values.append(role_ids)
+                if twitter_handle is not None:
+                    update_fields.append("twitter_handle = ?")
+                    update_values.append(twitter_handle)
+                if instagram_handle is not None:
+                    update_fields.append("instagram_handle = ?")
+                    update_values.append(instagram_handle)
+                if youtube_handle is not None:
+                    update_fields.append("youtube_handle = ?")
+                    update_values.append(youtube_handle)
+                if tiktok_handle is not None:
+                    update_fields.append("tiktok_handle = ?")
+                    update_values.append(tiktok_handle)
+                if website is not None:
+                    update_fields.append("website = ?")
+                    update_values.append(website)
+                if sharing_consent is not None:
+                    update_fields.append("sharing_consent = ?")
+                    update_values.append(sharing_consent)
+                if dm_preference is not None:
+                    update_fields.append("dm_preference = ?")
+                    update_values.append(dm_preference)
                 
                 if update_fields:
                     update_fields.append("updated_at = CURRENT_TIMESTAMP")
@@ -648,15 +680,23 @@ class DatabaseHandler:
                     cursor.execute(update_sql, tuple(update_values))
             else:
                 # Create new member
+                # Set default values for consent and preference if not provided
+                final_sharing_consent = sharing_consent if sharing_consent is not None else False
+                final_dm_preference = dm_preference if dm_preference is not None else True
+
                 cursor.execute("""
                     INSERT INTO members 
                     (member_id, username, server_nick, global_name, avatar_url, 
                      discriminator, bot, system, accent_color, banner_url, 
-                     discord_created_at, guild_join_date, role_ids)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     discord_created_at, guild_join_date, role_ids,
+                     twitter_handle, instagram_handle, youtube_handle, tiktok_handle, 
+                     website, sharing_consent, dm_preference)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (member_id, username, display_name, global_name, avatar_url,
                       discriminator, bot, system, accent_color, banner_url,
-                      discord_created_at, guild_join_date, role_ids))
+                      discord_created_at, guild_join_date, role_ids,
+                      twitter_handle, instagram_handle, youtube_handle, tiktok_handle,
+                      website, final_sharing_consent, final_dm_preference))
             
             cursor.close()
             return True

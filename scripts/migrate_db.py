@@ -28,8 +28,8 @@ def get_table_columns(cursor, table_name: str) -> Dict[str, dict]:
         }
     return columns
 
-def get_messages_schema():
-    """Define the schema structure for the messages table."""
+def get_desired_messages_schema() -> List[tuple]:
+    """Define the desired schema structure for the messages table."""
     return [
         ("message_id", "BIGINT PRIMARY KEY"),
         ("channel_id", "BIGINT"),
@@ -66,9 +66,18 @@ def get_desired_members_schema() -> List[tuple]:
         ("discord_created_at", "TEXT"),
         ("guild_join_date", "TEXT"),
         ("role_ids", "TEXT"),  # JSON array of role IDs
+        # New columns for sharing feature:
+        ("twitter_handle", "TEXT"),
+        ("instagram_handle", "TEXT"),
+        ("youtube_handle", "TEXT"),
+        ("tiktok_handle", "TEXT"),
+        ("website", "TEXT"),
+        ("sharing_consent", "BOOLEAN DEFAULT FALSE"),
+        ("dm_preference", "BOOLEAN DEFAULT TRUE"),
+        # Existing audit columns:
         ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
-        ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
-        ("notifications", "TEXT DEFAULT '[]'")
+        ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        # Removed: ("notifications", "TEXT DEFAULT '[]'") - Assuming not needed based on db_handler
     ]
 
 def get_desired_daily_summaries_schema() -> List[tuple]:
@@ -82,16 +91,21 @@ def get_desired_daily_summaries_schema() -> List[tuple]:
         ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     ]
 
-def create_messages_table(cursor):
-    """Create the messages table if it doesn't exist."""
-    schema = get_messages_schema()
-    columns_def = ", ".join([f"{name} {type_}" for name, type_ in schema])
-    create_sql = f"""
-    CREATE TABLE IF NOT EXISTS messages (
-        {columns_def}
-    )
-    """
-    cursor.execute(create_sql)
+def create_table_if_not_exists(cursor, table_name: str, schema_func):
+    """Generic function to create a table based on a schema function if it doesn't exist."""
+    if not table_exists(cursor, table_name):
+        logger.info(f"Table '{table_name}' does not exist. Creating table.")
+        schema = schema_func()
+        columns_def = ", ".join([f"{name} {type_}" for name, type_ in schema])
+        # Add constraints if needed, e.g., UNIQUE for daily_summaries
+        constraints = ""
+        if table_name == "daily_summaries":
+            constraints = ", UNIQUE(date, channel_id) ON CONFLICT REPLACE, FOREIGN KEY (channel_id) REFERENCES channels(channel_id)"
+        create_sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({columns_def}{constraints})"
+        cursor.execute(create_sql)
+        logger.info(f"Table '{table_name}' created successfully.")
+    else:
+        logger.info(f"Table '{table_name}' already exists.")
 
 def table_exists(cursor, table_name: str) -> bool:
     """Check if a table exists in the database."""
@@ -170,306 +184,157 @@ def create_temp_table_and_migrate_data(cursor, desired_schema: List[tuple], exis
         cursor.execute(f"ALTER TABLE {backup_name} RENAME TO messages")
         raise
 
-def migrate_messages_table(cursor):
-    """Migrate messages table to use message_id as primary key."""
-    logger.info("Starting messages table migration")
+def _needs_migration(existing_columns: Dict[str, dict], desired_schema: List[tuple]) -> bool:
+    """Checks if a table schema needs migration (missing/extra columns, type changes, PK change)."""
+    desired_column_names = {name for name, _ in desired_schema}
+    existing_column_names = set(existing_columns.keys())
+
+    missing_columns = desired_column_names - existing_column_names
+    extra_columns = existing_column_names - desired_column_names
+
+    # Check for type changes (simple comparison, might need refinement for complex types)
+    type_changes = False
+    for name, type_ in desired_schema:
+        if name in existing_columns and existing_columns[name]['type'].upper() != type_.split()[0].upper():
+             # Basic type check (e.g., 'BIGINT PRIMARY KEY' vs 'BIGINT')
+             logger.debug(f"Type mismatch for {name}: DB has {existing_columns[name]['type']}, desired {type_}")
+             type_changes = True
+             break
+
+    # Check if the primary key is correct (assuming single PK column defined in schema)
+    desired_pk = [name for name, type_ in desired_schema if "PRIMARY KEY" in type_.upper()]
+    actual_pk = [name for name, col in existing_columns.items() if col['primary_key'] == 1]
+    primary_key_wrong = (desired_pk and actual_pk != desired_pk)
+
+    if missing_columns:
+        logger.info(f"Migration needed: Missing columns {missing_columns}")
+        return True
+    if extra_columns:
+        logger.info(f"Migration needed: Extra columns {extra_columns}")
+        return True
+    if type_changes:
+        logger.info("Migration needed: Column type changes detected")
+        return True
+    if primary_key_wrong:
+        logger.info(f"Migration needed: Primary key mismatch (expected {desired_pk}, got {actual_pk})")
+        return True
+
+    return False
+
+def migrate_generic_table(cursor, table_name: str, schema_func):
+    """Migrates a table using the standard backup, create new, copy, swap method."""
+    logger.info(f"Starting migration check for table '{table_name}'...")
     
+    if not table_exists(cursor, table_name):
+         logger.warning(f"Table '{table_name}' does not exist. Cannot migrate. Creating instead.")
+         create_table_if_not_exists(cursor, table_name, schema_func)
+         return
+
+    existing_columns = get_table_columns(cursor, table_name)
+    desired_schema = schema_func()
+
+    if not _needs_migration(existing_columns, desired_schema):
+        logger.info(f"Table '{table_name}' schema is up to date. No migration needed.")
+        return
+
+    logger.info(f"Migration required for table '{table_name}'.")
+    backup_name = backup_table(cursor, table_name)
+    logger.info(f"Created backup table: {backup_name}")
+
     try:
-        # Get current columns with their definitions
-        existing_columns = get_table_columns(cursor, "messages")
-        desired_schema = get_messages_schema()
-        
-        # Find missing and extra columns
-        desired_column_names = {name for name, _ in desired_schema}
-        existing_column_names = set(existing_columns.keys())
-        
-        missing_columns = [
-            (name, type_) for name, type_ in desired_schema 
-            if name not in existing_columns
-        ]
-        extra_columns = existing_column_names - desired_column_names
-        
-        # Also check if any column types have changed
-        type_changes = [
-            (name, type_) for name, type_ in desired_schema
-            if name in existing_columns and existing_columns[name]['type'] != type_
-        ]
-        
-        # Check if message_id is not the primary key
-        primary_key_wrong = any(
-            col['primary_key'] == 1 and name != 'message_id'
-            for name, col in existing_columns.items()
-        )
-        
-        if not (missing_columns or extra_columns or type_changes or primary_key_wrong):
-            logger.info("Messages table schema is up to date")
-            return
+        # Get original row count for validation
+        cursor.execute(f"SELECT COUNT(*) FROM \"{backup_name}\"") # Count from backup
+        original_count = cursor.fetchone()[0]
 
-        if missing_columns:
-            logger.info(f"Found missing columns: {[col[0] for col in missing_columns]}")
-        if extra_columns:
-            logger.info(f"Found columns to remove: {list(extra_columns)}")
-        if type_changes:
-            logger.info(f"Found columns with changed types: {[col[0] for col in type_changes]}")
-        if primary_key_wrong:
-            logger.info("Primary key needs to be changed to message_id")
+        # Create new table with the desired schema
+        new_table_name = f"{table_name}_new"
+        create_table_if_not_exists(cursor, new_table_name, schema_func)
 
-        # Create backup
-        backup_name = backup_table(cursor, "messages")
-        logger.info(f"Created backup table: {backup_name}")
+        # Prepare column lists for INSERT INTO SELECT
+        desired_cols_ordered = [f'\"{name}\"' for name, _ in desired_schema]
+        # Select only columns that exist in the *old* table (the backup)
+        # And provide defaults for new columns
+        select_cols_ordered = []
+        backup_columns = get_table_columns(cursor, backup_name) # Get columns from backup
         
-        try:
-            # Get original row count
-            cursor.execute("SELECT COUNT(*) FROM messages")
-            original_count = cursor.fetchone()[0]
-            
-            # Create new table with correct schema
-            columns_def = ", ".join([f"{name} {type_}" for name, type_ in desired_schema])
-            cursor.execute(f"""
-                CREATE TABLE messages_new (
-                    {columns_def}
-                )
-            """)
-            
-            # Copy data, using message_id since we've already migrated from id
-            cursor.execute("""
-                INSERT INTO messages_new 
-                SELECT message_id, channel_id, author_id,
-                       content, created_at, attachments, embeds, reaction_count,
-                       reactors, reference_id, edited_at, is_pinned, thread_id,
-                       message_type, flags, 0, indexed_at
-                FROM messages
-            """)
-            
-            # Validate before dropping old table
-            cursor.execute("SELECT COUNT(*) FROM messages_new")
-            if cursor.fetchone()[0] != original_count:
-                raise ValueError("Row count mismatch before table swap")
-            
-            # Drop old table and rename new one
-            cursor.execute("DROP TABLE messages")
-            cursor.execute("ALTER TABLE messages_new RENAME TO messages")
-            
-            # Recreate indexes
-            cursor.execute("CREATE INDEX idx_channel_id ON messages(channel_id)")
-            cursor.execute("CREATE INDEX idx_created_at ON messages(created_at)")
-            cursor.execute("CREATE INDEX idx_author_id ON messages(author_id)")
-            cursor.execute("CREATE INDEX idx_reference_id ON messages(reference_id)")
-            
-            logger.info("Successfully migrated messages table")
-            
-        except Exception as e:
-            # If anything goes wrong, we can restore from backup
-            logger.error(f"Migration failed: {e}")
-            cursor.execute("DROP TABLE IF EXISTS messages")
-            cursor.execute(f"ALTER TABLE {backup_name} RENAME TO messages")
-            raise
-            
+        for name, type_def in desired_schema:
+            if name in backup_columns:
+                select_cols_ordered.append(f'\"{name}\"') # Select existing column
+            else:
+                # Provide default value for new column based on type/definition
+                default_value = "NULL" # Default NULL
+                if "DEFAULT" in type_def.upper():
+                    parts = type_def.upper().split("DEFAULT")
+                    default_value = parts[1].strip()
+                    # Handle specific types if needed (e.g., boolean 0/1)
+                    if "BOOLEAN" in parts[0] and default_value == "FALSE":
+                        default_value = "0"
+                    elif "BOOLEAN" in parts[0] and default_value == "TRUE":
+                        default_value = "1"
+                elif "BOOLEAN" in type_def.upper(): # Default for boolean if not specified
+                     default_value = "0" # Default to False
+
+                select_cols_ordered.append(default_value)
+                logger.debug(f"Providing default '{default_value}' for new column '{name}'")
+
+        # Copy data from backup to new table
+        insert_sql = f"""
+            INSERT INTO \"{new_table_name}\" ({', '.join(desired_cols_ordered)})
+            SELECT {', '.join(select_cols_ordered)}
+            FROM \"{backup_name}\"
+        """
+        logger.debug(f"Running INSERT SQL: {insert_sql}")
+        cursor.execute(insert_sql)
+
+        # Validate row count before dropping old table
+        cursor.execute(f"SELECT COUNT(*) FROM \"{new_table_name}\"")
+        new_count = cursor.fetchone()[0]
+        if new_count != original_count:
+            raise ValueError(f"Row count mismatch after copy ({new_count} vs {original_count}). Migration aborted.")
+
+        # Drop the original table
+        cursor.execute(f"DROP TABLE \"{table_name}\"")
+        # Rename the new table to the original name
+        cursor.execute(f"ALTER TABLE \"{new_table_name}\" RENAME TO \"{table_name}\"")
+
+        # Recreate indexes if necessary (example for messages)
+        if table_name == "messages":
+            logger.info("Recreating indexes for messages table...")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_channel_id ON messages(channel_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON messages(created_at)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_author_id ON messages(author_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_reference_id ON messages(reference_id)")
+        elif table_name == "members":
+             logger.info("Recreating indexes for members table...")
+             cursor.execute("CREATE INDEX IF NOT EXISTS idx_members_username ON members(username)")
+        elif table_name == "daily_summaries":
+            logger.info("Recreating indexes for daily_summaries table...")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_summaries_date ON daily_summaries(date)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_summaries_channel ON daily_summaries(channel_id)")
+
+        logger.info(f"Table '{table_name}' migrated successfully.")
+
     except Exception as e:
-        logger.error(f"Error during messages table migration: {e}")
-        raise
+        logger.error(f"Migration failed for table '{table_name}': {e}", exc_info=True)
+        # Attempt to restore from backup
+        logger.warning(f"Attempting to restore '{table_name}' from backup '{backup_name}'...")
+        try:
+            cursor.execute(f"DROP TABLE IF EXISTS \"{table_name}\"")
+            cursor.execute(f"DROP TABLE IF EXISTS \"{table_name}_new\"") # Drop temp table if exists
+            cursor.execute(f"ALTER TABLE \"{backup_name}\" RENAME TO \"{table_name}\"")
+            logger.info(f"Successfully restored '{table_name}' from {backup_name}.")
+        except Exception as restore_e:
+            logger.critical(f"Failed to restore table '{table_name}' from backup! DB might be in inconsistent state. Backup table: {backup_name}. Error: {restore_e}", exc_info=True)
+        raise # Re-raise original exception
+
+def migrate_messages_table(cursor):
+    migrate_generic_table(cursor, "messages", get_desired_messages_schema)
 
 def migrate_members_table(cursor):
-    """Migrate members table to use member_id as primary key."""
-    logger.info("Starting members table migration")
-    
-    try:
-        # Get current columns with their definitions
-        existing_columns = get_table_columns(cursor, "members")
-        desired_schema = get_desired_members_schema()
-        
-        # Find missing and extra columns
-        desired_column_names = {name for name, _ in desired_schema}
-        existing_column_names = set(existing_columns.keys())
-        
-        missing_columns = [
-            (name, type_) for name, type_ in desired_schema 
-            if name not in existing_columns
-        ]
-        extra_columns = existing_column_names - desired_column_names
-        
-        # Also check if any column types have changed
-        type_changes = [
-            (name, type_) for name, type_ in desired_schema
-            if name in existing_columns and existing_columns[name]['type'] != type_
-        ]
-        
-        # Check if member_id is not the primary key
-        primary_key_wrong = any(
-            col['primary_key'] == 1 and name != 'member_id'
-            for name, col in existing_columns.items()
-        )
-        
-        if not (missing_columns or extra_columns or type_changes or primary_key_wrong):
-            logger.info("Members table schema is up to date")
-            return
+    migrate_generic_table(cursor, "members", get_desired_members_schema)
 
-        if missing_columns:
-            logger.info(f"Found missing columns: {[col[0] for col in missing_columns]}")
-        if extra_columns:
-            logger.info(f"Found columns to remove: {list(extra_columns)}")
-        if type_changes:
-            logger.info(f"Found columns with changed types: {[col[0] for col in type_changes]}")
-        if primary_key_wrong:
-            logger.info("Primary key needs to be changed to member_id")
-
-        # Create backup
-        backup_name = backup_table(cursor, "members")
-        logger.info(f"Created backup table: {backup_name}")
-        
-        try:
-            # Get count of distinct member_id to account for duplicates
-            cursor.execute("SELECT COUNT(DISTINCT member_id) FROM members")
-            distinct_count = cursor.fetchone()[0]
-
-            # Create new table with correct schema
-            columns_def = ", ".join([f"{name} {type_}" for name, type_ in desired_schema])
-            cursor.execute(f"""
-                CREATE TABLE members_new (
-                    {columns_def}
-                )
-            """)
-            
-            # Copy data, aggregating duplicates by member_id
-            cursor.execute("""
-                INSERT INTO members_new 
-                SELECT 
-                    member_id, 
-                    MIN(username) as username, 
-                    MIN(global_name) as global_name, 
-                    MIN(server_nick) as server_nick,
-                    MIN(avatar_url) as avatar_url, 
-                    MIN(discriminator) as discriminator, 
-                    MIN(bot) as bot, 
-                    MIN(system) as system, 
-                    MIN(accent_color) as accent_color,
-                    MIN(banner_url) as banner_url, 
-                    MIN(discord_created_at) as discord_created_at, 
-                    MIN(guild_join_date) as guild_join_date, 
-                    MIN(role_ids) as role_ids, 
-                    MIN(created_at) as created_at, 
-                    MIN(updated_at) as updated_at, 
-                    '[]' as notifications
-                FROM members
-                GROUP BY member_id
-            """)
-            
-            # Validate that the new table has the expected number of unique member rows
-            cursor.execute("SELECT COUNT(*) FROM members_new")
-            if cursor.fetchone()[0] != distinct_count:
-                raise ValueError("Row count mismatch before table swap")
-            
-            # Drop old table and rename new one
-            cursor.execute("DROP TABLE members")
-            cursor.execute("ALTER TABLE members_new RENAME TO members")
-            
-            logger.info("Successfully migrated members table")
-            
-        except Exception as e:
-            # If anything goes wrong, we can restore from backup
-            logger.error(f"Migration failed: {e}")
-            cursor.execute("DROP TABLE IF EXISTS members")
-            cursor.execute(f"ALTER TABLE {backup_name} RENAME TO members")
-            raise
-            
-    except Exception as e:
-        logger.error(f"Error during members table migration: {e}")
-        raise
-
-def migrate_daily_summaries(cursor):
-    """Migrate daily_summaries table to use daily_summary_id as primary key."""
-    logger.info("Starting daily_summaries migration")
-    
-    try:
-        # Get current columns with their definitions
-        existing_columns = get_table_columns(cursor, "daily_summaries")
-        desired_schema = get_desired_daily_summaries_schema()
-        
-        # Find missing and extra columns
-        desired_column_names = {name for name, _ in desired_schema}
-        existing_column_names = set(existing_columns.keys())
-        
-        missing_columns = [
-            (name, type_) for name, type_ in desired_schema 
-            if name not in existing_columns
-        ]
-        extra_columns = existing_column_names - desired_column_names
-        
-        # Also check if any column types have changed
-        type_changes = [
-            (name, type_) for name, type_ in desired_schema
-            if name in existing_columns and existing_columns[name]['type'] != type_
-        ]
-        
-        # Check if daily_summary_id is not the primary key
-        primary_key_wrong = any(
-            col['primary_key'] == 1 and name != 'daily_summary_id'
-            for name, col in existing_columns.items()
-        )
-        
-        if not (missing_columns or extra_columns or type_changes or primary_key_wrong):
-            logger.info("Daily summaries table schema is up to date")
-            return
-
-        if missing_columns:
-            logger.info(f"Found missing columns: {[col[0] for col in missing_columns]}")
-        if extra_columns:
-            logger.info(f"Found columns to remove: {list(extra_columns)}")
-        if type_changes:
-            logger.info(f"Found columns with changed types: {[col[0] for col in type_changes]}")
-        if primary_key_wrong:
-            logger.info("Primary key needs to be changed to daily_summary_id")
-
-        # Create backup
-        backup_name = backup_table(cursor, "daily_summaries")
-        logger.info(f"Created backup table: {backup_name}")
-        
-        try:
-            # Get original row count
-            cursor.execute("SELECT COUNT(*) FROM daily_summaries")
-            original_count = cursor.fetchone()[0]
-            
-            # Create new table with correct schema
-            columns_def = ", ".join([f"{name} {type_}" for name, type_ in desired_schema])
-            cursor.execute(f"""
-                CREATE TABLE daily_summaries_new (
-                    {columns_def},
-                    UNIQUE(date, channel_id) ON CONFLICT REPLACE
-                )
-            """)
-            
-            # Copy data, using id as daily_summary_id
-            cursor.execute("""
-                INSERT INTO daily_summaries_new 
-                (daily_summary_id, date, channel_id, 
-                 full_summary, short_summary, created_at)
-                SELECT 
-                    daily_summary_id, date, channel_id,
-                    full_summary, short_summary, created_at
-                FROM daily_summaries
-            """)
-            
-            # Validate before dropping old table
-            cursor.execute("SELECT COUNT(*) FROM daily_summaries_new")
-            if cursor.fetchone()[0] != original_count:
-                raise ValueError("Row count mismatch before table swap")
-            
-            # Drop old table and rename new one
-            cursor.execute("DROP TABLE daily_summaries")
-            cursor.execute("ALTER TABLE daily_summaries_new RENAME TO daily_summaries")
-            
-            logger.info("Successfully migrated daily_summaries table")
-            
-        except Exception as e:
-            # If anything goes wrong, we can restore from backup
-            logger.error(f"Migration failed: {e}")
-            cursor.execute("DROP TABLE IF EXISTS daily_summaries")
-            cursor.execute(f"ALTER TABLE {backup_name} RENAME TO daily_summaries")
-            raise
-            
-    except Exception as e:
-        logger.error(f"Error during daily_summaries migration: {e}")
-        raise
+def migrate_daily_summaries_table(cursor):
+    migrate_generic_table(cursor, "daily_summaries", get_desired_daily_summaries_schema)
 
 def migrate_remove_raw_messages(cursor):
     """Remove raw_messages column from daily_summaries table."""
@@ -567,12 +432,30 @@ def migrate_database(dev_mode: bool = False):
         conn.execute("BEGIN TRANSACTION")  # Explicit transaction
         cursor = conn.cursor()
 
-        # Run migrations in order
-        migrate_members_table(cursor)  # Run members migration first
-        migrate_messages_table(cursor)  # Then messages since it depends on members
-        migrate_daily_summaries(cursor)
+        # Ensure tables exist before attempting migrations that depend on them (like FKs)
+        create_table_if_not_exists(cursor, "channels", lambda: [("channel_id", "BIGINT PRIMARY KEY"), ("channel_name", "TEXT NOT NULL")]) # Minimal channels schema if needed
+
+        # Run migrations using the generic handler
+        migrate_members_table(cursor)
+        migrate_messages_table(cursor)
+        migrate_daily_summaries_table(cursor)
         migrate_remove_raw_messages(cursor)
-        
+
+        # Add any other specific migration steps if necessary
+        # Example: Add FTS table creation/migration if needed
+        logger.info("Checking/Creating FTS table for messages...")
+        cursor.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                content,
+                content='messages',
+                content_rowid='message_id',
+                tokenize = 'porter unicode61'
+            )
+        """)
+        # Optional: Rebuild FTS index if schema changed significantly
+        # cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+        logger.info("FTS table check/creation complete.")
+
         # Clean up backup tables
         cleanup_backup_tables(cursor)
         
@@ -620,4 +503,5 @@ def main():
         raise
 
 if __name__ == "__main__":
+    main() 
     main() 

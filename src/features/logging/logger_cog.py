@@ -177,3 +177,20 @@ class LoggerCog(commands.Cog):
             self.logger.error(traceback.format_exc())  # Add full traceback for debugging
 
         # Additional logic to store in DB, etc.
+
+async def setup(bot: commands.Bot):
+    """Sets up the LoggerCog."""
+    # Ensure logger and dev_mode are available on the bot instance
+    if not hasattr(bot, 'logger'):
+        print("ERROR: Logger not found on bot object. Cannot load LoggerCog.")
+        return
+    if not hasattr(bot, 'dev_mode'):
+         print("ERROR: dev_mode attribute not found on bot object. Cannot load LoggerCog.")
+         return
+
+    # Retrieve logger and dev_mode from the bot instance
+    logger = bot.logger
+    dev_mode = bot.dev_mode
+    
+    await bot.add_cog(LoggerCog(bot, logger, dev_mode=dev_mode))
+    logger.info("LoggerCog added to bot.")

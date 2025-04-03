@@ -6,4 +6,6 @@ pillow>=8.0.0
 moviepy>=1.0.0
 apscheduler>=3.9.0
 aiofiles>=0.8.0
-praw>=7.7.0 
+praw>=7.7.0
+tweepy>=4.0.0
+opencv-python-headless 

@@ -161,3 +161,29 @@ class SummarizerCog(commands.Cog):
         await ctx.send("Manually triggering a summary. Stand by...")
         await self.generate_summary()
         await ctx.send("Summary completed.")
+
+async def setup(bot: commands.Bot):
+    """Sets up the SummarizerCog."""
+    # Ensure logger and dev_mode are available on the bot instance
+    if not hasattr(bot, 'logger'):
+        # Attempt to get the logger from the first cog if not directly on bot?
+        # Or rely on main.py setting it up first. For now, error out.
+        print("ERROR: Logger not found on bot object. Cannot load SummarizerCog.")
+        return
+    if not hasattr(bot, 'dev_mode'):
+         print("ERROR: dev_mode attribute not found on bot object. Cannot load SummarizerCog.")
+         # Defaulting dev_mode to False if not found might be an alternative
+         return
+
+    # Retrieve logger and dev_mode from the bot instance
+    logger = bot.logger
+    dev_mode = bot.dev_mode
+
+    # Retrieve summary_now flag from the bot object (added in main.py)
+    run_now_flag = getattr(bot, 'summary_now', False) # Use getattr for safety
+
+    # run_now is typically controlled by command-line args in main.py,
+    # so we likely don't pass it here, or default it to False.
+    # The cog's internal logic seems to handle its run_now state based on initialization.
+    await bot.add_cog(SummarizerCog(bot, logger, dev_mode=dev_mode, run_now=run_now_flag)) # Pass the retrieved flag
+    logger.info(f"SummarizerCog added to bot (run_now={run_now_flag}).") # Log the value passed

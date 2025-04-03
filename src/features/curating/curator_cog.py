@@ -44,3 +44,20 @@ class CuratorCog(commands.Cog):
         await self.art_curator.manual_curate()
         self.logger.info("Finished ArtCurator's manual curation.")
         await ctx.send("Manual curation cycle completed.")
+
+async def setup(bot: commands.Bot):
+    """Sets up the CuratorCog."""
+    # Ensure logger and dev_mode are available on the bot instance
+    if not hasattr(bot, 'logger'):
+        print("ERROR: Logger not found on bot object. Cannot load CuratorCog.")
+        return
+    if not hasattr(bot, 'dev_mode'):
+         print("ERROR: dev_mode attribute not found on bot object. Cannot load CuratorCog.")
+         return
+
+    # Retrieve logger and dev_mode from the bot instance
+    logger = bot.logger
+    dev_mode = bot.dev_mode
+    
+    await bot.add_cog(CuratorCog(bot, logger, dev_mode=dev_mode))
+    logger.info("CuratorCog added to bot.")
