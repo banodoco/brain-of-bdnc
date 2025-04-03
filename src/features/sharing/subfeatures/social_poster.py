@@ -4,6 +4,12 @@ import tweepy
 import os
 import asyncio
 import logging
+import json
+import requests
+import anthropic
+import cv2
+import shutil
+import base64
 from typing import Dict, Optional, List
 from pathlib import Path
 
@@ -16,10 +22,24 @@ CONSUMER_SECRET = os.getenv("TWITTER_CONSUMER_SECRET")
 ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN")
 ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
 
+# Added Zapier URL checks
+ZAPIER_TIKTOK_BUFFER_URL = os.getenv("ZAPIER_TIKTOK_BUFFER_URL")
+ZAPIER_INSTAGRAM_URL = os.getenv("ZAPIER_INSTAGRAM_URL")
+ZAPIER_YOUTUBE_URL = os.getenv("ZAPIER_YOUTUBE_URL")
+
 if not all([CONSUMER_KEY, CONSUMER_SECRET, ACCESS_TOKEN, ACCESS_TOKEN_SECRET]):
     logger.critical("Twitter API credentials missing in environment variables!")
-    # You might want to raise an exception here or handle it appropriately
-    # raise ValueError("Missing Twitter API credentials")
+    # raise ValueError("Missing Twitter API credentials") # Consider uncommenting
+
+if not ZAPIER_TIKTOK_BUFFER_URL:
+    logger.warning("ZAPIER_TIKTOK_BUFFER_URL missing from environment variables!")
+if not ZAPIER_INSTAGRAM_URL:
+    logger.warning("ZAPIER_INSTAGRAM_URL missing from environment variables!")
+if not ZAPIER_YOUTUBE_URL:
+    logger.warning("ZAPIER_YOUTUBE_URL missing from environment variables!")
+
+if not os.getenv("ANTHROPIC_API_KEY"):
+    logger.critical("ANTHROPIC_API_KEY missing from environment variables!")
 
 # --- Helper Functions ---
 
@@ -85,6 +105,234 @@ def _build_tweet_caption(base_description: str, user_details: Dict, original_con
 
     return "".join(caption_parts).strip()
 
+# Added helper for building Zapier captions/payloads
+# Note: This is simplified. You might want different caption logic per platform.
+def _build_zapier_payload(platform: str, user_details: Dict, attachment: Dict, generated_title: str, generated_description: str, original_content: Optional[str]) -> Dict:
+    """Builds the payload for Zapier webhooks."""
+    payload = {}
+    attachment_url = attachment.get('url') # Use the original Discord URL for Zapier
+    post_jump_url = attachment.get('post_jump_url', '') # Need to ensure this is passed
+
+    # --- Common elements ---
+    # Credit
+    credit = ""
+    handle = None
+    if platform == "instagram" and user_details.get('instagram_handle'):
+         handle = user_details['instagram_handle']
+    elif platform == "tiktok" and user_details.get('tiktok_handle'):
+         handle = user_details['tiktok_handle']
+    elif platform == "youtube" and user_details.get('youtube_handle'):
+         handle = user_details['youtube_handle']
+    
+    user_name = user_details.get('global_name') or user_details.get('username', 'the artist')
+    
+    if handle:
+         if handle.startswith('http'): credit = handle
+         elif not handle.startswith('@'): credit = f"@{handle}"
+         else: credit = handle
+    else:
+         credit = user_name
+         
+    website = user_details.get('website')
+    website_text = f"\n\nMore from them: {website}" if website else ""
+
+    # --- Platform specific ---
+    if platform == "instagram":
+        caption = f"{generated_description} by {credit}"
+        if original_content:
+             caption += f"\n\nArtist Comment: \"{_truncate_with_ellipsis(original_content, 1800)}\"" # Approx limit
+        caption += website_text
+        payload = {
+            "jump_url": post_jump_url,
+            "video_url": attachment_url,
+            "caption": caption.strip()
+        }
+    elif platform == "tiktok":
+         # TikTok captions often include hashtags, consider adding logic for that
+        caption = f"{generated_description} by {credit}"
+        if original_content:
+             caption += f"\n\nArtist Comment: \"{_truncate_with_ellipsis(original_content, 1800)}\"" # Approx limit
+        caption += website_text
+        payload = {
+            "video_url": attachment_url,
+            "caption": caption.strip()
+            # Add other fields if your Zapier workflow expects them (e.g., specific hashtags)
+        }
+    elif platform == "youtube":
+        # YouTube uses Title + Description separately
+        video_title = f"\"{generated_title}\" by {credit}" # Use the dedicated title
+        description = f"{generated_description}" # Use the main description
+        if original_content:
+             description += f"\n\nArtist Comment: \"{_truncate_with_ellipsis(original_content, 4500)}\"" # Approx limit
+        description += website_text
+        payload = {
+            "jump_url": post_jump_url,
+            "video_url": attachment_url,
+            "video_title_yt": video_title.strip(),
+            "caption": description.strip() # Zapier example used 'caption' for description
+        }
+        
+    return payload
+
+# --- Added Title Generation Helpers ---
+
+def _image_to_base64(image_path: str) -> Optional[str]:
+    """Converts an image file to a base64 encoded string."""
+    try:
+        with open(image_path, 'rb') as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
+    except Exception as e:
+        logger.error(f"Error encoding image {image_path} to base64: {e}", exc_info=True)
+        return None
+
+def _extract_frames(video_path: str, num_frames: int, save_dir: Path) -> bool:
+    """Extracts a specified number of evenly distributed frames from a video."""
+    try:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        vidcap = cv2.VideoCapture(video_path)
+        if not vidcap.isOpened():
+            logger.error(f"Failed to open video file: {video_path}")
+            return False
+
+        total_frames = int(vidcap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames < 1:
+            logger.warning(f"Video {video_path} has no frames.")
+            vidcap.release()
+            return False
+        
+        # Ensure num_frames is not greater than total_frames
+        num_frames = min(num_frames, total_frames)
+        if num_frames < 1:
+            logger.warning(f"Cannot extract less than 1 frame from {video_path}.")
+            vidcap.release()
+            return False
+            
+        # Calculate interval, ensuring it's at least 1 frame
+        frames_interval = max(1, total_frames // num_frames)
+        
+        extracted_count = 0
+        for i in range(num_frames):
+            frame_id = i * frames_interval
+            vidcap.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
+            success, image = vidcap.read()
+            if success:
+                save_path = save_dir / f"frame_{extracted_count}.jpg"
+                cv2.imwrite(str(save_path), image)
+                extracted_count += 1
+            else:
+                logger.warning(f"Failed to read frame {frame_id} from {video_path}")
+                # Optionally break if frame read fails
+
+        vidcap.release()
+        logger.info(f"Extracted {extracted_count} frames from {video_path} to {save_dir}")
+        return extracted_count > 0
+    except Exception as e:
+        logger.error(f"Error extracting frames from {video_path}: {e}", exc_info=True)
+        if vidcap.isOpened(): vidcap.release() # Ensure release on error
+        return False
+
+def _make_claude_title_request(frames_dir: Path, original_comment: Optional[str]) -> Optional[str]:
+    """Makes a request to Claude API to generate a title based on frames and comment."""
+    try:
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        image_paths = list(frames_dir.glob("*.jpg"))
+        if not image_paths:
+            logger.warning("No frames found to send to Claude for title generation.")
+            return None
+
+        # Limit frames sent if necessary (e.g., API limits)
+        max_frames_to_send = 5 # Adjust as needed
+        image_paths = image_paths[:max_frames_to_send]
+
+        content = []
+        for image_path in image_paths:
+            base64_image = _image_to_base64(str(image_path))
+            if base64_image:
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": base64_image
+                    }
+                })
+            else:
+                 logger.warning(f"Skipping image {image_path} due to encoding error.")
+
+        if not any(item['type'] == 'image' for item in content):
+             logger.error("No valid images could be prepared for Claude request.")
+             return None
+
+        # Refined prompt definition
+        base_prompt = ("Analyze these video frames. Create a short, interesting, unique title (max 3-4 words). Avoid cliches. "
+                       "If the user comment suggests a title, prioritize that. Output ONLY the title.")
+        comment_prompt_template = (f"Analyze these video frames and the artist's comment. Create a short, interesting, unique title (max 3-4 words). "
+                                   f"Try not to reference things only relevant to the specific community. Avoid cliches. "
+                                   f"If the comment seems to contain a title, please use that. "
+                                   f"Artist's comment: \\\"{{comment}}\\\"\\n\\nOutput ONLY the title.")
+
+        if original_comment and len(original_comment.strip()) > 0:
+            prompt = comment_prompt_template.format(comment=original_comment)
+        else:
+            prompt = base_prompt
+
+        content.append({"type": "text", "text": prompt})
+
+        message = client.messages.create(
+            model="claude-3-5-sonnet-20240620", # Or your preferred model
+            max_tokens=50, # Short response expected
+            temperature=0.5,
+            messages=[{"role": "user", "content": content}]
+        )
+
+        generated_title = message.content[0].text.strip().strip('\"\'') # Clean up output
+        logger.info(f"Claude generated title: {generated_title}")
+        return generated_title
+
+    except anthropic.APIError as e:
+        logger.error(f"Anthropic API error generating title: {e}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error during Claude title request: {e}", exc_info=True)
+        return None
+
+# --- Main Title Generation Function ---
+
+async def generate_social_media_title(video_path: str, original_comment: Optional[str], post_id: int) -> str:
+    """Generates a social media title using Claude, extracting frames first."""
+    temp_frames_dir = Path(f"./temp_frames_{post_id}")
+    title = "Featured Artwork" # Default fallback title
+    
+    if not os.path.exists(video_path):
+        logger.error(f"Video file not found for title generation: {video_path}")
+        return title # Return default title
+
+    try:
+        # Extract frames
+        if _extract_frames(video_path, num_frames=5, save_dir=temp_frames_dir):
+            # Generate title using Claude
+            generated_title = await asyncio.to_thread(
+                _make_claude_title_request, temp_frames_dir, original_comment
+            )
+            if generated_title:
+                title = generated_title
+            else:
+                 logger.warning(f"Claude title generation failed for post {post_id}, using default.")
+        else:
+             logger.warning(f"Frame extraction failed for post {post_id}, using default title.")
+            
+    except Exception as e:
+        logger.error(f"Error in title generation process for post {post_id}: {e}", exc_info=True)
+    finally:
+        # Clean up temporary frames directory
+        if temp_frames_dir.exists():
+            try:
+                shutil.rmtree(temp_frames_dir)
+                logger.info(f"Cleaned up temporary frame directory: {temp_frames_dir}")
+            except Exception as e:
+                logger.error(f"Error removing temporary frame directory {temp_frames_dir}: {e}", exc_info=True)
+                
+    return title
 
 # --- Main Posting Function ---
 
@@ -169,3 +417,50 @@ async def post_tweet(generated_description: str, user_details: Dict, attachments
     except Exception as e:
         logger.error(f"Unexpected error during Twitter posting: {e}", exc_info=True)
         return None 
+
+# --- Added Zapier Posting Functions ---
+
+def post_to_instagram_via_zapier(payload: Dict):
+    """Sends data to the Instagram Zapier webhook."""
+    if not ZAPIER_INSTAGRAM_URL:
+        logger.error("Cannot post to Instagram, ZAPIER_INSTAGRAM_URL not set.")
+        return False
+    try:
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(ZAPIER_INSTAGRAM_URL, headers=headers, data=json.dumps(payload), timeout=30)
+        response.raise_for_status() # Raise exception for bad status codes (4xx or 5xx)
+        logger.info(f"Successfully sent post data to Instagram Zapier webhook for jump_url: {payload.get('jump_url')}. Status: {response.status_code}")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error posting to Instagram Zapier webhook: {e}", exc_info=True)
+        return False
+
+def post_to_tiktok_via_zapier(payload: Dict):
+    """Sends data to the TikTok Zapier webhook (via Buffer in example)."""
+    if not ZAPIER_TIKTOK_BUFFER_URL:
+        logger.error("Cannot post to TikTok, ZAPIER_TIKTOK_BUFFER_URL not set.")
+        return False
+    try:
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(ZAPIER_TIKTOK_BUFFER_URL, headers=headers, data=json.dumps(payload), timeout=30)
+        response.raise_for_status()
+        logger.info(f"Successfully sent post data to TikTok Zapier webhook for video_url: {payload.get('video_url')}. Status: {response.status_code}")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error posting to TikTok Zapier webhook: {e}", exc_info=True)
+        return False
+
+def post_to_youtube_via_zapier(payload: Dict):
+    """Sends data to the YouTube Zapier webhook."""
+    if not ZAPIER_YOUTUBE_URL:
+        logger.error("Cannot post to YouTube, ZAPIER_YOUTUBE_URL not set.")
+        return False
+    try:
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(ZAPIER_YOUTUBE_URL, headers=headers, data=json.dumps(payload), timeout=30)
+        response.raise_for_status()
+        logger.info(f"Successfully sent post data to YouTube Zapier webhook for jump_url: {payload.get('jump_url')}. Status: {response.status_code}")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error posting to YouTube Zapier webhook: {e}", exc_info=True)
+        return False 

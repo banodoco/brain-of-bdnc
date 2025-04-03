@@ -112,6 +112,10 @@ async def main_async(args):
         # Logger Cog
         await bot.load_extension("src.features.logging.logger_cog")
         logger.info("LoggerCog loaded.")
+        
+        # Admin Cog (New)
+        await bot.load_extension("src.features.admin.admin_cog")
+        logger.info("AdminCog loaded.")
 
         # Reactor Cog (Needs bot.reactor_instance)
         await bot.load_extension("src.features.reacting.reactor_cog")

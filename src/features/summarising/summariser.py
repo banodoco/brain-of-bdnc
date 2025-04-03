@@ -36,6 +36,8 @@ from src.features.summarising.subfeatures.news_summary import NewsSummarizer
 from src.features.summarising.subfeatures.top_generations import TopGenerations
 from src.features.summarising.subfeatures.top_art_sharing import TopArtSharing
 
+# --- Import Sharer --- 
+from src.features.sharing.sharer import Sharer
 
 # Optional imports for media processing
 try:
@@ -100,10 +102,10 @@ class Attachment:
         self.content = content
 
 class AttachmentHandler:
-    def __init__(self, max_size: int = 25 * 1024 * 1024):
+    def __init__(self, logger: logging.Logger, max_size: int = 25 * 1024 * 1024):
         self.max_size = max_size
         self.attachment_cache: Dict[str, Dict[str, Any]] = {}
-        self.logger = logging.getLogger('ChannelSummarizer')
+        self.logger = logger
         
     def clear_cache(self):
         """Clear the attachment cache"""
@@ -287,19 +289,31 @@ class ChannelSummarizer(BaseDiscordBot):
         try:
             # Initialize handlers
             self.rate_limiter = RateLimiter()
-            self.attachment_handler = AttachmentHandler()
+            self.attachment_handler = AttachmentHandler(logger=self.logger)
             self.message_formatter = MessageFormatter()
             self.db = DatabaseHandler(dev_mode=dev_mode)
             self.error_handler = ErrorHandler(self)
             self.log_handler = LogHandler()
-            # --- New: Initialize the shared Claude client --- 
+            # --- Initialize the shared Claude client --- 
             self.claude_client = ClaudeClient()
             
-            # --- New: Instantiate the summarizer, passing the client --- 
-            self.news_summarizer = NewsSummarizer(claude_client=self.claude_client, dev_mode=dev_mode)
-            # --- Pass the bot instance, not the client --- 
-            self.top_art_sharing = TopArtSharing(self)
-            self.top_generations = TopGenerations(self)
+            # --- Instantiate Sharer, passing dependencies ---
+            self.sharer_instance = Sharer(
+                bot=self, 
+                db_handler=self.db,
+                logger_instance=self.logger,
+                claude_client=self.claude_client
+            )
+            
+            # --- Instantiate the summarizers/features, passing clients/instances --- 
+            self.news_summarizer = NewsSummarizer(
+                claude_client=self.claude_client, 
+                logger=self.logger,
+                dev_mode=dev_mode
+            )
+            # --- Pass Sharer instance to TopArtSharing --- 
+            self.top_art_sharing = TopArtSharing(self, sharer_instance=self.sharer_instance) 
+            self.top_generations = TopGenerations(self) 
             # ---------------------------------------------------------------
             
             # Initialize state variables
@@ -1071,8 +1085,46 @@ class ChannelSummarizer(BaseDiscordBot):
                                         await asyncio.sleep(1)
                                         # Post each portion of the summary
                                         for item in formatted_summary:
-                                            await self.safe_send_message(thread, item['content'])
-                                            await asyncio.sleep(1)
+                                            if item.get('type') == 'media_reference':
+                                                try:
+                                                    source_channel_id = int(item['channel_id'])
+                                                    message_id_to_fetch = int(item['message_id'])
+                                                    
+                                                    # Fetch the source channel
+                                                    source_channel = await self._get_channel_with_retry(source_channel_id)
+                                                    if not source_channel:
+                                                        self.logger.warning(f"Could not find source channel {source_channel_id} for media message {message_id_to_fetch}")
+                                                        continue
+
+                                                    # Fetch the original message
+                                                    try:
+                                                        original_message = await source_channel.fetch_message(message_id_to_fetch)
+                                                    except discord.NotFound:
+                                                        self.logger.warning(f"Original message {message_id_to_fetch} not found in channel {source_channel_id}.")
+                                                        continue
+                                                    except discord.Forbidden:
+                                                        self.logger.error(f"Forbidden to fetch message {message_id_to_fetch} from channel {source_channel_id}.")
+                                                        continue
+                                                    except discord.HTTPException as e:
+                                                        self.logger.error(f"HTTP error fetching message {message_id_to_fetch}: {e}")
+                                                        continue
+
+                                                    # Post attachments if they exist
+                                                    if original_message.attachments:
+                                                        for attachment in original_message.attachments:
+                                                            await self.safe_send_message(thread, attachment.url)
+                                                            await asyncio.sleep(0.5) # Small delay between attachments
+                                                    else:
+                                                        self.logger.info(f"Message {message_id_to_fetch} referenced for media has no attachments.")
+
+                                                except Exception as e:
+                                                    self.logger.error(f"Error processing media reference {item}: {e}")
+                                                    self.logger.debug(traceback.format_exc())
+                                            else:
+                                                # Send as regular text content
+                                                await self.safe_send_message(thread, item.get('content', ''))
+                                                await asyncio.sleep(1)
+                                        
                                         # Post top gens for the specific channel into this thread
                                         await self.top_generations.post_top_gens_for_channel(thread, channel_id)
                                         # Generate and post short summary with link back using the header message's id
@@ -1118,8 +1170,45 @@ class ChannelSummarizer(BaseDiscordBot):
                             
                             self.logger.info("Posting main summary to summary channel")
                             for item in formatted_summary:
-                                await self.safe_send_message(summary_channel, item['content'])
-                                await asyncio.sleep(1)
+                                if item.get('type') == 'media_reference':
+                                    try:
+                                        source_channel_id = int(item['channel_id'])
+                                        message_id_to_fetch = int(item['message_id'])
+
+                                        # Fetch the source channel
+                                        source_channel = await self._get_channel_with_retry(source_channel_id)
+                                        if not source_channel:
+                                            self.logger.warning(f"Could not find source channel {source_channel_id} for media message {message_id_to_fetch}")
+                                            continue
+
+                                        # Fetch the original message
+                                        try:
+                                            original_message = await source_channel.fetch_message(message_id_to_fetch)
+                                        except discord.NotFound:
+                                            self.logger.warning(f"Original message {message_id_to_fetch} not found in channel {source_channel_id}.")
+                                            continue
+                                        except discord.Forbidden:
+                                            self.logger.error(f"Forbidden to fetch message {message_id_to_fetch} from channel {source_channel_id}.")
+                                            continue
+                                        except discord.HTTPException as e:
+                                            self.logger.error(f"HTTP error fetching message {message_id_to_fetch}: {e}")
+                                            continue
+
+                                        # Post attachments if they exist
+                                        if original_message.attachments:
+                                            for attachment in original_message.attachments:
+                                                await self.safe_send_message(summary_channel, attachment.url)
+                                                await asyncio.sleep(0.5) # Small delay between attachments
+                                        else:
+                                            self.logger.info(f"Message {message_id_to_fetch} referenced for media has no attachments.")
+
+                                    except Exception as e:
+                                        self.logger.error(f"Error processing media reference {item}: {e}")
+                                        self.logger.debug(traceback.format_exc())
+                                else:
+                                    # Send as regular text content
+                                    await self.safe_send_message(summary_channel, item.get('content', ''))
+                                    await asyncio.sleep(1)
                         else:
                             await self.safe_send_message(summary_channel, "_No significant activity to summarize in the last 24 hours._")
                     else:
@@ -1132,7 +1221,7 @@ class ChannelSummarizer(BaseDiscordBot):
                 # Step 4) Post top generations
                 await self.top_generations.post_top_x_generations(summary_channel, limit=4)
 
-                # Step 5) Post top art sharing
+                # Step 5) Post top art sharing (which now initiates the sharing process)
                 await self.top_art_sharing.post_top_art_share(summary_channel)
                 
                 # Link back to the start

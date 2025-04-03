@@ -104,7 +104,7 @@ class Reactor:
         
         if self.sharer:
              # Call the Sharer instance to handle the process
-             await self.sharer.initiate_sharing_process(reaction, user)
+             await self.sharer.initiate_sharing_process_from_reaction(reaction, user)
         else:
              self.logger.error("[Reactor] Sharer instance not available. Cannot initiate sharing process.")
              # Optionally send a fallback message or log critical error
