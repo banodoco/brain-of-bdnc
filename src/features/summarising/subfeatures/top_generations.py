@@ -225,6 +225,7 @@ class TopGenerations:
             query = """
                 SELECT 
                     m.message_id,
+                    m.channel_id as m_channel_id,
                     m.content,
                     m.attachments,
                     COALESCE(mem.server_nick, mem.global_name, mem.username) as author_name,
@@ -291,7 +292,7 @@ class TopGenerations:
                     
                     desc.append(video_attachment['url'])
                     # Generate jump URL dynamically
-                    jump_url = f"https://discord.com/channels/{self.bot.guild_id}/{row['channel_id']}/{row['message_id']}"
+                    jump_url = f"https://discord.com/channels/{self.bot.guild_id}/{row['m_channel_id']}/{row['message_id']}"
                     desc.append(f"🔗 Original post: {jump_url}")
                     msg_text = "\n".join(desc)
                     

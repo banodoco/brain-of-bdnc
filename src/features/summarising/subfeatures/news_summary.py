@@ -51,13 +51,13 @@ Otherwise, respond with ONLY a JSON array in this exact format:
  {
    "title": "BFL ship new Controlnets for FluxText",
    "mainText": "A new ComfyUI analytics node has been developed to track and analyze data pipeline components, including inputs, outputs, and embeddings. This enhancement aims to provide more controllable prompting capabilities:",
-   "mainFile": "attachment_url1.mp4, attachment_url2.png",
+   "mainFile": "https://cdn.discordapp.com/attachments/123456789012345678/987654321098765432/example_video.mp4, https://cdn.discordapp.com/attachments/123456789012345678/987654321098765433/example_image.png",
    "message_id": "4532454353425342",
    "channel_id": "1138865343314530324",
    "subTopics": [
      {
        "text": "Here's another example of **Kijai** using it in combination with **Redux** - **Kijai** noted that it worked better than the previous version:",
-       "file": "attachment_url3.png",
+       "file": "https://cdn.discordapp.com/attachments/123456789012345679/987654321098765434/another_example.png",
        "message_id": "4532454353425343",
        "channel_id": "1138865343314530324"
      }
