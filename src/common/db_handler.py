@@ -777,6 +777,31 @@ class DatabaseHandler:
             
         return self._execute_with_retry(get_messages_operation)
 
+    def get_messages_in_range(self, start_date: datetime, end_date: datetime, channel_id: Optional[int] = None) -> List[Dict]:
+        """Get all messages within a specific date range, optionally filtered by channel."""
+        def get_range_operation(conn):
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            sql = """
+                SELECT * FROM messages 
+                WHERE created_at >= ? AND created_at <= ?
+            """
+            params = [start_date.isoformat(), end_date.isoformat()]
+            
+            if channel_id:
+                sql += " AND channel_id = ?"
+                params.append(channel_id)
+                
+            sql += " ORDER BY created_at ASC"
+            
+            cursor.execute(sql, tuple(params))
+            results = [dict(row) for row in cursor.fetchall()]
+            cursor.close()
+            return results
+            
+        return self._execute_with_retry(get_range_operation)
+
     @property
     def conn(self):
         # Return an existing connection or create a new one if not available

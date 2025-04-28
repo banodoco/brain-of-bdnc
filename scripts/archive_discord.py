@@ -19,6 +19,7 @@ from src.common.rate_limiter import RateLimiter
 import threading
 import queue
 import time
+import dateutil.parser
 
 # Configure logging
 logging.basicConfig(
@@ -42,7 +43,7 @@ def get_db(db_path):
     return thread_local.db
 
 class MessageArchiver(BaseDiscordBot):
-    def __init__(self, dev_mode=False, order="newest", days=None, batch_size=500, in_depth=False, channel_id=None, fetch_reactions=False):
+    def __init__(self, dev_mode=False, order="newest", days=None, batch_size=500, in_depth=False, channel_id=None, fetch_reactions=False, start_date_str=None, end_date_str=None):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
@@ -97,12 +98,31 @@ class MessageArchiver(BaseDiscordBot):
         self.oldest_first = order.lower() == "oldest"
         logger.info(f"Message ordering: {'oldest to newest' if self.oldest_first else 'newest to oldest'}")
         
-        # Set days limit
-        self.days_limit = days
-        if days:
-            logger.info(f"Will fetch messages from the last {days} days")
-        else:
-            logger.info("Will fetch all available messages")
+        # Set days limit - mutually exclusive with start/end date
+        self.days_limit = days if not (start_date_str or end_date_str) else None
+        if self.days_limit:
+            logger.info(f"Will fetch messages from the last {self.days_limit} days")
+        elif not (start_date_str or end_date_str):
+            logger.info("Will fetch all available messages (checking DB range)")
+
+        # Set start and end dates
+        self.start_date = None
+        self.end_date = None
+        if start_date_str or end_date_str:
+            if not start_date_str or not end_date_str:
+                raise ValueError("Both --start-date and --end-date must be provided together.")
+            try:
+                # Parse start date (beginning of the day, UTC)
+                self.start_date = datetime.strptime(start_date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+                # Parse end date and add one day to make it inclusive (beginning of the next day, UTC)
+                self.end_date = (datetime.strptime(end_date_str, '%Y-%m-%d') + timedelta(days=1)).replace(tzinfo=timezone.utc)
+
+                if self.start_date >= self.end_date:
+                    raise ValueError("Start date must be before end date.")
+                logger.info(f"Fetching messages strictly between {self.start_date.strftime('%Y-%m-%d %H:%M:%S %Z')} and {self.end_date.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            except ValueError as e:
+                logger.error(f"Invalid date format or range: {e}. Please use YYYY-MM-DD.")
+                raise
             
         # Set in-depth mode
         self.in_depth = in_depth
@@ -138,6 +158,13 @@ class MessageArchiver(BaseDiscordBot):
 
         # Insert after the super().__init__(...) call
         self._connection_history = []  # Initialize connection history to prevent shutdown errors
+
+        self.total_days_in_range = 0
+        if self.start_date and self.end_date:
+            # Calculate total days duration for progress reporting
+            self.total_days_in_range = (self.end_date - self.start_date).days
+            if self.total_days_in_range <= 0: # Should be caught by earlier check, but safety first
+                self.total_days_in_range = 1
 
     def _db_worker(self):
         """Worker thread for database operations."""
@@ -222,7 +249,7 @@ class MessageArchiver(BaseDiscordBot):
                         lambda db: db.message_exists(message.id)
                     )
                     if self.in_depth or self.fetch_reactions or not message_exists:
-                        logger.info(f"Processing reactions for message {message.id}: {len(message.reactions)} types, {reaction_count} total reactions")
+                        logger.debug(f"Processing reactions for message {message.id}: {len(message.reactions)} types, {reaction_count} total reactions")
                         
                         guild = self.get_guild(self.guild_id)
                         
@@ -381,76 +408,71 @@ class MessageArchiver(BaseDiscordBot):
                 await self.close()
                 return
             
-            # If a specific channel was requested, only archive that one
+            # --- Collect all items to process --- 
+            items_to_process = [] # List of (item_type, item_object, parent_name_if_thread)
+
             if self.target_channel_id:
                 channel = self.get_channel(self.target_channel_id)
-                if not channel:
-                    logger.error(f"Could not find channel with ID {self.target_channel_id}")
-                    await self.close()
-                    return
-                
-                logger.info(f"Starting archive of channel #{channel.name}")
-                await self.archive_channel(self.target_channel_id)
-                
-                # Also archive any threads in this channel if it's a text channel
-                if isinstance(channel, discord.TextChannel):
-                    logger.info(f"Checking for threads in #{channel.name}")
-                    # Archive archived threads
-                    async for thread in channel.archived_threads():
-                        logger.info(f"Starting archive of thread #{thread.name} in {channel.name}")
-                        await self.archive_channel(thread.id)
-                    # Archive active threads
-                    for thread in channel.threads:
-                        logger.info(f"Starting archive of active thread #{thread.name} in {channel.name}")
-                        await self.archive_channel(thread.id)
+                if channel:
+                    items_to_process.append(("channel", channel, None))
+                    if isinstance(channel, discord.TextChannel): 
+                        # Add threads within the target channel
+                        archived_threads = [t async for t in channel.archived_threads()]
+                        active_threads = channel.threads
+                        for thread in archived_threads + active_threads:
+                             items_to_process.append(("thread", thread, channel.name))
+                else:
+                     logger.error(f"Could not find target channel with ID {self.target_channel_id}")
             else:
-                # Archive all text channels in the guild
-                for channel in guild.text_channels:
-                    if channel.id not in self.skip_channels:
-                        logger.info(f"Starting archive of text channel #{channel.name}")
-                        await self.archive_channel(channel.id)
+                # Collect all text channels
+                all_text_channels = [c for c in guild.text_channels if c.id not in self.skip_channels]
+                for channel in all_text_channels:
+                    items_to_process.append(("channel", channel, None))
+                    # Collect threads within text channels
+                    archived_threads = [t async for t in channel.archived_threads()]
+                    active_threads = channel.threads
+                    for thread in archived_threads + active_threads:
+                        items_to_process.append(("thread", thread, channel.name))
                 
-                # Debug logging for forum channels
-                logger.info(f"Found {len(guild.forums)} forum channels")
-                for forum in guild.forums:
-                    logger.info(f"Found forum channel: #{forum.name} (ID: {forum.id})")
+                # Collect all forum threads
+                all_forums = [f for f in guild.forums if f.id not in self.skip_channels]
+                for forum in all_forums:
+                    archived_threads = [t async for t in forum.archived_threads()]
+                    active_threads = forum.threads
+                    for thread in archived_threads + active_threads:
+                         items_to_process.append(("forum_thread", thread, forum.name))
+
+            total_items = len(items_to_process)
+            logger.info(f"Collected {total_items} total channels/threads to process.")
+
+            # --- Process collected items --- 
+            for index, (item_type, item, parent_name) in enumerate(items_to_process):
+                item_index = index + 1 # 1-based index for logging
                 
-                # Archive all forum channels and their threads
-                for forum in guild.forums:
-                    if forum.id not in self.skip_channels:
-                        logger.info(f"Starting archive of forum channel #{forum.name}")
-                        # Archive the forum posts (threads)
-                        thread_count = 0
-                        async for thread in forum.archived_threads():
-                            thread_count += 1
-                            logger.info(f"Starting archive of forum thread #{thread.name} in {forum.name}")
-                            await self.archive_channel(thread.id)
-                        # Archive active threads
-                        for thread in forum.threads:
-                            thread_count += 1
-                            logger.info(f"Starting archive of active forum thread #{thread.name} in {forum.name}")
-                            await self.archive_channel(thread.id)
-                        logger.info(f"Processed {thread_count} total threads in forum #{forum.name}")
-                
-                # Archive threads in text channels
-                for channel in guild.text_channels:
-                    if channel.id not in self.skip_channels:
-                        logger.info(f"Checking for threads in #{channel.name}")
-                        # Archive archived threads
-                        async for thread in channel.archived_threads():
-                            logger.info(f"Starting archive of thread #{thread.name} in {channel.name}")
-                            await self.archive_channel(thread.id)
-                        # Archive active threads
-                        for thread in channel.threads:
-                            logger.info(f"Starting archive of active thread #{thread.name} in {channel.name}")
-                            await self.archive_channel(thread.id)
+                if item_type == "channel":
+                    log_prefix = f"Processing Channel {item_index}/{total_items}:"
+                    logger.info(f"{log_prefix} #{item.name}")
+                elif item_type == "thread":
+                     log_prefix = f"Processing Thread {item_index}/{total_items} in #{parent_name}:"
+                     logger.info(f"{log_prefix} #{item.name}")
+                elif item_type == "forum_thread":
+                     log_prefix = f"Processing Forum Thread {item_index}/{total_items} in forum #{parent_name}:"
+                     logger.info(f"{log_prefix} #{item.name}")
+                else:
+                    logger.warning(f"Skipping unknown item type at index {item_index}")
+                    continue # Skip unknown types
+
+                # Call archive_channel for the item's ID
+                await self.archive_channel(item.id) 
+                # Log running total after the item is done
+                logger.info(f"Running Total New Messages Archived: {self.total_messages_archived}") 
             
             logger.info("Archiving complete, shutting down bot")
-            logger.info(f"Total new messages archived across all channels: {self.total_messages_archived}")
-            # Close the bot after archiving
+            logger.info(f"Final Total New Messages Archived: {self.total_messages_archived}") 
             await self.close()
+
         except Exception as e:
-            logger.error(f"Error in on_ready: {e}")
+            logger.error(f"Error in on_ready: {e}", exc_info=True) # Add traceback
             await self.close()
 
     async def _wait_for_rate_limit(self):
@@ -468,12 +490,12 @@ class MessageArchiver(BaseDiscordBot):
         # Only enforce rate limits if we're actually approaching them
         if self.api_call_count >= 45:  # Conservative buffer before hitting 50
             wait_time = 1.0  # Start with a 1s pause
-            logger.info(f"Rate limit approaching - Current count: {self.api_call_count}, Remaining: {self.rate_limit_remaining}")
+            logger.debug(f"Rate limit approaching - Current count: {self.api_call_count}, Remaining: {self.rate_limit_remaining}")
             await asyncio.sleep(wait_time)
             self.api_call_count = 0
             self.rate_limit_reset = datetime.now() + timedelta(seconds=60)
             self.rate_limit_remaining = 50
-            logger.info(f"Rate limit reset - New remaining: {self.rate_limit_remaining}, Next reset: {self.rate_limit_reset}")
+            logger.debug(f"Rate limit reset - New remaining: {self.rate_limit_remaining}, Next reset: {self.rate_limit_reset}")
         
         self.last_api_call = now
 
@@ -501,339 +523,287 @@ class MessageArchiver(BaseDiscordBot):
             
             logger.info(f"Starting archive of #{channel.name} at {channel_start_time}")
             
-            # Initialize counters here so they're available in all branches
-            message_counter = 0
-            new_message_count = 0
-            batch = []
-            
-            # Calculate the cutoff date if days limit is set
-            cutoff_date = None
-            if self.days_limit:
-                # Make sure to create timezone-aware datetime
-                cutoff_date = datetime.now(timezone.utc) - timedelta(days=self.days_limit)
-                logger.info(f"Will only fetch messages after {cutoff_date}")
-            
-            # Initialize dates as None
-            earliest_date = None
-            latest_date = None
-            
-            try:
-                # Get date range of archived messages
-                earliest_date, latest_date = await self._db_operation(
-                    lambda db: db.get_message_date_range(channel_id)
-                )
-                # Make sure dates are timezone-aware
-                if earliest_date:
-                    earliest_date = earliest_date.replace(tzinfo=timezone.utc)
-                    logger.info(f"Earliest message in DB for #{channel.name}: {earliest_date}")
-                if latest_date:
-                    latest_date = latest_date.replace(tzinfo=timezone.utc)
-                    logger.info(f"Latest message in DB for #{channel.name}: {latest_date}")
-            except Exception as e:
-                logger.warning(f"Could not get message date range, will fetch all messages: {e}")
-            
-            # If no archived messages exist or we're in in-depth mode, get all messages in the time range
-            if not earliest_date or not latest_date or self.in_depth:
-                if self.in_depth:
-                    logger.info(f"In-depth mode: Re-checking all messages in time range for #{channel.name}")
-                else:
-                    logger.info(f"No existing archives found for #{channel.name}. Getting all messages...")
-                logger.info(f"Starting message fetch for #{channel.name} from {'oldest to newest' if self.oldest_first else 'newest to oldest'}...")
-                try:
-                    # We'll paginate through messages using before/after
-                    last_message = None
-                    while True:
-                        history_kwargs = {
-                            'limit': None,  # No limit, we'll control the flow ourselves
-                            'oldest_first': self.oldest_first,
-                            'before': last_message.created_at if last_message else None,
-                            'after': cutoff_date if cutoff_date else None
-                        }
+            # --- Logic based on whether specific dates are provided ---
+            if self.start_date and self.end_date:
+                # --- Archive Specific Date Range ---
+                start_log_msg = f"Starting date-range archive for #{channel.name} ({self.start_date.date()} to { (self.end_date - timedelta(days=1)).date() })"
+                if self.total_days_in_range > 0:
+                    start_log_msg += f" - Total duration: {self.total_days_in_range} days"
+                logger.info(start_log_msg)
+                
+                message_counter = 0
+                new_message_count = 0
+                current_batch = []
+                last_processed_message_date = None
+                last_progress_log_time = time.time()
+                
+                # Variables for daily timing and ETR
+                current_processing_day_date = None
+                current_day_start_time = None
+                processed_days_count = 0
+                total_processing_time_seconds = 0.0
+                last_day_duration_str = "N/A"
+                etr_str = "Calculating..."
+                messages_processed_this_day = 0 # Initialize daily counter
+
+                async for message in channel.history(limit=None, after=self.start_date, before=self.end_date, oldest_first=self.oldest_first):
+                    # Skip messages from the bot
+                    if message.author.id == self.bot_user_id:
+                        continue
+
+                    message_counter += 1
+                    msg_date = message.created_at.date()
+                    current_time_epoch = time.time()
+
+                    # --- Daily Duration Calculation ---
+                    if msg_date != current_processing_day_date:
+                        if current_processing_day_date is not None and current_day_start_time is not None:
+                            # Finish timing the previous day
+                            day_duration_secs = current_time_epoch - current_day_start_time
+                            processed_days_count += 1
+                            total_processing_time_seconds += day_duration_secs
+                            last_day_duration_str = f"{day_duration_secs:.2f}s"
+                            # MODIFIED: Add message count to completed log
+                            logger.info(f"Completed Day {processed_days_count}/{self.total_days_in_range} ({current_processing_day_date}) for #{channel.name} in {last_day_duration_str} - {messages_processed_this_day} messages processed")
+                            messages_processed_this_day = 0 # Reset counter for new day
                         
-                        logger.info(f"Fetching messages for #{channel.name} with kwargs: {history_kwargs}")
-                        current_batch = []
-                        
+                        # Start timing the new day
+                        current_processing_day_date = msg_date
+                        current_day_start_time = current_time_epoch
+                        # MODIFIED: Adjust starting log format (omitting count)
+                        logger.info(f"Starting Day {processed_days_count + 1}/{self.total_days_in_range} ({current_processing_day_date}) for #{channel.name}...")
+                    
+                    messages_processed_this_day += 1 # Increment daily counter
+
+                    last_processed_message_date = message.created_at # Keep track of the absolute latest message time
+
+                    # --- Progress Logging & ETR --- 
+                    # Log progress roughly every 30 seconds 
+                    if (current_time_epoch - last_progress_log_time > 30):
+                        if last_processed_message_date and self.total_days_in_range > 0:
+                            # Calculate how many whole days have been covered so far
+                            if self.oldest_first:
+                                # Processing oldest → newest: progress grows as we move forward in time
+                                elapsed_total_days = (last_processed_message_date - self.start_date).days + 1
+                            else:
+                                # Processing newest → oldest: progress grows as we move *back* in time
+                                # so measure distance from the *end* of the range
+                                elapsed_total_days = (self.end_date - last_processed_message_date).days
+                                if elapsed_total_days == 0:
+                                    elapsed_total_days = 1  # Ensure we never report 0%
+
+                            elapsed_total_days = max(1, min(elapsed_total_days, self.total_days_in_range))
+                            percentage = (elapsed_total_days / self.total_days_in_range) * 100
+                            
+                            # Calculate ETR based on completed days
+                            if processed_days_count > 0:
+                                avg_time_per_day = total_processing_time_seconds / processed_days_count
+                                remaining_days = self.total_days_in_range - processed_days_count # Use count of fully completed days
+                                etr_seconds = avg_time_per_day * remaining_days
+                                etr_str = str(timedelta(seconds=int(etr_seconds)))
+                            else:
+                                etr_str = "Calculating..." # Not enough data yet
+
+                            logger.info(f"Progress #{channel.name}: Overall {percentage:.1f}% ({elapsed_total_days}/{self.total_days_in_range} days). Last Day ({current_processing_day_date}) took {last_day_duration_str}. ETR: {etr_str}")
+                            last_progress_log_time = current_time_epoch
+                    # --- End Progress Logging ---
+
+                    process_this_message = False
+                    if self.in_depth or self.fetch_reactions:
+                        process_this_message = True
+                    else:
+                        message_exists = await self._db_operation(
+                            lambda db: db.message_exists(message.id)
+                        )
+                        if not message_exists:
+                            process_this_message = True
+
+                    if process_this_message:
+                        current_batch.append(message)
+
+                    # Store batch when it reaches the threshold
+                    if len(current_batch) >= 100:
                         try:
-                            got_messages = False
-                            async for message in channel.history(**{k: v for k, v in history_kwargs.items() if v is not None}):
-                                got_messages = True
-                                last_message = message
-                                
-                                # Process message
-                                message_counter += 1
-                                if message_counter % 25 == 0:
-                                    logger.info(f"Fetched {message_counter} messages so far from #{channel.name}, last message from {message.created_at}")
-                                
-                                try:
-                                    # Skip messages from the bot
-                                    if message.author.id == self.bot_user_id:
+                            processed_messages = []
+                            for msg in current_batch:
+                                processed_msg = await self._process_message(msg, channel_id)
+                                if processed_msg:
+                                    processed_messages.append(processed_msg)
+                            if processed_messages:
+                                pre_existing_ids = set()
+                                if not self.in_depth:
+                                    existing_in_db = await self._db_operation(
+                                        lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
+                                    )
+                                    pre_existing_ids = {msg['message_id'] for msg in existing_in_db}
+                                new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing_ids]
+                                new_message_count += len(new_messages)
+                                await self._db_operation(
+                                    lambda db: db.store_messages(processed_messages)
+                                )
+                            current_batch = []
+                            await asyncio.sleep(0.1)
+                        except Exception as e:
+                            logger.error(f"Failed to store batch during date range archive: {e}")
+
+                # --- After the loop --- 
+                # Log duration for the final day if it was started
+                if current_processing_day_date is not None and current_day_start_time is not None:
+                    final_day_duration_secs = time.time() - current_day_start_time
+                    # Check if this day was already counted (might happen if loop ends exactly on day boundary)
+                    if processed_days_count < self.total_days_in_range:
+                         processed_days_count += 1 
+                    # MODIFIED: Add message count to final completed log
+                    logger.info(f"Completed Final Day {processed_days_count}/{self.total_days_in_range} ({current_processing_day_date}) for #{channel.name} in {final_day_duration_secs:.2f}s - {messages_processed_this_day} messages processed")
+
+                # Process any remaining messages in the final batch
+                if current_batch:
+                    try:
+                        processed_messages = []
+                        for msg in current_batch:
+                            processed_msg = await self._process_message(msg, channel_id)
+                            if processed_msg:
+                                processed_messages.append(processed_msg)
+                        if processed_messages:
+                            pre_existing_ids = set()
+                            if not self.in_depth:
+                                existing_in_db = await self._db_operation(
+                                    lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
+                                )
+                                pre_existing_ids = {msg['message_id'] for msg in existing_in_db}
+                            new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing_ids]
+                            new_message_count += len(new_messages)
+                            await self._db_operation(
+                                lambda db: db.store_messages(processed_messages)
+                            )
+                    except Exception as e:
+                        logger.error(f"Failed to store final date range batch: {e}")
+
+                logger.info(f"Finished date range archive for #{channel.name}. Processed {message_counter} messages, found {new_message_count} new.")
+                # Log final 100% progress
+                if self.total_days_in_range > 0:
+                     logger.info(f"Progress for #{channel.name}: Day {self.total_days_in_range}/{self.total_days_in_range} (100.0%) - Completed.")
+
+            else:
+                # --- Original Archive Logic (using --days or DB range checks) ---
+                logger.info(f"Starting incremental/full archive for #{channel.name} at {channel_start_time}")
+                # Calculate the cutoff date if days limit is set
+                cutoff_date = None
+                if self.days_limit:
+                    # Make sure to create timezone-aware datetime
+                    cutoff_date = datetime.now(timezone.utc) - timedelta(days=self.days_limit)
+                    logger.debug(f"Will only fetch messages after {cutoff_date}")
+                
+                # Initialize dates as None
+                earliest_date = None
+                latest_date = None
+                
+                try:
+                    # Get date range of archived messages
+                    earliest_date, latest_date = await self._db_operation(
+                        lambda db: db.get_message_date_range(channel_id)
+                    )
+                    # Make sure dates are timezone-aware
+                    if earliest_date:
+                        earliest_date = earliest_date.replace(tzinfo=timezone.utc)
+                        logger.info(f"Earliest message in DB for #{channel.name}: {earliest_date}")
+                    if latest_date:
+                        latest_date = latest_date.replace(tzinfo=timezone.utc)
+                        logger.info(f"Latest message in DB for #{channel.name}: {latest_date}")
+                except Exception as e:
+                    logger.warning(f"Could not get message date range, will fetch all messages: {e}")
+                
+                message_counter = 0
+                new_message_count = 0
+                batch = []
+
+                # If no archived messages exist or we're in in-depth mode, get all messages in the time range
+                if not earliest_date or not latest_date or self.in_depth:
+                    if self.in_depth:
+                        logger.debug(f"In-depth mode: Re-checking all messages in time range for #{channel.name}")
+                    else:
+                        logger.info(f"No existing archives found for #{channel.name}. Getting all messages...")
+                    logger.debug(f"Starting message fetch for #{channel.name} from {'oldest to newest' if self.oldest_first else 'newest to oldest'}...")
+                    try:
+                        # We'll paginate through messages using before/after
+                        last_message = None
+                        while True:
+                            history_kwargs = {
+                                'limit': None,  # No limit, we'll control the flow ourselves
+                                'oldest_first': self.oldest_first,
+                                'before': last_message.created_at if last_message else None,
+                                'after': cutoff_date if cutoff_date else None
+                            }
+                            
+                            logger.debug(f"Fetching messages for #{channel.name} with kwargs: {history_kwargs}")
+                            current_batch = []
+                            
+                            try:
+                                got_messages = False
+                                async for message in channel.history(**{k: v for k, v in history_kwargs.items() if v is not None}):
+                                    got_messages = True
+                                    last_message = message
+                                    
+                                    # Process message
+                                    message_counter += 1
+                                    if message_counter % 25 == 0:
+                                        logger.debug(f"Fetched {message_counter} messages so far from #{channel.name}, last message from {message.created_at}")
+                                    
+                                    try:
+                                        # Skip messages from the bot
+                                        if message.author.id == self.bot_user_id:
+                                            continue
+                                        
+                                        # In in-depth mode, always process the message
+                                        # In normal mode, only process if not already in DB
+                                        message_exists = await self._db_operation(
+                                            lambda db: db.message_exists(message.id)
+                                        )
+                                        if self.in_depth or self.fetch_reactions or not message_exists:
+                                            current_batch.append(message)
+                                        
+                                        # Store batch when it reaches the threshold
+                                        if len(current_batch) >= 100:
+                                            try:
+                                                processed_messages = []
+                                                for msg in current_batch:
+                                                    processed_msg = await self._process_message(msg, channel_id)
+                                                    if processed_msg:
+                                                        processed_messages.append(processed_msg)
+                                                
+                                                if processed_messages:
+                                                    # Only increment counter for messages that didn't exist before
+                                                    pre_existing = set(msg['message_id'] for msg in await self._db_operation(
+                                                        lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
+                                                    ))
+                                                    new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
+                                                    new_message_count += len(new_messages)
+                                                    
+                                                    logger.debug(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
+                                                    await self._db_operation(
+                                                        lambda db: db.store_messages(processed_messages)
+                                                    )
+                                                
+                                                current_batch = []
+                                                await asyncio.sleep(0.1)
+                                            except Exception as e:
+                                                logger.error(f"Failed to store batch: {e}")
+                                                logger.error(f"Error details: {str(e)}")
+                                                
+                                    except Exception as e:
+                                        logger.error(f"Error processing message {message.id}: {e}")
+                                        logger.error(f"Error details: {str(e)}")
                                         continue
                                     
-                                    # In in-depth mode, always process the message
-                                    # In normal mode, only process if not already in DB
-                                    message_exists = await self._db_operation(
-                                        lambda db: db.message_exists(message.id)
-                                    )
-                                    if self.in_depth or self.fetch_reactions or not message_exists:
-                                        current_batch.append(message)
-                                    
-                                    # Store batch when it reaches the threshold
-                                    if len(current_batch) >= 100:
-                                        try:
-                                            processed_messages = []
-                                            for msg in current_batch:
-                                                processed_msg = await self._process_message(msg, channel_id)
-                                                if processed_msg:
-                                                    processed_messages.append(processed_msg)
-                                            
-                                            if processed_messages:
-                                                # Only increment counter for messages that didn't exist before
-                                                pre_existing = set(msg['message_id'] for msg in await self._db_operation(
-                                                    lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
-                                                ))
-                                                new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
-                                                new_message_count += len(new_messages)
-                                                
-                                                logger.info(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
-                                                await self._db_operation(
-                                                    lambda db: db.store_messages(processed_messages)
-                                                )
-                                            
-                                            current_batch = []
-                                            await asyncio.sleep(0.1)
-                                        except Exception as e:
-                                            logger.error(f"Failed to store batch: {e}")
-                                            logger.error(f"Error details: {str(e)}")
-                                            
-                                except Exception as e:
-                                    logger.error(f"Error processing message {message.id}: {e}")
-                                    logger.error(f"Error details: {str(e)}")
-                                    continue
-                                
-                        except discord.Forbidden:
-                            logger.warning(f"Missing permissions to read messages in #{channel.name}")
-                            break
-                        except Exception as e:
-                            logger.error(f"Error fetching messages: {e}")
-                            break
-                        
-                        # Process any remaining messages in the current batch
-                        if current_batch:
-                            try:
-                                processed_messages = []
-                                for msg in current_batch:
-                                    processed_msg = await self._process_message(msg, channel_id)
-                                    if processed_msg:
-                                        processed_messages.append(processed_msg)
-                                
-                                if processed_messages:
-                                    # Only increment counter for messages that didn't exist before
-                                    pre_existing = set(msg['message_id'] for msg in await self._db_operation(
-                                        lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
-                                    ))
-                                    new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
-                                    new_message_count += len(new_messages)
-                                    
-                                    logger.info(f"Storing final batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
-                                    await self._db_operation(
-                                        lambda db: db.store_messages(processed_messages)
-                                    )
+                            except discord.Forbidden:
+                                logger.warning(f"Missing permissions to read messages in #{channel.name}")
+                                break
                             except Exception as e:
-                                logger.error(f"Failed to store final batch: {e}")
-                                logger.error(f"Error details: {str(e)}")
-                        
-                        # If we didn't get any messages in this fetch, break the loop
-                        if not got_messages:
-                            logger.info(f"No more messages found in #{channel.name} for the current time range")
-                            break
+                                logger.error(f"Error fetching messages: {e}")
+                                break
                             
-                        await asyncio.sleep(0.1)
-                    
-                    logger.info(f"Finished initial fetch for #{channel.name}: {message_counter} messages fetched, last message from {last_message.created_at if last_message else 'N/A'}")
-                except Exception as e:
-                    logger.error(f"Error fetching message history: {e}")
-                    logger.error(f"Error details: {str(e)}")
-                    raise
-
-            # Still check before earliest and after latest, respecting days limit
-            if latest_date:
-                logger.info(f"Searching for newer messages in #{channel.name} (after {latest_date})...")
-                current_batch = []
-                messages_found = 0
-                async for message in channel.history(limit=None, after=latest_date, oldest_first=self.oldest_first):
-                    messages_found += 1
-                    if messages_found % 100 == 0:
-                        logger.info(f"Found {messages_found} newer messages in #{channel.name}")
-                    if cutoff_date and message.created_at < cutoff_date:
-                        logger.debug(f"Reached cutoff date {cutoff_date}, stopping newer message search")
-                        break
-                    
-                    # Skip messages from the bot
-                    if message.author.id == self.bot_user_id:
-                        continue
-                        
-                    current_batch.append(message)
-                    message_counter += 1
-                    
-                    # Store batch when it reaches the threshold
-                    if len(current_batch) >= 100:
-                        try:
-                            processed_messages = []
-                            for msg in current_batch:
-                                processed_msg = await self._process_message(msg, channel_id)
-                                if processed_msg:
-                                    processed_messages.append(processed_msg)
-                            
-                            if processed_messages:
-                                # Only increment counter for messages that didn't exist before
-                                pre_existing = set(msg['message_id'] for msg in await self._db_operation(
-                                    lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
-                                ))
-                                new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
-                                new_message_count += len(new_messages)
-                                
-                                logger.info(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
-                                await self._db_operation(
-                                    lambda db: db.store_messages(processed_messages)
-                                )
-                            current_batch = []
-                            await asyncio.sleep(0.1)
-                        except Exception as e:
-                            logger.error(f"Failed to store batch: {e}")
-                            logger.error(f"Error details: {str(e)}")
-                
-                # Process any remaining messages
-                if current_batch:
-                    try:
-                        processed_messages = []
-                        for msg in current_batch:
-                            processed_msg = await self._process_message(msg, channel_id)
-                            if processed_msg:
-                                processed_messages.append(processed_msg)
-                        
-                        if processed_messages:
-                            # Only increment counter for messages that didn't exist before
-                            pre_existing = set(msg['message_id'] for msg in await self._db_operation(
-                                lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
-                            ))
-                            new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
-                            new_message_count += len(new_messages)
-                            
-                            logger.info(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
-                            await self._db_operation(
-                                lambda db: db.store_messages(processed_messages)
-                            )
-                    except Exception as e:
-                        logger.error(f"Failed to store batch: {e}")
-                        logger.error(f"Error details: {str(e)}")
-            
-            # Only search for older messages if we're not using --days flag
-            if not self.days_limit and earliest_date:
-                logger.info(f"Searching for older messages in #{channel.name} (before {earliest_date})...")
-                current_batch = []
-                messages_found = 0
-                async for message in channel.history(limit=None, before=earliest_date, oldest_first=self.oldest_first):
-                    messages_found += 1
-                    if messages_found % 100 == 0:
-                        logger.info(f"Found {messages_found} older messages in #{channel.name}")
-                    if cutoff_date and message.created_at < cutoff_date:
-                        continue
-                        
-                    # Skip messages from the bot
-                    if message.author.id == self.bot_user_id:
-                        continue
-                        
-                    current_batch.append(message)
-                    message_counter += 1
-                    
-                    # Store batch when it reaches the threshold
-                    if len(current_batch) >= 100:
-                        try:
-                            processed_messages = []
-                            for msg in current_batch:
-                                processed_msg = await self._process_message(msg, channel_id)
-                                if processed_msg:
-                                    processed_messages.append(processed_msg)
-                            
-                            if processed_messages:
-                                # Only increment counter for messages that didn't exist before
-                                pre_existing = set(msg['message_id'] for msg in await self._db_operation(
-                                    lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
-                                ))
-                                new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
-                                new_message_count += len(new_messages)
-                                
-                                logger.info(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
-                                await self._db_operation(
-                                    lambda db: db.store_messages(processed_messages)
-                                )
-                            current_batch = []
-                            await asyncio.sleep(0.1)
-                        except Exception as e:
-                            logger.error(f"Failed to store batch: {e}")
-                            logger.error(f"Error details: {str(e)}")
-                
-                # Process any remaining messages
-                if current_batch:
-                    try:
-                        processed_messages = []
-                        for msg in current_batch:
-                            processed_msg = await self._process_message(msg, channel_id)
-                            if processed_msg:
-                                processed_messages.append(processed_msg)
-                        
-                        if processed_messages:
-                            # Only increment counter for messages that didn't exist before
-                            pre_existing = set(msg['message_id'] for msg in await self._db_operation(
-                                lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
-                            ))
-                            new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
-                            new_message_count += len(new_messages)
-                            
-                            logger.info(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
-                            await self._db_operation(
-                                lambda db: db.store_messages(processed_messages)
-                            )
-                    except Exception as e:
-                        logger.error(f"Failed to store batch: {e}")
-                        logger.error(f"Error details: {str(e)}")
-
-            # Get all message dates to check for gaps
-            message_dates = await self._db_operation(
-                lambda db: db.get_message_dates(channel_id)
-            )
-            if message_dates:
-                # Filter dates based on cutoff if set
-                if cutoff_date:
-                    message_dates = [d for d in message_dates if datetime.fromisoformat(d) >= cutoff_date]
-                
-                # Sort dates based on order setting
-                message_dates.sort(reverse=not self.oldest_first)
-                gaps = []
-                for i in range(len(message_dates) - 1):
-                    current = datetime.fromisoformat(message_dates[i])
-                    next_date = datetime.fromisoformat(message_dates[i + 1])
-                    # Compare dates based on order
-                    date_diff = (next_date - current).days if self.oldest_first else (current - next_date).days
-                    if date_diff > 7:
-                        gaps.append((current, next_date) if self.oldest_first else (next_date, current))
-                
-                if gaps:
-                    logger.info(f"Found {len(gaps)} gaps (>1 week) in message history for #{channel.name}")
-                    for start, end in gaps:
-                        gap_message_count = 0
-                        current_batch = []
-                        logger.info(f"Searching for messages in #{channel.name} between {start} and {end} (gap of {abs((end - start).days)} days)")
-                        async for message in channel.history(limit=None, after=start, before=end, oldest_first=self.oldest_first):
-                            # Skip messages from the bot
-                            if message.author.id == self.bot_user_id:
-                                continue
-                                
-                            current_batch.append(message)
-                            gap_message_count += 1
-                            
-                            # Store batch when it reaches the threshold
-                            if len(current_batch) >= 100:
+                            # Process any remaining messages in the current batch
+                            if current_batch:
                                 try:
                                     processed_messages = []
                                     for msg in current_batch:
@@ -849,21 +819,49 @@ class MessageArchiver(BaseDiscordBot):
                                         new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
                                         new_message_count += len(new_messages)
                                         
-                                        logger.info(f"Storing batch of {len(processed_messages)} messages from gap in #{channel.name} ({len(new_messages)} new)")
+                                        logger.debug(f"Storing final batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
                                         await self._db_operation(
                                             lambda db: db.store_messages(processed_messages)
                                         )
-                                        if gap_message_count % 100 == 0:
-                                            logger.info(f"Found {gap_message_count} messages in current gap for #{channel.name}")
-                                    
-                                    current_batch = []
-                                    await asyncio.sleep(0.1)
                                 except Exception as e:
-                                    logger.error(f"Failed to store batch: {e}")
+                                    logger.error(f"Failed to store final batch: {e}")
                                     logger.error(f"Error details: {str(e)}")
+                            
+                            # If we didn't get any messages in this fetch, break the loop
+                            if not got_messages:
+                                logger.info(f"No more messages found in #{channel.name} for the current time range")
+                                break
+                                
+                            await asyncio.sleep(0.1)
                         
-                        # Process any remaining messages from the gap
-                        if current_batch:
+                        logger.info(f"Finished initial fetch for #{channel.name}: {message_counter} messages fetched, last message from {last_message.created_at if last_message else 'N/A'}")
+                    except Exception as e:
+                        logger.error(f"Error fetching message history: {e}")
+                        logger.error(f"Error details: {str(e)}")
+                        raise
+
+                # Still check before earliest and after latest, respecting days limit
+                if latest_date:
+                    logger.info(f"Searching for newer messages in #{channel.name} (after {latest_date})..." )
+                    current_batch = []
+                    messages_found = 0
+                    async for message in channel.history(limit=None, after=latest_date, oldest_first=self.oldest_first):
+                        messages_found += 1
+                        if messages_found % 100 == 0:
+                            logger.debug(f"Found {messages_found} newer messages in #{channel.name}")
+                        if cutoff_date and message.created_at < cutoff_date:
+                            logger.debug(f"Reached cutoff date {cutoff_date}, stopping newer message search")
+                            break
+                        
+                        # Skip messages from the bot
+                        if message.author.id == self.bot_user_id:
+                            continue
+                            
+                        current_batch.append(message)
+                        message_counter += 1
+                        
+                        # Store batch when it reaches the threshold
+                        if len(current_batch) >= 100:
                             try:
                                 processed_messages = []
                                 for msg in current_batch:
@@ -879,23 +877,210 @@ class MessageArchiver(BaseDiscordBot):
                                     new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
                                     new_message_count += len(new_messages)
                                     
-                                    logger.info(f"Storing final gap batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
+                                    logger.debug(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
                                     await self._db_operation(
                                         lambda db: db.store_messages(processed_messages)
                                     )
+                                current_batch = []
+                                await asyncio.sleep(0.1)
                             except Exception as e:
                                 logger.error(f"Failed to store batch: {e}")
                                 logger.error(f"Error details: {str(e)}")
+                    
+                    # Process any remaining messages
+                    if current_batch:
+                        try:
+                            processed_messages = []
+                            for msg in current_batch:
+                                processed_msg = await self._process_message(msg, channel_id)
+                                if processed_msg:
+                                    processed_messages.append(processed_msg)
+                            
+                            if processed_messages:
+                                # Only increment counter for messages that didn't exist before
+                                pre_existing = set(msg['message_id'] for msg in await self._db_operation(
+                                    lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
+                                ))
+                                new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
+                                new_message_count += len(new_messages)
+                                
+                                logger.debug(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
+                                await self._db_operation(
+                                    lambda db: db.store_messages(processed_messages)
+                                )
+                        except Exception as e:
+                            logger.error(f"Failed to store batch: {e}")
+                            logger.error(f"Error details: {str(e)}")
+                
+                # Only search for older messages if we're not using --days flag
+                if not self.days_limit and earliest_date:
+                    logger.info(f"Searching for older messages in #{channel.name} (before {earliest_date})..." )
+                    current_batch = []
+                    messages_found = 0
+                    async for message in channel.history(limit=None, before=earliest_date, oldest_first=self.oldest_first):
+                        messages_found += 1
+                        if messages_found % 100 == 0:
+                            logger.debug(f"Found {messages_found} older messages in #{channel.name}")
+                        if cutoff_date and message.created_at < cutoff_date:
+                            continue
+                            
+                        # Skip messages from the bot
+                        if message.author.id == self.bot_user_id:
+                            continue
+                            
+                        current_batch.append(message)
+                        message_counter += 1
                         
-                        logger.info(f"Finished gap search in #{channel.name}, found {gap_message_count} messages")
-            
-            logger.info(f"Found {new_message_count} new messages to archive in #{channel.name}")
-            logger.info(f"Archive complete - processed {new_message_count} new messages")
-            self.total_messages_archived += new_message_count
-            
-            channel_duration = (datetime.now() - channel_start_time).total_seconds()
-            logger.info(f"Finished archive of #{channel.name} in {channel_duration:.2f}s")
-            
+                        # Store batch when it reaches the threshold
+                        if len(current_batch) >= 100:
+                            try:
+                                processed_messages = []
+                                for msg in current_batch:
+                                    processed_msg = await self._process_message(msg, channel_id)
+                                    if processed_msg:
+                                        processed_messages.append(processed_msg)
+                                
+                                if processed_messages:
+                                    # Only increment counter for messages that didn't exist before
+                                    pre_existing = set(msg['message_id'] for msg in await self._db_operation(
+                                        lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
+                                    ))
+                                    new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
+                                    new_message_count += len(new_messages)
+                                    
+                                    logger.debug(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
+                                    await self._db_operation(
+                                        lambda db: db.store_messages(processed_messages)
+                                    )
+                                current_batch = []
+                                await asyncio.sleep(0.1)
+                            except Exception as e:
+                                logger.error(f"Failed to store batch: {e}")
+                                logger.error(f"Error details: {str(e)}")
+                    
+                    # Process any remaining messages
+                    if current_batch:
+                        try:
+                            processed_messages = []
+                            for msg in current_batch:
+                                processed_msg = await self._process_message(msg, channel_id)
+                                if processed_msg:
+                                    processed_messages.append(processed_msg)
+                            
+                            if processed_messages:
+                                # Only increment counter for messages that didn't exist before
+                                pre_existing = set(msg['message_id'] for msg in await self._db_operation(
+                                    lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
+                                ))
+                                new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
+                                new_message_count += len(new_messages)
+                                
+                                logger.debug(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
+                                await self._db_operation(
+                                    lambda db: db.store_messages(processed_messages)
+                                )
+                        except Exception as e:
+                            logger.error(f"Failed to store batch: {e}")
+                            logger.error(f"Error details: {str(e)}")
+
+                # Get all message dates to check for gaps
+                message_dates = await self._db_operation(
+                    lambda db: db.get_message_dates(channel_id)
+                )
+                if message_dates:
+                    # Filter dates based on cutoff if set
+                    if cutoff_date:
+                        message_dates = [d for d in message_dates if datetime.fromisoformat(d) >= cutoff_date]
+                    
+                    # Sort dates based on order setting
+                    message_dates.sort(reverse=not self.oldest_first)
+                    gaps = []
+                    for i in range(len(message_dates) - 1):
+                        current = datetime.fromisoformat(message_dates[i])
+                        next_date = datetime.fromisoformat(message_dates[i + 1])
+                        # Compare dates based on order
+                        date_diff = (next_date - current).days if self.oldest_first else (current - next_date).days
+                        if date_diff > 7:
+                            gaps.append((current, next_date) if self.oldest_first else (next_date, current))
+                    
+                    if gaps:
+                        logger.info(f"Found {len(gaps)} gaps (>1 week) in message history for #{channel.name}")
+                        for start, end in gaps:
+                            gap_message_count = 0
+                            current_batch = []
+                            logger.info(f"Searching for messages in #{channel.name} between {start} and {end} (gap of {abs((end - start).days)} days)")
+                            async for message in channel.history(limit=None, after=start, before=end, oldest_first=self.oldest_first):
+                                # Skip messages from the bot
+                                if message.author.id == self.bot_user_id:
+                                    continue
+                                    
+                                current_batch.append(message)
+                                gap_message_count += 1
+                                
+                                # Store batch when it reaches the threshold
+                                if len(current_batch) >= 100:
+                                    try:
+                                        processed_messages = []
+                                        for msg in current_batch:
+                                            processed_msg = await self._process_message(msg, channel_id)
+                                            if processed_msg:
+                                                processed_messages.append(processed_msg)
+                                        
+                                        if processed_messages:
+                                            # Only increment counter for messages that didn't exist before
+                                            pre_existing = set(msg['message_id'] for msg in await self._db_operation(
+                                                lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
+                                            ))
+                                            new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
+                                            new_message_count += len(new_messages)
+                                            
+                                            logger.debug(f"Storing batch of {len(processed_messages)} messages from gap in #{channel.name} ({len(new_messages)} new)")
+                                            await self._db_operation(
+                                                lambda db: db.store_messages(processed_messages)
+                                            )
+                                            if gap_message_count % 100 == 0:
+                                                logger.debug(f"Found {gap_message_count} messages in current gap for #{channel.name}")
+                                        
+                                        current_batch = []
+                                        await asyncio.sleep(0.1)
+                                    except Exception as e:
+                                        logger.error(f"Failed to store batch: {e}")
+                                        logger.error(f"Error details: {str(e)}")
+                            
+                            # Process any remaining messages from the gap
+                            if current_batch:
+                                try:
+                                    processed_messages = []
+                                    for msg in current_batch:
+                                        processed_msg = await self._process_message(msg, channel_id)
+                                        if processed_msg:
+                                            processed_messages.append(processed_msg)
+                                    
+                                    if processed_messages:
+                                        # Only increment counter for messages that didn't exist before
+                                        pre_existing = set(msg['message_id'] for msg in await self._db_operation(
+                                            lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
+                                        ))
+                                        new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
+                                        new_message_count += len(new_messages)
+                                        
+                                        logger.debug(f"Storing final gap batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
+                                        await self._db_operation(
+                                            lambda db: db.store_messages(processed_messages)
+                                        )
+                                except Exception as e:
+                                    logger.error(f"Failed to store batch: {e}")
+                                    logger.error(f"Error details: {str(e)}")
+                            
+                            logger.info(f"Finished gap search in #{channel.name}, found {gap_message_count} messages")
+                
+                logger.info(f"Found {new_message_count} new messages to archive in #{channel.name}")
+                logger.info(f"Archive complete - processed {new_message_count} new messages")
+                self.total_messages_archived += new_message_count
+                
+                channel_duration = (datetime.now() - channel_start_time).total_seconds()
+                logger.info(f"Finished archive of #{channel.name} in {channel_duration:.2f}s")
+                
         except discord.HTTPException as e:
             if e.code == 429:  # Rate limit error
                 logger.warning(f"Hit rate limit while processing #{channel.name}: {e}")
@@ -941,7 +1126,9 @@ def main():
     parser.add_argument('--dev', action='store_true', help='Run in development mode')
     parser.add_argument('--order', choices=['newest', 'oldest'], default='newest',
                       help='Order to process messages (default: newest)')
-    parser.add_argument('--days', type=int, help='Number of days of history to fetch (default: all)')
+    parser.add_argument('--days', type=int, help='Number of days of history to fetch (default: all, conflicts with --start-date/--end-date)')
+    parser.add_argument('--start-date', type=str, help='Start date for fetching messages (YYYY-MM-DD, requires --end-date, conflicts with --days)')
+    parser.add_argument('--end-date', type=str, help='End date for fetching messages (YYYY-MM-DD, requires --start-date, conflicts with --days)')
     parser.add_argument('--batch-size', type=int, default=100,
                       help='Number of messages to process in each batch (default: 100)')
     parser.add_argument('--in-depth', action='store_true',
@@ -952,6 +1139,23 @@ def main():
                       help='Fetch reactions for all messages in range, not just new ones')
     args = parser.parse_args()
     
+    # Validate arguments
+    if args.days and (args.start_date or args.end_date):
+        parser.error("argument --days: not allowed with argument --start-date or --end-date")
+    if (args.start_date and not args.end_date) or (not args.start_date and args.end_date):
+        parser.error("--start-date and --end-date must be used together")
+    # Basic format validation (more robust parsing happens in __init__)
+    if args.start_date:
+        try:
+            datetime.strptime(args.start_date, '%Y-%m-%d')
+        except ValueError:
+            parser.error("Invalid format for --start-date. Use YYYY-MM-DD.")
+    if args.end_date:
+        try:
+            datetime.strptime(args.end_date, '%Y-%m-%d')
+        except ValueError:
+             parser.error("Invalid format for --end-date. Use YYYY-MM-DD.")
+
     if args.dev:
         logger.info("Running in development mode")
     
@@ -963,7 +1167,8 @@ def main():
         
         bot = MessageArchiver(dev_mode=args.dev, order=args.order, days=args.days, 
                             batch_size=args.batch_size, in_depth=args.in_depth,
-                            channel_id=args.channel, fetch_reactions=args.fetch_reactions)
+                            channel_id=args.channel, fetch_reactions=args.fetch_reactions,
+                            start_date_str=args.start_date, end_date_str=args.end_date) # Pass date strings
         
         # Start the bot and keep it running until archiving is complete
         async def runner():
@@ -979,11 +1184,17 @@ def main():
         logger.error("Failed to login. Please check your Discord token.")
     except Exception as e:
         logger.error(f"Fatal error: {e}")
+        # Print traceback for debugging if needed
+        import traceback
+        traceback.print_exc()
     finally:
         # Ensure everything is cleaned up properly
         if bot:
             if not loop.is_closed():
-                loop.run_until_complete(bot.close())
+                try:
+                    loop.run_until_complete(bot.close())
+                except Exception as e:
+                    logger.error(f"Error closing bot: {e}")
 
         # Clean up the event loop
         try:
@@ -991,14 +1202,23 @@ def main():
                 loop.run_until_complete(loop.shutdown_asyncgens())
                 remaining_tasks = asyncio.all_tasks(loop)
                 if remaining_tasks:
-                    loop.run_until_complete(asyncio.gather(*remaining_tasks))
+                    # Give tasks a moment to finish
+                    loop.run_until_complete(asyncio.wait(remaining_tasks, timeout=5.0))
+                    # Cancel any tasks that are still running
+                    for task in remaining_tasks:
+                        if not task.done():
+                            task.cancel()
+                    # Wait for cancellations to take effect
+                    loop.run_until_complete(asyncio.gather(*remaining_tasks, return_exceptions=True))
+
         except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
+            logger.error(f"Error during loop cleanup: {e}")
         finally:
             if loop.is_running():
                 loop.stop()
             if not loop.is_closed():
                 loop.close()
+            logger.info("Event loop closed.")
 
 if __name__ == "__main__":
     try:
@@ -1006,4 +1226,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("Bot shutdown initiated by user")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}") 
+        logger.error(f"Unexpected error in __main__: {e}")
+        import traceback
+        traceback.print_exc() 

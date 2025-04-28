@@ -61,11 +61,6 @@ async def main_async(args):
         # Store the command-line flag on the bot instance so cogs can access it
         bot.summary_now = args.summary_now
 
-        # ---- BASIC EVENT TEST ----
-        @bot.event
-        async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-            # Log basic payload info
-            logger.debug(f"<<< [MAIN.PY] RAW on_raw_reaction_add event received: Emoji={payload.emoji}, UserID={payload.user_id}, MessageID={payload.message_id}, ChannelID={payload.channel_id} >>>")
         # ---- END BASIC EVENT TEST ----
 
         # ---- Initialize Core Components ----
@@ -94,7 +89,18 @@ async def main_async(args):
              return
 
         # 4. Reactor Instance
-        reactor_instance = Reactor(logger=logger, sharer_instance=sharer_instance, dev_mode=args.dev)
+        # Load credentials needed for Reactor explicitly here
+        supabase_url = os.getenv('SUPABASE_URL')
+        supabase_key = os.getenv('SUPABASE_SERVICE_KEY')
+        
+        # Pass the loaded (and tested) credentials to the Reactor constructor
+        reactor_instance = Reactor(
+            logger=logger, 
+            sharer_instance=sharer_instance, 
+            supabase_url=supabase_url, # Pass loaded URL
+            supabase_key=supabase_key, # Pass loaded Key
+            dev_mode=args.dev
+        )
         bot.reactor_instance = reactor_instance
         logger.info("Reactor instance created and attached to bot.")
 
@@ -122,8 +128,8 @@ async def main_async(args):
         logger.info("ReactorCog loaded.")
 
         # ---- RUN ----
-        # Log the final intents object being used
-        logger.debug(f"Final bot intents before starting: {bot.intents}")
+        # Log the final intents object being used (changed to INFO level)
+        logger.info(f"Final bot intents before starting: {bot.intents}") # Ensure this is INFO level and appears only ONCE
         bot.logger.info("All core components initialized and cogs added. Running the bot...")
         await bot.start(token)
 

@@ -43,7 +43,7 @@ Your message ({message.jump_url}) was flagged and might be featured on our socia
 
 {details_md}
 
-Please review and update your details/preferences below. Clicking 'Allow Feature' gives us permission to post this specific message's content/attachments externally.
+Please review and update your details/preferences below. Clicking 'Allow Feature' gives us permission to post messages from you externally - unless you change this.
 """
     return msg.strip()
 

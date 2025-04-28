@@ -90,8 +90,9 @@ Focus on these types of content:
 2. Demos or images that got a lot of attention (especially messages with many reactions) - especially if there are multple examples of people using it that people remarked upon or reacted to.
 3. Focus on the things that people seem most excited about or commented/reacted to on a lot
 4. Focus on AI art and AI art-related tools and open source tools and projects
-5. Call out notable achievements or demonstrations or work that people did
-6. Don't avoid negative news but try to frame it in a positive way
+5. Workflows (often json files) that people shared - include examples of them in action if possible
+6. Call out notable achievements or demonstrations or work that people did
+7. Don't avoid negative news but try to frame it in a positive way
 
 IMPORTANT REQUIREMENTS FOR MEDIA AND LINKS:
 1. Each topic MUST have `message_id` and `channel_id` for linking back to the original message introducing the topic.
