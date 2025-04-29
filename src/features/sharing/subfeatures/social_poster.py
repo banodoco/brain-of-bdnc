@@ -13,6 +13,8 @@ import base64
 from typing import Dict, Optional, List
 from pathlib import Path
 
+from src.common.claude_client import ClaudeClient
+
 logger = logging.getLogger('DiscordBot')
 
 # --- Environment Variable Check ---
@@ -231,101 +233,97 @@ def _extract_frames(video_path: str, num_frames: int, save_dir: Path) -> bool:
         if vidcap.isOpened(): vidcap.release() # Ensure release on error
         return False
 
-def _make_claude_title_request(frames_dir: Path, original_comment: Optional[str]) -> Optional[str]:
-    """Makes a request to Claude API to generate a title based on frames and comment."""
-    try:
-        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        image_paths = list(frames_dir.glob("*.jpg"))
-        if not image_paths:
-            logger.warning("No frames found to send to Claude for title generation.")
-            return None
-
-        # Limit frames sent if necessary (e.g., API limits)
-        max_frames_to_send = 5 # Adjust as needed
-        image_paths = image_paths[:max_frames_to_send]
-
-        content = []
-        for image_path in image_paths:
-            base64_image = _image_to_base64(str(image_path))
-            if base64_image:
-                content.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/jpeg",
-                        "data": base64_image
-                    }
-                })
-            else:
-                 logger.warning(f"Skipping image {image_path} due to encoding error.")
-
-        if not any(item['type'] == 'image' for item in content):
-             logger.error("No valid images could be prepared for Claude request.")
-             return None
-
-        # Refined prompt definition
-        base_prompt = ("Analyze these video frames. Create a short, interesting, unique title (max 3-4 words). Avoid cliches. "
-                       "If the user comment suggests a title, prioritize that. Output ONLY the title.")
-        comment_prompt_template = (f"Analyze these video frames and the artist's comment. Create a short, interesting, unique title (max 3-4 words). "
-                                   f"Try not to reference things only relevant to the specific community. Avoid cliches. "
-                                   f"If the comment seems to contain a title, please use that. "
-                                   f"Artist's comment: \\\"{{comment}}\\\"\\n\\nOutput ONLY the title.")
-
-        if original_comment and len(original_comment.strip()) > 0:
-            prompt = comment_prompt_template.format(comment=original_comment)
-        else:
-            prompt = base_prompt
-
-        content.append({"type": "text", "text": prompt})
-
-        message = client.messages.create(
-            model="claude-3-5-sonnet-20240620", # Or your preferred model
-            max_tokens=50, # Short response expected
-            temperature=0.5,
-            messages=[{"role": "user", "content": content}]
-        )
-
-        generated_title = message.content[0].text.strip().strip('\"\'') # Clean up output
-        logger.info(f"Claude generated title: {generated_title}")
-        return generated_title
-
-    except anthropic.APIError as e:
-        logger.error(f"Anthropic API error generating title: {e}", exc_info=True)
-        return None
-    except Exception as e:
-        logger.error(f"Unexpected error during Claude title request: {e}", exc_info=True)
-        return None
-
 # --- Main Title Generation Function ---
 
-async def generate_social_media_title(video_path: str, original_comment: Optional[str], post_id: int) -> str:
-    """Generates a social media title using Claude, extracting frames first."""
-    temp_frames_dir = Path(f"./temp_frames_{post_id}")
-    title = "Featured Artwork" # Default fallback title
+# Rename and change signature to accept attachment dict
+async def generate_media_title(claude_client: ClaudeClient, attachment: Dict, original_comment: Optional[str], post_id: int) -> str:
+    """Generates a social media title using Claude for videos or images, extracting frames if necessary."""
+    media_local_path = attachment.get('local_path')
+    content_type = attachment.get('content_type', '')
+    is_video = content_type.startswith('video') or (media_local_path and Path(media_local_path).suffix.lower() in ['.mp4', '.mov', '.webm', '.avi', '.mkv'])
     
-    if not os.path.exists(video_path):
-        logger.error(f"Video file not found for title generation: {video_path}")
-        return title # Return default title
+    temp_frames_dir = None # Initialize frame dir path
+    title = "Featured Creation" # More general default
+    
+    if not media_local_path or not os.path.exists(media_local_path):
+        logger.error(f"Media file not found for title generation: {media_local_path}")
+        return title
 
     try:
-        # Extract frames
-        if _extract_frames(video_path, num_frames=5, save_dir=temp_frames_dir):
-            # Generate title using Claude
-            generated_title = await asyncio.to_thread(
-                _make_claude_title_request, temp_frames_dir, original_comment
-            )
-            if generated_title:
-                title = generated_title
+        content_blocks = []
+        base64_image_data = None
+        
+        # Prepare media content (frames for video, single base64 for image)
+        if is_video:
+            temp_frames_dir = Path(f"./temp_frames_{post_id}")
+            if _extract_frames(media_local_path, num_frames=5, save_dir=temp_frames_dir):
+                image_paths = list(temp_frames_dir.glob("*.jpg"))
+                max_frames_to_send = 5
+                image_paths = image_paths[:max_frames_to_send]
+                for image_path in image_paths:
+                    base64_image = _image_to_base64(str(image_path))
+                    if base64_image:
+                        content_blocks.append({
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": "image/jpeg", "data": base64_image}
+                        })
+                    else:
+                        logger.warning(f"Skipping frame {image_path} due to encoding error.")
             else:
-                 logger.warning(f"Claude title generation failed for post {post_id}, using default.")
+                logger.warning(f"Frame extraction failed for video post {post_id}, cannot generate title with media context.")
+                # Proceed without image content blocks if frame extraction fails
+        else: # Assume image
+            base64_image_data = _image_to_base64(media_local_path)
+            if base64_image_data:
+                 content_blocks.append({
+                     "type": "image",
+                     "source": {"type": "base64", "media_type": attachment.get('content_type', 'image/jpeg'), "data": base64_image_data}
+                 })
+            else:
+                logger.warning(f"Base64 encoding failed for image post {post_id}, cannot generate title with media context.")
+                # Proceed without image content blocks if encoding fails
+
+        # Only proceed with Claude call if we have *some* content (text prompt is always added)
+        # Construct the prompt (same logic as before, works for images too)
+        if original_comment and len(original_comment.strip()) > 0:
+            prompt = (
+                f"Here are some frames from a video or an image, and a description. " # Modified prompt start
+                f"Your job is to analyse these and create an appropriate title for the media which will be uploaded to social media. " # Modified context
+                f"This is from a community so try not to reference things from the comment that might only be relevant to people in the community. "
+                f"Try to make the title interesting, unique and fairly short - max. 3-4 words. Also, avoid cliches.\n\n"
+                f"Artist's comment: \"{original_comment}\"\n\n"
+                f"If they have included what looks like a title in the comment, please use this.\n\n"
+                f"Output ONLY the title, with no additional explanation or text."
+            )
         else:
-             logger.warning(f"Frame extraction failed for post {post_id}, using default title.")
+            prompt = (
+                "Here are some frames from a video or an image. " # Modified prompt start
+                "Your job is to analyse these and create an appropriate title for the media which will be uploaded to social media. " # Modified context
+                "Try to make the title interesting, unique and fairly short - max. 3-4 words. Also, avoid cliches.\n\n"
+                "Output ONLY the title, with no additional explanation or text."
+            )
             
+        content_blocks.append({"type": "text", "text": prompt}) # Add prompt text
+        
+        # ---- Call ClaudeClient ----
+        logger.info(f"Requesting title from Claude for post {post_id}...")
+        generated_title_text = await claude_client.generate_text(
+            content=content_blocks, 
+            model="claude-3-5-sonnet-20240620", 
+            max_tokens=50, 
+        )
+        # ---- Handle Claude response ----
+        if generated_title_text:
+            title = generated_title_text.strip().strip('\"\'') 
+            logger.info(f"Claude generated title for post {post_id}: {title}")
+        else:
+             logger.warning(f"Claude title generation failed for post {post_id}, using default: {title}")
+
     except Exception as e:
         logger.error(f"Error in title generation process for post {post_id}: {e}", exc_info=True)
     finally:
-        # Clean up temporary frames directory
-        if temp_frames_dir.exists():
+        # Clean up temporary frames directory if it was created
+        if temp_frames_dir and temp_frames_dir.exists():
             try:
                 shutil.rmtree(temp_frames_dir)
                 logger.info(f"Cleaned up temporary frame directory: {temp_frames_dir}")

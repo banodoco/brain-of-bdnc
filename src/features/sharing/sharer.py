@@ -20,7 +20,8 @@ from .subfeatures.social_poster import (
     post_to_tiktok_via_zapier,
     post_to_youtube_via_zapier,
     generate_social_media_title,
-    _build_zapier_payload # Also import the payload builder
+    _build_zapier_payload, # Also import the payload builder
+    generate_media_title, # Added
 )
 
 logger = logging.getLogger('DiscordBot')
@@ -121,27 +122,50 @@ class Sharer:
         media_local_path = primary_attachment.get('local_path')
         is_video = primary_attachment.get('content_type', '').startswith('video') or Path(media_local_path).suffix.lower() in ['.mp4', '.mov', '.webm', '.avi', '.mkv']
         is_gif = Path(media_local_path).suffix.lower() == '.gif'
+        is_image = primary_attachment.get('content_type', '').startswith('image')
         
-        # 4. Generate Title (primarily for videos, but can use for others too)
-        # Use placeholder description for now, replace if Claude description needed
-        # generated_desc = await generate_description_with_claude(...) # If you still need a separate description
-        generated_desc = "Check out this amazing creation!" # Placeholder description
+        # 4. Generate Title and Description
         
-        generated_title = "Featured Creation" # Default title
-        if is_video and media_local_path:
-            self.logger.info(f"Generating social media title for video message {message_id}.")
-            generated_title = await generate_social_media_title(
-                video_path=media_local_path,
+        # Determine Title (using Claude for video/image, default for GIF)
+        generated_title = "Featured Creation" # Default
+        if is_video or (is_image and not is_gif): # Generate for video or non-GIF image
+            self.logger.info(f"Generating media title for message {message_id} ({'video' if is_video else 'image'}).")
+            generated_title = await generate_media_title(
+                claude_client=self.claude_client, 
+                attachment=primary_attachment, # Pass the whole attachment dict
                 original_comment=message_object.content,
                 post_id=message_id
             )
-        else:
-             # Maybe use Claude to generate a description/title for images/gifs?
-             # For now, use a simpler approach or default title/desc
-             generated_title = "Featured Art" if not is_gif else "Cool Gif"
-             logger.info(f"Using default title '{generated_title}' for non-video message {message_id}.")
-             # You could potentially still call Claude here for a description based on comment/image
-             # generated_desc = await generate_description_from_image_or_comment(...)
+        elif is_gif:
+             generated_title = "Cool Gif" # Keep simple default for GIFs
+             logger.info(f"Using default title '{generated_title}' for GIF message {message_id}.")
+        else: # Fallback for unknown types
+             logger.warning(f"Unknown attachment type for title generation, using default for message {message_id}.")
+             generated_title = "Featured Creation" 
+
+        # Generate Description using Claude (using the title and original comment)
+        generated_desc = "Check out this amazing creation!" # Default fallback description
+        try:
+            desc_prompt = (
+                f"Based on the title \"{generated_title}\" and the artist's original comment below, write a short, engaging social media description (1-2 sentences). "
+                f"Mention the type of media (e.g., 'artwork', 'video', 'creation'). Avoid simply repeating the title. "
+                f"Focus on generating excitement or interest.\n\n"
+                f"Artist's Comment: \"{message_object.content if message_object.content else 'None'}\""
+            )
+            self.logger.info(f"Generating description for message {message_id}...")
+            claude_desc = await self.claude_client.generate_text(
+                content=desc_prompt,
+                model="claude-3-haiku-20240307", # Use Haiku for faster/cheaper description
+                max_tokens=150, # Allow slightly longer description
+            )
+            if claude_desc:
+                generated_desc = claude_desc.strip()
+                self.logger.info(f"Claude generated description for message {message_id}: {generated_desc}")
+            else:
+                self.logger.warning(f"Claude description generation failed for message {message_id}, using default.")
+        except Exception as e:
+            self.logger.error(f"Error during Claude description generation for message {message_id}: {e}", exc_info=True)
+            # Fallback to default description is handled by initial assignment
 
         self.logger.info(f"Using Title: '{generated_title}', Description: '{generated_desc}' for message {message_id}")
 
