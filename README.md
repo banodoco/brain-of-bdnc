@@ -1,14 +1,21 @@
-# Hive Mind
+# BNDC's Brain
 
-A Discord bot that turns your community's conversations into a knowledge base - helping you answer questios with it, summarise it, create articles and more. Built with Claude 3.5 Sonnet, it archives, indexes, and makes sense of your community's collective intelligence.
+<img src="bndc.png" alt="Hive Mind Bot Logo" width="150" align="left" style="margin-right: 20px;">
+
+This is the Brain of BNDC, a friendly robot dedicated to helping our around the Banodoco and open source AI art communities. His goal is to streamline the sharing and discovery of knowledge, making it easier for everyone to contribute, learn, and connect. 
+
+<br clear="left"/>
 
 ## Features
 
-- 🧠 Answers questions about any past discussion, pulling from the community's entire conversation history
-- 📚 Generates daily summaries of all community activity, organized by topic and relevance
-- 🔍 Maintains a searchable archive of all messages, files, and media shared in the community
-- 📝 Creates long-form articles and reports by synthesizing related discussions across channels
-- 🤖 Automatically identifies important discussions, emerging topics, and connects related threads
+- 📚 **Summarization:** Generates daily or on-demand summaries of activity, grouped by topic (`summarising`).
+- ✍️ **Content Synthesis:** Creates long-form articles and reports by synthesizing related discussions (combines `summarising`/`answering`).
+- 💾 **Archiving & Logging:** Maintains a searchable archive of all messages, files, and media (`logging`).
+- ✨ **Curation:** Automatically identifies high-quality posts and important discussions (`curating`).
+- ⚡ **Reaction Workflows:** Triggers automated actions based on message reactions (`reacting`).
+- 🔗 **Message Relaying:** Relays messages to external services or platforms via webhooks (`relaying`).
+- 📣 **Social Sharing:** Shares curated content or summaries to external platforms like Twitter (`sharing`).
+- 🧠 **Question Answering:** Answers questions about past discussions using the community's conversation history (`answering`) (Coming Soon).
 
 ## Live Demo
 
@@ -30,25 +37,11 @@ cd bndc-engine
 pip install -r requirements.txt
 ```
 
-3. Create a `.env` file with the following variables:
+3. Copy the example environment file `.env.example` to a new file named `.env`:
+```bash
+cp .env.example .env
 ```
-# Required Bot Configuration
-DISCORD_BOT_TOKEN=your_discord_bot_token
-ANTHROPIC_API_KEY=your_anthropic_api_key
-
-# Main Configuration
-GUILD_ID=your_server_id
-PRODUCTION_SUMMARY_CHANNEL_ID=channel_id_for_summaries
-CATEGORIES_TO_MONITOR=category_id1,category_id2
-ADMIN_USER_ID=your_admin_user_id
-
-# Development Configuration (optional)
-DEV_GUILD_ID=dev_server_id
-DEV_SUMMARY_CHANNEL_ID=dev_channel_id
-DEV_CATEGORIES_TO_MONITOR=dev_category_ids
-TEST_DATA_CHANNEL=test_channel_id
-
-```
+Then, open the `.env` file and fill in the required values. Refer to the comments in `.env.example` for guidance on each variable.
 
 ### Running the Bot
 
