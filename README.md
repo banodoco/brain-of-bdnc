@@ -1,10 +1,6 @@
 # BNDC's Brain
 
-<img src="bndc.png" alt="Hive Mind Bot Logo" width="150" align="left" style="margin-right: 20px;">
-
 This is the Brain of BNDC, a friendly robot dedicated to helping our around the Banodoco and open source AI art communities. His goal is to streamline the sharing and discovery of knowledge, making it easier for everyone to contribute, learn, and connect. 
-
-<br clear="left"/>
 
 ## Features
 
