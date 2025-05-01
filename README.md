@@ -1,6 +1,6 @@
-# BNDC's Brain
+# BNDC's Brain <img src="bndc.png" align="right" width="150px">
 
-This is the Brain of BNDC, a friendly robot dedicated to helping our around the Banodoco and open source AI art communities. His goal is to streamline the sharing and discovery of knowledge, making it easier for everyone to contribute, learn, and connect. 
+This is the Brain of BNDC, a friendly robot dedicated to helping our around the Banodoco and open source AI art communities. His goal is to streamline the sharing and discovery of knowledge, making it easier for everyone to contribute, learn, and connect.
 
 ## Features
 
