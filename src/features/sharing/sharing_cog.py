@@ -3,24 +3,24 @@ from discord.ext import commands
 import logging
 
 from src.common.db_handler import DatabaseHandler
-# Import the shared client
-from src.common.claude_client import ClaudeClient
+# Remove old client import
+# from src.common.claude_client import ClaudeClient 
 from .sharer import Sharer
 
 logger = logging.getLogger('DiscordBot')
 
 class SharingCog(commands.Cog):
-    def __init__(self, bot: commands.Bot, db_handler: DatabaseHandler, claude_client: ClaudeClient):
+    def __init__(self, bot: commands.Bot, db_handler: DatabaseHandler):
         self.bot = bot
         self.db_handler = db_handler
-        # Store the shared client
-        self.claude_client = claude_client
-        # Initialize the Sharer instance, passing the client along
+        # Remove storing the old client
+        # self.claude_client = claude_client 
+        # Initialize the Sharer instance without passing the client
         self.sharer_instance = Sharer(
             bot=self.bot, 
             db_handler=self.db_handler, 
             logger_instance=logger,
-            claude_client=self.claude_client # Pass client to Sharer
+            # claude_client=self.claude_client # Remove client pass-through
         )
         logger.info("SharingCog initialized.")
         # TODO: Add any sharing-specific commands here using @commands.command or @app_commands.command
@@ -33,19 +33,17 @@ class SharingCog(commands.Cog):
     # Add other listeners or commands specific to sharing if necessary
 
 async def setup(bot: commands.Bot):
-    # Fetch the db_handler and claude_client instances from the bot 
-    # This assumes they are initialized and stored on the bot object in your main file
+    # Fetch the db_handler instance from the bot 
     if not hasattr(bot, 'db_handler'):
          logger.error("Database handler not found on bot object. Cannot load SharingCog.")
          return 
-    if not hasattr(bot, 'claude_client'):
-         logger.error("Claude client not found on bot object. Cannot load SharingCog.")
-         # Initialize if needed and not global: 
-         # bot.claude_client = ClaudeClient()
-         return
+    # Remove check for claude_client
+    # if not hasattr(bot, 'claude_client'):
+    #      logger.error("Claude client not found on bot object. Cannot load SharingCog.")
+    #      return
 
-    # Pass the required instances to the Cog
-    await bot.add_cog(SharingCog(bot, bot.db_handler, bot.claude_client))
+    # Pass only required instances to the Cog
+    await bot.add_cog(SharingCog(bot, bot.db_handler))
     logger.info("SharingCog added to bot.")
 
     # IMPORTANT: Update Reactor initialization in main bot file as noted before

@@ -8,7 +8,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import asyncio
 import discord
 from discord.ext import commands
-import anthropic
 from dotenv import load_dotenv
 import streamlit as st
 import json
@@ -16,6 +15,7 @@ from typing import Dict, List, Optional
 import logging
 from src.common.db_handler import DatabaseHandler
 import traceback
+from src.common.llm import get_llm_response
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -52,108 +52,77 @@ class ChannelAnalyzer(commands.Bot):
             logger.error(f"Error saving descriptions: {e}")
 
     async def get_channel_description(self, channel_data: Dict) -> Dict[str, str]:
-        """Get channel description from Claude based on recent messages."""
-        try:
-            logger.info(f"Getting channel {channel_data['id']} from Discord...")
-            
-            # Wait for guild to be available
-            retries = 0
-            guild = None
-            while retries < 5 and not guild:
-                logger.info(f"Attempt {retries + 1}: Fetching guild with ID {os.getenv('GUILD_ID')}.")
-                guild = self.get_guild(int(os.getenv('GUILD_ID')))
-                if not guild:
-                    logger.info("Guild not available yet, waiting...")
-                    await asyncio.sleep(1)
-                    retries += 1
-                    
-            if not guild:
-                logger.error("Could not find guild after retries")
-                raise ValueError(f"Could not find guild after {retries} attempts")
-            
-            channel = guild.get_channel(channel_data['id'])
-            
-            if not channel:
-                logger.error(f"Could not find channel with ID {channel_data['id']}")
-                raise ValueError(f"Could not find channel with ID {channel_data['id']}")
+        """Get channel description from LLM based on recent messages using the dispatcher."""
+        self.logger.info(f"Analyzing channel: #{channel_data['name']} (ID: {channel_data['id']})")
+        messages = channel_data.get('recent_messages', [])
+        if not messages:
+            self.logger.warning(f"No recent messages found for channel #{channel_data['name']}. Skipping LLM analysis.")
+            return {"error": "No recent messages"}
 
-            logger.info(f"Collecting messages from channel #{channel_data['name']}...")
-            # Collect last 100 messages
-            messages = []
-            async for message in channel.history(limit=100):
-                messages.append(f"{message.author.name}: {message.content}")
-            logger.info(f"Collected {len(messages)} messages")
-
-            logger.info("Preparing Claude prompt...")
-            prompt = f"""Analyze these messages from the Discord channel #{channel_data['name']} and create a clear description.
+        # Format messages for context
+        context = "\n".join([f"- {msg}" for msg in messages]) # Simple formatting
+        
+        # Define System Prompt
+        system_prompt = """Analyze these messages from the Discord channel provided and create a clear description.
 Return the response in this exact JSON format:
-{{
+{
     "description": "Brief overview of the channel's purpose",
     "suitable_posts": "Bullet list of what belongs here",
     "unsuitable_posts": "Bullet list of what doesn't belong here",
     "rules": "Any specific rules or guidelines"
-}}
+}
 
 Good example:
-
-{{
+{
     "description": "For discussing academic papers, books, and publications related to artificial intelligence and machine learning",
-    "suitable_posts": "• Links to academic papers on arXiv, similar repositories,AI/ML book recommendations
-• Discussions related to the above",
-    "unsuitable_posts": "• Stuff related to deep implementations 
-- post in specific channels for that",
-    "rules": "• Share links to legitimate academic sources or repositories
-• No bullshit hype    
-• Keep content focused on AI/ML literature and research
-}}
+    "suitable_posts": "• Links to academic papers on arXiv, similar repositories,AI/ML book recommendations\n• Discussions related to the above",
+    "unsuitable_posts": "• Stuff related to deep implementations \n- post in specific channels for that",
+    "rules": "• Share links to legitimate academic sources or repositories\n• No bullshit hype\n• Keep content focused on AI/ML literature and research\n}
 
-Recent messages from #{channel_data['name']}:
-{chr(10).join(messages)}"""
+Respond with ONLY the JSON object."""
+        
+        # Prepare user content
+        user_content = f"Recent messages from #{channel_data['name']}:\n{context}"
+        llm_messages = [{"role": "user", "content": user_content}]
 
-            logger.info("Sending request to Claude...")
-            
-            # Run the blocking Claude API call in a thread pool
-            loop = asyncio.get_running_loop()
-            
-            def call_claude():
-                return self.claude.messages.create(
-                    model="claude-3-5-sonnet-latest",
-                    max_tokens=1000,
-                    messages=[{
-                        "role": "user",
-                        "content": prompt
-                    }]
-                )
-            
-            response = await loop.run_in_executor(None, call_claude)
-            logger.info("Received response from Claude")
+        try:
+            self.logger.info(f"Sending request to LLM dispatcher (Claude Sonnet) for channel #{channel_data['name']}...")
+            # Call the dispatcher directly
+            response_text = await get_llm_response(
+                client_name="claude",
+                model="claude-3-5-sonnet-20240620", # Sonnet for structured JSON
+                system_prompt=system_prompt,
+                messages=llm_messages,
+                max_tokens=1000 # Allow space for description
+            )
+            self.logger.info(f"Received LLM response for #{channel_data['name']}")
 
-            # Sanitize the response text before parsing JSON
-            response_text = response.content[0].text.strip()
-            
-            try:
-                # Parse the JSON response
-                description = json.loads(response_text)
-                return description
-            except json.JSONDecodeError as e:
-                logger.error(f"Error parsing Claude response as JSON: {e}")
-                logger.error(f"Raw response: {response_text}")
-                return {
-                    "description": "Error parsing channel description",
-                    "suitable_posts": "• Unable to determine",
-                    "unsuitable_posts": "• Unable to determine",
-                    "rules": "• Unable to determine"
-                }
-                
+            # Sanitize and parse JSON
+            cleaned_response = response_text.strip()
+            # Attempt to find the start of the JSON object
+            json_start = cleaned_response.find('{')
+            json_end = cleaned_response.rfind('}')
+            if json_start != -1 and json_end != -1:
+                 json_str = cleaned_response[json_start : json_end + 1]
+                 try:
+                     description_data = json.loads(json_str)
+                     # Basic validation of expected keys
+                     if all(k in description_data for k in ["description", "suitable_posts", "unsuitable_posts", "rules"]):
+                         self.logger.info(f"Successfully parsed description for #{channel_data['name']}")
+                         return description_data
+                     else:
+                          self.logger.warning(f"Parsed JSON for #{channel_data['name']} missing expected keys: {json_str}")
+                          return {"error": "Parsed JSON missing keys", "raw_response": response_text}
+                 except json.JSONDecodeError as e:
+                     self.logger.error(f"Failed to decode LLM JSON response for #{channel_data['name']}: {e}. Response: {json_str}")
+                     return {"error": f"JSON Decode Error: {e}", "raw_response": response_text}
+            else:
+                self.logger.error(f"Could not find valid JSON object in LLM response for #{channel_data['name']}: {cleaned_response}")
+                return {"error": "Could not find JSON object in response", "raw_response": response_text}
+
         except Exception as e:
-            logger.error(f"Error getting channel description: {e}")
-            logger.error(traceback.format_exc())
-            return {
-                "description": "Error getting channel description",
-                "suitable_posts": "• Unable to determine",
-                "unsuitable_posts": "• Unable to determine",
-                "rules": "• Unable to determine"
-            }
+            self.logger.error(f"Error getting channel description via LLM dispatcher for #{channel_data['name']}: {e}", exc_info=True)
+            return {"error": f"LLM API call failed: {e}"}
 
 async def main():
     load_dotenv()

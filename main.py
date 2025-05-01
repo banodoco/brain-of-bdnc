@@ -14,7 +14,6 @@ import discord
 from src.common.log_handler import LogHandler
 from src.common.base_bot import BaseDiscordBot
 from src.common.db_handler import DatabaseHandler
-from src.common.claude_client import ClaudeClient
 from src.features.curating.curator_cog import CuratorCog
 from src.features.summarising.summariser_cog import SummarizerCog
 from src.features.logging.logger_cog import LoggerCog
@@ -22,6 +21,7 @@ from src.features.sharing.sharing_cog import SharingCog
 from src.features.sharing.sharer import Sharer
 from src.features.reacting.reactor import Reactor
 from src.features.reacting.reactor_cog import ReactorCog
+from src.features.relaying.relayer import Relayer
 
 def setup_logging(dev_mode=False):
     """Setup shared logging configuration for all bots"""
@@ -64,15 +64,15 @@ async def main_async(args):
         # ---- END BASIC EVENT TEST ----
 
         # ---- Initialize Core Components ----
-        logger.info("Initializing core components (DB, Claude, Sharer, Reactor)...")
+        logger.info("Initializing core components (DB, Sharer, Reactor, Relayer)...")
 
         # 1. Database Handler
         bot.db_handler = DatabaseHandler(dev_mode=args.dev)
         logger.info("DatabaseHandler initialized and attached to bot.")
 
-        # 2. Claude Client
-        bot.claude_client = ClaudeClient()
-        logger.info("ClaudeClient initialized and attached to bot.")
+        # 2. Claude Client (REMOVED - Cogs should use get_llm_response)
+        # bot.claude_client = ClaudeClient() 
+        # logger.info("ClaudeClient initialized and attached to bot.")
 
         # 3. Sharing Cog & Sharer Instance
         await bot.load_extension("src.features.sharing.sharing_cog")
@@ -104,6 +104,11 @@ async def main_async(args):
         bot.reactor_instance = reactor_instance
         logger.info("Reactor instance created and attached to bot.")
 
+        # 5. Relayer Instance (New)
+        relayer_instance = Relayer(bot=bot, logger=logger, dev_mode=args.dev)
+        bot.relayer_instance = relayer_instance
+        logger.info("Relayer instance created and attached to bot.")
+
         # ---- ADD OTHER COGS ----
         logger.info("Adding remaining cogs...")
 
@@ -126,6 +131,10 @@ async def main_async(args):
         # Reactor Cog (Needs bot.reactor_instance)
         await bot.load_extension("src.features.reacting.reactor_cog")
         logger.info("ReactorCog loaded.")
+
+        # Relaying Cog (New - Needs bot.relayer_instance)
+        await bot.load_extension("src.features.relaying.relaying_cog")
+        logger.info("RelayingCog loaded.")
 
         # ---- RUN ----
         # Log the final intents object being used (changed to INFO level)

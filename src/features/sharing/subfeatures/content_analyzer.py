@@ -9,8 +9,8 @@ import shutil
 from pathlib import Path
 from typing import List, Optional, Dict
 
-# Import the shared client
-from src.common.claude_client import ClaudeClient 
+# Import the new dispatcher
+from src.common.llm import get_llm_response
 
 logger = logging.getLogger('DiscordBot')
 
@@ -101,48 +101,47 @@ def _extract_frames(video_path: str, num_frames: int, save_dir: str) -> List[str
     logger.info(f"Extracted {extracted_count} frames from {video_path} into {save_dir}")
     return frame_paths
 
-# --- Claude Interaction ---
+# --- Claude Interaction (Refactored to use Dispatcher) ---
 
-# Modify signature to accept ClaudeClient
+# Remove ClaudeClient from signature
 async def generate_description_with_claude(
-    claude_client: ClaudeClient, 
     original_content: str, 
     attachments: List[Dict], 
     user_name: Optional[str] = "the user"
 ) -> Optional[str]:
-    """Generates a social media post description using Claude 3.5 Sonnet via the shared client."""
+    """Generates a social media post description using the LLM dispatcher (Claude 3.5 Sonnet)."""
 
-    prompt = f"You are generating a social media post caption for a piece of digital art shared by {user_name}. Analyze the attached media (and text, if provided) and create an engaging and concise caption (around 1-3 sentences). Focus on describing the art visually or capturing its mood. Avoid simply restating the user's original text, but incorporate its essence if relevant. Do not use hashtags unless explicitly asked. Keep it positive and suitable for a general audience."
+    # Define System Prompt separately
+    system_prompt = f"You are generating a social media post caption for a piece of digital art shared by {user_name}. Analyze the attached media (and text, if provided) and create an engaging and concise caption (around 1-3 sentences). Focus on describing the art visually or capturing its mood. Avoid simply restating the user's original text, but incorporate its essence if relevant. Do not use hashtags unless explicitly asked. Keep it positive and suitable for a general audience. Output ONLY the generated caption text."
 
+    # User prompt text (part of the multimodal content)
+    user_prompt_text = "Analyze the provided media."
     if original_content:
-        prompt += f"\n\nOriginal text from the user (for context, do not just copy it): \"{original_content}\""
-    
-    prompt += "\n\nOutput ONLY the generated caption text."
+        user_prompt_text += f"\n\nOriginal text from the user (for context, do not just copy it): \"{original_content}\""
 
     content_blocks = []
     temp_frame_dir = None
 
     try:
-        # Prepare media blocks
-        for attachment in attachments[:5]: # Limit attachments to avoid exceeding token limits
-            media_path = attachment.get('local_path') # Assume local_path is added earlier
+        # Prepare media blocks (image/video frames)
+        for attachment in attachments[:5]: # Limit attachments
+            media_path = attachment.get('local_path')
             if not media_path or not os.path.exists(media_path):
                  logger.warning(f"Attachment missing local path or file not found: {attachment.get('filename')}")
                  continue
 
             media_type = attachment.get('content_type', '').lower()
 
-            # If video, extract frames
+            # Video frame extraction
             if media_type.startswith('video/'):
                 if not temp_frame_dir:
-                     # Create a temporary directory for frames for this specific request
                      temp_frame_dir = Path(f"./temp_frames_{os.urandom(4).hex()}")
                      temp_frame_dir.mkdir(exist_ok=True)
                      logger.debug(f"Created temp frame dir: {temp_frame_dir}")
 
                 frame_paths = _extract_frames(video_path=media_path, num_frames=5, save_dir=str(temp_frame_dir))
                 
-                for frame_path in frame_paths[:5]: # Max 5 frames per video
+                for frame_path in frame_paths[:5]:
                      mime_type = _get_media_type(frame_path)
                      base64_data = _image_to_base64(frame_path)
                      if mime_type and base64_data:
@@ -150,9 +149,9 @@ async def generate_description_with_claude(
                              "type": "image",
                              "source": {"type": "base64", "media_type": mime_type, "data": base64_data}
                          })
-            # If image, encode directly
+            # Image encoding
             elif media_type.startswith('image/'):
-                 mime_type = _get_media_type(media_path) or media_type # Fallback to original content_type
+                 mime_type = _get_media_type(media_path) or media_type
                  base64_data = _image_to_base64(media_path)
                  if mime_type and base64_data:
                      content_blocks.append({
@@ -162,31 +161,47 @@ async def generate_description_with_claude(
             else:
                  logger.warning(f"Skipping unsupported attachment type: {media_type} for file {attachment.get('filename')}")
         
-        # Add the text prompt after all media blocks
-        content_blocks.append({"type": "text", "text": prompt}) # Add prompt text last
+        # Add the text prompt block *first* in the content list (common practice)
+        content_blocks.insert(0, {"type": "text", "text": user_prompt_text})
 
         if len(content_blocks) == 1: # Only text block was added (no valid media)
-             logger.warning("No valid media found to send to Claude. Cannot generate description.")
+             logger.warning("No valid media found to send to LLM. Cannot generate description.")
+             # Clean up potentially created empty temp dir
+             if temp_frame_dir and temp_frame_dir.exists() and not any(temp_frame_dir.iterdir()):
+                 try: shutil.rmtree(temp_frame_dir) 
+                 except Exception: pass
              return None
 
-        # Use the shared client's generate_text method
-        logger.info(f"Sending request to Claude 3.5 Sonnet via shared client with {len(content_blocks) - 1} media blocks.")
-        generated_text = await claude_client.generate_text(
-            content=content_blocks, # Pass the list of blocks
+        # Prepare the messages list for the dispatcher
+        messages = [
+            {
+                "role": "user",
+                "content": content_blocks # Pass the list of blocks as content
+            }
+        ]
+        
+        # Call the dispatcher
+        logger.info(f"Sending request via dispatcher (Claude) with {len(content_blocks) - 1} media blocks.")
+        generated_text = await get_llm_response(
+            client_name="claude", 
             model="claude-3-5-sonnet-20240620",
+            system_prompt=system_prompt,
+            messages=messages,
             max_tokens=200, # Keep caption relatively short
-            # temperature=0.7, # Client uses default or can be added if needed
+            # temperature=0.7 # Can add other kwargs if needed
         )
 
-        if generated_text:
-            logger.info(f"Claude generated description via shared client: {generated_text}")
-            return generated_text
-        else:
-            logger.error(f"Claude call via shared client failed to generate description.")
-            return None
+        # Response handling (dispatcher raises on error, so we expect text if successful)
+        logger.info(f"LLM dispatcher generated description: {generated_text}")
+        return generated_text
+        # The old check `if generated_text:` might be redundant if dispatcher always raises/returns str
+        # else:
+        #     logger.error(f"LLM dispatcher failed to generate description.")
+        #     return None
 
     except Exception as e:
-        logger.error(f"Error preparing content or calling shared Claude client: {e}", exc_info=True)
+        # Catch errors from dispatcher or content preparation
+        logger.error(f"Error generating description via LLM dispatcher: {e}", exc_info=True)
         return None
     finally:
          # Clean up temporary frame directory if it was created

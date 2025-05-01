@@ -120,12 +120,12 @@ class TopGenerations:
                 LIMIT {limit}
             """
 
-            self.bot.db.conn.row_factory = sqlite3.Row
-            cursor = self.bot.db.conn.cursor()
+            self.bot.db_handler.conn.row_factory = sqlite3.Row
+            cursor = self.bot.db_handler.conn.cursor()
             cursor.execute(query, query_params)
             top_generations = [dict(row) for row in cursor.fetchall()]
             cursor.close()
-            self.bot.db.conn.row_factory = None
+            self.bot.db_handler.conn.row_factory = None
             
             if not top_generations:
                 self.bot.logger.info(f"No qualifying videos found - skipping top {limit} gens post.")
@@ -258,12 +258,12 @@ class TopGenerations:
                 LIMIT 5
             """
             
-            self.bot.db.conn.row_factory = sqlite3.Row
-            cursor = self.bot.db.conn.cursor()
+            self.bot.db_handler.conn.row_factory = sqlite3.Row
+            cursor = self.bot.db_handler.conn.cursor()
             cursor.execute(query, (channel_id, yesterday.isoformat()))
             results = [dict(row) for row in cursor.fetchall()]
             cursor.close()
-            self.bot.db.conn.row_factory = None
+            self.bot.db_handler.conn.row_factory = None
             
             if not results:
                 self.bot.logger.info(f"No top generations found for channel {channel_id}")
@@ -314,7 +314,7 @@ class TopGenerations:
         """
         Replace <@123...> with @username lookups from DB for more readable messages.
         """
-        cursor = self.bot.db.conn.cursor()
+        cursor = self.bot.db_handler.conn.cursor()
 
         def replace_mention(match):
             user_id = match.group(1)

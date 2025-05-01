@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 from src.common.db_handler import DatabaseHandler
-from src.common.claude_client import ClaudeClient
+# Remove old client import
+# from src.common.claude_client import ClaudeClient 
+# Import the dispatcher
+from src.common.llm import get_llm_response
 from .subfeatures.notify_user import send_sharing_request_dm
 # Removed content_analyzer import, assuming title generation covers description needs
 # from .subfeatures.content_analyzer import generate_description_with_claude
@@ -19,19 +22,20 @@ from .subfeatures.social_poster import (
     post_to_instagram_via_zapier,
     post_to_tiktok_via_zapier,
     post_to_youtube_via_zapier,
-    generate_social_media_title,
     _build_zapier_payload, # Also import the payload builder
-    generate_media_title, # Added
+    generate_media_title, # Now correctly references the moved function
 )
 
 logger = logging.getLogger('DiscordBot')
 
 class Sharer:
-    def __init__(self, bot: discord.Client, db_handler: DatabaseHandler, logger_instance: logging.Logger, claude_client: ClaudeClient):
+    # Remove claude_client from init
+    def __init__(self, bot: discord.Client, db_handler: DatabaseHandler, logger_instance: logging.Logger):
         self.bot = bot
         self.db_handler = db_handler
         self.logger = logger_instance
-        self.claude_client = claude_client # Keep Claude client if needed elsewhere or for description
+        # Remove client storage
+        # self.claude_client = claude_client 
         self.temp_dir = Path("./temp_media_sharing")
         self.temp_dir.mkdir(exist_ok=True)
 
@@ -126,13 +130,14 @@ class Sharer:
         
         # 4. Generate Title and Description
         
-        # Determine Title (using Claude for video/image, default for GIF)
+        # Determine Title (using generate_media_title from social_poster)
         generated_title = "Featured Creation" # Default
         if is_video or (is_image and not is_gif): # Generate for video or non-GIF image
             self.logger.info(f"Generating media title for message {message_id} ({'video' if is_video else 'image'}).")
+            # Call generate_media_title WITHOUT passing claude_client
             generated_title = await generate_media_title(
-                claude_client=self.claude_client, 
-                attachment=primary_attachment, # Pass the whole attachment dict
+                # claude_client=self.claude_client, # REMOVED
+                attachment=primary_attachment, 
                 original_comment=message_object.content,
                 post_id=message_id
             )
@@ -143,28 +148,36 @@ class Sharer:
              logger.warning(f"Unknown attachment type for title generation, using default for message {message_id}.")
              generated_title = "Featured Creation" 
 
-        # Generate Description using Claude (using the title and original comment)
+        # Generate Description using LLM Dispatcher
         generated_desc = "Check out this amazing creation!" # Default fallback description
         try:
-            desc_prompt = (
+            # Define system prompt for description
+            desc_system_prompt = (
                 f"Based on the title \"{generated_title}\" and the artist's original comment below, write a short, engaging social media description (1-2 sentences). "
                 f"Mention the type of media (e.g., 'artwork', 'video', 'creation'). Avoid simply repeating the title. "
-                f"Focus on generating excitement or interest.\n\n"
-                f"Artist's Comment: \"{message_object.content if message_object.content else 'None'}\""
+                f"Focus on generating excitement or interest."
             )
-            self.logger.info(f"Generating description for message {message_id}...")
-            claude_desc = await self.claude_client.generate_text(
-                content=desc_prompt,
-                model="claude-3-haiku-20240307", # Use Haiku for faster/cheaper description
+            # Define user content for description
+            desc_user_content = f"Artist's Comment: \"{message_object.content if message_object.content else 'None'}\""
+            desc_messages = [{"role": "user", "content": desc_user_content}]
+            
+            self.logger.info(f"Generating description via dispatcher for message {message_id}...")
+            # Use the dispatcher
+            claude_desc = await get_llm_response(
+                client_name="claude",
+                model="claude-3-5-haiku-20240307", # Use Haiku for faster/cheaper description
+                system_prompt=desc_system_prompt,
+                messages=desc_messages,
                 max_tokens=150, # Allow slightly longer description
             )
             if claude_desc:
                 generated_desc = claude_desc.strip()
-                self.logger.info(f"Claude generated description for message {message_id}: {generated_desc}")
+                self.logger.info(f"LLM dispatcher generated description for message {message_id}: {generated_desc}")
             else:
-                self.logger.warning(f"Claude description generation failed for message {message_id}, using default.")
+                 # Should not happen if dispatcher raises error, but good fallback logging
+                self.logger.warning(f"LLM description generation failed or returned empty for message {message_id}, using default.")
         except Exception as e:
-            self.logger.error(f"Error during Claude description generation for message {message_id}: {e}", exc_info=True)
+            self.logger.error(f"Error during LLM description generation for message {message_id}: {e}", exc_info=True)
             # Fallback to default description is handled by initial assignment
 
         self.logger.info(f"Using Title: '{generated_title}', Description: '{generated_desc}' for message {message_id}")

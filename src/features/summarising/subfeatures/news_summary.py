@@ -8,8 +8,8 @@ import asyncio
 
 from dotenv import load_dotenv
 
-# Import the shared client
-from src.common.claude_client import ClaudeClient
+# Add new dispatcher import
+from src.common.llm import get_llm_response 
 
 # We removed direct Discord/bot usage here since SUMMARIZER handles posting logic now.
 # This class now focuses on:
@@ -17,7 +17,7 @@ from src.common.claude_client import ClaudeClient
 #  - chunking/formatting the prompt & returned JSON.
 
 class NewsSummarizer:
-    def __init__(self, claude_client: ClaudeClient, logger: logging.Logger, dev_mode=False):
+    def __init__(self, logger: logging.Logger, dev_mode=False):
         self.logger = logger
         self.logger.info("Initializing NewsSummarizer...")
 
@@ -29,13 +29,10 @@ class NewsSummarizer:
         else:
             self.guild_id = int(os.getenv('GUILD_ID'))
 
-        # Store the passed Claude client instead of creating a new one
-        self.claude_client = claude_client
-        self.logger.info("NewsSummarizer initialized with shared Claude client.")
+        self.logger.info("NewsSummarizer initialized.")
 
-    def format_messages_for_claude(self, messages):
-        """Format messages for Claude analysis."""
-        conversation = """You MUST respond with ONLY a JSON array containing news items. NO introduction text, NO explanation, NO markdown formatting.
+    # Updated system prompt from user provided code
+    _NEWS_GENERATION_SYSTEM_PROMPT = """You MUST respond with ONLY a JSON array containing news items. NO introduction text, NO explanation, NO markdown formatting.
 
 If there are no significant news items, respond with exactly "[NO SIGNIFICANT NEWS]".
 Otherwise, respond with ONLY a JSON array in this exact format:
@@ -116,88 +113,137 @@ Requirements for the response:
 8. Don't repeat the same item or leave any empty fields (except optional `mainMediaMessageId` and `subTopicMediaMessageIds`).
 9. When you're referring to groups of community members, refer to them as Banodocians.
 10. Don't be hyperbolic or overly enthusiastic.
-11. If something seems to be a subjective opinion but still noteworthy, mention it as such: "**Draken** felt...", etc.
+11. If something seems to be a subjective opinion but still noteworthy, mention it as such: "**Draken** felt...", etc."""
 
-Here are the messages to analyze:
+    # Added system prompt from user provided code
+    _SHORT_SUMMARY_SYSTEM_PROMPT = """Create exactly 3 bullet points summarizing key developments. STRICT format requirements:
+1. The FIRST LINE MUST BE EXACTLY: 📨 __{message_count} messages sent__
+2. Then three bullet points that:
+   - Start with - (hyphen, not bullet)
+   - Give a short summary of one of the main topics from the full summary - priotise topics that are related to the channel and are likely to be useful to others.
+   - Bold the most important finding/result/insight using **
+   - Keep each to a single line
+4. DO NOT MODIFY THE MESSAGE COUNT OR FORMAT IN ANY WAY
 
-"""
+Required format:
+"📨 __{message_count} messages sent__
+• [Main topic 1] 
+• [Main topic 2]
+• [Main topic 3]"
+DO NOT CHANGE THE MESSAGE COUNT LINE. IT MUST BE EXACTLY AS SHOWN ABOVE. DO NOT ADD INCLUDE ELSE IN THE MESSAGE OTHER THAN THE ABOVE."""
 
+    def format_messages_for_user_prompt(self, messages: List[Dict[str, Any]]) -> str:
+        """Formats the list of message dictionaries into a string for the user prompt."""
+        message_string = "Here are the messages to analyze:\n\n"
         for msg in messages:
-            conversation += f"=== Message from {msg['author_name']} ===\n"
-            conversation += f"Time: {msg['created_at']}\n"
-            conversation += f"Content: {msg['content']}\n"
-            if msg['reaction_count']:
-                conversation += f"Reactions: {msg['reaction_count']}\n"
-            if msg['attachments']:
-                conversation += "Attachments:\n"
-                for attach in msg['attachments']:
-                    if isinstance(attach, dict):
-                        # url = attach.get('url', '') # Don't send the URL
-                        filename = attach.get('filename', '')
-                        # Only send the filename to avoid confusing the LLM with attachment IDs
-                        conversation += f"- {filename}\n"
+            message_string += f"=== Message from {msg['author_name']} ===\n"
+            message_string += f"Time: {msg['created_at']}\n"
+            message_string += f"Content: {msg['content']}\n"
+            if msg.get('reaction_count'): # Use .get for safety
+                message_string += f"Reactions: {msg['reaction_count']}\n"
+            if msg.get('attachments'):
+                message_string += "Attachments:\n"
+                try:
+                    attachments_list = json.loads(msg['attachments']) if isinstance(msg['attachments'], str) else msg['attachments']
+                    if isinstance(attachments_list, list):
+                        for attach in attachments_list:
+                            if isinstance(attach, dict):
+                                filename = attach.get('filename', '')
+                                message_string += f"- {filename}\n"
+                            else:
+                                message_string += f"- {attach}\n"
                     else:
-                        # Fallback if not a dict
-                        conversation += f"- {attach}\n"
-            conversation += f"Message ID: {msg['message_id']}\n"
-            conversation += f"Channel ID: {msg['channel_id']}\n"
-            conversation += "\n"
-
-        conversation += "\nRemember: Respond with ONLY the JSON array or '[NO SIGNIFICANT NEWS]'. NO other text."
-        return conversation
+                        message_string += f"- (Could not parse attachments: {msg['attachments']})\n"
+                except Exception:
+                     message_string += f"- (Could not parse attachments: {msg['attachments']})\n"
+                     
+            message_string += f"Message ID: {msg['message_id']}\n"
+            message_string += f"Channel ID: {msg['channel_id']}\n"
+            message_string += "\n"
+        
+        message_string += "\nRemember: Respond with ONLY the JSON array or '[NO SIGNIFICANT NEWS]'. NO other text."
+        return message_string
 
     async def generate_news_summary(self, messages: List[Dict[str, Any]]) -> str:
         """
         Generate a news summary from a given list of messages
-        by sending them to Claude in chunks if needed.
+        by sending them to the LLM dispatcher in chunks if needed.
         """
         if not messages:
             self.logger.warning("No messages to analyze")
             return "[NO MESSAGES TO ANALYZE]"
 
-        chunk_size = 1000
+        chunk_size = 1000 # Consider adjusting based on typical token counts
         chunk_summaries = []
-        previous_summary = None
+        previous_summary_json = None
 
         for i in range(0, len(messages), chunk_size):
             chunk = messages[i:i + chunk_size]
             self.logger.info(f"Summarizing chunk {i//chunk_size + 1} of {(len(messages) + chunk_size - 1)//chunk_size}")
             
-            prompt = self.format_messages_for_claude(chunk)
-            if previous_summary:
-                prompt = f"""Previous summary chunk(s) contained these items:
-{previous_summary}
+            # Format the current chunk data for the user prompt
+            user_prompt_content = self.format_messages_for_user_prompt(chunk)
+            
+            # Prepend context from previous chunks if available
+            if previous_summary_json:
+                user_prompt_content = f"""Previous summary chunk(s) contained these items (JSON format):
+{previous_summary_json}
 
-DO NOT duplicate or repeat any of the topics, ideas, or media from above.
+DO NOT duplicate or repeat any of the topics, ideas, or media from the JSON above.
 Only include NEW and DIFFERENT topics from the messages below.
 If all significant topics have already been covered, respond with "[NO SIGNIFICANT NEWS]".
 
-{prompt}"""
+{user_prompt_content}"""
+            
+            # Prepare messages for the dispatcher
+            llm_messages = [{"role": "user", "content": user_prompt_content}]
             
             try:
-                text = await self.claude_client.generate_text(
-                    content=prompt,
-                    model="claude-3-5-sonnet-latest",
-                    max_tokens=8192
+                # Call the dispatcher - Updated model name
+                text = await get_llm_response(
+                    client_name="claude",
+                    model="claude-3-5-sonnet-latest", 
+                    system_prompt=self._NEWS_GENERATION_SYSTEM_PROMPT,
+                    messages=llm_messages,
+                    max_tokens=8192 
                 )
-                self.logger.debug(f"Claude response for chunk summary: {text}") # Log raw response
-                if text and text not in ["[NOTHING OF NOTE]", "[NO SIGNIFICANT NEWS]", "[NO MESSAGES TO ANALYZE]"]:
-                    chunk_summaries.append(text)
-                    if previous_summary:
-                        previous_summary = previous_summary + "\n\n" + text
-                    else:
-                        previous_summary = text
+                
+                self.logger.debug(f"LLM response for chunk summary: {text}") 
+                
+                # Basic validation of response before adding
+                if text and isinstance(text, str) and text.strip() not in ["[NOTHING OF NOTE]", "[NO SIGNIFICANT NEWS]", "[NO MESSAGES TO ANALYZE]"]:
+                    # Attempt to parse to ensure it's likely valid JSON before appending
+                    try:
+                        # Check if it starts with '[' - basic JSON array check
+                        if text.strip().startswith('['):
+                             json.loads(text.strip()) # Try parsing
+                             chunk_summaries.append(text.strip()) # Add the valid JSON string
+                             previous_summary_json = text.strip() # Update context for next chunk
+                             self.logger.info(f"Successfully processed chunk {i//chunk_size + 1}")
+                        else:
+                             self.logger.warning(f"LLM response for chunk {i//chunk_size + 1} was not a JSON array: {text[:100]}...")
+                    except json.JSONDecodeError:
+                         self.logger.warning(f"LLM response for chunk {i//chunk_size + 1} was not valid JSON: {text[:100]}...")
+                else:
+                     self.logger.info(f"Chunk {i//chunk_size + 1} resulted in no significant news or invalid response.")
+
             except Exception as e:
-                self.logger.error(f"Error during generate_news_summary call via ClaudeClient: {e}")
-                self.logger.debug(traceback.format_exc())
+                # Catch errors from the dispatcher
+                self.logger.error(f"Error during generate_news_summary LLM call for chunk {i//chunk_size + 1}: {e}", exc_info=True)
+                # Decide if we should continue to next chunk or stop?
+                # For now, just log and continue, but might result in incomplete summary.
 
         if not chunk_summaries:
+            self.logger.info("No valid chunk summaries generated.")
             return "[NO SIGNIFICANT NEWS]"
         
+        # If only one chunk summary (already validated as JSON string)
         if len(chunk_summaries) == 1:
+            self.logger.info("Returning single chunk summary.")
             return chunk_summaries[0]
 
         # If multiple chunk summaries, combine them
+        self.logger.info(f"Combining {len(chunk_summaries)} chunk summaries.")
         return await self.combine_channel_summaries(chunk_summaries)
 
     def format_news_for_discord(self, news_items_json: str) -> List[Dict[str, str]]:
@@ -274,13 +320,14 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
     async def combine_channel_summaries(self, summaries: List[str]) -> str:
         """
         Combine multiple summary JSON strings into a single filtered summary
-        by asking Claude which items are the most interesting.
+        by asking the LLM dispatcher which items are the most interesting.
+        Assumes input `summaries` are strings of valid JSON arrays.
         """
         if not summaries:
             return "[NO SIGNIFICANT NEWS]"
 
-        # Prepare a prompt that merges them
-        prompt = """You are analyzing multiple JSON summaries.
+        # Define System Prompt
+        system_prompt = """You are analyzing multiple JSON summaries.
 Each summary is in the same format: an array of objects with fields:
   title, mainText, mainMediaMessageId (optional), message_id, channel_id,
   subTopics (which is an array of objects with text, subTopicMediaMessageIds (optional), message_id, channel_id).
@@ -290,63 +337,87 @@ You MUST keep each chosen item in the exact same structure (all fields) as it ap
 If no interesting items, respond with "[NO SIGNIFICANT NEWS]".
 Otherwise, respond with ONLY a JSON array. No extra text.
 
-Here are the input summaries:
-"""
-
-        for s in summaries:
-            prompt += f"\n{s}\n"
-
-        prompt += "\nReturn just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')."
+Return just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')."""
+        
+        # Prepare user prompt content
+        user_prompt_content = "Here are the input summaries (each is a JSON array string):\n\n"
+        for i, s in enumerate(summaries):
+            user_prompt_content += f"--- Summary {i+1} ---\n{s}\n\n"
+        
+        # Prepare messages for dispatcher
+        messages = [{"role": "user", "content": user_prompt_content}]
 
         try:
-            text = await self.claude_client.generate_text(
-                content=prompt,
-                model="claude-3-5-sonnet-latest",
-                max_tokens=8192
+            # Call the dispatcher - Updated model name
+            text = await get_llm_response(
+                client_name="claude",
+                model="claude-3-5-sonnet-latest", 
+                system_prompt=system_prompt,
+                messages=messages,
+                max_tokens=8192 
             )
-            self.logger.debug(f"Claude response for combined summary: {text}") # Log raw response
-            return text if text else "[NO SIGNIFICANT NEWS]"
+            self.logger.debug(f"LLM response for combined summary: {text}") 
+            
+            # Basic validation
+            if text and isinstance(text, str) and text.strip() == "[NO SIGNIFICANT NEWS]":
+                return "[NO SIGNIFICANT NEWS]"
+            elif text and isinstance(text, str) and text.strip().startswith('['):
+                # Try parsing to be sure
+                try:
+                    json.loads(text.strip())
+                    return text.strip() # Return valid JSON string
+                except json.JSONDecodeError:
+                     self.logger.warning(f"Combined summary response looked like JSON but failed parsing: {text[:100]}...")
+                     return "[ERROR PARSING COMBINED SUMMARY]" # Indicate error
+            else:
+                self.logger.warning(f"Unexpected response format for combined summary: {text[:100]}...")
+                return "[ERROR COMBINING SUMMARIES]" # Indicate error
+                
         except Exception as e:
-            self.logger.error(f"Error combining summaries via ClaudeClient: {e}")
-            self.logger.debug(traceback.format_exc())
-            return "[NO SIGNIFICANT NEWS]"
+            self.logger.error(f"Error combining summaries via LLM dispatcher: {e}", exc_info=True)
+            return "[ERROR COMBINING SUMMARIES]" # Indicate error
 
     async def generate_short_summary(self, full_summary: str, message_count: int) -> str:
         """
-        Get a short summary using Claude with proper async handling.
+        Get a short summary using the LLM dispatcher with proper async handling.
         """
-        conversation = f"""Create exactly 3 bullet points summarizing key developments. STRICT format requirements:
-1. The FIRST LINE MUST BE EXACTLY: 📨 __{message_count} messages sent__
-2. Then three bullet points that:
-   - Start with -
-   - Give a short summary of one of the main topics from the full summary - priotise topics that are related to the channel and are likely to be useful to others.
-   - Bold the most important finding/result/insight using **
-   - Keep each to a single line
-4. DO NOT MODIFY THE MESSAGE COUNT OR FORMAT IN ANY WAY
+        # Use the new system prompt defined above, formatting the message count in
+        system_prompt_formatted = self._SHORT_SUMMARY_SYSTEM_PROMPT.format(message_count=message_count)
+        # Prepare user message content (the full summary to work from)
+        messages = [{"role": "user", "content": f"Full summary to work from:\n{full_summary}"}]
 
-Required format:
-"📨 __{message_count} messages sent__
-• [Main topic 1] 
-• [Main topic 2]
-• [Main topic 3]"
-DO NOT CHANGE THE MESSAGE COUNT LINE. IT MUST BE EXACTLY AS SHOWN ABOVE. DO NOT ADD INCLUDE ELSE IN THE MESSAGE OTHER THAN THE ABOVE.
+        try:
+            # Call the LLM dispatcher - Use a cheaper/faster model - Updated model name
+            text = await get_llm_response(
+                client_name="claude",
+                model="claude-3-5-haiku-latest", 
+                system_prompt=system_prompt_formatted,
+                messages=messages,
+                max_tokens=512 # Keep lower max tokens for short summary
+            )
+            self.logger.debug(f"LLM response for short summary: {text}")
+            
+            # Basic validation of the response format
+            if text and isinstance(text, str):
+                lines = text.strip().split('\n')
+                # Adjusted check for hyphen instead of bullet
+                if len(lines) >= 1 and lines[0].strip() == f"📨 __{message_count} messages sent__" and all(l.strip().startswith('-') for l in lines[1:]):
+                     # Further checks could be added (e.g., number of bullet points)
+                     return text.strip()
+                else:
+                    self.logger.warning(f"Short summary response did not match expected format (Message Count Line or Hyphen Mismatch): {text[:100]}...")
+                    # Fallback or attempt to fix? For now, return error indication. Might need manual fix later.
+                    # return f"📨 __{message_count} messages sent__\n• LLM response format error." # Option 1: Provide default error bullets
+                    return text.strip() # Option 2: Return the potentially incorrect text and hope it's close
+            else:
+                 # Handle cases where text is None or not a string (though dispatcher should prevent None)
+                 self.logger.error("LLM dispatcher returned invalid type or empty response for short summary.")
+                 return f"📨 __{message_count} messages sent__\n• Failed to generate summary (Invalid LLM Response)."
 
-Full summary to work from:
-{full_summary}"""
-
-        text = await self.claude_client.generate_text(
-            content=conversation,
-            model="claude-3-5-haiku-latest",
-            max_tokens=8192,
-            max_retries=3
-        )
-
-        self.logger.debug(f"Claude response for short summary: {text}") # Log raw response
-
-        if text:
-            return text
-        else:
-            return f"📨 __{message_count} messages sent__\n• Unable to generate short summary due to API error after retries."
+        except Exception as e:
+            self.logger.error(f"Error generating short summary via LLM dispatcher: {e}", exc_info=True)
+            # Return a formatted error message
+            return f"📨 __{message_count} messages sent__\n• Error generating summary due to API issue."
 
 
 if __name__ == "__main__":

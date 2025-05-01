@@ -65,7 +65,7 @@ class TopArtSharing:
                 # Assuming sync execution for now based on original code
                 loop = asyncio.get_event_loop()
                 def db_query(): 
-                    conn = self.bot.db._get_connection() # Get connection from handler
+                    conn = self.bot.db_handler._get_connection() # Get connection from handler
                     conn.row_factory = sqlite3.Row
                     cursor = conn.cursor()
                     cursor.execute(query, (art_channel_id, yesterday.isoformat()))
@@ -97,7 +97,8 @@ class TopArtSharing:
                  
             # Fetch the actual message object
             try:
-                art_channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                # Access discord methods via self.bot.bot
+                art_channel = self.bot.bot.get_channel(channel_id) or await self.bot.bot.fetch_channel(channel_id)
                 if not isinstance(art_channel, (discord.TextChannel, discord.Thread)):
                     self.bot.logger.error(f"Fetched channel {channel_id} is not a text channel or thread.")
                     return

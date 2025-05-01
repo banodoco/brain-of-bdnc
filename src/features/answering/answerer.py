@@ -1,6 +1,5 @@
 import discord
 from discord.ext import commands
-import anthropic
 import os
 from typing import List, Dict, Tuple
 import asyncio
@@ -13,6 +12,7 @@ import sys
 import aiohttp
 from common.db_handler import DatabaseHandler
 from src.common.base_bot import BaseDiscordBot
+from src.common.llm import get_llm_response
 
 class SearchAnswerBot(BaseDiscordBot):
     def __init__(self):
@@ -48,7 +48,6 @@ class SearchAnswerBot(BaseDiscordBot):
         if missing_vars:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
             
-        self.claude = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
         self.answer_channel_id = 1322583491019407361
         self.guild_id = int(os.getenv('GUILD_ID'))
         self.channel_map = {}
@@ -129,136 +128,128 @@ class SearchAnswerBot(BaseDiscordBot):
         return channels
 
     async def determine_relevant_channels(self, question: str, channels: Dict[int, str], search_info: Dict) -> List[int]:
-        """Ask Claude which channels are most relevant for the search."""
-        prompt = f"""Given this question and list of Discord channels, return ONLY the channel IDs that are most relevant for finding the answer.
-Format as a JSON list of integers. Example: [123456789, 987654321]
-
-Question: {question}
-
-Available channels:
-{json.dumps(channels, indent=2)}
-
-Return ONLY the list of relevant channel IDs, nothing else."""
-
-        input_tokens = len(prompt.split())
+        """Ask the LLM dispatcher which channels are most relevant for the search."""
+        # Define system prompt
+        system_prompt = """Given this question and list of Discord channels, return ONLY the channel IDs that are most relevant for finding the answer.
+Format as a JSON list of integers. Example: [123456789, 987654321]. Return ONLY the list of relevant channel IDs, nothing else."""
+        
+        # Prepare user content
+        user_content = f"Question: {question}\n\nAvailable channels:\n{json.dumps(channels, indent=2)}"
+        messages = [{"role": "user", "content": user_content}]
+        
+        search_info['step_channel_selection_start'] = datetime.now()
         
         try:
-            # Run the blocking Claude API call in a thread pool
-            loop = asyncio.get_running_loop()
+            self.logger.info(f"Asking LLM (Claude Haiku) to determine relevant channels for: '{question[:50]}...'")
+            # Call the dispatcher directly (no need for run_in_executor)
+            response_text = await get_llm_response(
+                client_name="claude",
+                model="claude-3-5-haiku-20240307", # Use updated Haiku model name
+                system_prompt=system_prompt,
+                messages=messages,
+                max_tokens=500 # Keep max_tokens reasonable
+            )
             
-            def call_claude():
-                return self.claude.messages.create(
-                    model="claude-3-5-haiku-latest",
-                    max_tokens=500,
-                    messages=[{
-                        "role": "user",
-                        "content": prompt
-                    }]
-                )
-            
-            response = await loop.run_in_executor(None, call_claude)
-            
-            output_tokens = len(response.content[0].text.split())
-            input_cost = (input_tokens / 1000000) * 0.80
-            output_cost = (output_tokens / 1000000) * 4.00
-            total_cost = input_cost + output_cost
-            
-            logging.info(f"\nChannel Selection API Usage:")
-            logging.info(f"Input tokens: {input_tokens:,}")
-            logging.info(f"Output tokens: {output_tokens:,}")
-            logging.info(f"Estimated cost: ${total_cost:.6f}")
-            
-            # Extract the JSON list from the response
-            response_text = response.content[0].text.strip()
-            logging.debug(f"Claude response: {response_text}")
+            self.logger.debug(f"LLM response for channel selection: {response_text}")
+            search_info['step_channel_selection_llm_complete'] = datetime.now()
             
             # Try to parse as JSON
             try:
-                channel_ids = json.loads(response_text)
+                channel_ids = json.loads(response_text.strip())
                 if isinstance(channel_ids, list):
                     # Filter to only valid channel IDs
                     valid_ids = [cid for cid in channel_ids if cid in channels]
                     if valid_ids:
-                        search_info['channel_selection_tokens'] = input_tokens + output_tokens
-                        search_info['channel_selection_cost'] = total_cost
+                        self.logger.info(f"LLM identified relevant channels: {valid_ids}")
+                        search_info['selected_channels'] = valid_ids
+                        search_info['step_channel_selection_complete'] = datetime.now()
                         return valid_ids
+                    else:
+                         self.logger.warning("LLM returned empty list or only invalid channel IDs.")
             except json.JSONDecodeError:
-                logging.error("Failed to parse Claude response as JSON")
+                self.logger.error(f"Failed to parse LLM response for channel selection as JSON: {response_text}")
             
-            # If we get here, something went wrong with the response
-            logging.error("Invalid response format from Claude")
-            return list(channels.keys())[:3]  # Return first 3 channels as fallback
+            # If parsing failed or no valid IDs returned
+            self.logger.warning("Invalid response format or no valid channels from LLM. Falling back to first 3 channels.")
+            fallback_channels = list(channels.keys())[:3]
+            search_info['selected_channels'] = fallback_channels
+            search_info['step_channel_selection_complete'] = datetime.now()
+            return fallback_channels
             
         except Exception as e:
-            logging.error(f"Error determining relevant channels: {e}")
+            # Catch errors from the dispatcher
+            self.logger.error(f"Error determining relevant channels via LLM dispatcher: {e}", exc_info=True)
+            search_info['step_channel_selection_error'] = str(e)
+            search_info['step_channel_selection_complete'] = datetime.now()
+            # Fallback: return empty list or first few? Empty seems safer.
             return []
 
     async def generate_search_queries(self, question: str, search_info: Dict) -> List[Dict[str, str]]:
-        """Generate search queries based on the question."""
+        """Generate search queries based on the question using the LLM dispatcher."""
         
         system_prompt = """Generate 2-3 precise search queries for finding information in Discord channels.
-        Rules:
-        - Keep queries very short (1-3 words)
-        - Focus on the most specific, relevant terms
-        - Avoid generic terms unless necessary
-        - Include technical terms if relevant
-        - Prioritize exact matches over broad concepts
+Rules:
+- Keep queries very short (1-3 words)
+- Focus on the most specific, relevant terms
+- Avoid generic terms unless necessary
+- Include technical terms if relevant
+- Prioritize exact matches over broad concepts
+
+Format as JSON list with 'query' and 'reason' keys.
+Example for "How do I adjust video settings in Hunyuan?":
+[
+    {"query": "video settings", "reason": "Most specific match for the question"},
+    {"query": "resolution config", "reason": "Alternative technical term"}
+]
+
+Return ONLY the JSON list."""
         
-        Format as JSON list with 'query' and 'reason' keys.
-        Example for "How do I adjust video settings in Hunyuan?":
-        [
-            {"query": "video settings", "reason": "Most specific match for the question"},
-            {"query": "resolution config", "reason": "Alternative technical term"}
-        ]
+        user_content = f"Question: {question}"
+        messages = [{"role": "user", "content": user_content}]
         
-        Question: """
-        
-        input_tokens = len(system_prompt.split()) + len(question.split())
+        search_info['step_query_generation_start'] = datetime.now()
         
         try:
-            # Run the blocking Claude API call in a thread pool
-            loop = asyncio.get_running_loop()
+            self.logger.info(f"Asking LLM (Claude Haiku) to generate search queries for: '{question[:50]}...'")
+            # Call the dispatcher directly
+            response_text = await get_llm_response(
+                client_name="claude",
+                model="claude-3-5-haiku-20240307", # Use updated Haiku model name
+                system_prompt=system_prompt,
+                messages=messages,
+                max_tokens=500
+            )
             
-            def call_claude():
-                return self.claude.messages.create(
-                    model="claude-3-5-haiku-latest",
-                    max_tokens=500,
-                    messages=[{
-                        "role": "user",
-                        "content": system_prompt + question
-                    }]
-                )
-            
-            response = await loop.run_in_executor(None, call_claude)
-            
-            output_tokens = len(response.content[0].text.split())
-            input_cost = (input_tokens / 1000000) * 0.80
-            output_cost = (output_tokens / 1000000) * 4.00
-            total_cost = input_cost + output_cost
-            
-            logging.info(f"\nQuery Generation API Usage:")
-            logging.info(f"Input tokens: {input_tokens:,}")
-            logging.info(f"Output tokens: {output_tokens:,}")
-            logging.info(f"Estimated cost: ${total_cost:.6f}")
-            
-            search_info['query_generation_tokens'] = input_tokens + output_tokens
-            search_info['query_generation_cost'] = total_cost
+            self.logger.debug(f"LLM response for query generation: {response_text}")
+            search_info['step_query_generation_llm_complete'] = datetime.now()
             
             # Try to parse as JSON
             try:
-                queries = json.loads(response.content[0].text.strip())
-                if isinstance(queries, list):
+                queries = json.loads(response_text.strip())
+                if isinstance(queries, list) and all(isinstance(q, dict) and 'query' in q and 'reason' in q for q in queries):
+                    self.logger.info(f"LLM generated queries: {queries}")
+                    search_info['generated_queries'] = queries
+                    search_info['step_query_generation_complete'] = datetime.now()
                     return queries
+                else:
+                     self.logger.warning(f"LLM generated query list has invalid format: {queries}")
             except json.JSONDecodeError:
-                logging.error("Failed to parse Claude response as JSON")
+                self.logger.error(f"Failed to parse LLM response for query generation as JSON: {response_text}")
             
-            # If we get here, something went wrong with the response
-            logging.error("Invalid response format from Claude")
-            return [{"query": question, "reason": "Fallback to original question"}]
+            # Fallback if parsing fails or format is wrong
+            self.logger.warning("Invalid response format from LLM for queries. Falling back to original question.")
+            fallback_query = [{"query": question, "reason": "Fallback to original question due to LLM format error"}]
+            search_info['generated_queries'] = fallback_query
+            search_info['step_query_generation_complete'] = datetime.now()
+            return fallback_query
             
         except Exception as e:
-            logging.error(f"Error generating search queries: {e}")
-            return [{"query": question, "reason": "Error occurred, using original question"}]
+            # Catch errors from the dispatcher
+            self.logger.error(f"Error generating search queries via LLM dispatcher: {e}", exc_info=True)
+            search_info['step_query_generation_error'] = str(e)
+            search_info['step_query_generation_complete'] = datetime.now()
+            fallback_query = [{"query": question, "reason": "Error occurred during LLM call, using original question"}]
+            return fallback_query
 
     async def search_channels(self, query: str, channels: List[int], limit: int = None) -> List[discord.Message]:
         """Search for messages in specified channels using archived data first."""
@@ -357,138 +348,190 @@ Return ONLY the list of relevant channel IDs, nothing else."""
         return "\n".join(context)
 
     async def get_claude_answer(self, question: str, context: str, search_info: Dict) -> str:
-        """Get answer from Claude using the context and search information."""
+        """Generate an answer using Claude based on the question and context using the LLM dispatcher."""
+        
+        system_prompt = """You are an AI assistant answering questions based ONLY on the provided Discord message context. Follow these rules:
+1. Answer concisely and directly based *only* on the text provided in the context.
+2. If the context doesn't contain the answer, say "I couldn't find the answer in the provided context."
+3. Do NOT use prior knowledge or search the web.
+4. If quoting directly from the context, keep quotes brief.
+5. Format the answer clearly. Use bullet points for lists if appropriate.
+6. Mention the user who provided relevant information if their name is available in the context (e.g., "UserX mentioned...").
+7. Do not invent information or speculate.
+8. If multiple messages address the question, synthesize the information.
+"""
+        
+        user_content = f"Question: {question}\n\nContext from Discord messages:\n{context}"
+        messages = [{"role": "user", "content": user_content}]
+
+        search_info['step_answer_generation_start'] = datetime.now()
+
         try:
-            prompt = f"""Based on the following context from Discord messages, please answer this question: {question}
-
-Search Information:
-Channels searched: {', '.join(f"#{self.channel_map.get(cid, str(cid))}" for cid in search_info['channels'])}
-Queries used: {', '.join(q['query'] for q in search_info['queries'])}
-
-Context:
-{context}
-
-Please provide a clear, concise answer that:
-1. Directly addresses the question
-2. Cites specific messages from the context when relevant (include Discord message links)
-3. Acknowledges if certain aspects can't be fully answered from the available context
-4. Uses Discord markdown formatting
-5. Mentions which channels/queries were most helpful in finding the information
-
-Answer:"""
-
-            # Calculate input tokens
-            input_tokens = len(prompt.split())  # Simple approximation
+            self.logger.info(f"Asking LLM (Claude Sonnet) to generate answer for: '{question[:50]}...'")
+            # Call the dispatcher directly
+            answer_text = await get_llm_response(
+                client_name="claude",
+                model="claude-3-5-sonnet-20240620", # Use Sonnet for answer quality
+                system_prompt=system_prompt,
+                messages=messages,
+                max_tokens=1500 # Allow reasonable length for answer
+            )
             
-            # Run the blocking Claude API call in a thread pool
-            loop = asyncio.get_running_loop()
+            self.logger.debug(f"LLM generated answer: {answer_text[:100]}...")
+            search_info['step_answer_generation_llm_complete'] = datetime.now()
             
-            def call_claude():
-                return self.claude.messages.create(
-                    model="claude-3-5-haiku-latest",
-                    max_tokens=1500,
-                    messages=[{
-                        "role": "user",
-                        "content": prompt
-                    }]
-                )
-            
-            response = await loop.run_in_executor(None, call_claude)
-            
-            # Calculate output tokens and costs
-            output_tokens = len(response.content[0].text.split())  # Simple approximation
-            input_cost = (input_tokens / 1000000) * 0.80  # $0.80 per million tokens
-            output_cost = (output_tokens / 1000000) * 4.00  # $4.00 per million tokens
-            total_cost = input_cost + output_cost
-            
-            logging.info(f"\nClaude API Usage:")
-            logging.info(f"Input tokens: {input_tokens:,}")
-            logging.info(f"Output tokens: {output_tokens:,}")
-            logging.info(f"Estimated cost: ${total_cost:.6f}")
-            
-            search_info['answer_generation_tokens'] = input_tokens + output_tokens
-            search_info['answer_generation_cost'] = total_cost
-            search_info['total_cost'] = (search_info.get('channel_selection_cost', 0) + 
-                                       search_info.get('query_generation_cost', 0) + 
-                                       search_info.get('answer_generation_cost', 0))
-            
-            return response.content[0].text
-            
-        except anthropic.APIError as e:
-            logging.error(f"Claude API error: {e}")
-            return "Sorry, I encountered an error generating the answer. Please try again later."
+            search_info['generated_answer'] = answer_text # Store the generated answer
+            search_info['step_answer_generation_complete'] = datetime.now()
+            return answer_text
             
         except Exception as e:
-            logging.error(f"Unexpected error getting Claude answer: {e}")
-            return "An unexpected error occurred. Please try again later."
+            # Catch errors from the dispatcher
+            self.logger.error(f"Error getting answer via LLM dispatcher: {e}", exc_info=True)
+            search_info['step_answer_generation_error'] = str(e)
+            search_info['step_answer_generation_complete'] = datetime.now()
+            # Return a user-friendly error message
+            return "Sorry, I encountered an error while generating the answer. Please try again later."
 
     async def create_answer_thread(self, channel_id: int, question_msg: discord.Message, answer: str, search_info: Dict):
         """Create a thread from the question message with the answer and search metadata."""
         try:
             # Create thread from the question message
+            thread_name = f"Answer: {question_msg.content[:50]}..."
+            # Ensure thread name length is within Discord limits (100 chars)
+            if len(thread_name) > 100:
+                thread_name = thread_name[:97] + "..."
+                
             thread = await question_msg.create_thread(
-                name=f"Answer: {question_msg.content[:50]}...",
-                auto_archive_duration=1440
+                name=thread_name,
+                auto_archive_duration=1440 # 24 hours
             )
             
-            # Format initial status message
-            status_msg = "🔍 **Searching...**\n"
-            status_msg += f"Channels being searched:\n"
-            for cid in search_info['channels']:
-                channel_name = self.channel_map.get(cid, str(cid))
-                status_msg += f"• #{channel_name}\n"
+            # --- Build Status/Metadata Message --- 
+            # Initial status part
+            status_lines = ["🔍 **Searching...**"] 
             
-            status_msg += "\nQueries being used:\n"
-            for q in search_info['queries']:
-                status_msg += f"• `{q['query']}` ({q['reason']})\n"
+            # Selected Channels
+            selected_channel_names = [f"• #{self.channel_map.get(cid, str(cid))}" 
+                                      for cid in search_info.get('selected_channels', [])]
+            if selected_channel_names:
+                status_lines.append("\nChannels being searched:")
+                status_lines.extend(selected_channel_names)
+            else:
+                status_lines.append("\nNo channels selected for search.")
+
+            # Generated Queries
+            generated_queries = search_info.get('generated_queries', [])
+            if generated_queries:
+                 status_lines.append("\nQueries being used:")
+                 status_lines.extend([f"• `{q.get('query')}` ({q.get('reason')})" 
+                                      for q in generated_queries])
+            else:
+                 status_lines.append("\nNo queries generated.")
+            
+            status_msg = "\n".join(status_lines)
             
             # Send initial status
             await thread.send(status_msg)
             
-            # Format channel results and API usage for final metadata
-            channel_results = []
-            for cid in search_info['channels']:
+            # --- Build Final Metadata Message --- 
+            metadata_lines = ["*Search completed with:*"]
+
+            # Queries Used (redundant if in status, but maybe useful here too)
+            if generated_queries:
+                 metadata_lines.append(f"Queries: {', '.join(q.get('query') for q in generated_queries)}")
+                 
+            # Channel Results
+            channel_results_summary = []
+            for cid in search_info.get('selected_channels', []):
                 channel_name = self.channel_map.get(cid, str(cid))
                 result_count = len([msg for msg in search_info.get('results', []) 
                                   if msg.channel.id == cid])
-                channel_results.append(f"#{channel_name} ({result_count} results)")
+                channel_results_summary.append(f"#{channel_name} ({result_count} results)")
+            if channel_results_summary:
+                 metadata_lines.append(f"Channels: {', '.join(channel_results_summary)}")
+                 
+            # Total Results
+            total_results = len(search_info.get('results', []))
+            metadata_lines.append(f"Total unique results: {total_results}")
+
+            # Add Timings (calculate durations)
+            metadata_lines.append("\n**Processing Times:**")
+            t_start = search_info.get('step_received_question')
+            t_chan_sel_llm = search_info.get('step_channel_selection_llm_complete')
+            t_chan_sel = search_info.get('step_channel_selection_complete')
+            t_query_gen_llm = search_info.get('step_query_generation_llm_complete')
+            t_query_gen = search_info.get('step_query_generation_complete')
+            t_search = search_info.get('step_search_complete')
+            t_ans_gen_llm = search_info.get('step_answer_generation_llm_complete')
+            t_ans_gen = search_info.get('step_answer_generation_complete')
+
+            if t_start and t_chan_sel:
+                 metadata_lines.append(f"- Channel Selection: {(t_chan_sel - t_start).total_seconds():.2f}s" + 
+                                       (f" (LLM: {(t_chan_sel_llm - t_start).total_seconds():.2f}s)" if t_chan_sel_llm else ""))
+            if t_chan_sel and t_query_gen:
+                 metadata_lines.append(f"- Query Generation: {(t_query_gen - t_chan_sel).total_seconds():.2f}s" + 
+                                       (f" (LLM: {(t_query_gen_llm - t_chan_sel).total_seconds():.2f}s)" if t_query_gen_llm else ""))
+            if t_query_gen and t_search:
+                 metadata_lines.append(f"- Discord Search: {(t_search - t_query_gen).total_seconds():.2f}s")
+            if t_search and t_ans_gen:
+                 metadata_lines.append(f"- Answer Generation: {(t_ans_gen - t_search).total_seconds():.2f}s" + 
+                                       (f" (LLM: {(t_ans_gen_llm - t_search).total_seconds():.2f}s)" if t_ans_gen_llm else ""))
+            if t_start and t_ans_gen: # Overall
+                 metadata_lines.append(f"- Total Time: {(t_ans_gen - t_start).total_seconds():.2f}s")
+
+            # Add Errors if they occurred
+            errors = {k: v for k, v in search_info.items() if 'error' in k and v}
+            if errors:
+                 metadata_lines.append("\n**Errors Encountered:**")
+                 for step, err_msg in errors.items():
+                      metadata_lines.append(f"- {step.replace('step_','').replace('_error','')}: {str(err_msg)[:100]}...") # Truncate long errors
             
-            # Add API usage information
-            api_usage = (
-                f"\n\n**API Usage:**\n"
-                f"Channel Selection: {search_info.get('channel_selection_tokens', 0):,} tokens (${search_info.get('channel_selection_cost', 0):.4f})\n"
-                f"Query Generation: {search_info.get('query_generation_tokens', 0):,} tokens (${search_info.get('query_generation_cost', 0):.4f})\n"
-                f"Answer Generation: {search_info.get('answer_generation_tokens', 0):,} tokens (${search_info.get('answer_generation_cost', 0):.4f})\n"
-                f"Total Cost: ${search_info.get('total_cost', 0):.4f}"
-            )
-            
-            # Send search metadata with API usage
-            metadata = (
-                f"*Search completed with:*\n"
-                f"Queries: {', '.join(q['query'] for q in search_info['queries'])}\n"
-                f"Channels: {', '.join(channel_results)}\n"
-                f"Total unique results: {len(search_info.get('results', []))}"
-                f"{api_usage}"
-            )
+            metadata = "\n".join(metadata_lines)
             await thread.send(metadata)
             
             # Split answer into chunks if needed (Discord 2000 char limit)
-            chunks = [answer[i:i+1900] for i in range(0, len(answer), 1900)]
-            for chunk in chunks:
+            if not answer or not isinstance(answer, str):
+                 self.logger.error(f"Invalid answer type received for thread: {type(answer)}")
+                 answer = "[Error: Received invalid answer format from generation step]"
+                 
+            answer_chunks = [answer[i:i+1990] for i in range(0, len(answer), 1990)]
+            for chunk in answer_chunks:
                 await thread.send(chunk)
                 
+        except discord.errors.Forbidden:
+             self.logger.error(f"Permission error creating thread in channel {channel_id}. Check bot permissions.")
+             # Fallback: try to send as regular message
+             channel = self.get_channel(channel_id)
+             if channel:
+                 try:
+                     await channel.send(f"Error creating thread (Permissions Error). \n\nAnswer to {question_msg.author.mention}:\n{answer[:1900]}...") # Truncate answer
+                 except Exception as fallback_e:
+                     self.logger.error(f"Failed to send fallback message: {fallback_e}")
         except Exception as e:
-            logging.error(f"Error creating answer thread: {e}")
+            self.logger.error(f"Error creating answer thread: {e}", exc_info=True)
             # Fallback: try to send as regular message if thread creation fails
             channel = self.get_channel(channel_id)
             if channel:
-                await channel.send(f"Error creating thread: {e}\n\nAnswer to {question_msg.author.mention}:\n{answer}")
+                try:
+                    await channel.send(f"Error creating thread: {e}\n\nAnswer to {question_msg.author.mention}:\n{answer[:1900]}...") # Truncate answer
+                except Exception as fallback_e:
+                    self.logger.error(f"Failed to send fallback message: {fallback_e}")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Handle incoming messages."""
         if message.channel.id != self.answer_channel_id or message.author.bot:
             return
+        
+        # Initialize search_info at the very start
+        search_info = {
+            'step_received_question': datetime.now(), # Record time immediately
+            'question': message.content,
+            'selected_channels': [],
+            'generated_queries': [],
+            'results': [],
+            # Removed cost/token fields
+        }
         
         # Add rate limiting check
         bucket = self.search_cooldown.get_bucket(message)
@@ -498,74 +541,157 @@ Answer:"""
             return
             
         # Check if message is from admin user
-        admin_user_id = int(os.getenv('ADMIN_USER_ID'))
+        try:
+             admin_user_id = int(os.getenv('ADMIN_USER_ID'))
+        except (TypeError, ValueError):
+             self.logger.error("ADMIN_USER_ID not found or invalid in environment variables.")
+             await message.reply("Bot configuration error: Admin User ID not set.")
+             return 
+             
         if message.author.id != admin_user_id:
-            await message.reply(f"Sorry, I only run queries for POM ")
+            self.logger.warning(f"Ignoring message from non-admin user: {message.author.id}")
+            await message.reply(f"Sorry, I only run queries for the configured admin user.")
             return
             
         # Process the question
         question = message.content
-        logging.info(f"\nProcessing question: {question}")
+        search_info['question'] = question # Ensure question is stored
+        self.logger.info(f"\n--- New Question Received ---")
+        self.logger.info(f"User: {message.author.name} ({message.author.id})")
+        self.logger.info(f"Question: {question}")
         
         # Get all available channels
         self.channel_map = await self.get_searchable_channels()
+        if not self.channel_map:
+             await message.reply("Error: Could not retrieve searchable channels from the guild.")
+             return
         
-        # Initialize search_info at the start
-        search_info = {
-            'channels': [],
-            'queries': [],
-            'results': [],
-            'channel_selection_tokens': 0,
-            'channel_selection_cost': 0,
-            'query_generation_tokens': 0,
-            'query_generation_cost': 0,
-            'answer_generation_tokens': 0,
-            'answer_generation_cost': 0,
-            'total_cost': 0
-        }
-        
-        # Determine which channels to search
+        # Step 1: Determine which channels to search
         relevant_channels = await self.determine_relevant_channels(question, self.channel_map, search_info)
+        if not relevant_channels:
+             await message.reply("Could not determine relevant channels to search. Please try rephrasing your question or check logs.")
+             return # Stop if no channels selected
+        search_info['selected_channels'] = relevant_channels # Ensure it's stored
         
-        # Generate search queries
+        # Step 2: Generate search queries
         queries = await self.generate_search_queries(question, search_info)
+        if not queries or not isinstance(queries[0].get("query"), str):
+            await message.reply("Could not generate valid search queries. Please try rephrasing your question or check logs.")
+            # Attempt to create a thread with the error info gathered so far
+            await self.create_answer_thread(self.answer_channel_id, message, "[Error: Failed to generate valid search queries]", search_info)
+            return
+        search_info['generated_queries'] = queries # Ensure it's stored
         
-        # Update search_info
-        search_info.update({
-            'channels': relevant_channels,
-            'queries': queries,
-            'results': []
-        })
+        # Update user with initial status via thread (doing this early)
+        # Create thread first, then send status inside
+        thread = None
+        try:
+            thread_name = f"Answer: {question[:50]}..."
+            if len(thread_name) > 100: thread_name = thread_name[:97] + "..."
+            thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+            
+            status_lines = ["🔍 **Searching...**"]
+            selected_channel_names = [f"• #{self.channel_map.get(cid, str(cid))}" for cid in relevant_channels]
+            if selected_channel_names: status_lines.extend(["\nChannels:", *selected_channel_names])
+            query_lines = [f"• `{q.get('query')}` ({q.get('reason')})" for q in queries]
+            if query_lines: status_lines.extend(["\nQueries:", *query_lines])
+            await thread.send("\n".join(status_lines))
+            
+        except Exception as thread_e:
+             self.logger.error(f"Failed to create initial thread or send status: {thread_e}")
+             await message.reply(f"Error starting search thread: {thread_e}. Proceeding without thread updates.")
+             # We can continue without the thread, but final answer posting needs care
+             thread = None # Ensure thread is None if creation failed
         
-        # Collect all relevant messages
+        # Step 3: Collect all relevant messages
+        search_info['step_search_start'] = datetime.now()
         all_results = []
         for query_dict in queries:
-            query = query_dict['query']
-            logging.info(f"\nExecuting search for query: {query}")
-            results = await self.search_channels(query, relevant_channels)
+            query = query_dict.get('query')
+            if not query or not isinstance(query, str):
+                self.logger.warning(f"Skipping invalid query object: {query_dict}")
+                continue
+            self.logger.info(f"Executing search for query: '{query}'")
+            # TODO: Implement search_channels method if needed, or rely on _search_recent_messages
+            # results = await self.search_channels(query, relevant_channels)
+            results = await self._search_recent_messages(query, relevant_channels)
             all_results.extend(results)
+            self.logger.info(f"Found {len(results)} results for query '{query}'")
         
         # Remove duplicates while preserving order
-        seen = set()
+        seen_ids = set()
         unique_results = []
         for msg in all_results:
-            if msg.id not in seen:
-                seen.add(msg.id)
+            if msg.id not in seen_ids:
+                seen_ids.add(msg.id)
                 unique_results.append(msg)
         
-        logging.info(f"\nFinal unique results: {len(unique_results)} messages")
-        
-        # Update search_info with results
+        self.logger.info(f"Final unique results after combining queries: {len(unique_results)} messages")
         search_info['results'] = unique_results
+        search_info['step_search_complete'] = datetime.now()
         
-        # Format context
+        # Step 4: Format context
         context = self.format_messages_for_context(unique_results)
+        if not context:
+             answer = "I found some relevant messages, but couldn't format them for context generation."
+             self.logger.warning("Context formatting resulted in empty string.")
+        else:
+             # Step 5: Get answer from LLM
+             answer = await self.get_claude_answer(question, context, search_info)
         
-        # Get answer from Claude
-        answer = await self.get_claude_answer(question, context, search_info)
-        
-        # Create thread with answer
-        await self.create_answer_thread(self.answer_channel_id, message, answer, search_info)
+        # Step 6: Post answer (in thread if available, otherwise reply)
+        if thread:
+             # Send final metadata and answer chunks to the existing thread
+             try:
+                 metadata_lines = ["*Search completed with:*"]
+                 # ... (build metadata lines as before, using search_info) ...
+                 # Queries Used
+                 if queries: metadata_lines.append(f"Queries: {', '.join(q.get('query') for q in queries)}")
+                 # Channel Results
+                 channel_results_summary = [f"#{self.channel_map.get(cid, str(cid))} ({len([m for m in unique_results if m.channel.id == cid])} results)" 
+                                          for cid in relevant_channels]
+                 if channel_results_summary: metadata_lines.append(f"Channels: {', '.join(channel_results_summary)}")
+                 # Total Results
+                 metadata_lines.append(f"Total unique results: {len(unique_results)}")
+                 # Timings
+                 metadata_lines.append("\n**Processing Times:**")
+                 t_start = search_info.get('step_received_question')
+                 t_chan_sel = search_info.get('step_channel_selection_complete')
+                 t_query_gen = search_info.get('step_query_generation_complete')
+                 t_search = search_info.get('step_search_complete')
+                 t_ans_gen = search_info.get('step_answer_generation_complete')
+                 if t_start and t_chan_sel: metadata_lines.append(f"- Channel Selection: {(t_chan_sel - t_start).total_seconds():.2f}s")
+                 if t_chan_sel and t_query_gen: metadata_lines.append(f"- Query Generation: {(t_query_gen - t_chan_sel).total_seconds():.2f}s")
+                 if t_query_gen and t_search: metadata_lines.append(f"- Discord Search: {(t_search - t_query_gen).total_seconds():.2f}s")
+                 if t_search and t_ans_gen: metadata_lines.append(f"- Answer Generation: {(t_ans_gen - t_search).total_seconds():.2f}s")
+                 if t_start and t_ans_gen: metadata_lines.append(f"- Total Time: {(t_ans_gen - t_start).total_seconds():.2f}s")
+                 # Errors
+                 errors = {k: v for k, v in search_info.items() if 'error' in k and v}
+                 if errors: metadata_lines.extend(["\n**Errors Encountered:**", *[f"- {k}: {str(v)[:100]}..." for k, v in errors.items()]])
+                 
+                 await thread.send("\n".join(metadata_lines))
+                 
+                 # Send answer chunks
+                 answer_chunks = [answer[i:i+1990] for i in range(0, len(answer), 1990)]
+                 for chunk in answer_chunks:
+                     await thread.send(chunk)
+             except Exception as post_e:
+                 self.logger.error(f"Error posting final answer/metadata to thread: {post_e}")
+                 # Try a simple reply if thread posting fails
+                 try: await message.reply(f"(Error posting to thread) Answer:\n{answer[:1900]}...")
+                 except Exception: pass # Ignore reply error
+        else:
+             # Fallback reply if thread couldn't be created
+             try:
+                 reply_content = f"Answer to your question:\n{answer}"
+                 reply_chunks = [reply_content[i:i+1990] for i in range(0, len(reply_content), 1990)]
+                 for i, chunk in enumerate(reply_chunks):
+                     if i == 0:
+                         await message.reply(chunk)
+                     else:
+                         await message.channel.send(chunk) # Send subsequent chunks without reply
+             except Exception as reply_e:
+                 self.logger.error(f"Failed to send fallback reply: {reply_e}")
 
 async def main():
     print("Starting main function...")
