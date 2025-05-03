@@ -74,6 +74,7 @@ def get_desired_members_schema() -> List[tuple]:
         ("website", "TEXT"),
         ("sharing_consent", "BOOLEAN DEFAULT FALSE"),
         ("dm_preference", "BOOLEAN DEFAULT TRUE"),
+        ("permission_to_curate", "BOOLEAN DEFAULT NULL"),
         # Existing audit columns:
         ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
         ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")

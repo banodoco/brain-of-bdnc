@@ -33,12 +33,22 @@ class SummarizerCog(commands.Cog):
     @tasks.loop(hours=24)
     async def run_daily_summary(self):
         """Daily task to run the summary generation."""
-        # Wait until the bot is ready before the first run
         await self.bot.wait_until_ready()
-        
+
+        # On the first run, delay the summary unless --summary-now flag is provided
+        if not hasattr(self, 'has_run_initial_summary'):
+            self.has_run_initial_summary = True
+            if not getattr(self.bot, 'summary_now', False):
+                now_utc = datetime.utcnow()
+                scheduled_time = now_utc.replace(hour=10, minute=0, second=0, microsecond=0)
+                if scheduled_time < now_utc:
+                    scheduled_time += timedelta(days=1)
+                wait_seconds = (scheduled_time - now_utc).total_seconds()
+                logger.info(f"Skipping initial summary run because '--summary-now' flag not provided. Waiting {wait_seconds:.0f} seconds until scheduled time (10:00 UTC).")
+                await asyncio.sleep(wait_seconds)
+
         logger.info("Starting scheduled daily summary...")
         try:
-            # Access the generate_summary method from the stored instance
             await self.channel_summarizer.generate_summary()
             logger.info("Scheduled daily summary finished.")
         except Exception as e:

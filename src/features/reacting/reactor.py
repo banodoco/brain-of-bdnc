@@ -6,14 +6,10 @@ import traceback
 import json
 import asyncio
 import re # Added for text matching
+from discord.ui import View, Button, button # <<< Added for Views
 from src.features.sharing.sharer import Sharer # Import the Sharer class
-from supabase import create_client, Client # Added for Supabase
-import cv2 # Add opencv import (requires installation)
-import numpy as np # Add numpy import (requires installation)
-import tempfile # Add tempfile import
-from io import BytesIO # Keep BytesIO if needed elsewhere, though temp file used here
-from urllib.parse import quote # <<< Added for URL encoding usernames
-import httpx # Import httpx to potentially catch specific errors like WriteError
+from src.common.db_handler import DatabaseHandler # <<< Added DB Handler import
+from src.common.openmuse_interactor import OpenMuseInteractor # <<< Added OpenMuse Interactor import
 
 # Environment variable for watchlist configuration
 # Example format:
@@ -27,37 +23,94 @@ WATCHLIST_JSON = os.getenv('REACTION_WATCHLIST', '[]')
 MAX_UPLOAD_ATTEMPTS = 3
 BASE_RETRY_DELAY_SECONDS = 2
 
+# --- BEGIN VIEW DEFINITION ---
+class PermissionRequestView(View):
+    def __init__(self, author: discord.Member, curator: discord.User, message_link: str, db_handler: DatabaseHandler, logger):
+        super().__init__(timeout=86400.0) # 24 hour timeout for the view
+        self.author = author
+        self.curator = curator
+        self.message_link = message_link
+        self.db_handler = db_handler
+        self.logger = logger
+        self.response_message = None # To store the message sent with the view
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Only allow the author of the original message to interact
+        if interaction.user.id == self.author.id:
+            return True
+        else:
+            await interaction.response.send_message("Sorry, only the author of the work can respond.", ephemeral=True)
+            return False
+
+    async def disable_view(self, interaction: discord.Interaction, final_message: str):
+        """Disables all buttons and updates the message."""
+        for item in self.children:
+            if isinstance(item, Button):
+                item.disabled = True
+        # Use the original interaction or the stored message to edit
+        edit_target = interaction.message if interaction.message else self.response_message
+        if edit_target:
+            await edit_target.edit(content=final_message, view=self)
+        else:
+             self.logger.warning(f"Could not find message to edit after permission response for author {self.author.id}")
+
+    @button(label="Give Permission", style=discord.ButtonStyle.success, custom_id="give_curate_permission")
+    async def give_permission_callback(self, interaction: discord.Interaction, button: Button):
+        self.logger.info(f"[Reactor][Permission] User {self.author.id} GRANTED permission to curator {self.curator.id} for message {self.message_link}")
+        # Update database
+        success = await asyncio.to_thread(self.db_handler.update_member_permission_status, self.author.id, True)
+
+        response_text = f"Thank you! Permission granted to @{self.curator.display_name} to curate your work."
+        if not success:
+            self.logger.error(f"[Reactor][Permission] Failed to update database for user {self.author.id} granting permission.")
+            response_text += "\n(There was an issue saving your preference, please contact an admin)."
+
+        await interaction.response.defer() # Acknowledge interaction immediately
+        await self.disable_view(interaction, response_text)
+        self.stop() # Stop the view from listening
+
+    @button(label="Deny Permission", style=discord.ButtonStyle.danger, custom_id="deny_curate_permission")
+    async def deny_permission_callback(self, interaction: discord.Interaction, button: Button):
+        self.logger.info(f"[Reactor][Permission] User {self.author.id} DENIED permission to curator {self.curator.id} for message {self.message_link}")
+        # Update database
+        success = await asyncio.to_thread(self.db_handler.update_member_permission_status, self.author.id, False)
+
+        response_text = f"Okay, permission denied. @{self.curator.display_name} will not curate this work."
+        if not success:
+            self.logger.error(f"[Reactor][Permission] Failed to update database for user {self.author.id} denying permission.")
+            response_text += "\n(There was an issue saving your preference, please contact an admin)."
+
+        await interaction.response.defer() # Acknowledge interaction immediately
+        await self.disable_view(interaction, response_text)
+        self.stop() # Stop the view from listening
+
+    async def on_timeout(self):
+        self.logger.info(f"[Reactor][Permission] Permission request timed out for author {self.author.id}, curator {self.curator.id}, message {self.message_link}")
+        timeout_message = "This permission request has expired."
+        # Attempt to edit the original message if we stored it
+        if self.response_message:
+            try:
+                for item in self.children:
+                    if isinstance(item, Button):
+                        item.disabled = True
+                await self.response_message.edit(content=timeout_message, view=self)
+            except discord.NotFound:
+                self.logger.warning(f"[Reactor][Permission] Could not find DM message {self.response_message.id} to edit on timeout.")
+            except discord.Forbidden:
+                 self.logger.warning(f"[Reactor][Permission] Missing permissions to edit DM message {self.response_message.id} on timeout.")
+            except Exception as e:
+                 self.logger.error(f"[Reactor][Permission] Error editing DM message {self.response_message.id} on timeout: {e}")
+# --- END VIEW DEFINITION ---
+
 class Reactor:
-    def __init__(self, logger, sharer_instance: Sharer, supabase_url: str | None, supabase_key: str | None, dev_mode=False):
+    def __init__(self, logger, sharer_instance: Sharer, db_handler: DatabaseHandler, openmuse_interactor: OpenMuseInteractor, dev_mode=False):
         self.logger = logger
         self.dev_mode = dev_mode
         self.sharer = sharer_instance # Store the Sharer instance
-        # Store credentials passed from main.py
-        self.supabase_url = supabase_url
-        self.supabase_key = supabase_key
+        self.db_handler = db_handler # Store DB Handler instance
+        self.openmuse_interactor = openmuse_interactor # <<< Store OpenMuse Interactor instance
         self.watchlist = []
-        self.supabase: Client | None = self._init_supabase() # Initialize Supabase client
         self._load_watchlist()
-        # TODO: Initialize other API clients or shared resources here if needed
-        # e.g., self.twitter_api = self.setup_twitter_api()
-
-    def _init_supabase(self) -> Client | None:
-        """Initializes the Supabase client if credentials are provided."""
-        # Use instance variables instead of module-level constants
-        if self.supabase_url and self.supabase_key:
-            try:
-                self.logger.info("[Reactor] Initializing Supabase client.")
-                # Use instance variables
-                return create_client(self.supabase_url, self.supabase_key)
-            except Exception as e:
-                self.logger.error(f"[Reactor] Failed to initialize Supabase client: {e}")
-                # Log the specific key being used (masked) during the failed attempt inside Reactor
-                masked_key_reactor = f"{self.supabase_key[:5]}...{self.supabase_key[-5:]}" if self.supabase_key and len(self.supabase_key) > 10 else self.supabase_key
-                self.logger.error(f"[Reactor] Attempted connection with URL: {self.supabase_url} and Key: {masked_key_reactor}")
-                return None
-        else:
-            self.logger.warning("[Reactor] Supabase URL or Service Key not provided to Reactor. Supabase-dependent actions will be skipped.")
-            return None
 
     def _load_watchlist(self):
         """Loads and parses the reaction watchlist from environment variables."""
@@ -263,6 +316,117 @@ class Reactor:
             self.logger.error(f"[Reactor] Message action method '{method_name}' (for action '{action_name}') not found or not callable.")
 
     # --- Reaction-Triggered Actions ---
+    # Action name in JSON: "request_curation_permission"
+    async def _react_action_request_curation_permission(self, reaction: discord.Reaction, curator: discord.User):
+        """[Reaction Action] Sends a DM to the message author requesting permission to curate their work."""
+        message = reaction.message
+        author = message.author
+        message_link = message.jump_url
+        self.logger.info(f"[Reactor][Permission] Action 'request_curation_permission' triggered by curator {curator.id} ({curator.display_name}) on message {message.id} by author {author.id} ({author.display_name}).")
+
+        if author.bot:
+            self.logger.info(f"[Reactor][Permission] Author {author.id} is a bot. Skipping permission request.")
+            return
+
+        if author.id == curator.id:
+            self.logger.info(f"[Reactor][Permission] Curator {curator.id} reacted to their own message {message.id}. Skipping permission request.")
+            # Optionally send feedback to the curator
+            # try:
+            #     await curator.send(f"You can't request curation permission for your own message: {message_link}")
+            # except discord.Forbidden:
+            #     self.logger.warning(f"[Reactor][Permission] Could not send feedback DM to curator {curator.id}.")
+            return
+
+        if not self.db_handler:
+            self.logger.error("[Reactor][Permission] Database handler not available. Cannot request curation permission.")
+            # Optionally react to the original message with an error indicator
+            # try:
+            #     await message.add_reaction("⚙️") # Cog/Settings emoji
+            # except Exception:
+            #     pass
+            return
+
+        # Check author's current permission status
+        try:
+            author_member_data = await asyncio.to_thread(self.db_handler.get_member, author.id)
+
+            if not author_member_data:
+                 self.logger.info(f"[Reactor][Permission] Author {author.id} not found in DB. Creating member entry.")
+                 # Attempt to create the member with basic info
+                 # Ensure we have necessary info like username. display_name might be None.
+                 success = await asyncio.to_thread(
+                     self.db_handler.create_or_update_member,
+                     member_id=author.id,
+                     username=author.name,
+                     display_name=getattr(author, 'display_name', None), # Use display_name if available
+                     global_name=getattr(author, 'global_name', None),
+                     avatar_url=str(author.display_avatar.url) if author.display_avatar else None,
+                     discriminator=getattr(author, 'discriminator', None),
+                     bot=author.bot,
+                     system=author.system
+                 )
+                 if not success:
+                    self.logger.error(f"[Reactor][Permission] Failed to create database entry for author {author.id}. Aborting permission request.")
+                    # Optionally react to the original message
+                    # try: await message.add_reaction("💾") except Exception: pass
+                    return
+                 # After creation, permission_to_curate will be NULL, so we can proceed
+                 self.logger.info(f"[Reactor][Permission] Member entry created for author {author.id}. Proceeding with DM.")
+                 permission_status = None # Explicitly set to None after creation
+            else:
+                permission_status = author_member_data.get('permission_to_curate')
+                self.logger.info(f"[Reactor][Permission] Author {author.id} found in DB. Current permission_to_curate status: {permission_status}")
+
+            # Check if permission is already decided (True or False, not None)
+            if permission_status is not None: # Checks for both True and False
+                status_str = "granted" if permission_status else "denied"
+                self.logger.info(f"[Reactor][Permission] Author {author.id} has already {status_str} permission. No action needed.")
+                # Optionally DM the curator that permission is already set
+                # try:
+                #      await curator.send(f"Permission for {author.display_name}'s message ({message_link}) has already been {status_str}.")
+                # except discord.Forbidden:
+                #      self.logger.warning(f"[Reactor][Permission] Could not send feedback DM to curator {curator.id}.")
+                return
+
+            # Proceed to send DM if permission is NULL
+            self.logger.info(f"[Reactor][Permission] Permission status for author {author.id} is NULL. Sending permission request DM.")
+
+            dm_content = (
+                f"Hi @{author.display_name}! @{curator.display_name} would like to curate your work to OpenMuse: {message_link}\n\n"
+                f"It will be hosted under your profile name there - for you to edit and update if/when you claim an account by signing up with your Discord account at https://openmuse.ai/.\n\n"
+                f"Do you give permission? (This request expires in 24 hours)"
+            )
+
+            view = PermissionRequestView(author=author, curator=curator, message_link=message_link, db_handler=self.db_handler, logger=self.logger)
+
+            try:
+                sent_message = await author.send(content=dm_content, view=view)
+                view.response_message = sent_message # Store the sent message in the view for editing later (e.g., on timeout)
+                self.logger.info(f"[Reactor][Permission] Successfully sent permission request DM to author {author.id} for message {message.id}. DM ID: {sent_message.id}")
+                # Optionally react to the original message to show DM was sent
+                # try: await message.add_reaction("✉️") except Exception: pass
+
+            except discord.Forbidden:
+                self.logger.warning(f"[Reactor][Permission] Could not send permission request DM to author {author.id}. They may have DMs disabled.")
+                # Optionally react to the original message to show DM failed
+                # try: await message.add_reaction("🚫") except Exception: pass
+                 # Maybe DM the curator?
+                # try:
+                #     await curator.send(f"Could not send curation permission request to {author.display_name} for message {message_link}. Their DMs might be closed.")
+                # except discord.Forbidden:
+                #     pass # Ignore if curator DMs are closed too
+            except Exception as e:
+                self.logger.error(f"[Reactor][Permission] Error sending permission request DM to author {author.id}: {e}")
+                self.logger.error(traceback.format_exc())
+                # Optionally react to the original message
+                # try: await message.add_reaction("⚠️") except Exception: pass
+
+        except Exception as e:
+             self.logger.error(f"[Reactor][Permission] Unexpected error during 'request_curation_permission' for message {message.id}: {e}")
+             self.logger.error(traceback.format_exc())
+             # Add a generic error reaction to the original message
+             # try: await message.add_reaction("🆘") except Exception: pass
+
     # Action name in JSON: "send_tweet_about_message"
     async def _react_action_send_tweet_about_message(self, reaction, user):
         """[Reaction Action] Initiates the sharing process via the Sharer class."""
@@ -282,437 +446,85 @@ class Reactor:
         self.logger.info(f"[Reactor] _react_action_log_general_reaction: Received reaction {reaction.emoji} by user {user.id} on message {message.id}.")
         
     # Action name in JSON: "upload_attachment_to_supabase"
-    async def _react_action_upload_attachment_to_supabase(self, reaction, user):
+    async def _react_action_upload_to_openmuse(self, reaction, user):
         """[Reaction Action] Finds the first attachment, ensures user profile exists, uploads to Supabase Storage, adds media record, and handles video thumbnails."""
         message = reaction.message
         discord_user_id_str = str(user.id)
         self.logger.info(f"[Reactor] Action 'upload_attachment_to_supabase' triggered for message {message.id} by user {discord_user_id_str} with emoji {reaction.emoji}.")
         self.logger.debug(f"[Reactor] Entering _react_action_upload_attachment_to_supabase. Checking author: reacting user {user.id} vs message author {message.author.id}")
         
+        # --- Ensure interactor is available ---
+        if not self.openmuse_interactor:
+             self.logger.error("[Reactor] OpenMuse Interactor not available. Cannot execute 'upload_attachment_to_supabase'.")
+             try: await message.add_reaction("⚙️")
+             except Exception: pass
+             return
+
+        # --- Keep initial checks ---
         if user.id != message.author.id:
             self.logger.debug(f"[Reactor] User {user.id} reacted with {reaction.emoji}, but is not the author ({message.author.id}) of message {message.id}. Skipping action.")
-            return
-
-        if not self.supabase:
-            self.logger.error("[Reactor] Supabase client not initialized. Cannot execute 'upload_attachment_to_supabase'.")
+            # Add feedback reaction?
+            # try: await message.add_reaction("🤔") except Exception: pass
             return
 
         if not message.attachments:
             self.logger.warning(f"[Reactor] No attachments found on message {message.id} for 'upload_attachment_to_supabase' action (triggered by author {user.id}).")
+            try: await message.add_reaction("📎") # Paperclip emoji for no attachment
+            except Exception: pass
             return
         
-        # --- Process the first attachment ---
+        # --- Process the first attachment using the Interactor ---
         attachment = message.attachments[0]
-        filename = attachment.filename
-        content_type = attachment.content_type or 'application/octet-stream'
+        self.logger.info(f"[Reactor] Calling OpenMuseInteractor.upload_discord_attachment for '{attachment.filename}'")
 
-        # --- Add File Size Check ---
-        MAX_FILE_SIZE_BYTES = 512 * 1024 * 1024 # 512 MiB
-        if attachment.size > MAX_FILE_SIZE_BYTES:
-            self.logger.warning(f"[Reactor] Attachment '{filename}' ({attachment.size} bytes) exceeds maximum size ({MAX_FILE_SIZE_BYTES} bytes). Skipping upload.")
-            dm_message = "Sorry, we're too poor to host files this large right now :("
-            try:
-                await user.send(dm_message)
-                self.logger.info(f"[Reactor] Sent file size limit DM to user {user.id}.")
-            except discord.Forbidden:
-                self.logger.warning(f"[Reactor] Failed to send file size limit DM to user {user.id}. They may have DMs disabled.")
+        # --- Call the Interactor --- 
+        media_record, profile_data = await self.openmuse_interactor.upload_discord_attachment(
+            attachment=attachment,
+            author=user, # Pass the reacting user (who is confirmed to be the author)
+            message=message
+        )
+
+        # --- Handle the result --- 
+        if media_record:
+            # Success!
+            self.logger.info(f"[Reactor] Upload successful via Interactor for message {message.id}. Media ID: {media_record.get('id')}")
+            try: await message.add_reaction("✔️")
             except Exception as e:
-                 self.logger.error(f"[Reactor] Error sending file size limit DM to user {user.id}: {e}")
-            # Add a reaction to the original message to indicate the issue
-            try:
-                 await message.add_reaction("💾") # Disk emoji for size issue
-            except Exception as react_ex:
-                 self.logger.error(f"[Reactor] Failed to add size limit reaction to message {message.id}: {react_ex}")
-            return # Stop processing this action
-        # --- End File Size Check ---
+                 self.logger.error(f"[Reactor] Failed to add success reaction: {e}")
 
-        # Define Supabase targets
-        video_bucket_name = "videos" # Bucket for the main video/file
-        thumbnail_bucket_name = "thumbnails" # Bucket for extracted thumbnails
-        profiles_table = "profiles" 
-        media_table = "media"       
+        else:
+            # Upload or DB insert failed, profile step might have succeeded
+            self.logger.warning(f"[Reactor] OpenMuseInteractor failed to create media record for message {message.id}. Profile Data: {bool(profile_data)}")
 
-        profile_id_uuid = None
-        placeholder_image_url = None # Initialize placeholder URL
-        public_url = None # Initialize public_url for the main file
-        calculated_aspect_ratio = None # << Initialize aspect ratio
-
-        try:
-            # --- 1. Select Profile based on discord_user_id ---
-            self.logger.info(f"[Reactor] Checking for existing profile with discord_user_id: {discord_user_id_str}")
-            try:
-                # Select id, discord_connected, username, display_name
-                select_response = await asyncio.to_thread(
-                    self.supabase.table(profiles_table)
-                    .select('id, discord_connected, username, display_name') # <<< Added username, display_name
-                    .eq('discord_user_id', discord_user_id_str)
-                    .limit(1)
-                    .execute
-                )
-                # --- ADDED LOGGING AND CHECK FOR NONE RESPONSE ---
-                self.logger.debug(f"[Reactor] Raw select_response from Supabase query: {select_response}")
-                if select_response is None:
-                    self.logger.error(f"[Reactor] Supabase select query for discord_user_id '{discord_user_id_str}' returned None unexpectedly. Aborting action.") 
-                    await message.add_reaction("⚠️") 
-                    return 
-                # --- END LOGGING AND CHECK ---
-
-                existing_profile_data = select_response.data
-            except Exception as sel_ex:
-                 # --- ADDED TRACEBACK ---
-                 self.logger.error(f"[Reactor] Error selecting profile for discord_user_id '{discord_user_id_str}': {sel_ex}")
-                 self.logger.error(traceback.format_exc()) # Log the full traceback
-                 await message.add_reaction("⚠️")
-                 return
-
-            # --- 1a. If Profile Exists, Conditionally Update It ---
-            if existing_profile_data:
-                profile_id_uuid = existing_profile_data['id']
-                initial_discord_connected = existing_profile_data.get('discord_connected') 
-                supabase_username = existing_profile_data.get('username') # <<< Get username from Supabase
-                existing_display_name = existing_profile_data.get('display_name') # <<< Get display_name from Supabase
-                self.logger.info(f"[Reactor] Found existing profile. UUID: {profile_id_uuid}, User: {supabase_username}, Display: {existing_display_name}, Connected: {initial_discord_connected}")
-                
-                # Prepare data for update conditionally
-                profile_update_data = {
-                    # Always update avatar
-                    'avatar_url': str(user.display_avatar.url) if user.display_avatar else None,
-                }
-                # ONLY update display_name if it's currently NULL or empty in Supabase
-                if not existing_display_name:
-                    profile_update_data['display_name'] = user.display_name 
-                    self.logger.info(f"[Reactor] Existing display_name is NULL/empty, will update.")
-                else:
-                    self.logger.info(f"[Reactor] Existing display_name ('{existing_display_name}') found, will not update.")
-                
-                # Only perform update if there's actually data to update (at least avatar_url)
-                if profile_update_data:
-                    self.logger.info(f"[Reactor] --> Updating existing profile {profile_id_uuid} with data: {profile_update_data}")
-                    try:
-                         await asyncio.to_thread(
-                            self.supabase.table(profiles_table)
-                            .update(profile_update_data)
-                            .eq('id', profile_id_uuid)
-                            .execute
-                        )
-                         self.logger.info(f"[Reactor] <-- Successfully updated profile {profile_id_uuid}.")
-                    except Exception as upd_ex:
-                         self.logger.error(f"[Reactor] Error updating profile {profile_id_uuid}: {upd_ex}")
-                else:
-                    self.logger.info(f"[Reactor] No data requires updating for profile {profile_id_uuid}.")
-
-            # --- 1b. If Profile Does Not Exist, handle it ---
-            else:
-                self.logger.info(f"[Reactor] No existing profile found for discord_user_id {discord_user_id_str}. Informing user to sign up.")
-                # --- START: Send DM to user --- 
-                dm_message = "You need to sign up for a profile on OpenMuse first to upload using this reaction: https://openmuse.ai/" # Removed @ symbol
-                try:
-                    await user.send(dm_message)
-                    self.logger.info(f"[Reactor] Sent profile required DM to user {user.id}.")
-                except discord.Forbidden:
-                    self.logger.warning(f"[Reactor] Failed to send profile required DM to user {user.id}. DMs disabled?")
-                except Exception as dm_ex:
-                    self.logger.error(f"[Reactor] Error sending profile required DM to user {user.id}: {dm_ex}")
-                # --- END: Send DM to user ---
-                
-                # --- Add reaction to original message ---
-                try:
-                    await message.add_reaction("👤") # User profile emoji
-                    self.logger.info(f"[Reactor] Added profile required reaction to message {message.id}")
-                except Exception as react_ex:
-                    self.logger.error(f"[Reactor] Failed to add profile required reaction to message {message.id}: {react_ex}")
-                    
-                return # Stop the function here, do not proceed to upload
-
-            # --- Sanity Check: Ensure profile_id_uuid is set --- 
-            # This check should only be relevant if a profile WAS found and updated
-            if not profile_id_uuid:
-                self.logger.error(f"[Reactor] profile_id_uuid is not set after profile handling for discord_user_id '{discord_user_id_str}'. Aborting.")
-                await message.add_reaction("🆘") # Different emoji for unexpected state
-                return
-
-            # --- 2. Download the file content from Discord ---
-            self.logger.info(f"[Reactor] --> Attempting to read attachment '{filename}' from message {message.id}.") 
-            file_bytes = await attachment.read()
-            self.logger.info(f"[Reactor] <-- Read {len(file_bytes)} bytes for attachment '{filename}'.") 
-
-            # --- 2.5 Extract and Upload Thumbnail IF VIDEO --- 
-            thumbnail_upload_success = False # Flag for successful thumbnail upload
-            if content_type.startswith('video/'):
-                self.logger.info(f"[Reactor] Attachment '{filename}' is a video ({content_type}). Attempting thumbnail extraction and ratio calculation using OpenCV.")
-                temp_video_file = None
-                cap = None # <<< Reverted back to cap
-                frame = None 
-                try:
-                    # Write video bytes to a temporary file
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as temp_video_file:
-                        temp_video_file.write(file_bytes)
-                        temp_video_path = temp_video_file.name
-                    self.logger.info(f"[Reactor] Video bytes written to temporary file: {temp_video_path}")
-                    
-                    # Use OpenCV VideoCapture
-                    cap = cv2.VideoCapture(temp_video_path)
-                    if not cap.isOpened():
-                        self.logger.error(f"[Reactor] OpenCV could not open temporary video file: {temp_video_path}")
-                    else:
-                        ret, frame = cap.read() # Read the first frame
-                        if ret:
-                            self.logger.info(f"[Reactor] Successfully read first frame from video using OpenCV.")
-                            # --- Calculate Aspect Ratio using OpenCV frame.shape ---
-                            try:
-                                h, w = frame.shape[:2]
-                                if h > 0: 
-                                    calculated_aspect_ratio = round(w / h, 2) 
-                                    self.logger.info(f"[Reactor] OpenCV Calculated aspect ratio: {calculated_aspect_ratio} (w={w}, h={h})")
-                                else:
-                                    self.logger.warning("[Reactor] Frame height is 0, cannot calculate aspect ratio.")
-                            except Exception as ar_ex:
-                                 self.logger.error(f"[Reactor] Error calculating aspect ratio from frame shape: {ar_ex}")
-                            # ---------------------------------------------------------
-                            
-                            # Encode frame as JPEG using OpenCV
-                            is_success, buffer = cv2.imencode(".jpg", frame)
-                            if is_success:
-                                thumbnail_bytes = buffer.tobytes()
-                                self.logger.info(f"[Reactor] Encoded frame to {len(thumbnail_bytes)} bytes (JPEG).")
-                                
-                                # Define thumbnail path
-                                thumbnail_filename = f"{os.path.splitext(filename)[0]}_thumb.jpg"
-                                thumbnail_storage_path = f"user_media/{profile_id_uuid}/{message.id}_{thumbnail_filename}"
-                                self.logger.info(f"[Reactor] --> Attempting to upload thumbnail to bucket '{thumbnail_bucket_name}' at path '{thumbnail_storage_path}'.")
-                                
-                                # --- BEGIN THUMBNAIL UPLOAD RETRY LOGIC ---
-                                for attempt in range(MAX_UPLOAD_ATTEMPTS):
-                                    try:
-                                        await asyncio.to_thread(
-                                            self.supabase.storage.from_(thumbnail_bucket_name).upload,
-                                            path=thumbnail_storage_path,
-                                            file=thumbnail_bytes,
-                                            file_options={"content-type": "image/jpeg", "upsert": "true"}
-                                        )
-                                        self.logger.info(f"[Reactor] <-- Successfully uploaded thumbnail '{thumbnail_filename}' (Attempt {attempt + 1}).")
-                                        thumbnail_upload_success = True
-                                        break # Exit loop on success
-                                    except (Exception, httpx.WriteError) as upload_ex: # Catch specific write errors too
-                                        self.logger.warning(f"[Reactor] Thumbnail upload attempt {attempt + 1}/{MAX_UPLOAD_ATTEMPTS} failed: {upload_ex}")
-                                        if attempt + 1 < MAX_UPLOAD_ATTEMPTS:
-                                            delay = BASE_RETRY_DELAY_SECONDS * (2 ** attempt)
-                                            self.logger.info(f"[Reactor] Retrying thumbnail upload in {delay} seconds...")
-                                            await asyncio.sleep(delay)
-                                        else:
-                                            self.logger.error(f"[Reactor] Thumbnail upload failed after {MAX_UPLOAD_ATTEMPTS} attempts.")
-                                            # Add reaction but don't stop the whole process
-                                            try:
-                                                await message.add_reaction("🖼️") # Indicate thumbnail issue
-                                            except Exception as react_ex:
-                                                 self.logger.error(f"[Reactor] Failed to add thumbnail error reaction: {react_ex}")
-                                            # thumbnail_upload_success remains False
-                                # --- END THUMBNAIL UPLOAD RETRY LOGIC ---
-
-                                # Only get URL if thumbnail upload succeeded
-                                if thumbnail_upload_success:
-                                    try:
-                                        self.logger.info(f"[Reactor] --> Attempting to get public URL for thumbnail '{thumbnail_storage_path}'.")
-                                        thumb_url_resp = await asyncio.to_thread(
-                                                self.supabase.storage.from_(thumbnail_bucket_name).get_public_url, thumbnail_storage_path
-                                        )
-                                        placeholder_image_url = thumb_url_resp 
-                                        self.logger.info(f"[Reactor] <-- Got thumbnail public URL: {placeholder_image_url}")
-                                    except Exception as url_ex:
-                                        self.logger.error(f"[Reactor] Failed to get public URL for successfully uploaded thumbnail '{thumbnail_storage_path}': {url_ex}")
-                                        # placeholder_image_url remains None
-
-                            else:
-                                self.logger.error("[Reactor] Failed to encode video frame (obtained via OpenCV) to JPEG using OpenCV.")
-                        else:
-                            self.logger.error("[Reactor] Failed to read first frame from video using OpenCV.")
-                except Exception as thumb_ex:
-                     self.logger.error(f"[Reactor] Error during thumbnail/ratio processing (OpenCV): {thumb_ex}")
-                     self.logger.error(traceback.format_exc())
-                finally:
-                    # Release the OpenCV capture
-                    if cap and cap.isOpened():
-                        cap.release()
-                        self.logger.info("[Reactor] Released video capture.")
-                    # Remove the temporary file
-                    if temp_video_file and os.path.exists(temp_video_path):
-                         try:
-                             os.remove(temp_video_path)
-                             self.logger.info(f"[Reactor] Removed temporary video file: {temp_video_path}")
-                         except OSError as e:
-                             self.logger.error(f"[Reactor] Error removing temporary file {temp_video_path}: {e}")
-            else:
-                self.logger.info(f"[Reactor] Attachment '{filename}' is not a video ({content_type}). Skipping thumbnail extraction and aspect ratio calculation.")
-
-            # --- 3. Upload Original File to Supabase Storage ---
-            storage_path = f"user_media/{profile_id_uuid}/{message.id}_{filename}" 
-            self.logger.info(f"[Reactor] --> Attempting to upload original file '{filename}' to Supabase Storage bucket '{video_bucket_name}' at path '{storage_path}'.") 
+            # Determine appropriate reaction based on possibility (could enhance Interactor return value)
+            failure_emoji = "❌" # Default failure emoji
             
-            # --- BEGIN ORIGINAL FILE UPLOAD RETRY LOGIC ---
-            main_upload_success = False
-            for attempt in range(MAX_UPLOAD_ATTEMPTS):
-                try:
-                    await asyncio.to_thread(
-                        self.supabase.storage.from_(video_bucket_name).upload,
-                        path=storage_path,
-                        file=file_bytes,
-                        file_options={"content-type": content_type, "upsert": "true"} 
-                    )
-                    self.logger.info(f"[Reactor] <-- Successfully uploaded original file '{filename}' to Supabase Storage path '{storage_path}' (Attempt {attempt + 1}).")
-                    main_upload_success = True
-                    break # Exit loop on success
-                except (Exception, httpx.WriteError) as upload_ex:
-                     self.logger.warning(f"[Reactor] Original file upload attempt {attempt + 1}/{MAX_UPLOAD_ATTEMPTS} failed: {upload_ex}")
-                     if attempt + 1 < MAX_UPLOAD_ATTEMPTS:
-                         delay = BASE_RETRY_DELAY_SECONDS * (2 ** attempt)
-                         self.logger.info(f"[Reactor] Retrying original file upload in {delay} seconds...")
-                         await asyncio.sleep(delay)
-                     else:
-                         self.logger.error(f"[Reactor] Original file upload failed after {MAX_UPLOAD_ATTEMPTS} attempts. Aborting action for this message.")
-                         # --- SEND DM ON FAILURE ---
-                         dm_message = f"Sorry, I couldn't upload your file '{filename}' to OpenMuse after {MAX_UPLOAD_ATTEMPTS} attempts. \nPlease try again later. If the problem persists, let an admin know."
-                         try:
-                             await user.send(dm_message)
-                             self.logger.info(f"[Reactor] Sent upload failure DM to user {user.id}.")
-                         except discord.Forbidden:
-                             self.logger.warning(f"[Reactor] Failed to send upload failure DM to user {user.id}. They may have DMs disabled.")
-                         except Exception as dm_ex:
-                             self.logger.error(f"[Reactor] Error sending upload failure DM to user {user.id}: {dm_ex}")
-                         # --- END SEND DM ---
-                         # Add reaction and STOP the function execution
-                         try:
-                             await message.add_reaction("🔁") # Indicate retry failure
-                         except Exception as react_ex:
-                              self.logger.error(f"[Reactor] Failed to add retry failure reaction: {react_ex}")
-                         return # <<<< EXIT THE FUNCTION HERE
-            # --- END ORIGINAL FILE UPLOAD RETRY LOGIC ---
+            # Check for size error first
+            if attachment.size > self.openmuse_interactor.MAX_FILE_SIZE_BYTES:
+                 failure_emoji = "💾"
+                 # Send DM for size error - nested inside the size check
+                 dm_message = "Sorry, we're too poor to host files this large right now :("
+                 try:
+                     await user.send(dm_message)
+                     self.logger.info(f"[Reactor] Sent file size limit DM to user {user.id}.")
+                 except discord.Forbidden:
+                     self.logger.warning(f"[Reactor] Failed to send file size limit DM to user {user.id}. They may have DMs disabled.")
+                 except Exception as e:
+                     self.logger.error(f"[Reactor] Error sending file size limit DM to user {user.id}: {e}")
+            
+            # Check for profile failure ONLY if size wasn't the issue
+            elif not profile_data:
+                 # If profile data is also None, profile step likely failed
+                 failure_emoji = "👤"
+                 # Consider adding a DM here if profile step failed?
 
-            # --- 4. Get Public URL for the Original File (Only if upload succeeded) ---
-            if main_upload_success:
-                try:
-                    self.logger.info(f"[Reactor] --> Attempting to get public URL for original file '{storage_path}'.")
-                    public_url_response = await asyncio.to_thread(
-                         self.supabase.storage.from_(video_bucket_name).get_public_url, storage_path
-                    )
-                    public_url = public_url_response
-                    self.logger.info(f"[Reactor] <-- Got public URL for original file '{storage_path}': {public_url}") 
-                except Exception as url_ex:
-                    self.logger.error(f"[Reactor] Failed to get public URL for successfully uploaded original file '{storage_path}': {url_ex}")
-                    # public_url remains None. Consider if this should also cause failure/reaction.
-                    # For now, log and proceed to insert media record without URL.
-                    try:
-                        await message.add_reaction("🔗") # Link error reaction
-                    except Exception: pass # Ignore reaction error here
+            # Add the determined failure reaction (runs regardless of which condition above was met)
+            try:
+                await message.add_reaction(failure_emoji)
+            except Exception as e:
+                 self.logger.error(f"[Reactor] Failed to add failure reaction '{failure_emoji}': {e}")
 
-            else:
-                # This case should not be reachable due to the 'return' in the retry loop failure
-                self.logger.error("[Reactor] Reached code path after main upload failure - this should not happen.")
-                return
-
-            # --- 5. Insert record into Supabase Media Table ---
-            # Determine classification based on channel name
-            classification = None
-            if message.channel and hasattr(message.channel, 'name'): # Check if channel and name exist
-                if message.channel.name.lower().startswith('art'):
-                    classification = 'art'
-                    self.logger.info(f"[Reactor] Setting classification to 'art' based on channel name '{message.channel.name}'.")
-                else:
-                    classification = 'gen'
-                    self.logger.info(f"[Reactor] Setting classification to 'gen' as channel name '{message.channel.name}' does not start with 'art'.")
-            else:
-                 classification = 'gen' # Default if channel name unavailable
-                 self.logger.warning("[Reactor] Could not determine channel name, defaulting classification to 'gen'.")
-
-            media_data = {
-                'user_id': profile_id_uuid, 
-                'title': None if content_type.startswith('video/') else filename, # Set title to None for videos
-                'url': public_url, 
-                'placeholder_image': placeholder_image_url, 
-                'type': content_type if not content_type.startswith('video/') else 'video', # Use original type or 'video'
-                'classification': classification, 
-                'admin_status': 'Listed', 
-                'user_status': 'View', 
-                'metadata': { 
-                    "discord_message_id": str(message.id),
-                    "discord_channel_id": str(message.channel.id),
-                    "discord_guild_id": str(message.guild.id) if message.guild else None,
-                    "discord_attachment_url": attachment.url, 
-                    "reacted_by_discord_user_id": discord_user_id_str,
-                    "trigger_emoji": str(reaction.emoji),
-                    "aspectRatio": calculated_aspect_ratio # <<< CHANGED KEY NAME HERE
-                }
-            }
-            self.logger.info(f"[Reactor] --> Attempting to insert record into Supabase table '{media_table}'. Data: {media_data}") 
-            await asyncio.to_thread(
-                 self.supabase.table(media_table).insert(media_data).execute
-            )
-            self.logger.info(f"[Reactor] <-- Successfully inserted record into table '{media_table}'.") # Simplified log message
-
-            # Optionally react to the original message to indicate success
-            self.logger.info(f"[Reactor] --> Adding ✔️ reaction to message {message.id}.")
-            await message.add_reaction("✔️") # <<< Changed emoji here 
-            self.logger.info(f"[Reactor] <-- Added ✔️ reaction.")
-
-            # --- 6. Check discord_connected and send Welcome DM if needed --- 
-            if initial_discord_connected == False: 
-                self.logger.info(f"[Reactor] Profile {profile_id_uuid} discord_connected is False. Attempting to send Welcome DM.")
-                try:
-                    # Use the username fetched/set from/in Supabase for the URL
-                    username_for_url = supabase_username 
-                    if not username_for_url:
-                        # Fallback to current Discord username if Supabase username wasn't retrieved (shouldn't happen)
-                        self.logger.warning(f"[Reactor] Supabase username not available for profile {profile_id_uuid}, falling back to current Discord username for DM URL.")
-                        username_for_url = user.name
-                    
-                    formatted_username = quote(username_for_url, safe='') 
-                    profile_url = f"https://openmuse.ai/profile/{formatted_username}"
-                    dm_message = (
-                        f"Your first upload to OpenMuse via Discord has been successful!\n\n"
-                        f"You can see your profile here: {profile_url}"
-                    )
-                    
-                    self.logger.info(f"[Reactor] --> Sending Welcome DM to user {user.id} (URL uses username: '{username_for_url}').")
-                    await user.send(dm_message)
-                    self.logger.info(f"[Reactor] <-- Successfully sent Welcome DM to user {user.id}.")
-
-                    # Update discord_connected to True
-                    self.logger.info(f"[Reactor] --> Attempting to update discord_connected to True for profile {profile_id_uuid}.")
-                    update_response = await asyncio.to_thread(
-                        self.supabase.table(profiles_table)
-                        .update({'discord_connected': True})
-                        .eq('id', profile_id_uuid)
-                        .execute
-                    )
-                    # You might want to check update_response for errors if needed
-                    self.logger.info(f"[Reactor] <-- Updated discord_connected status for profile {profile_id_uuid}.")
-
-                except discord.Forbidden:
-                     self.logger.warning(f"[Reactor] Failed to send Welcome DM to user {user.id}. They may have DMs disabled.")
-                except Exception as dm_update_ex:
-                     self.logger.error(f"[Reactor] Error sending Welcome DM or updating discord_connected for profile {profile_id_uuid}: {dm_update_ex}")
-                     self.logger.error(traceback.format_exc())
-            else:
-                 # Log why DM wasn't sent (already connected or status unknown)
-                 if initial_discord_connected is None:
-                     self.logger.info(f"[Reactor] Skipping Welcome DM for profile {profile_id_uuid} as initial status could not be determined.")
-                 else: # Must be True if not False or None
-                     self.logger.info(f"[Reactor] Skipping Welcome DM for profile {profile_id_uuid} as discord_connected is already True.")
-
-            self.logger.info(f"[Reactor] <-- Finished action '_react_action_upload_attachment_to_supabase' successfully for message {message.id}.")
-
-        except discord.HTTPException as e:
-             self.logger.error(f"[Reactor] Discord HTTP error during operation for message {message.id}: {e}")
-             # Ensure reaction is added even if error happens before the retry logic completes
-             try: await message.add_reaction("❌") 
-             except Exception: pass
-        except Exception as e: 
-            # This block will now catch errors *not* handled by the retry loops (e.g., profile handling, media insert)
-            # or if the retry logic itself has an unexpected error.
-            self.logger.error(f"[Reactor] Unhandled error during Supabase operation for message {message.id} (Profile: {profile_id_uuid}): {e}")
-            self.logger.error(traceback.format_exc())
-            # Ensure reaction is added
-            try: await message.add_reaction("❌") 
-            except Exception: pass
+        self.logger.info(f"[Reactor] Finished action '_react_action_upload_attachment_to_supabase' for message {message.id}.")
 
     # --- Message-Triggered Actions ---
     # Action name in JSON: "log_special_keyword" (Example)

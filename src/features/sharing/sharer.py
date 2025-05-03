@@ -165,7 +165,7 @@ class Sharer:
             # Use the dispatcher
             claude_desc = await get_llm_response(
                 client_name="claude",
-                model="claude-3-5-haiku-20240307", # Use Haiku for faster/cheaper description
+                model="claude-3-5-sonnet-latest", # Use Haiku for faster/cheaper description
                 system_prompt=desc_system_prompt,
                 messages=desc_messages,
                 max_tokens=150, # Allow slightly longer description

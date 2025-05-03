@@ -167,6 +167,7 @@ class DatabaseHandler:
                     website TEXT,
                     sharing_consent BOOLEAN DEFAULT FALSE,
                     dm_preference BOOLEAN DEFAULT TRUE,
+                    permission_to_curate BOOLEAN DEFAULT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -690,8 +691,8 @@ class DatabaseHandler:
                      discriminator, bot, system, accent_color, banner_url, 
                      discord_created_at, guild_join_date, role_ids,
                      twitter_handle, instagram_handle, youtube_handle, tiktok_handle, 
-                     website, sharing_consent, dm_preference)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     website, sharing_consent, dm_preference, permission_to_curate)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 """, (member_id, username, display_name, global_name, avatar_url,
                       discriminator, bot, system, accent_color, banner_url,
                       discord_created_at, guild_join_date, role_ids,
@@ -702,6 +703,30 @@ class DatabaseHandler:
             return True
             
         return self._execute_with_retry(member_operation)
+
+    def update_member_permission_status(self, member_id: int, permission_status: Optional[bool]) -> bool:
+        """Update the permission_to_curate status for a specific member."""
+        def update_permission_operation(conn):
+            cursor = conn.cursor()
+            try:
+                cursor.execute("""
+                    UPDATE members
+                    SET permission_to_curate = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE member_id = ?
+                """, (permission_status, member_id))
+                updated = cursor.rowcount > 0
+                if updated:
+                    logger.info(f"Updated permission_to_curate for member {member_id} to {permission_status}")
+                else:
+                    logger.warning(f"Attempted to update permission_to_curate for non-existent member {member_id}")
+                cursor.close()
+                return updated
+            except sqlite3.Error as e:
+                logger.error(f"Database error updating permission for member {member_id}: {e}")
+                cursor.close()
+                return False
+
+        return self._execute_with_retry(update_permission_operation)
 
     def get_channel(self, channel_id: int) -> Optional[Dict]:
         """Get a channel by its ID."""

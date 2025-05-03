@@ -107,3 +107,6 @@ test_art_query.py
 
 # Project specific
 /files/
+
+# Project specific results/output
+results/

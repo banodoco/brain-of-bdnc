@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 import json
 from collections import defaultdict
 import asyncio
+import traceback
 
 # Adjust the path to import from the 'src' directory
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -19,24 +20,25 @@ from src.common.constants import get_database_path
 from src.common.llm import get_llm_response
 
 # --- Configuration ---
-BATCH_SIZE = 2500
+BATCH_SIZE = 1000
 DEFAULT_DEV_MODE = False # Set to True if you want to use the dev database by default
 LOG_PREVIEW_MESSAGE_COUNT = 3 # How many messages to preview per batch
 # --- LLM Configuration ---
 LLM1_CLIENT = "openai"
 # Using a placeholder 'o3' model name, adjust as needed.
 # See src/common/llm/openai_client.py for how 'o' models are handled.
-LLM1_MODEL = "o3"
+LLM1_MODEL = "o3-mini"
 LLM1_SYSTEM_PROMPT = """You are an AI assistant analyzing Discord messages from an open source AI art community. The community allocates monthly 'ownership' to contributors who advance the ecosystem (tools, models, workflows, help, resources).
 
 Your task is to identify potential candidates for this allocation based *solely* on the provided batch of messages. Prioritize individuals who:
 1. Create/share tangible, useful open source work (code, models, workflows, guides).
 2. Demonstrate significant helpfulness (troubleshooting, detailed explanations).
 3. Post messages/content with high positive reactions (indicated by '| N reacts |', focus on >= 2 reacts).
+4. Focus on contributions where the person seems to be the primary contributor - as opposed to just sharing someone else's work.
 
 Return your findings ONLY as a valid JSON object. The object should contain a single key "candidates" whose value is a list of JSON objects. Each object in the "candidates" list must have the following keys:
 - "handle": The Discord handle/username (string).
-- "justification": A concise description justifying their potential eligibility based on criteria observed *in this batch* (string).
+- "justification": A concise description justifying their potential eligibility based on criteria observed *in this batch* (string) - don't explicitly mention the number of reactions, just focus on the content and its usefulness.
 
 Example JSON Output:
 {
@@ -51,19 +53,19 @@ Example JSON Output:
     },
     {
       "handle": "creative_person",
-      "justification": "Posted an image generated with a new technique that received '15 reacts' (high reactions)."
+      "justification": "Posted demonstrations of new techniques that got a lot of response from the community."
     }
   ]
 }
 
-If no candidates are found in this batch, return: {"candidates": []}
-Focus only on evidence within this message batch. Do not include any text outside the JSON object."""
-LLM1_MAX_TOKENS = 4096 # Corresponds to max_completion_tokens for 'o' models
+Keep a reasonably high-bar. If no candidates are found in this batch, return: {"candidates": []}
+Focus only on evidence within this message batch. DO NOT include any text outside the JSON object."""
+LLM1_MAX_TOKENS = 99999 # Corresponds to max_completion_tokens for 'o' models
 # LLM1_TEMPERATURE = 0.5 # Removed as not supported by model
 
 # LLM2 Configuration
 LLM2_CLIENT = "openai"
-LLM2_MODEL = "o3" # Can be same or different model
+LLM2_MODEL = "o3-mini" # Can be same or different model
 LLM2_SYSTEM_PROMPT = """You are an AI assistant tasked with refining a list of potential community contributors based on justifications gathered from multiple message batches.
 
 You will receive a JSON list of candidates. Each candidate object has a "handle" and a "justification". The "justification" field may contain concatenated text from different sources, separated by '---'.
@@ -86,12 +88,12 @@ Example Output Candidate (after your refinement):
 }
 
 If the input list is empty, return: {"candidates": []}
-Do not include any text outside the final JSON object."""
-LLM2_MAX_TOKENS = 4096 # Adjust as needed
+DO NOT include any text outside the final JSON object."""
+LLM2_MAX_TOKENS = 99999 # Adjust as needed
 
 
 # Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [ShortlistScript] - %(message)s')
 logger = logging.getLogger(__name__)
 
 # --- Placeholder LLM Functions ---
@@ -157,29 +159,44 @@ async def process_candidates_with_llm2(candidates: List[Dict]) -> Dict:
             input_preview = input_json_str[:1000] + ("..." if len(input_json_str) > 1000 else "")
             logger.debug(f"LLM2 Input Preview:\n{input_preview}")
 
+        # Add logging BEFORE the call
+        logger.info(f"Calling get_llm_response for LLM2 ({LLM2_CLIENT}/{LLM2_MODEL})...")
         refined_result_text = await get_llm_response(
             client_name=LLM2_CLIENT,
             model=LLM2_MODEL,
             system_prompt=LLM2_SYSTEM_PROMPT,
             messages=messages_for_llm2,
-            max_completion_tokens=LLM2_MAX_TOKENS, # Use max_completion_tokens for 'o' model
-            response_format={"type": "json_object"} # Request JSON output
+            max_completion_tokens=LLM2_MAX_TOKENS, # Ensure LLM2_MAX_TOKENS is used here
+            response_format={"type": "json_object"}, # Request JSON output
+            reasoning_effort="high" # Add high reasoning effort
         )
+        # Add logging AFTER the call
+        logger.info(f"Received response from LLM2 ({LLM2_CLIENT}/{LLM2_MODEL}). Length: {len(refined_result_text)}")
+
+        # --- Add this block to clean the response ---
+        cleaned_text = refined_result_text.strip()
+        if cleaned_text.startswith("```json\n") and cleaned_text.endswith("\n```"):
+            cleaned_text = cleaned_text[len("```json\n"):-len("\n```")]
+        elif cleaned_text.startswith("```") and cleaned_text.endswith("```"):
+            # Handle cases where it might just be ```...```
+            cleaned_text = cleaned_text[3:-3]
+        # ---------------------------------------------
 
         # Attempt to parse the refined result as JSON
         try:
-            refined_result = json.loads(refined_result_text)
+            # Use the cleaned_text variable here
+            refined_result = json.loads(cleaned_text)
             # Validate structure
             if not isinstance(refined_result, dict) or "candidates" not in refined_result or not isinstance(refined_result["candidates"], list):
-                logger.error(f"LLM2 response parsed as JSON but missing expected structure: {refined_result_text[:200]}...")
-                return {"error": "LLM2 response structure invalid", "raw_response": refined_result_text}
+                logger.error(f"LLM2 response parsed as JSON but missing expected structure: {cleaned_text[:200]}...")
+                return {"error": "LLM2 response structure invalid", "raw_response": refined_result_text} # Log original raw text
 
             logger.info(f"LLM 2 refinement successful. Refined {len(refined_result.get('candidates', []))} candidates.")
             return refined_result # Return the parsed, validated JSON
 
         except json.JSONDecodeError:
-            logger.error(f"Failed to parse LLM2 response as JSON. Response text: {refined_result_text[:200]}...", exc_info=False)
-            return {"error": "LLM2 response was not valid JSON", "raw_response": refined_result_text}
+            logger.error(f"Failed to parse LLM2 response as JSON. Cleaned text: {cleaned_text[:200]}... Original text: {refined_result_text[:200]}...", exc_info=False)
+            return {"error": "LLM2 response was not valid JSON", "raw_response": refined_result_text} # Log original raw text
 
     except Exception as llm_error:
         logger.error(f"Error during LLM2 call with {LLM2_CLIENT} model {LLM2_MODEL}: {llm_error}", exc_info=True)
@@ -423,12 +440,35 @@ def format_messages_hierarchical(messages: List[Dict], db_handler: DatabaseHandl
     formatted.sort(key=lambda x: (x["ancestor_id"], x["created_at"]))
     return formatted
 
+# --- Helper function for saving results ---
+def save_results_to_md(file_path: str, data: Any, header: str):
+    """Appends formatted data under a header to the specified Markdown file."""
+    try:
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
+        with open(file_path, 'a', encoding='utf-8') as f:
+            f.write(f"## {header}\n\n")
+            if isinstance(data, (dict, list)):
+                json_str = json.dumps(data, indent=2)
+                f.write(f"```json\n{json_str}\n```\n\n")
+            else:
+                # Handle raw text or other types
+                f.write(f"```\n{str(data)}\n```\n\n")
+        logger.info(f"Successfully saved '{header}' results to {file_path}")
+    except Exception as e:
+        logger.error(f"Failed to save results under header '{header}' to {file_path}: {e}", exc_info=True)
+
 # --- Main Script Logic ---
 
 async def main():
     parser = argparse.ArgumentParser(description="Fetch messages for a specific month, process them in batches with LLMs.")
     parser.add_argument("-m", "--month", help="The month to process in YYYY-MM format.", type=str)
     parser.add_argument("--dev", action='store_true', help="Use the development database.")
+    parser.add_argument("--no-llm1", action='store_true', help="Skip LLM1 processing (for debugging).")
+    parser.add_argument("--no-llm2", action='store_true', help="Skip LLM2 processing (for debugging).")
+    # Add the save-results flag
+    parser.add_argument("--save-results", action='store_true', help="Save intermediate and final results to a Markdown file.")
     args = parser.parse_args()
 
     dev_mode = args.dev or DEFAULT_DEV_MODE
@@ -437,8 +477,28 @@ async def main():
 
     logger.info(f"Processing messages for {year_month} (from {start_date} to {end_date})")
     logger.info(f"Using {'development' if dev_mode else 'production'} database.")
+    if args.no_llm1: logger.warning("LLM1 processing will be SKIPPED.")
+    if args.no_llm2: logger.warning("LLM2 processing will be SKIPPED.")
+    if args.save_results: logger.info("--save-results flag detected. Results will be saved.")
     if dev_mode:
         logger.info("--- DEVELOPMENT MODE ACTIVE ---")
+        
+    # --- Prepare results file if flag is set ---
+    results_file_path = None
+    if args.save_results:
+        results_dir = os.path.join(project_root, 'results')
+        results_file_path = os.path.join(results_dir, f"{year_month}_shortlist_results.md")
+        try:
+            # Ensure directory exists
+            os.makedirs(results_dir, exist_ok=True)
+            # Create/clear the file and write the main header
+            with open(results_file_path, 'w', encoding='utf-8') as f:
+                f.write(f"# Monthly Equity Shortlist Results - {year_month}\n\n")
+            logger.info(f"Initialized results file: {results_file_path}")
+        except Exception as e:
+             logger.error(f"Failed to initialize results file {results_file_path}: {e}", exc_info=True)
+             results_file_path = None # Disable saving if initialization fails
+    # ------------------------------------------
 
     try:
         # Initialize database handler
@@ -453,13 +513,19 @@ async def main():
 
         if not raw_messages:
             logger.info("No messages found for the specified month. Exiting.")
+            # Save info to results file if enabled
+            if results_file_path:
+                 save_results_to_md(results_file_path, "No messages found for the specified month.", "Status")
+            print(json.dumps({"candidates": [], "info": "No messages found for period"})) # Print empty result and exit
             return
 
         # Format messages hierarchically (indentation, prefixes, etc.)
+        logger.info("Formatting messages hierarchically...")
         formatted_records = format_messages_hierarchical(raw_messages, db_handler)
         logger.info(f"After filtering & formatting, {len(formatted_records)} messages remain.")
 
         # Convert each record to a single string line resembling the SQL output
+        logger.info("Converting records to formatted lines...")
         formatted_lines: List[str] = []
         for rec in formatted_records:
             # rec['created_at'] is stored as ISO string – keep as-is for now or convert if desired
@@ -478,6 +544,7 @@ async def main():
 
         # Process each batch with the first LLM
         llm1_results = []
+        logger.info("Starting LLM1 batch processing...")
         batches_to_process = len(batches)
         if dev_mode:
              # Limit to max 2 batches in dev mode
@@ -490,6 +557,12 @@ async def main():
             # Skip processing if we've hit the dev mode limit
             if dev_mode and i >= batches_to_process:
                 logger.info(f"--- DEV MODE: Skipping batch {i+1}/{len(batches)} --- ")
+                # Ensure batch_result is defined even when skipping
+                batch_result = {"candidates": [], "info": f"Skipped batch {i+1} due to dev mode limit"}
+                llm1_results.append(batch_result)
+                # Save skipped batch info to results file if enabled
+                if results_file_path:
+                     save_results_to_md(results_file_path, batch_result, f"LLM1 Batch {i+1} Result (Skipped)")
                 continue # Skip this batch
 
             logger.info(f"--- Processing Batch {i+1}/{len(batches)} --- ('Dev Mode Batch {i+1}' if dev_mode else '')")
@@ -501,47 +574,71 @@ async def main():
                 logger.info(f"  Msg {msg_index+1}: {line}")
             if not batch:
                 logger.info("  Batch is empty.")
+                # Handle empty batch result
+                batch_result = {"candidates": [], "info": f"Batch {i+1} was empty"}
+                llm1_results.append(batch_result)
+                 # Save empty batch info to results file if enabled
+                if results_file_path:
+                     save_results_to_md(results_file_path, batch_result, f"LLM1 Batch {i+1} Result (Empty)")
                 continue
 
             # --- Call LLM 1 ---
             try:
-                # Format batch content for LLM
-                # Sending the whole batch as a single user message content string
-                batch_content = "\n".join(batch)
-                messages_for_llm = [{"role": "user", "content": batch_content}]
+                if args.no_llm1:
+                    logger.warning(f"--- SKIPPING LLM1 CALL for batch {i+1} due to --no-llm1 flag ---")
+                    batch_result = {"candidates": [], "info": f"LLM1 skipped for batch {i+1}"}
+                else:
+                    # Format batch content for LLM
+                    # Sending the whole batch as a single user message content string
+                    batch_content = "\n".join(batch)
+                    messages_for_llm = [{"role": "user", "content": batch_content}]
 
-                if dev_mode:
-                     content_preview = batch_content[:500] + ("..." if len(batch_content) > 500 else "")
-                     logger.info(f"--- DEV MODE: Sending content to LLM (Preview):\n{content_preview}")
+                    if dev_mode:
+                         content_preview = batch_content[:500] + ("..." if len(batch_content) > 500 else "")
+                         logger.info(f"--- DEV MODE: Sending content to LLM (Preview):\n{content_preview}")
 
-                # Make the actual async LLM call
-                batch_result_text = await get_llm_response(
-                    client_name=LLM1_CLIENT,
-                    model=LLM1_MODEL,
-                    system_prompt=LLM1_SYSTEM_PROMPT,
-                    messages=messages_for_llm,
-                    # Pass kwargs expected by the client
-                    # For 'o' models, openai_client expects 'max_completion_tokens'
-                    max_completion_tokens=LLM1_MAX_TOKENS,
-                    # Request JSON output if supported by the model/client
-                    response_format={"type": "json_object"}
-                )
+                    # Make the actual async LLM call
+                    logger.info(f"Calling get_llm_response for LLM1 ({LLM1_CLIENT}/{LLM1_MODEL}) on batch {i+1}... Size: {len(batch_content)} chars")
+                    batch_result_text = await get_llm_response(
+                        client_name=LLM1_CLIENT,
+                        model=LLM1_MODEL,
+                        system_prompt=LLM1_SYSTEM_PROMPT,
+                        messages=messages_for_llm,
+                        # Pass kwargs expected by the client
+                        # For 'o' models, openai_client expects 'max_completion_tokens'
+                        max_completion_tokens=LLM1_MAX_TOKENS,
+                        # Request JSON output if supported by the model/client
+                        response_format={"type": "json_object"},
+                        reasoning_effort="high" # Add high reasoning effort
+                    )
+                    logger.info(f"Received response from LLM1 ({LLM1_CLIENT}/{LLM1_MODEL}) for batch {i+1}. Length: {len(batch_result_text)}")
 
-                # Attempt to parse the result as JSON
-                try:
-                    batch_result = json.loads(batch_result_text)
-                    # Optional: Validate structure further if needed
-                    if not isinstance(batch_result, dict) or "candidates" not in batch_result or not isinstance(batch_result["candidates"], list):
-                        logger.warning(f"LLM response parsed as JSON but missing expected structure (batch {i+1}): {batch_result_text[:200]}...")
-                        # Store raw text if structure is wrong, but indicate issue
-                        batch_result = {"parsing_error": "JSON structure invalid", "raw_response": batch_result_text}
-                    else:
-                        logger.info(f"LLM 1 processing for batch {i+1} successful (JSON Parsed).")
+                    # --- Add this block to clean the response ---
+                    cleaned_text = batch_result_text.strip()
+                    if cleaned_text.startswith("```json\n") and cleaned_text.endswith("\n```"):
+                        cleaned_text = cleaned_text[len("```json\n"):-len("\n```")]
+                    elif cleaned_text.startswith("```") and cleaned_text.endswith("```"):
+                        # Handle cases where it might just be ```...```
+                        cleaned_text = cleaned_text[3:-3]
+                    # ---------------------------------------------
 
-                except json.JSONDecodeError:
-                    logger.error(f"Failed to parse LLM response as JSON (batch {i+1}). Response text: {batch_result_text[:200]}...", exc_info=False)
-                    # Store raw text if JSON parsing fails
-                    batch_result = {"parsing_error": "Invalid JSON", "raw_response": batch_result_text}
+                    # Attempt to parse the result as JSON
+                    try:
+                        # Use the cleaned_text variable here
+                        batch_result = json.loads(cleaned_text)
+                        logger.info(f"Successfully parsed JSON response for batch {i+1}.")
+                        # Optional: Validate structure further if needed
+                        if not isinstance(batch_result, dict) or "candidates" not in batch_result or not isinstance(batch_result["candidates"], list):
+                            logger.warning(f"LLM response parsed as JSON but missing expected structure (batch {i+1}): {cleaned_text[:200]}...")
+                            # Store raw text if structure is wrong, but indicate issue
+                            batch_result = {"parsing_error": "JSON structure invalid", "raw_response": batch_result_text} # Log original raw text
+                        else:
+                            logger.info(f"LLM 1 processing for batch {i+1} successful (JSON Parsed).")
+
+                    except json.JSONDecodeError:
+                        logger.error(f"Failed to parse LLM response as JSON (batch {i+1}). Cleaned text: {cleaned_text[:200]}... Original text: {batch_result_text[:200]}...", exc_info=False)
+                        # Store raw text if JSON parsing fails
+                        batch_result = {"parsing_error": "Invalid JSON", "raw_response": batch_result_text} # Log original raw text
 
                 # Optional: Log a snippet of the result (now potentially a dict)
                 if isinstance(batch_result, dict) and "candidates" in batch_result:
@@ -563,23 +660,52 @@ async def main():
                 # Here, we'll store an error indicator.
                 batch_result = {"error": f"Failed to process batch {i+1}: {str(llm_error)}"}
 
+            # Save batch result to file if enabled
+            if results_file_path:
+                 save_results_to_md(results_file_path, batch_result, f"LLM1 Batch {i+1} Result")
 
             llm1_results.append(batch_result)
 
         # Consolidate results from LLM1
+        logger.info("Consolidating results from LLM1...")
         consolidated_candidates = _consolidate_candidates(llm1_results)
+        logger.info(f"Consolidation complete. {len(consolidated_candidates)} unique candidates found.")
+        
+        # Save consolidated list to file if enabled
+        if results_file_path:
+            save_results_to_md(results_file_path, consolidated_candidates, "Consolidated LLM1 Candidates")
 
         # Process consolidated results with the second LLM
         # The result from LLM2 is now our final intended output
-        final_result = await process_candidates_with_llm2(consolidated_candidates)
+        if args.no_llm2:
+            logger.warning("--- SKIPPING LLM2 CALL due to --no-llm2 flag ---")
+            # Use the consolidated list directly as the final result, but maintain structure
+            final_result = {"candidates": consolidated_candidates, "info": "LLM2 skipped"}
+        else:
+            logger.info("Processing consolidated candidates with LLM2...")
+            final_result = await process_candidates_with_llm2(consolidated_candidates)
+            logger.info("LLM2 processing complete.")
+            
+        # Save final result to file if enabled
+        if results_file_path:
+            save_results_to_md(results_file_path, final_result, "Final Result (after LLM2)")
 
         # Output the final result (which is the refined list from LLM2 or an error dict)
-        logger.info("--- Final Result ---")
+        logger.info("--- Final Result --- Preparing to print JSON output.")
         # Pretty print the final JSON result
-        print(json.dumps(final_result, indent=2))
+        final_json_output = json.dumps(final_result, indent=2)
+        logger.info(f"Final JSON output generated (length: {len(final_json_output)}). Printing to stdout...")
+        print(final_json_output)
+        logger.info("Script finished successfully.")
 
     except Exception as e:
-        logger.error(f"An error occurred: {e}", exc_info=True) # Log traceback
+        logger.error(f"An error occurred in main: {e}", exc_info=True) # Log traceback
+        # Save error to results file if enabled
+        if results_file_path:
+            save_results_to_md(results_file_path, f"Script failed: {str(e)}\n{traceback.format_exc()}", "Script Error")
+        # Attempt to print an error JSON to stdout so the bot can report it
+        error_output = json.dumps({"error": f"Script failed: {str(e)}", "candidates": []})
+        print(error_output)
         sys.exit(1)
     finally:
         if 'db_handler' in locals() and db_handler:

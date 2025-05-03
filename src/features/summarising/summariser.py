@@ -52,22 +52,33 @@ async def schedule_daily_summary(bot):
     Example stub for daily scheduled runs. 
     Adjust logic and scheduling library as appropriate to your environment.
     """
+    first_run = True
     while not bot._shutdown_flag:
         now_utc = datetime.utcnow()
         # Suppose we run at 10:00 UTC daily
         run_time = now_utc.replace(hour=10, minute=0, second=0, microsecond=0)
         if run_time < now_utc:
             run_time += timedelta(days=1)
-        await asyncio.sleep((run_time - now_utc).total_seconds())
-        
+        sleep_duration = (run_time - now_utc).total_seconds()
+        await asyncio.sleep(sleep_duration)
+
         if bot._shutdown_flag:
             break
-        
+
+        if first_run:
+            if bot.summary_now:
+                bot.logger.info("'--summary-now' flag detected. Running initial summary now.")
+            else:
+                bot.logger.info("Skipping initial summary run because '--summary-now' flag was not provided.")
+                first_run = False
+                continue
+            first_run = False
+
         try:
             await bot.generate_summary()
         except Exception as e:
             bot.logger.error(f"Scheduled summary run failed: {e}")
-        
+
         # Sleep 24h until next scheduled run:
         await asyncio.sleep(86400)
 
@@ -931,7 +942,7 @@ class ChannelSummarizer:
                 try:
                     # Ensure db_handler.execute_query is used if it exists and handles connection/cursor
                     if hasattr(db_handler, 'execute_query'):
-                         results = db_handler.execute_query(channel_query, fetch_all=True)
+                         results = db_handler.execute_query(channel_query)
                          return results if results else []
                     else:
                          # Fallback to direct connection if needed (adjust based on db_handler)
