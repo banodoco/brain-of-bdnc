@@ -5,6 +5,8 @@ import traceback
 import json
 from discord.ext import commands
 from src.common.db_handler import DatabaseHandler
+import discord
+import os
 
 class LoggerCog(commands.Cog):
     def __init__(self, bot, logger, dev_mode=False):
@@ -17,6 +19,12 @@ class LoggerCog(commands.Cog):
         self.db = DatabaseHandler(dev_mode=dev_mode)
         if dev_mode:
             self.logger.debug(f"Database initialized with path: {self.db.db_path}")
+        try:
+            self.bot_user_id = int(os.getenv('BOT_USER_ID'))
+            self.logger.debug(f"Retrieved BOT_USER_ID: {self.bot_user_id}")
+        except Exception as e:
+            self.logger.error(f"Error retrieving BOT_USER_ID: {e}")
+            self.bot_user_id = None
 
     async def cog_load(self):
         if self.dev_mode:
@@ -287,44 +295,115 @@ class LoggerCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        """
-        Example message logging. 
-        If your original `MessageLogger` had more sophisticated logic,
-        replicate it here (like ignoring certain channels, storing DB, etc.).
-        """
-        if message.author.bot:
-            if self.dev_mode:
-                self.logger.debug("Skipping bot message")
-            return  # skip bot messages if desired
-
-        if self.dev_mode:
-            self.logger.debug(f"Message channel: {message.channel.name} ({message.channel.id})")
-
-        # Log message content in dev mode only
-        if self.dev_mode:
-            self.logger.info(f"Message from {message.author}: {message.content}")
-
-        # Prepare message data for DB storage
-        message_data = {
-            'message_id': message.id,
-            'channel_id': message.channel.id,
-            'author_id': message.author.id,
-            'content': message.content,
-            'created_at': message.created_at,
-            'attachments': [{'url': a.url, 'filename': a.filename} for a in message.attachments],
-            'embeds': [embed.to_dict() for embed in message.embeds]
-        }
-
-        # Store in database
+        """Called when a message is sent in any channel the bot can see."""
+        self.logger.debug(f"[LoggerCog] on_message triggered for message ID: {message.id} in channel {message.channel.id} by author {message.author.id}")
         try:
-            if self.dev_mode:
-                self.logger.debug(f"Storing message {message.id}")
-            self.db.store_messages([message_data])
-        except Exception as e:
-            self.logger.error(f"Failed to store message {message.id} in database: {e}")
-            self.logger.error(traceback.format_exc())  # Add full traceback for debugging
+            # Ignore messages from the bot itself or the configured bot user
+            # TODO: Add bot_user_id check similar to logger.py if needed
+            if message.author == self.bot.user: # Use self.bot.user here
+                self.logger.debug(f"[LoggerCog] Ignoring message from self (bot user: {self.bot.user.id})")
+                return
 
-        # Additional logic to store in DB, etc.
+            # TODO: Implement skip_channels check logic here
+            self.logger.debug(f"[LoggerCog] Preparing message data for message {message.id}")
+            # Check if _prepare_message_data exists before calling
+            if not hasattr(self, '_prepare_message_data'):
+                self.logger.error(f"[LoggerCog] CRITICAL: _prepare_message_data method not found on LoggerCog instance!")
+                # Optionally, try to dynamically get it from somewhere if that's the intended design,
+                # but it's likely a structural issue that needs fixing.
+                # For now, just log the error and return to prevent crashing the listener.
+                return
+                
+            message_data = await self._prepare_message_data(message) # This call will likely fail
+            self.logger.debug(f"[LoggerCog] Message data prepared for message {message.id}. Keys: {list(message_data.keys())}")
+
+            self.logger.debug(f"[LoggerCog] Storing message {message.id} using DB handler: {self.db}")
+            self.db.store_messages([message_data]) 
+            self.logger.info(f"[LoggerCog] Successfully logged message {message.id} from {message.author.name} in #{message.channel.name}")
+
+        except AttributeError as ae:
+             self.logger.error(f"[LoggerCog] AttributeError in on_message for message {message.id}: {ae}")
+             self.logger.error(traceback.format_exc()) # Log the full traceback for AttributeError
+        except Exception as e:
+            self.logger.error(f"[LoggerCog] Unexpected error logging message {message.id}: {e}")
+            self.logger.error(traceback.format_exc()) # Log the full traceback for other errors
+
+    async def _prepare_message_data(self, message: discord.Message) -> dict:
+        """Convert a discord message into a format suitable for database storage."""
+        try:
+            # Calculate total reaction count
+            reaction_count = sum(reaction.count for reaction in message.reactions) if message.reactions else 0
+            
+            # Get list of unique reactors
+            reactors = []
+            if message.reactions:
+                for reaction in message.reactions:
+                    async for user in reaction.users():
+                        if user.id not in reactors and user.id != self.bot_user_id:
+                            reactors.append(user.id)
+            
+            # Handle thread_id with logging
+            thread_id = None
+            try:
+                if hasattr(message, 'thread') and message.thread:
+                    thread_id = message.thread.id
+                    self.logger.debug(f"Found thread_id {thread_id} for message {message.id}")
+                elif message.channel and isinstance(message.channel, discord.Thread):
+                    thread_id = message.channel.id
+                    self.logger.debug(f"Message {message.id} is in thread {thread_id}")
+            except Exception as e:
+                self.logger.debug(f"Error getting thread_id for message {message.id}: {e}")
+            
+            # Get guild display name (nickname) if available
+            display_name = None
+            global_name = message.author.global_name
+            try:
+                if hasattr(message, 'guild') and message.guild:
+                    member = message.guild.get_member(message.author.id)
+                    if member:
+                        display_name = member.nick
+            except Exception as e:
+                self.logger.debug(f"Error getting display name for user {message.author.id}: {e}")
+            
+            # Get category ID if available
+            category_id = None
+            if hasattr(message.channel, 'category') and message.channel.category:
+                category_id = message.channel.category.id
+            
+            return {
+                'id': message.id,
+                'message_id': message.id,
+                'channel_id': message.channel.id,
+                'channel_name': message.channel.name,
+                'author_id': message.author.id,
+                'author_name': message.author.name,
+                'author_discriminator': message.author.discriminator,
+                'author_avatar_url': str(message.author.avatar.url) if message.author.avatar else None,
+                'content': message.content,
+                'created_at': message.created_at.isoformat(),
+                'attachments': [
+                    {
+                        'url': attachment.url,
+                        'filename': attachment.filename
+                    } for attachment in message.attachments
+                ],
+                'embeds': [embed.to_dict() for embed in message.embeds],
+                'reaction_count': reaction_count,
+                'reactors': json.dumps(reactors),
+                'reference_id': message.reference.message_id if message.reference else None,
+                'edited_at': message.edited_at.isoformat() if message.edited_at else None,
+                'is_pinned': message.pinned,
+                'thread_id': thread_id,
+                'message_type': str(message.type),
+                'flags': message.flags.value,
+                'is_deleted': False,
+                'display_name': display_name,
+                'global_name': global_name,
+                'category_id': category_id
+            }
+        except Exception as e:
+            self.logger.error(f"Error preparing message data: {e}")
+            raise
 
 async def setup(bot: commands.Bot):
     """Sets up the LoggerCog."""

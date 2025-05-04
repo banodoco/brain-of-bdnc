@@ -14,6 +14,7 @@ import discord
 from src.common.log_handler import LogHandler
 from src.common.base_bot import BaseDiscordBot
 from src.common.db_handler import DatabaseHandler
+from src.common.openmuse_interactor import OpenMuseInteractor
 from src.features.curating.curator_cog import CuratorCog
 from src.features.summarising.summariser_cog import SummarizerCog
 from src.features.logging.logger_cog import LoggerCog
@@ -89,17 +90,25 @@ async def main_async(args):
              return
 
         # 4. Reactor Instance
-        # Load credentials needed for Reactor explicitly here
         supabase_url = os.getenv('SUPABASE_URL')
         supabase_key = os.getenv('SUPABASE_SERVICE_KEY')
-        
-        # Pass the loaded (and tested) credentials to the Reactor constructor
+
+        # Create OpenMuse Interactor instance (needed by Reactor)
+        openmuse_interactor_instance = OpenMuseInteractor(
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+            logger=logger
+        )
+        bot.openmuse_interactor_instance = openmuse_interactor_instance # Optional: Attach to bot if needed elsewhere
+        logger.info("OpenMuseInteractor instance created.")
+
+        # Pass the DB handler and OpenMuse interactor to the Reactor constructor
         reactor_instance = Reactor(
-            logger=logger, 
-            sharer_instance=sharer_instance, 
-            supabase_url=supabase_url, # Pass loaded URL
-            supabase_key=supabase_key, # Pass loaded Key
-            dev_mode=args.dev
+            logger=logger,
+            sharer_instance=sharer_instance,
+            db_handler=bot.db_handler, # Pass the db_handler instance
+            openmuse_interactor=openmuse_interactor_instance, # Pass the interactor instance
+            dev_mode=args.dev,
         )
         bot.reactor_instance = reactor_instance
         logger.info("Reactor instance created and attached to bot.")

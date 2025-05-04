@@ -782,8 +782,8 @@ class ChannelSummarizer:
                             self.logger.debug(f"Inserting summary for channel {channel_id} into daily_summaries.")
                             cursor.execute("""
                                 INSERT INTO daily_summaries (
-                                    date, channel_id, full_summary, short_summary, created_at, status
-                                ) VALUES (?, ?, ?, ?, datetime('now'), 'pending')
+                                    date, channel_id, full_summary, short_summary, created_at
+                                ) VALUES (?, ?, ?, ?, datetime('now'))
                             """, (
                                 current_date.strftime('%Y-%m-%d'),
                                 channel_id,
@@ -791,13 +791,7 @@ class ChannelSummarizer:
                                 short_sum, # Use the passed short_summary
                             ))
                             summary_id = cursor.lastrowid
-                            self.logger.debug(f"Inserted summary with ID: {summary_id}. Updating status.")
-                            
-                            cursor.execute("""
-                                UPDATE daily_summaries 
-                                SET status = 'completed' 
-                                WHERE daily_summary_id = ?
-                            """, (summary_id,))
+                            self.logger.debug(f"Inserted summary with ID: {summary_id}.")
                             
                             # Commit within the operation if execute_with_retry doesn't handle it
                             # Depending on _execute_with_retry, commit might be handled there
