@@ -6,6 +6,8 @@ import traceback
 import json
 import asyncio
 import re # Added for text matching
+from typing import Optional # Added for Optional type hint
+from urllib.parse import quote # <<<--- Added Import
 from discord.ui import View, Button, button # <<< Added for Views
 from src.features.sharing.sharer import Sharer # Import the Sharer class
 from src.common.db_handler import DatabaseHandler # <<< Added DB Handler import
@@ -23,83 +25,255 @@ WATCHLIST_JSON = os.getenv('REACTION_WATCHLIST', '[]')
 MAX_UPLOAD_ATTEMPTS = 3
 BASE_RETRY_DELAY_SECONDS = 2
 
-# --- BEGIN VIEW DEFINITION ---
-class PermissionRequestView(View):
-    def __init__(self, author: discord.Member, curator: discord.User, message_link: str, db_handler: DatabaseHandler, logger):
-        super().__init__(timeout=86400.0) # 24 hour timeout for the view
+# --- BEGIN VIEW DEFINITION --- Correctly modify the existing view
+class PermissionRequestView(discord.ui.View):
+    # Update __init__ to accept necessary parameters
+    def __init__(self, *, timeout=86400, author: discord.User, curator: discord.User, message: discord.Message, message_link: str, db_handler, logger, openmuse_interactor):
+        super().__init__(timeout=timeout)
         self.author = author
         self.curator = curator
+        self.message = message # Store the message
         self.message_link = message_link
         self.db_handler = db_handler
         self.logger = logger
-        self.response_message = None # To store the message sent with the view
+        self.openmuse_interactor = openmuse_interactor # Store the interactor
+        self.response_message: Optional[discord.Message] = None # To edit the DM later
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Only allow the author of the original message to interact
-        if interaction.user.id == self.author.id:
-            return True
-        else:
-            await interaction.response.send_message("Sorry, only the author of the work can respond.", ephemeral=True)
+        # Ensure only the message author can interact
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("This is not for you!", ephemeral=True)
             return False
+        return True
 
-    async def disable_view(self, interaction: discord.Interaction, final_message: str):
-        """Disables all buttons and updates the message."""
+    async def disable_all_items(self):
+        """Disables all buttons and updates the message if possible."""
         for item in self.children:
             if isinstance(item, Button):
                 item.disabled = True
-        # Use the original interaction or the stored message to edit
-        edit_target = interaction.message if interaction.message else self.response_message
-        if edit_target:
-            await edit_target.edit(content=final_message, view=self)
-        else:
-             self.logger.warning(f"Could not find message to edit after permission response for author {self.author.id}")
-
-    @button(label="Give Permission", style=discord.ButtonStyle.success, custom_id="give_curate_permission")
-    async def give_permission_callback(self, interaction: discord.Interaction, button: Button):
-        self.logger.info(f"[Reactor][Permission] User {self.author.id} GRANTED permission to curator {self.curator.id} for message {self.message_link}")
-        # Update database
-        success = await asyncio.to_thread(self.db_handler.update_member_permission_status, self.author.id, True)
-
-        response_text = f"Thank you! Permission granted to @{self.curator.display_name} to curate your work."
-        if not success:
-            self.logger.error(f"[Reactor][Permission] Failed to update database for user {self.author.id} granting permission.")
-            response_text += "\n(There was an issue saving your preference, please contact an admin)."
-
-        await interaction.response.defer() # Acknowledge interaction immediately
-        await self.disable_view(interaction, response_text)
-        self.stop() # Stop the view from listening
-
-    @button(label="Deny Permission", style=discord.ButtonStyle.danger, custom_id="deny_curate_permission")
-    async def deny_permission_callback(self, interaction: discord.Interaction, button: Button):
-        self.logger.info(f"[Reactor][Permission] User {self.author.id} DENIED permission to curator {self.curator.id} for message {self.message_link}")
-        # Update database
-        success = await asyncio.to_thread(self.db_handler.update_member_permission_status, self.author.id, False)
-
-        response_text = f"Okay, permission denied. @{self.curator.display_name} will not curate this work."
-        if not success:
-            self.logger.error(f"[Reactor][Permission] Failed to update database for user {self.author.id} denying permission.")
-            response_text += "\n(There was an issue saving your preference, please contact an admin)."
-
-        await interaction.response.defer() # Acknowledge interaction immediately
-        await self.disable_view(interaction, response_text)
-        self.stop() # Stop the view from listening
-
-    async def on_timeout(self):
-        self.logger.info(f"[Reactor][Permission] Permission request timed out for author {self.author.id}, curator {self.curator.id}, message {self.message_link}")
-        timeout_message = "This permission request has expired."
-        # Attempt to edit the original message if we stored it
         if self.response_message:
             try:
+                await self.response_message.edit(view=self)
+                self.logger.debug(f"[Reactor][PermissionView] Disabled buttons for DM {self.response_message.id}.")
+            except discord.HTTPException as e:
+                self.logger.warning(f"[Reactor][PermissionView] Failed to disable view items for message {self.response_message.id}: {e}")
+        else:
+             self.logger.warning(f"[Reactor][PermissionView] response_message not set, cannot disable buttons via edit.")
+
+    # Modify the existing button callback for ALLOW
+    @discord.ui.button(label="Allow", style=discord.ButtonStyle.green, custom_id="permission_allow") # Changed label/ID
+    async def allow_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.logger.info(f"[Reactor][PermissionView] Author {self.author.id} clicked 'Allow' for message {self.message.id}.")
+
+        # Defer response before potentially long operations
+        await interaction.response.defer(ephemeral=True, thinking=True) # Defer ephemerally while thinking
+
+        # --- 1. Update Database ---
+        success = False
+        try:
+            self.logger.info(f"[Reactor][PermissionView] Updating permission to TRUE for author {self.author.id}.")
+            success = await asyncio.to_thread(
+                self.db_handler.update_member_permission_status,
+                self.author.id,
+                True
+            )
+            if not success:
+                self.logger.error(f"[Reactor][PermissionView] Failed to update permission to TRUE (returned False).")
+            else:
+                 self.logger.info(f"[Reactor][PermissionView] Successfully updated permission to TRUE.")
+        except Exception as db_err:
+            self.logger.error(f"[Reactor][PermissionView] Exception updating permission to TRUE: {db_err}", exc_info=True)
+            await interaction.followup.send(content="Sorry, there was a database error updating your permission. Please try again later or contact support.", ephemeral=True)
+            self.stop()
+            return
+
+        if not success:
+             await interaction.followup.send(content="Sorry, there was a database error updating your permission. Please contact support.", ephemeral=True)
+             self.stop()
+             return
+
+        # --- 2. Attempt to delete original DM --- (Do this early)
+        if self.response_message:
+            try:
+                await self.response_message.delete()
+                self.logger.info(f"[Reactor][PermissionView] Deleted original permission request DM {self.response_message.id}.")
+            except discord.HTTPException as e:
+                self.logger.warning(f"[Reactor][PermissionView] Failed to delete original permission DM {self.response_message.id}: {e}")
+        else:
+            self.logger.warning("[Reactor][PermissionView] response_message not set, cannot delete original DM.")
+
+        # --- 3. Perform Upload --- (Buttons are implicitly disabled as message is deleted)
+        # We no longer need to call self.disable_all_items() explicitly
+
+        profile_record = None # Store profile data from upload result
+        if not self.message or not self.message.attachments:
+             self.logger.warning(f"[Reactor][PermissionView] Original message/attachments missing for {getattr(self.message, 'id', 'Unknown')}. Skipping upload.")
+             upload_success_count = 0
+             upload_fail_count = 0
+             # Try to get profile data anyway, in case it was fetched before attachments were checked
+             if self.openmuse_interactor:
+                 try:
+                     _, profile_record = await self.openmuse_interactor.find_or_create_profile(self.author)
+                 except Exception as profile_err:
+                      self.logger.error(f"[Reactor][PermissionView] Error fetching profile data when attachments missing: {profile_err}")
+             # No attachments, proceed to final feedback without upload details
+
+        elif not self.openmuse_interactor:
+             self.logger.error(f"[Reactor][PermissionView] OpenMuseInteractor not available. Cannot upload.")
+             await interaction.followup.send("Permission granted, but an internal error occurred preventing the upload. Please contact support.", ephemeral=True)
+             self.stop()
+             return # Stop if interactor is missing
+        else:
+            # Perform uploads if attachments exist and interactor is available
+            upload_success_count = 0
+            upload_fail_count = 0
+            for attachment in self.message.attachments:
+                self.logger.info(f"[Reactor][PermissionView] Uploading attachment '{attachment.filename}' for message {self.message.id}.")
+                try:
+                    # Capture both media and profile records
+                    media_record, current_profile_record = await self.openmuse_interactor.upload_discord_attachment(
+                        attachment=attachment,
+                        author=self.author,
+                        message=self.message
+                    )
+                    if media_record:
+                        self.logger.info(f"[Reactor][PermissionView] Upload success: '{attachment.filename}'. Media ID: {media_record.get('id')}")
+                        upload_success_count += 1
+                        # Store the profile record from the latest successful interaction
+                        if current_profile_record:
+                            profile_record = current_profile_record
+                    else:
+                        self.logger.error(f"[Reactor][PermissionView] Upload failure: '{attachment.filename}' (media_record is None).")
+                        upload_fail_count += 1
+                        # Still store profile record even on media failure if available
+                        if current_profile_record and not profile_record:
+                            profile_record = current_profile_record
+                except Exception as upload_ex:
+                    self.logger.error(f"[Reactor][PermissionView] Exception during upload of '{attachment.filename}': {upload_ex}", exc_info=True)
+                    upload_fail_count += 1
+
+        # --- 4. Send New Confirmation DM to Author --- 
+        profile_url = None
+        if profile_record:
+             username = profile_record.get('username')
+             if username:
+                  try:
+                      # Construct the profile URL safely
+                      profile_url = f"https://openmuse.ai/profile/{quote(username)}"
+                      self.logger.info(f"[Reactor][PermissionView] Constructed profile URL: {profile_url}")
+                  except Exception as quote_err:
+                      self.logger.error(f"[Reactor][PermissionView] Error URL-encoding username '{username}': {quote_err}")
+             else:
+                  self.logger.warning(f"[Reactor][PermissionView] Username not found in profile_record for user {self.author.id}.")
+        else:
+             self.logger.warning(f"[Reactor][PermissionView] profile_record not available after upload attempt for user {self.author.id}. Cannot generate profile link.")
+        
+        if profile_url:
+             final_content = f"Thanks! You can find your profile [here]({profile_url}) and just log in with Discord to update or edit it."
+        else:
+             # Fallback message if profile URL couldn't be generated
+             final_content = "Thanks! Your permission has been recorded."
+             if upload_fail_count > 0:
+                  final_content += " Some uploads may have failed, please check with curators."
+
+        try:
+             # Send the new message directly to the author's DM channel
+             await self.author.send(content=final_content)
+             self.logger.info(f"[Reactor][PermissionView] Sent final confirmation DM to author {self.author.id}.")
+        except (discord.HTTPException, discord.Forbidden) as send_err:
+             self.logger.error(f"[Reactor][PermissionView] Failed to send final confirmation DM to author {self.author.id}: {send_err}")
+
+        # --- 5. Feedback to Curator --- (Keep this part)
+        curator_feedback = f"{self.author.mention} granted permission for {self.message_link}. Upload result: {upload_success_count} succeeded, {upload_fail_count} failed."
+        try:
+            await self.curator.send(curator_feedback)
+            self.logger.info(f"[Reactor][PermissionView] Sent upload status feedback to curator {self.curator.id}.")
+        except discord.Forbidden:
+            self.logger.warning(f"[Reactor][PermissionView] Could not send upload status DM feedback to curator {self.curator.id}.")
+        except Exception as e:
+             self.logger.error(f"[Reactor][PermissionView] Error sending feedback to curator {self.curator.id}: {e}")
+
+        self.stop() # Stop the view after completion
+
+    # Modify the existing button callback for DENY
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.red, custom_id="permission_deny") # Changed label/ID
+    async def deny_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.logger.info(f"[Reactor][PermissionView] Author {self.author.id} clicked 'Deny' for message {self.message.id}.")
+
+        # Defer response ephemerally
+        await interaction.response.defer(ephemeral=True)
+
+        # --- 1. Update Database ---
+        success = False
+        try:
+            self.logger.info(f"[Reactor][PermissionView] Updating permission to FALSE for author {self.author.id}.")
+            success = await asyncio.to_thread(
+                self.db_handler.update_member_permission_status,
+                self.author.id,
+                False
+            )
+            if not success:
+                 self.logger.error(f"[Reactor][PermissionView] Failed to update permission to FALSE (returned False).")
+            else:
+                 self.logger.info(f"[Reactor][PermissionView] Successfully updated permission to FALSE.")
+        except Exception as db_err:
+            self.logger.error(f"[Reactor][PermissionView] Exception updating permission to FALSE: {db_err}", exc_info=True)
+            await interaction.followup.send(content="Sorry, there was a database error updating your permission. Please contact support.", ephemeral=True)
+            self.stop()
+            return
+
+        if not success:
+             await interaction.followup.send(content="Sorry, there was a database error updating your permission. Please contact support.", ephemeral=True)
+             self.stop()
+             return
+
+        # --- 2. Attempt to delete original DM ---
+        if self.response_message:
+            try:
+                await self.response_message.delete()
+                self.logger.info(f"[Reactor][PermissionView] Deleted original permission request DM {self.response_message.id}.")
+            except discord.HTTPException as e:
+                self.logger.warning(f"[Reactor][PermissionView] Failed to delete original permission DM {self.response_message.id}: {e}")
+        else:
+             self.logger.warning("[Reactor][PermissionView] response_message not set, cannot delete original DM.")
+
+        # --- 3. Send New Confirmation DM to Author ---
+        final_content = "No problem, thank you for your response!"
+        try:
+            # Send the new message directly to the author's DM channel
+            await self.author.send(content=final_content)
+            self.logger.info(f"[Reactor][PermissionView] Sent denial confirmation DM to author {self.author.id}.")
+        except (discord.HTTPException, discord.Forbidden) as send_err:
+            self.logger.error(f"[Reactor][PermissionView] Failed to send denial confirmation DM to author {self.author.id}: {send_err}")
+
+        # --- 4. Feedback to Curator --- (Keep this part)
+        curator_feedback = f"{self.author.mention} denied permission for {self.message_link}."
+        try:
+            await self.curator.send(curator_feedback)
+            self.logger.info(f"[Reactor][PermissionView] Sent denial feedback to curator {self.curator.id}.")
+        except discord.Forbidden:
+            self.logger.warning(f"[Reactor][PermissionView] Could not send denial DM feedback to curator {self.curator.id}.")
+        except Exception as e:
+            self.logger.error(f"[Reactor][PermissionView] Error sending denial feedback to curator {self.curator.id}: {e}")
+
+
+        self.stop() # Stop the view
+
+    async def on_timeout(self):
+        self.logger.info(f"[Reactor][PermissionView] Permission request view timed out for author {self.author.id}, message {getattr(self.message, 'id', 'Unknown')}.")
+        # Edit the original DM to show it expired
+        if self.response_message:
+            try:
+                # Disable buttons on timeout as well
                 for item in self.children:
                     if isinstance(item, Button):
                         item.disabled = True
-                await self.response_message.edit(content=timeout_message, view=self)
-            except discord.NotFound:
-                self.logger.warning(f"[Reactor][Permission] Could not find DM message {self.response_message.id} to edit on timeout.")
-            except discord.Forbidden:
-                 self.logger.warning(f"[Reactor][Permission] Missing permissions to edit DM message {self.response_message.id} on timeout.")
-            except Exception as e:
-                 self.logger.error(f"[Reactor][Permission] Error editing DM message {self.response_message.id} on timeout: {e}")
+                await self.response_message.edit(content=f"This permission request for {self.message_link} has expired.", view=self)
+            except discord.HTTPException as e:
+                 self.logger.warning(f"[Reactor][PermissionView] Failed to edit message on timeout: {e}")
+        # No need to update DB, permission remains NULL
+        # No need to inform curator unless desired
+
 # --- END VIEW DEFINITION ---
 
 class Reactor:
@@ -318,16 +492,23 @@ class Reactor:
     # --- Reaction-Triggered Actions ---
     # Action name in JSON: "request_curation_permission"
     async def _react_action_request_curation_permission(self, reaction: discord.Reaction, curator: discord.User):
-        """[Reaction Action] Sends a DM to the message author requesting permission to curate their work."""
+        """[Reaction Action] Sends a DM requesting permission or uploads if permission granted."""
         message = reaction.message
         author = message.author
         message_link = message.jump_url
+        # Add check for openmuse_interactor existence
+        if not hasattr(self, 'openmuse_interactor') or self.openmuse_interactor is None:
+             self.logger.error("[Reactor][Permission] OpenMuseInteractor not available. Cannot proceed.")
+             # Optionally react to the original message with an error indicator
+             # try: await message.add_reaction("⚙️") except Exception: pass
+             return
+
         self.logger.info(f"[Reactor][Permission] Action 'request_curation_permission' triggered by curator {curator.id} ({curator.display_name}) on message {message.id} by author {author.id} ({author.display_name}).")
 
         if author.bot:
             self.logger.info(f"[Reactor][Permission] Author {author.id} is a bot. Skipping permission request.")
             return
-
+        '''
         if author.id == curator.id:
             self.logger.info(f"[Reactor][Permission] Curator {curator.id} reacted to their own message {message.id}. Skipping permission request.")
             # Optionally send feedback to the curator
@@ -336,7 +517,7 @@ class Reactor:
             # except discord.Forbidden:
             #     self.logger.warning(f"[Reactor][Permission] Could not send feedback DM to curator {curator.id}.")
             return
-
+        '''
         if not self.db_handler:
             self.logger.error("[Reactor][Permission] Database handler not available. Cannot request curation permission.")
             # Optionally react to the original message with an error indicator
@@ -377,10 +558,63 @@ class Reactor:
                 permission_status = author_member_data.get('permission_to_curate')
                 self.logger.info(f"[Reactor][Permission] Author {author.id} found in DB. Current permission_to_curate status: {permission_status}")
 
-            # Check if permission is already decided (True or False, not None)
-            if permission_status is not None: # Checks for both True and False
-                status_str = "granted" if permission_status else "denied"
-                self.logger.info(f"[Reactor][Permission] Author {author.id} has already {status_str} permission. No action needed.")
+            # Check if permission is already decided (True or False/1 or 0, not None)
+            if permission_status is not None:
+                # Check truthiness (handles both Python True and integer 1)
+                if permission_status:
+                    self.logger.info(f"[Reactor][Permission] Author {author.id} has already granted permission (status: {permission_status}). Proceeding with upload for message {message.id}.")
+                    # --- UPLOAD LOGIC for existing permission ---
+                    if not message.attachments:
+                        self.logger.warning(f"[Reactor][Permission] Message {message.id} has no attachments to upload, despite existing permission.")
+                        # Optionally notify curator
+                        # try: await curator.send(f"{author.display_name} granted permission previously, but the message {message_link} has no attachments.")
+                        # except discord.Forbidden: pass
+                        return
+
+                    upload_success_count = 0
+                    upload_fail_count = 0
+                    for attachment in message.attachments:
+                        self.logger.info(f"[Reactor][Permission] Uploading attachment '{attachment.filename}' for message {message.id} due to existing permission.")
+                        try:
+                            # Assuming self.openmuse_interactor is available
+                            media_record, profile_record = await self.openmuse_interactor.upload_discord_attachment(
+                                attachment=attachment,
+                                author=author,
+                                message=message
+                            )
+                            if media_record:
+                                self.logger.info(f"[Reactor][Permission] Successfully uploaded attachment '{attachment.filename}' for message {message.id}.")
+                                upload_success_count += 1
+                            else:
+                                self.logger.error(f"[Reactor][Permission] Failed to upload attachment '{attachment.filename}' for message {message.id} (media_record is None).")
+                                upload_fail_count += 1
+                        except Exception as upload_ex:
+                            self.logger.error(f"[Reactor][Permission] Exception during upload of attachment '{attachment.filename}': {upload_ex}", exc_info=True)
+                            upload_fail_count += 1
+
+                    # Feedback to curator about upload result
+                    feedback_msg = f"Attempted upload for {author.display_name}'s message ({message_link}) based on existing permission: {upload_success_count} succeeded, {upload_fail_count} failed."
+                    try:
+                         await curator.send(feedback_msg)
+                         self.logger.info(f"[Reactor][Permission] Sent upload status feedback to curator {curator.id}.")
+                         # Optionally react to the original message
+                         # if upload_fail_count == 0 and upload_success_count > 0:
+                         #     await message.add_reaction("✅") # Success
+                         # elif upload_fail_count > 0 and upload_success_count > 0:
+                         #     await message.add_reaction("⚠️") # Partial success
+                         # elif upload_fail_count > 0 and upload_success_count == 0:
+                         #      await message.add_reaction("❌") # Failure
+                    except discord.Forbidden:
+                         self.logger.warning(f"[Reactor][Permission] Could not send upload status DM feedback to curator {curator.id}.")
+                    except Exception as react_ex:
+                         self.logger.warning(f"[Reactor][Permission] Could not add reaction to message {message.id} after upload attempt: {react_ex}")
+
+                    return # Stop here, upload attempted based on existing permission
+                    # --- END UPLOAD LOGIC ---
+                else: # permission_status is False, 0, or anything else non-None and not truthy
+                    status_str = "denied"
+                    # Log the actual status value for clarity
+                    self.logger.info(f"[Reactor][Permission] Author {author.id} has already {status_str} permission (status: {permission_status}). No action needed.")
                 # Optionally DM the curator that permission is already set
                 # try:
                 #      await curator.send(f"Permission for {author.display_name}'s message ({message_link}) has already been {status_str}.")
@@ -392,12 +626,21 @@ class Reactor:
             self.logger.info(f"[Reactor][Permission] Permission status for author {author.id} is NULL. Sending permission request DM.")
 
             dm_content = (
-                f"Hi @{author.display_name}! @{curator.display_name} would like to curate your work to OpenMuse: {message_link}\n\n"
-                f"It will be hosted under your profile name there - for you to edit and update if/when you claim an account by signing up with your Discord account at https://openmuse.ai/.\n\n"
+                f"Hi {author.mention}! {curator.mention} would like to curate your work to [OpenMuse](https://openmuse.ai/. ): {message_link}\n\n"
+                f"It will be hosted under your profile name there - for you to edit and update if/when you claim an account by signing up with your Discord account.\n\n"
                 f"Do you give permission? (This request expires in 24 hours)"
             )
 
-            view = PermissionRequestView(author=author, curator=curator, message_link=message_link, db_handler=self.db_handler, logger=self.logger)
+            # Pass the interactor and original message to the view
+            view = PermissionRequestView(
+                author=author,
+                curator=curator,
+                message=message, # Pass the full message object
+                message_link=message_link,
+                db_handler=self.db_handler,
+                logger=self.logger,
+                openmuse_interactor=self.openmuse_interactor # Pass the interactor instance
+            )
 
             try:
                 sent_message = await author.send(content=dm_content, view=view)

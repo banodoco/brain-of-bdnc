@@ -449,8 +449,9 @@ class OpenMuseInteractor:
             'placeholder_image': placeholder_image_url,
             'type': media_type,
             'classification': classification,
-            'admin_status': 'Listed', # Default status
-            'user_status': 'View', # Default status
+            'admin_status': 'Curated', # Changed from 'Listed'
+            'user_status': 'Listed', # Changed from 'View'
+            'description': message.content,
             'metadata': {
                 "discord_message_id": str(message.id),
                 "discord_channel_id": str(message.channel.id),

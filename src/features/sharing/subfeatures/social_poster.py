@@ -112,30 +112,24 @@ def _build_zapier_payload(platform: str, user_details: Dict, attachment: Dict, g
     post_jump_url = attachment.get('post_jump_url', '') # Need to ensure this is passed
 
     # --- Common elements ---
-    # Credit
-    credit = ""
-    handle = None
-    if platform == "instagram" and user_details.get('instagram_handle'):
-         handle = user_details['instagram_handle']
-    elif platform == "tiktok" and user_details.get('tiktok_handle'):
-         handle = user_details['tiktok_handle']
-    elif platform == "youtube" and user_details.get('youtube_handle'):
-         handle = user_details['youtube_handle']
-    
+    # Get user's display name (prioritize global, fallback to username)
     user_name = user_details.get('global_name') or user_details.get('username', 'the artist')
-    
-    if handle:
-         if handle.startswith('http'): credit = handle
-         elif not handle.startswith('@'): credit = f"@{handle}"
-         else: credit = handle
-    else:
-         credit = user_name
-         
+
+    # Initialize credit (will be overridden per platform if handle exists)
+    credit = user_name
+
     website = user_details.get('website')
     website_text = f"\n\nMore from them: {website}" if website else ""
 
     # --- Platform specific ---
     if platform == "instagram":
+        handle = user_details.get('instagram_handle')
+        if handle:
+             if handle.startswith('http'): credit = handle
+             elif not handle.startswith('@'): credit = f"@{handle}"
+             else: credit = handle
+        # else: credit remains user_name
+
         caption = f"{generated_description} by {credit}"
         if original_content:
              caption += f"\n\nArtist Comment: \"{_truncate_with_ellipsis(original_content, 1800)}\"" # Approx limit
@@ -146,7 +140,13 @@ def _build_zapier_payload(platform: str, user_details: Dict, attachment: Dict, g
             "caption": caption.strip()
         }
     elif platform == "tiktok":
-         # TikTok captions often include hashtags, consider adding logic for that
+        handle = user_details.get('tiktok_handle')
+        if handle:
+             if handle.startswith('http'): credit = handle
+             elif not handle.startswith('@'): credit = f"@{handle}"
+             else: credit = handle
+        # else: credit remains user_name
+
         caption = f"{generated_description} by {credit}"
         if original_content:
              caption += f"\n\nArtist Comment: \"{_truncate_with_ellipsis(original_content, 1800)}\"" # Approx limit
@@ -154,15 +154,21 @@ def _build_zapier_payload(platform: str, user_details: Dict, attachment: Dict, g
         payload = {
             "video_url": attachment_url,
             "caption": caption.strip()
-            # Add other fields if your Zapier workflow expects them (e.g., specific hashtags)
         }
     elif platform == "youtube":
-        # YouTube uses Title + Description separately
-        video_title = f"\"{generated_title}\" by {credit}" # Use the dedicated title
-        description = f"{generated_description}" # Use the main description
+        # Always use the user's display name for the credit in the YouTube title.
+        # We don't need to check the youtube_handle for the title itself.
+        credit_for_title = user_name
+
+        # Construct title using the display name
+        video_title = f"\"{generated_title}\" by {credit_for_title}"
+
+        # Description remains the same
+        description = f"{generated_description}"
         if original_content:
-             description += f"\n\nArtist Comment: \"{_truncate_with_ellipsis(original_content, 4500)}\"" # Approx limit
+             description += f"\n\nArtist Comment: \"{_truncate_with_ellipsis(original_content, 4500)}\""
         description += website_text
+
         payload = {
             "jump_url": post_jump_url,
             "video_url": attachment_url,
@@ -229,118 +235,185 @@ def _extract_frames(video_path: str, num_frames: int, save_dir: Path) -> bool:
         if vidcap.isOpened(): vidcap.release() # Ensure release on error
         return False
 
-# --- Main Title Generation Function ---
+# --- Claude Interaction (Video Frames) --- REFACTORED ---
+# Make the function async
+async def _make_claude_title_request(frames_dir: Path,
+                                     original_comment: Optional[str]) -> Optional[str]:
+    """Makes a request via LLM dispatcher to generate a title from video frames."""
+    try:
+        # Prepare ≤ 5 JPEG frames (already extracted elsewhere) as base64
+        image_paths = list(frames_dir.glob("*.jpg"))[:5]
+        content_blocks = []
+        for image_path in image_paths:
+            base64_image = _image_to_base64(str(image_path))
+            if base64_image:
+                content_blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": base64_image
+                    }
+                })
 
-# Remove claude_client from signature
+        if not any(item['type'] == 'image' for item in content_blocks):
+            logger.warning(f"No valid image frames found in {frames_dir} to send via dispatcher.")
+            return None
+
+        # Define System Prompt
+        system_prompt = (
+            "Analyze these video frames. Create a short, interesting, unique "
+            "title (max 3-4 words). Avoid clichés. If the user comment suggests "
+            "a title, prioritize that. Output ONLY the title."
+        )
+        
+        # Define User Prompt Text Block
+        user_prompt_text = "Generate a title for the attached video frames."
+        if original_comment and original_comment.strip():
+             user_prompt_text += f'\n\nArtist\'s comment: "{original_comment}"'
+
+        # Add text block *first* for dispatcher format
+        content_blocks.insert(0, {"type": "text", "text": user_prompt_text})
+        
+        # Prepare messages list for dispatcher
+        messages_for_dispatcher = [{"role": "user", "content": content_blocks}]
+
+        # ---- Call LLM Dispatcher ----
+        logger.info("Requesting video title via dispatcher (Claude Sonnet)...")
+        generated_title = await get_llm_response(
+            client_name="claude",
+            model="claude-3-5-sonnet-20240620", # Or appropriate model
+            system_prompt=system_prompt,
+            messages=messages_for_dispatcher,
+            max_tokens=50,
+            temperature=0.5 # Pass other kwargs if needed
+        )
+
+        # Dispatcher should return string or raise error
+        if generated_title and isinstance(generated_title, str):
+            cleaned_title = generated_title.strip().strip('\"\'')
+            logger.info(f"Dispatcher generated title from video frames: {cleaned_title}")
+            return cleaned_title
+        else:
+            # This case might indicate an issue with dispatcher response handling if reached
+            logger.warning(f"Dispatcher returned unexpected response for video title: {generated_title}")
+            return None
+
+    except Exception as e:
+        # Catch errors from dispatcher or content preparation
+        logger.error(f"Error generating title from video frames via dispatcher: {e}", exc_info=True)
+        return None
+
+# --- Main Title Generation Function --- REFACTORED ---
 async def generate_media_title(attachment: Dict, original_comment: Optional[str], post_id: int) -> str:
-    """Generates a social media title using the LLM dispatcher for videos or images."""
+    """
+    Generates a social media title using the LLM Dispatcher (ClaudeClient).
+    For videos: Extracts frames, prepares content, calls dispatcher.
+    For images: Prepares base64 image content, calls dispatcher.
+    """
     media_local_path = attachment.get('local_path')
     content_type = attachment.get('content_type', '')
-    is_video = content_type.startswith('video') or (media_local_path and Path(media_local_path).suffix.lower() in ['.mp4', '.mov', '.webm', '.avi', '.mkv'])
-    
+    title = "Featured Artwork"  # Default title
     temp_frames_dir = None
-    title = "Featured Creation" # Default title
-    
+
     if not media_local_path or not os.path.exists(media_local_path):
         logger.error(f"Media file not found for title generation: {media_local_path}, Post ID: {post_id}")
         return title
 
-    content_blocks = []
-    try:
-        # --- Prepare Media Content --- 
-        if is_video:
-            temp_frames_dir = Path(f"./temp_title_frames_{post_id}_{os.urandom(4).hex()}")
-            logger.debug(f"Creating temp frame dir for title gen: {temp_frames_dir}")
-            frames_extracted = _extract_frames(video_path=media_local_path, num_frames=5, save_dir=temp_frames_dir)
-            if not frames_extracted:
-                 logger.warning(f"Could not extract frames for video: {media_local_path}, Post ID: {post_id}")
-                 # Proceed without frames if extraction failed?
-            else:
-                 for frame_file in sorted(temp_frames_dir.glob('frame_*.jpg'))[:5]: # Limit frames
-                     mime_type = _get_media_type(str(frame_file)) # Use helper
-                     base64_data = _image_to_base64(str(frame_file))
-                     if mime_type and base64_data:
-                         content_blocks.append({
-                             "type": "image",
-                             "source": {"type": "base64", "media_type": mime_type, "data": base64_data}
-                         })
-        elif content_type.startswith('image'):
-             mime_type = _get_media_type(media_local_path) or content_type
-             base64_data = _image_to_base64(media_local_path)
-             if mime_type and base64_data:
-                 content_blocks.append({
-                     "type": "image",
-                     "source": {"type": "base64", "media_type": mime_type, "data": base64_data}
-                 })
-        else:
-            logger.warning(f"Unsupported media type for title generation: {content_type}, Post ID: {post_id}")
-            # No media blocks added, rely on comment if available
+    is_video = content_type.startswith('video') or Path(media_local_path).suffix.lower() in ['.mp4', '.mov', '.webm', '.avi', '.mkv']
+    is_image = content_type.startswith('image') # Includes gifs
 
-        # --- Prepare Prompts --- 
-        # System Prompt (Instructions)
-        system_prompt = """Analyze the provided media (image frames or a single image) and the optional artist comment. 
-Create an appropriate title for the media, suitable for platforms like YouTube or social media.
-Rules:
-- Make the title interesting, unique, and short (max 3-4 words).
-- Avoid cliches.
-- If the artist's comment seems to contain a title (e.g., enclosed in quotes or clearly stated), prioritize using that.
-- Output ONLY the generated title text, with no additional explanation, quotation marks, or formatting."""
-        
-        # User Prompt (Text part of the multimodal message)
-        user_prompt_text = "Generate a title for the attached media."
-        if original_comment and len(original_comment.strip()) > 0:
-             user_prompt_text += f"\n\nArtist's comment (consider this for title extraction or context): \"{original_comment}\""
-             
-        # Add the text block to the start of the content list
-        content_blocks.insert(0, {"type": "text", "text": user_prompt_text})
-        
-        # Check if we have *any* content to send (at least the text block)
-        if not content_blocks:
-             logger.error(f"No content (text or media) available to generate title for Post ID: {post_id}")
-             # Cleanup already done in finally block
-             return title # Return default title
-             
-        # ---- Call LLM Dispatcher ----
-        logger.info(f"Requesting title via dispatcher (Claude Sonnet) for post {post_id}...")
-        
-        messages = [{"role": "user", "content": content_blocks}]
-        
-        generated_title_text = await get_llm_response(
-            client_name="claude",
-            model="claude-3-5-sonnet-20240620", # Or choose Haiku if preferred for speed/cost
-            system_prompt=system_prompt,
-            messages=messages,
-            max_tokens=50, # Keep max_tokens reasonable for a title
-        )
-        
-        # ---- Handle LLM response ----
-        # Dispatcher raises on error, so we expect string if successful
-        if generated_title_text and isinstance(generated_title_text, str):
-            # Simple cleaning: remove potential quotes/newlines
-            cleaned_title = generated_title_text.strip().strip('\"\'\n') 
-            # Additional check for overly long titles despite max_tokens
-            if len(cleaned_title.split()) > 6: # Heuristic check for too many words
-                 logger.warning(f"Generated title seems long for post {post_id}: '{cleaned_title}'. Truncating.")
-                 title = " ".join(cleaned_title.split()[:5]) # Take first 5 words
+    try:
+        generated_title_text = None
+
+        if is_video:
+            logger.info(f"Generating title for video via dispatcher: {media_local_path} (Post ID: {post_id})")
+            temp_frames_dir = Path(f"./temp_title_frames_{post_id}_{os.urandom(4).hex()}")
+            if _extract_frames(video_path=media_local_path, num_frames=5, save_dir=temp_frames_dir):
+                # Call the refactored async helper directly
+                generated_title_text = await _make_claude_title_request(temp_frames_dir, original_comment)
             else:
-                 title = cleaned_title
-            logger.info(f"LLM dispatcher generated title for post {post_id}: {title}")
+                logger.warning(f"Frame extraction failed for {media_local_path}. Cannot generate title from video.")
+
+        elif is_image:
+            logger.info(f"Generating title for image via dispatcher: {media_local_path} (Post ID: {post_id})")
+            base64_image = _image_to_base64(media_local_path)
+            if base64_image:
+                 # Determine mime type
+                 mime_type = content_type if content_type.startswith('image/') else 'image/jpeg'
+                 suffix = Path(media_local_path).suffix.lower()
+                 if suffix == '.gif': mime_type = 'image/gif'
+                 elif suffix == '.png': mime_type = 'image/png'
+                 elif suffix == '.webp': mime_type = 'image/webp'
+                 
+                 # Prepare content blocks for dispatcher
+                 content_blocks = [
+                     { # Text block first
+                        "type": "text",
+                         "text": (
+                             f"Generate a title for the attached image." +
+                             (f'\n\nArtist\'s comment: "{original_comment}"' if original_comment and original_comment.strip() else "")
+                         )
+                     },
+                     { # Image block
+                        "type": "image",
+                         "source": {
+                             "type": "base64",
+                             "media_type": mime_type,
+                             "data": base64_image
+                         }
+                     }
+                 ]
+                 
+                 # System prompt for images
+                 system_prompt = (
+                     "Analyze this image. Create a short, interesting, unique "
+                     "title (max 3-4 words). Avoid clichés. If the user comment suggests "
+                     "a title, prioritize that. Output ONLY the title."
+                 )
+
+                 # Prepare messages list for dispatcher
+                 messages_for_dispatcher = [{"role": "user", "content": content_blocks}]
+
+                 # ---- Call LLM Dispatcher ----
+                 logger.info("Requesting image title via dispatcher (Claude Sonnet)...")
+                 llm_response = await get_llm_response(
+                     client_name="claude",
+                     model="claude-3-5-sonnet-20240620", # Or appropriate model
+                     system_prompt=system_prompt,
+                     messages=messages_for_dispatcher,
+                     max_tokens=50,
+                     temperature=0.5
+                 )
+                 
+                 if llm_response and isinstance(llm_response, str):
+                     generated_title_text = llm_response.strip().strip('\"\'')
+                     logger.info(f"Dispatcher generated title from image: {generated_title_text}")
+                 else:
+                     logger.warning(f"Dispatcher returned unexpected response for image title: {llm_response}")
+
+            else:
+                logger.warning(f"Could not encode image {media_local_path} to base64. Cannot generate title.")
         else:
-             # This case should ideally not be reached if dispatcher works correctly
-             logger.warning(f"LLM dispatcher title generation failed or returned invalid type for post {post_id}, using default: {title}")
+            logger.warning(f"Unsupported media type for title generation: {content_type}, Post ID: {post_id}. Using default title.")
+
+        # Update title if generation was successful
+        if generated_title_text:
+            title = generated_title_text
 
     except Exception as e:
-        logger.error(f"Error in title generation process for post {post_id}: {e}", exc_info=True)
-        # Keep default title on error
+        logger.error(f"Error in generate_media_title (dispatcher path) for Post ID {post_id}: {e}", exc_info=True)
+        # Fallback to default title is handled by initial assignment
+
     finally:
-        # Clean up temporary frames directory if it was created
+        # Clean up temporary frame directory if it was created
         if temp_frames_dir and temp_frames_dir.exists():
             try:
                 shutil.rmtree(temp_frames_dir)
-                logger.debug(f"Cleaned up temporary frame directory: {temp_frames_dir}")
-            except Exception as e:
-                logger.error(f"Error removing temporary frame directory {temp_frames_dir}: {e}", exc_info=True)
-                
+                logger.debug(f"Cleaned up temp frame directory: {temp_frames_dir}")
+            except Exception as e_clean:
+                logger.error(f"Error cleaning up temp frame directory {temp_frames_dir}: {e_clean}", exc_info=True)
+
     return title
 
 # --- Main Posting Function ---

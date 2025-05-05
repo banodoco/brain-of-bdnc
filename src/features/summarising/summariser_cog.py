@@ -3,8 +3,8 @@
 import asyncio
 import os
 import traceback
-from datetime import datetime, timedelta
-import time
+from datetime import datetime, timedelta, time, timezone
+import time as standard_time # Rename standard time library if needed to avoid conflict
 from discord.ext import commands
 import logging
 import discord
@@ -30,29 +30,34 @@ class SummarizerCog(commands.Cog):
     def cog_unload(self):
         self.run_daily_summary.cancel()
 
-    @tasks.loop(hours=24)
+    @tasks.loop(time=time(hour=10, minute=0, tzinfo=timezone.utc))
     async def run_daily_summary(self):
-        """Daily task to run the summary generation."""
-        await self.bot.wait_until_ready()
-
-        # On the first run, delay the summary unless --summary-now flag is provided
-        if not hasattr(self, 'has_run_initial_summary'):
-            self.has_run_initial_summary = True
-            if not getattr(self.bot, 'summary_now', False):
-                now_utc = datetime.utcnow()
-                scheduled_time = now_utc.replace(hour=10, minute=0, second=0, microsecond=0)
-                if scheduled_time < now_utc:
-                    scheduled_time += timedelta(days=1)
-                wait_seconds = (scheduled_time - now_utc).total_seconds()
-                logger.info(f"Skipping initial summary run because '--summary-now' flag not provided. Waiting {wait_seconds:.0f} seconds until scheduled time (10:00 UTC).")
-                await asyncio.sleep(wait_seconds)
-
-        logger.info("Starting scheduled daily summary...")
+        """Daily task to run the summary generation at 10:00 UTC."""
+        logger.info("Scheduled daily summary time reached (10:00 UTC). Starting...")
         try:
             await self.channel_summarizer.generate_summary()
             logger.info("Scheduled daily summary finished.")
         except Exception as e:
             logger.error(f"Error during scheduled summary run: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Handles the --summary-now flag on bot startup."""
+        if not hasattr(self, '_ran_summary_now_check'):
+            self._ran_summary_now_check = True
+            run_now_flag = getattr(self.bot, 'summary_now', False)
+            if run_now_flag:
+                logger.info("Detected --summary-now flag on startup. Triggering initial summary run.")
+                try:
+                    if hasattr(self, 'channel_summarizer'):
+                         await self.channel_summarizer.generate_summary()
+                         logger.info("Initial --summary-now run finished.")
+                    else:
+                         logger.error("ChannelSummarizer not found during on_ready for --summary-now run.")
+                except Exception as e:
+                    logger.error(f"Error during initial --summary-now run: {e}", exc_info=True)
+            else:
+                logger.debug("No --summary-now flag detected on startup.")
 
     @commands.command(name="summarynow")
     @commands.is_owner() # Or check for specific admin role/ID
