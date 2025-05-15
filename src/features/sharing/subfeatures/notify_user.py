@@ -22,7 +22,8 @@ logger = logging.getLogger('DiscordBot')
 def _format_user_details_md(user_details: dict) -> str:
     details = f"""
 **Sharing Preferences:**
-- **Okay to Feature?** {'✅ Yes' if user_details.get('sharing_consent', False) else '❌ No'}
+- **Okay to feature on social?** {'✅ Yes' if user_details.get('sharing_consent', False) else '❌ No'}
+- **Okay to curate to OpenMuse?** {'✅ Yes' if user_details.get('permission_to_curate', False) else '❌ No'}
 - **Receive these DMs?** {'✅ Yes' if user_details.get('dm_preference', True) else '❌ No'}
 
 **Your Socials:** (Edit these below!)
@@ -50,37 +51,39 @@ Please review and update your details/preferences below. Clicking 'Allow Feature
 
 # --- Discord UI Components ---
 
-class UpdateSocialsModal(discord.ui.Modal, title='Update Social Handles & Website'):
+class UpdateSocialsModal(discord.ui.Modal, title='Update Your Preferences'):
     twitter_input = discord.ui.TextInput(
-        label='Twitter Handle (e.g., @username or full URL)',
+        label='Twitter Handle (e.g., @username)',
         required=False,
         placeholder='Leave blank to remove',
         max_length=100
     )
     instagram_input = discord.ui.TextInput(
-        label='Instagram Handle (@username or URL)',
+        label='Instagram Handle (e.g., @username)',
         required=False,
         placeholder='Leave blank to remove',
         max_length=100
     )
     youtube_input = discord.ui.TextInput(
-        label='YouTube Handle (e.g., @channel or full URL)',
+        label='YouTube Channel URL (full URL)',
         required=False,
         placeholder='Leave blank to remove',
         max_length=100
     )
-    tiktok_input = discord.ui.TextInput(
-        label='TikTok Handle (e.g., @username or full URL)',
-        required=False,
-        placeholder='Leave blank to remove',
-        max_length=100
+    permission_to_share_input = discord.ui.TextInput(
+        label='Okay to share on social? (yes/no)',
+        placeholder='Type "yes" or "no"',
+        required=True,
+        max_length=3,
+        min_length=2
     )
-    website_input = discord.ui.TextInput(
-        label='Website URL',
-        required=False,
-        placeholder='Leave blank to remove',
-        style=discord.TextStyle.short,
-        max_length=200
+
+    permission_to_curate_input = discord.ui.TextInput(
+        label='Okay to share on OpenMuse? (yes/no)',
+        placeholder='Type "yes" or "no"',
+        required=True,
+        max_length=3,
+        min_length=2
     )
 
     def __init__(self, user_details: dict, db_handler: DatabaseHandler, original_message: discord.Message, parent_view: 'SharingRequestView'):
@@ -94,81 +97,111 @@ class UpdateSocialsModal(discord.ui.Modal, title='Update Social Handles & Websit
         self.twitter_input.default = user_details.get('twitter_handle')
         self.instagram_input.default = user_details.get('instagram_handle')
         self.youtube_input.default = user_details.get('youtube_handle')
-        self.tiktok_input.default = user_details.get('tiktok_handle')
-        self.website_input.default = user_details.get('website')
+
+        # Pre-fill new permission inputs based on DB fields (sharing_consent, permission_to_curate)
+        # Display with first letter capitalized for the user
+        self.permission_to_share_input.default = "Yes" if user_details.get('sharing_consent') == 1 else "No"
+        self.permission_to_curate_input.default = "Yes" if user_details.get('permission_to_curate') == 1 else "No"
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            # Update details in the dictionary first
+            share_social_input_raw = self.permission_to_share_input.value.strip().lower()
+            curate_openmuse_input_raw = self.permission_to_curate_input.value.strip().lower()
+
+            final_sharing_consent = None
+            final_permission_to_curate = None
+
+            # Validate and convert for sharing_consent
+            if share_social_input_raw == 'yes':
+                final_sharing_consent = 1
+            elif share_social_input_raw == 'no':
+                final_sharing_consent = 0
+            else:
+                await interaction.response.send_message(
+                    "Invalid input for 'Okay to share on social?'. Please enter 'yes' or 'no'.", 
+                    ephemeral=True
+                )
+                return
+
+            # Validate and convert for permission_to_curate
+            if curate_openmuse_input_raw == 'yes':
+                final_permission_to_curate = 1
+            elif curate_openmuse_input_raw == 'no':
+                final_permission_to_curate = 0
+            else:
+                await interaction.response.send_message(
+                    "Invalid input for 'Okay to share on OpenMuse?'. Please enter 'yes' or 'no'.", 
+                    ephemeral=True
+                )
+                return
+
             updated_data = {
                 'twitter_handle': self.twitter_input.value.strip() or None,
                 'instagram_handle': self.instagram_input.value.strip() or None,
                 'youtube_handle': self.youtube_input.value.strip() or None,
-                'tiktok_handle': self.tiktok_input.value.strip() or None,
-                'website': self.website_input.value.strip() or None,
+                'sharing_consent': final_sharing_consent,
+                'permission_to_curate': final_permission_to_curate,
             }
             
             # Update DB
             success = self.db_handler.create_or_update_member(
                 member_id=interaction.user.id,
-                username=interaction.user.name, # Keep username sync (optional)
+                username=interaction.user.name, 
                 global_name=interaction.user.global_name,
-                # Pass only updated social fields
-                **updated_data
-                # Keep existing consent/prefs
+                **updated_data # Pass all updated data, including new permissions
             )
 
             if success:
-                # Fetch potentially updated user details to refresh the view
                 new_details = self.db_handler.get_member(interaction.user.id)
-                self.parent_view.user_details = new_details # Update parent view's state
-
-                # Edit the original DM message with updated info and refreshed view
-                await interaction.response.edit_message(
-                    content=_format_dm_message(self.original_message, new_details),
-                    view=self.parent_view
-                )
-                logger.info(f"User {interaction.user.id} updated social details via modal for message {self.original_message.id}.")
+                if new_details:
+                    self.parent_view.user_details = new_details
+                    await interaction.response.edit_message(
+                        content=_format_dm_message(self.original_message, new_details),
+                        view=self.parent_view
+                    )
+                    logger.info(f"User {interaction.user.id} updated preferences via modal for message {self.original_message.id}. Data: {updated_data}")
+                else:
+                    # This case should ideally not happen if create_or_update_member was successful
+                    # and get_member is reliable.
+                    await interaction.response.send_message("Preferences updated, but failed to refresh display. Please try again or check your DMs.", ephemeral=True)
+                    logger.error(f"User {interaction.user.id} updated preferences, but new_details fetch failed for msg {self.original_message.id}.")
             else:
-                 await interaction.response.send_message("Failed to update your details in the database.", ephemeral=True)
-                 logger.error(f"Failed DB update for user {interaction.user.id} social details via modal.")
+                 await interaction.response.send_message("Failed to update your preferences in the database.", ephemeral=True)
+                 logger.error(f"Failed DB update for user {interaction.user.id} preferences via modal.")
 
         except Exception as e:
             logger.error(f"Error in UpdateSocialsModal on_submit for user {interaction.user.id}: {e}", exc_info=True)
-            await interaction.response.send_message("An error occurred while updating your details.", ephemeral=True)
+            # Check if interaction is already responded to before sending another response
+            if not interaction.response.is_done():
+                await interaction.response.send_message("An error occurred while updating your preferences.", ephemeral=True)
+            else:
+                await interaction.followup.send("An error occurred after the initial response while updating your preferences.", ephemeral=True)
 
 class SharingRequestView(discord.ui.View):
     def __init__(self, user_details: dict, db_handler: DatabaseHandler, sharer_instance: 'Sharer', original_message: discord.Message, timeout=1800): # Timeout 30 mins
         super().__init__(timeout=timeout)
         self.user_details = user_details
         self.db_handler = db_handler
-        self.sharer_instance = sharer_instance # Store the Sharer instance
-        self.original_message = original_message # Message that triggered the DM
+        self.sharer_instance = sharer_instance
+        self.original_message = original_message
         self._update_button_states()
 
-    # Dynamically update button labels/styles based on current state
     def _update_button_states(self):
-        # Consent Button
-        consent_button = self.children[0] # Assuming it's the first button
-        if self.user_details.get('sharing_consent', False):
-            consent_button.label = "Revoke Feature Consent"
-            consent_button.style = discord.ButtonStyle.danger
-            consent_button.emoji = "❌"
-        else:
-            consent_button.label = "Allow Feature"
-            consent_button.style = discord.ButtonStyle.success
-            consent_button.emoji = "✅"
+        # Update button labels based on current state
+        consent_button = self.get_item("toggle_consent")
+        if consent_button:
+            consent_button.label = "Allow Feature" if not self.user_details.get('sharing_consent', False) else "Revoke Feature"
+            consent_button.style = discord.ButtonStyle.success if not self.user_details.get('sharing_consent', False) else discord.ButtonStyle.danger
 
-        # DM Preference Button
-        dm_pref_button = self.children[2] # Assuming it's the third button
-        if self.user_details.get('dm_preference', True):
-            dm_pref_button.label = "Disable These DMs"
-            dm_pref_button.style = discord.ButtonStyle.secondary
-            dm_pref_button.emoji = "🔕"
-        else:
-            dm_pref_button.label = "Enable These DMs"
-            dm_pref_button.style = discord.ButtonStyle.primary
-            dm_pref_button.emoji = "🔔"
+        curation_button = self.get_item("toggle_curation")
+        if curation_button:
+            curation_button.label = "Allow Curation" if not self.user_details.get('permission_to_curate', False) else "Revoke Curation"
+            curation_button.style = discord.ButtonStyle.success if not self.user_details.get('permission_to_curate', False) else discord.ButtonStyle.danger
+
+        dm_button = self.get_item("toggle_dms")
+        if dm_button:
+            dm_button.label = "Disable DMs" if self.user_details.get('dm_preference', True) else "Enable DMs"
+            dm_button.style = discord.ButtonStyle.danger if self.user_details.get('dm_preference', True) else discord.ButtonStyle.success
 
     async def _update_db_and_view(self, interaction: discord.Interaction, updates: dict):
         try:
@@ -208,6 +241,15 @@ class SharingRequestView(discord.ui.View):
         else:
              logger.info(f"User {interaction.user.id} REVOKED sharing consent for message {self.original_message.id}.")
 
+    @discord.ui.button(label="Toggle Curation", style=discord.ButtonStyle.success, custom_id="toggle_curation", row=0)
+    async def toggle_curation_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        new_curation = not self.user_details.get('permission_to_curate', False)
+        await self._update_db_and_view(interaction, {'permission_to_curate': new_curation})
+        
+        if new_curation:
+            logger.info(f"User {interaction.user.id} GRANTED curation permission for message {self.original_message.id}.")
+        else:
+            logger.info(f"User {interaction.user.id} REVOKED curation permission for message {self.original_message.id}.")
 
     @discord.ui.button(label="Edit Socials", style=discord.ButtonStyle.primary, custom_id="edit_socials", emoji="📝", row=0)
     async def edit_socials_button(self, interaction: discord.Interaction, button: discord.ui.Button):

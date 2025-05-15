@@ -596,7 +596,7 @@ class DatabaseHandler:
                               twitter_handle: Optional[str] = None, instagram_handle: Optional[str] = None,
                               youtube_handle: Optional[str] = None, tiktok_handle: Optional[str] = None,
                               website: Optional[str] = None, sharing_consent: Optional[bool] = None,
-                              dm_preference: Optional[bool] = None) -> bool:
+                              dm_preference: Optional[bool] = None, permission_to_curate: Optional[bool] = None) -> bool:
         """Create or update a member in the database."""
         def member_operation(conn):
             cursor = conn.cursor()
@@ -668,6 +668,9 @@ class DatabaseHandler:
                 if dm_preference is not None:
                     update_fields.append("dm_preference = ?")
                     update_values.append(dm_preference)
+                if permission_to_curate is not None:
+                    update_fields.append("permission_to_curate = ?")
+                    update_values.append(permission_to_curate)
                 
                 if update_fields:
                     update_fields.append("updated_at = CURRENT_TIMESTAMP")
@@ -684,6 +687,7 @@ class DatabaseHandler:
                 # Set default values for consent and preference if not provided
                 final_sharing_consent = sharing_consent if sharing_consent is not None else False
                 final_dm_preference = dm_preference if dm_preference is not None else True
+                final_curation_permission = permission_to_curate if permission_to_curate is not None else False
 
                 cursor.execute("""
                     INSERT INTO members 
@@ -692,12 +696,12 @@ class DatabaseHandler:
                      discord_created_at, guild_join_date, role_ids,
                      twitter_handle, instagram_handle, youtube_handle, tiktok_handle, 
                      website, sharing_consent, dm_preference, permission_to_curate)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (member_id, username, display_name, global_name, avatar_url,
                       discriminator, bot, system, accent_color, banner_url,
                       discord_created_at, guild_join_date, role_ids,
                       twitter_handle, instagram_handle, youtube_handle, tiktok_handle,
-                      website, final_sharing_consent, final_dm_preference))
+                      website, final_sharing_consent, final_dm_preference, final_curation_permission))
             
             cursor.close()
             return True
@@ -826,6 +830,31 @@ class DatabaseHandler:
             return results
             
         return self._execute_with_retry(get_range_operation)
+
+    def get_messages_by_authors_in_range(self, author_ids: List[int], start_date: datetime, end_date: datetime) -> List[Dict]:
+        """Get all messages from a list of authors within a specific date range."""
+        if not author_ids:
+            return []
+
+        def get_messages_operation(conn):
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            placeholders = ','.join('?' * len(author_ids))
+            sql = f"""
+                SELECT * FROM messages 
+                WHERE author_id IN ({placeholders})
+                AND created_at >= ? AND created_at <= ?
+                ORDER BY created_at ASC
+            """
+            params = list(author_ids) + [start_date.isoformat(), end_date.isoformat()]
+            
+            cursor.execute(sql, tuple(params))
+            results = [dict(row) for row in cursor.fetchall()]
+            cursor.close()
+            return results
+            
+        return self._execute_with_retry(get_messages_operation)
 
     @property
     def conn(self):

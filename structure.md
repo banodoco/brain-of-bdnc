@@ -65,6 +65,12 @@ This document provides an overview of the `bndc` code-base, detailing the purpos
 │       ├── reacting/                   # Automated reaction-based workflows
 │       │   ├── reactor.py                # Core business logic – watches for reactions & performs actions
 │       │   └── reactor_cog.py            # Discord event listeners forwarding to `Reactor`
+│       │   └── subfeatures/              # Helper modules for specific reaction-triggered actions
+│       │       ├── __init__.py               # Marks directory as a Python package
+│       │       ├── permission_handler.py     # Handles curation permission requests and view logic
+│       │       ├── dispute_resolver.py       # Manages dispute resolution process using LLMs
+│       │       ├── openmuse_uploader.py      # Handles direct uploads to OpenMuse triggered by reactions
+│       │       └── tweet_sharer_bridge.py    # Bridges reaction events to the Sharer for social media posting
 │       │
 │       ├── relaying/                   # Webhook relay of messages to external services
 │       │   ├── relayer.py                # Handles outbound webhooks respecting auth/signing

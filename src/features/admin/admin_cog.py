@@ -23,37 +23,54 @@ from src.common.db_handler import DatabaseHandler
 logger = logging.getLogger('DiscordBot')
 
 # --- Modal for Updating Socials --- 
-class AdminUpdateSocialsModal(discord.ui.Modal, title='Update Your Social Handles & Website'):
+class AdminUpdateSocialsModal(discord.ui.Modal, title='Update Your Preferences'):
     twitter_input = discord.ui.TextInput(
-        label='Twitter Handle (e.g., @username or full URL)',
+        label='Twitter Handle (e.g., @username)',
         required=False,
         placeholder='Leave blank to remove',
         max_length=100
     )
     instagram_input = discord.ui.TextInput(
-        label='Instagram Handle (@username or URL)',
+        label='Instagram Handle (e.g., @username)',
         required=False,
         placeholder='Leave blank to remove',
         max_length=100
     )
     youtube_input = discord.ui.TextInput(
-        label='YouTube Handle (e.g., @channel or full URL)',
+        label='YouTube Channel URL (full URL)',
         required=False,
         placeholder='Leave blank to remove',
         max_length=100
     )
-    tiktok_input = discord.ui.TextInput(
-        label='TikTok Handle (e.g., @username or full URL)',
-        required=False,
-        placeholder='Leave blank to remove',
-        max_length=100
+    # REMOVE TIKTOK AND WEBSITE
+    # tiktok_input = discord.ui.TextInput(
+    #     label='TikTok Handle (e.g., @username or full URL)',
+    #     required=False,
+    #     placeholder='Leave blank to remove',
+    #     max_length=100
+    # )
+    # website_input = discord.ui.TextInput(
+    #     label='Website URL',
+    #     required=False,
+    #     placeholder='Leave blank to remove',
+    #     style=discord.TextStyle.short,
+    #     max_length=200
+    # )
+
+    permission_to_share_input = discord.ui.TextInput(
+        label='Okay to share on social? (yes/no)',
+        placeholder='Type "yes" or "no"',
+        required=True, # Making it required to ensure user makes a choice or confirms current
+        max_length=3,
+        min_length=2 
     )
-    website_input = discord.ui.TextInput(
-        label='Website URL',
-        required=False,
-        placeholder='Leave blank to remove',
-        style=discord.TextStyle.short,
-        max_length=200
+
+    permission_to_curate_input = discord.ui.TextInput(
+        label='Okay to share on OpenMuse? (yes/no)',
+        placeholder='Type "yes" or "no"',
+        required=True, # Making it required
+        max_length=3,
+        min_length=2
     )
 
     def __init__(self, user_details: dict, db_handler: DatabaseHandler):
@@ -65,22 +82,57 @@ class AdminUpdateSocialsModal(discord.ui.Modal, title='Update Your Social Handle
         self.twitter_input.default = user_details.get('twitter_handle')
         self.instagram_input.default = user_details.get('instagram_handle')
         self.youtube_input.default = user_details.get('youtube_handle')
-        self.tiktok_input.default = user_details.get('tiktok_handle')
-        self.website_input.default = user_details.get('website')
+        # self.tiktok_input.default = user_details.get('tiktok_handle') # REMOVED
+        # self.website_input.default = user_details.get('website') # REMOVED
+
+        # Pre-fill new permission inputs based on DB fields (sharing_consent, permission_to_curate)
+        # Assuming these fields store 1 (for yes) or 0 (for no)
+        # Display with first letter capitalized for the user
+        self.permission_to_share_input.default = "Yes" if user_details.get('sharing_consent') == 1 else "No"
+        self.permission_to_curate_input.default = "Yes" if user_details.get('permission_to_curate') == 1 else "No"
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
+            share_social_input_raw = self.permission_to_share_input.value.strip().lower()
+            curate_openmuse_input_raw = self.permission_to_curate_input.value.strip().lower()
+
+            final_sharing_consent = None
+            final_permission_to_curate = None
+
+            # Validate and convert for sharing_consent
+            if share_social_input_raw == 'yes':
+                final_sharing_consent = 1
+            elif share_social_input_raw == 'no':
+                final_sharing_consent = 0
+            else: # Invalid input (should be caught by min/max_length, but good to have)
+                await interaction.response.send_message(
+                    "Invalid input for 'Okay to share on social?'. Please enter 'yes' or 'no'.", 
+                    ephemeral=True
+                )
+                return
+
+            # Validate and convert for permission_to_curate
+            if curate_openmuse_input_raw == 'yes':
+                final_permission_to_curate = 1
+            elif curate_openmuse_input_raw == 'no':
+                final_permission_to_curate = 0
+            else: # Invalid input
+                await interaction.response.send_message(
+                    "Invalid input for 'Okay to share on OpenMuse?'. Please enter 'yes' or 'no'.", 
+                    ephemeral=True
+                )
+                return
+            
             updated_data = {
                 'twitter_handle': self.twitter_input.value.strip() or None,
                 'instagram_handle': self.instagram_input.value.strip() or None,
                 'youtube_handle': self.youtube_input.value.strip() or None,
-                'tiktok_handle': self.tiktok_input.value.strip() or None,
-                'website': self.website_input.value.strip() or None,
+                # 'tiktok_handle': self.tiktok_input.value.strip() or None, # REMOVED
+                # 'website': self.website_input.value.strip() or None, # REMOVED
+                'sharing_consent': final_sharing_consent,       # Use correct DB field name
+                'permission_to_curate': final_permission_to_curate, # Use correct DB field name
             }
             
-            # Update DB
-            # Assuming db_handler has a synchronous method or handles async internally
-            # If it's async, you might need asyncio.to_thread or ensure it's called from async context correctly
             success = self.db_handler.create_or_update_member(
                 member_id=interaction.user.id,
                 username=interaction.user.name, 
@@ -89,15 +141,19 @@ class AdminUpdateSocialsModal(discord.ui.Modal, title='Update Your Social Handle
             )
 
             if success:
-                await interaction.response.send_message("Your social details have been updated successfully!", ephemeral=True)
-                logger.info(f"User {interaction.user.id} updated social details via /update_details command.")
+                await interaction.response.send_message("Your preferences have been updated successfully!", ephemeral=True)
+                logger.info(f"User {interaction.user.id} updated preferences via /update_details. Data: {updated_data}")
             else:
-                 await interaction.response.send_message("Failed to update your details in the database. Please try again later.", ephemeral=True)
-                 logger.error(f"Failed DB update for user {interaction.user.id} social details via /update_details.")
+                 await interaction.response.send_message("Failed to update your preferences. Please try again later.", ephemeral=True)
+                 logger.error(f"Failed DB update for user {interaction.user.id} preferences via /update_details.")
 
         except Exception as e:
             logger.error(f"Error in AdminUpdateSocialsModal on_submit for user {interaction.user.id}: {e}", exc_info=True)
-            await interaction.response.send_message("An error occurred while updating your details.", ephemeral=True)
+            # Check if interaction is already responded to before sending another response
+            if not interaction.response.is_done():
+                await interaction.response.send_message("An error occurred while updating your preferences.", ephemeral=True)
+            else:
+                await interaction.followup.send("An error occurred after the initial response while updating your preferences.", ephemeral=True)
 
 # --- Admin Dashboard View ---
 class AdminDashboardView(discord.ui.View):
@@ -264,19 +320,72 @@ class AdminDashboardView(discord.ui.View):
 class AdminCog(commands.Cog):
     # Flag to ensure the persistent view is added only once
     _persistent_view_added = False
+    _commands_synced = False  # Add flag to track if commands have been synced
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db_handler: DatabaseHandler = getattr(bot, 'db_handler', None)
-        if not self.db_handler:
-             logger.error("AdminCog initialized without access to db_handler on the bot!")
-             # Depending on strictness, you might raise an error here
+        self.db_handler = bot.db_handler if hasattr(bot, 'db_handler') else None
+        logger.info("AdminCog initialized")
 
-        # Check for required bot attributes needed for admin features
-        if not hasattr(bot, 'owner_ids') and not hasattr(bot, 'owner_id'): # Check both
-             logger.warning("AdminCog: Bot owner_id or owner_ids not found on bot instance. Admin DM features require owner check.")
-        
-        # No need to check dev_mode here, view reads it dynamically
+    async def cog_load(self):
+        """Called when the cog is loaded."""
+        logger.info("AdminCog cog_load called")
+        # Log all registered commands
+        commands = [cmd.name for cmd in self.bot.tree.get_commands()]
+        logger.info(f"Currently registered commands: {commands}")
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Called when the bot is ready and connected to Discord."""
+        logger.info("AdminCog on_ready called")
+        if not self._commands_synced:
+            try:
+                # Log current commands before sync
+                commands_before = [cmd.name for cmd in self.bot.tree.get_commands()]
+                logger.info(f"Commands before sync: {commands_before}")
+
+                # First sync to the global scope
+                logger.info("Attempting global sync...")
+                try:
+                    synced = await self.bot.tree.sync()
+                    logger.info(f"Global sync completed. Synced {len(synced)} command(s): {[cmd.name for cmd in synced]}")
+                except discord.Forbidden as e:
+                    logger.error(f"Bot lacks permissions to sync commands globally: {e}")
+                    raise
+                except discord.HTTPException as e:
+                    logger.error(f"Discord API error during global sync: {e}")
+                    raise
+                
+                # Then sync to the guild scope if we're in dev mode
+                if getattr(self.bot, 'dev_mode', False):
+                    logger.info("Bot is in dev mode, syncing to guilds...")
+                    for guild in self.bot.guilds:
+                        logger.info(f"Syncing commands to guild {guild.id} ({guild.name})...")
+                        try:
+                            guild_synced = await self.bot.tree.sync(guild=guild)
+                            logger.info(f"Successfully synced {len(guild_synced)} command(s) to guild {guild.id}: {[cmd.name for cmd in guild_synced]}")
+                        except discord.Forbidden as e:
+                            logger.error(f"Bot lacks permissions to sync commands to guild {guild.id}: {e}")
+                            continue
+                        except discord.HTTPException as e:
+                            logger.error(f"Discord API error syncing to guild {guild.id}: {e}")
+                            continue
+                        except Exception as guild_sync_error:
+                            logger.error(f"Failed to sync commands to guild {guild.id}: {guild_sync_error}", exc_info=True)
+                            continue
+                else:
+                    logger.info("Bot is in production mode, skipping guild sync")
+                
+                # Log commands after sync
+                commands_after = [cmd.name for cmd in self.bot.tree.get_commands()]
+                logger.info(f"Commands after sync: {commands_after}")
+                
+                self._commands_synced = True
+                logger.info("Successfully completed all command syncing")
+            except Exception as e:
+                logger.error(f"Failed to sync commands: {e}", exc_info=True)
+                # Don't set _commands_synced to True so we can retry on next ready event
+                raise  # Re-raise to ensure we know if sync fails
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -318,6 +427,7 @@ class AdminCog(commands.Cog):
     @app_commands.command(name="update_details", description="Update your social media handles and website link.")
     async def update_details(self, interaction: discord.Interaction):
         """Allows a user to update their social media details via a modal."""
+        logger.info(f"update_details command triggered by user {interaction.user.id} in {'DM' if interaction.guild is None else f'guild {interaction.guild.id}'}")
         if not self.db_handler:
              await interaction.response.send_message("Database connection is unavailable. Please try again later.", ephemeral=True)
              return
@@ -330,8 +440,6 @@ class AdminCog(commands.Cog):
             if not user_details:
                 # If user not found, create a default entry or structure to pre-fill modal
                 logger.info(f"User {user_id} not found in DB for /update_details. Creating temporary dict.")
-                # We don't necessarily need to create them in the DB *before* the modal,
-                # create_or_update_member handles inserts. Just need defaults for the modal.
                 user_details = {
                      'member_id': user_id,
                      'username': interaction.user.name,
@@ -359,6 +467,8 @@ class AdminCog(commands.Cog):
                       logger.error(f"Failed to send error message for /update_details: {followup_e}")
 
 async def setup(bot: commands.Bot):
+    """Sets up the AdminCog."""
+    logger.info("Setting up AdminCog")
     # Check for db_handler dependency
     if not hasattr(bot, 'db_handler'):
          logger.error("Cannot setup AdminCog: db_handler not found on bot instance.")
@@ -366,17 +476,13 @@ async def setup(bot: commands.Bot):
 
     # Add the AdminCog instance
     await bot.add_cog(AdminCog(bot))
+    logger.info("AdminCog added to bot")
 
     # Add the persistent view *once*
-    # Check if the view with this custom_id prefix is already added is tricky,
-    # so using a simple flag on the class for now.
     if not AdminCog._persistent_view_added:
-        # Make sure owner_ids and dev_mode are available before creating the view
-        # No need to check for dev_mode here, the view reads it dynamically
         if not hasattr(bot, 'owner_ids') and not bot.owner_id:
             logger.error("Cannot add AdminDashboardView: Bot owner ID(s) are required.")
         else:
-            # Ensure the cog instance is passed if needed, but here we just need the bot
             bot.add_view(AdminDashboardView(bot))
             AdminCog._persistent_view_added = True
             logger.info("AdminDashboardView added as a persistent view.") 

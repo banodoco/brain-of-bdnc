@@ -241,6 +241,7 @@ class OpenMuseInteractor:
         attachment: discord.Attachment,
         author: discord.User | discord.Member,
         message: discord.Message,
+        admin_status: str = 'Listed'
         # Optional: Pass reaction if needed for metadata, though probably not
         # reaction: discord.Reaction | None = None
     ) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
@@ -252,6 +253,7 @@ class OpenMuseInteractor:
             attachment: The discord.Attachment object to upload.
             author: The discord.User or discord.Member who authored the message.
             message: The original discord.Message containing the attachment.
+            admin_status: The admin_status for the media record
 
         Returns:
             A tuple containing (media_record, profile_record) upon successful
@@ -449,7 +451,7 @@ class OpenMuseInteractor:
             'placeholder_image': placeholder_image_url,
             'type': media_type,
             'classification': classification,
-            'admin_status': 'Curated', # Changed from 'Listed'
+            'admin_status': admin_status,
             'user_status': 'Listed', # Changed from 'View'
             'description': message.content,
             'metadata': {

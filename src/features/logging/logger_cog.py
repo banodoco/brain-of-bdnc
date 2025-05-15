@@ -298,9 +298,13 @@ class LoggerCog(commands.Cog):
         """Called when a message is sent in any channel the bot can see."""
         self.logger.debug(f"[LoggerCog] on_message triggered for message ID: {message.id} in channel {message.channel.id} by author {message.author.id}")
         try:
+            # Skip DMs
+            if not message.guild:
+                self.logger.debug(f"[LoggerCog] Skipping DM message {message.id}")
+                return
+
             # Ignore messages from the bot itself or the configured bot user
-            # TODO: Add bot_user_id check similar to logger.py if needed
-            if message.author == self.bot.user: # Use self.bot.user here
+            if message.author == self.bot.user:
                 self.logger.debug(f"[LoggerCog] Ignoring message from self (bot user: {self.bot.user.id})")
                 return
 
@@ -309,12 +313,9 @@ class LoggerCog(commands.Cog):
             # Check if _prepare_message_data exists before calling
             if not hasattr(self, '_prepare_message_data'):
                 self.logger.error(f"[LoggerCog] CRITICAL: _prepare_message_data method not found on LoggerCog instance!")
-                # Optionally, try to dynamically get it from somewhere if that's the intended design,
-                # but it's likely a structural issue that needs fixing.
-                # For now, just log the error and return to prevent crashing the listener.
                 return
                 
-            message_data = await self._prepare_message_data(message) # This call will likely fail
+            message_data = await self._prepare_message_data(message)
             self.logger.debug(f"[LoggerCog] Message data prepared for message {message.id}. Keys: {list(message_data.keys())}")
 
             self.logger.debug(f"[LoggerCog] Storing message {message.id} using DB handler: {self.db}")
@@ -323,10 +324,10 @@ class LoggerCog(commands.Cog):
 
         except AttributeError as ae:
              self.logger.error(f"[LoggerCog] AttributeError in on_message for message {message.id}: {ae}")
-             self.logger.error(traceback.format_exc()) # Log the full traceback for AttributeError
+             self.logger.error(traceback.format_exc())
         except Exception as e:
             self.logger.error(f"[LoggerCog] Unexpected error logging message {message.id}: {e}")
-            self.logger.error(traceback.format_exc()) # Log the full traceback for other errors
+            self.logger.error(traceback.format_exc())
 
     async def _prepare_message_data(self, message: discord.Message) -> dict:
         """Convert a discord message into a format suitable for database storage."""

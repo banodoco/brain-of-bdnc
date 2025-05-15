@@ -134,8 +134,14 @@ async def main_async(args):
         logger.info("LoggerCog loaded.")
         
         # Admin Cog (New)
-        await bot.load_extension("src.features.admin.admin_cog")
-        logger.info("AdminCog loaded.")
+        try:
+            logger.info("Attempting to load AdminCog...")
+            from src.features.admin.admin_cog import AdminCog
+            await bot.add_cog(AdminCog(bot))
+            logger.info("AdminCog successfully loaded and added to bot")
+        except Exception as e:
+            logger.error(f"Failed to load AdminCog: {e}", exc_info=True)
+            raise  # Re-raise to prevent bot from starting with missing functionality
 
         # Reactor Cog (Needs bot.reactor_instance)
         await bot.load_extension("src.features.reacting.reactor_cog")

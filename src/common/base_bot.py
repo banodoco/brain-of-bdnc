@@ -17,11 +17,11 @@ class BaseDiscordBot(commands.Bot):
     heartbeat and reconnection logic rather than manual heartbeat checks.
     """
 
-    def __init__(self, *args, **kwargs) -> None:
-        self.logger = kwargs.get("logger") or logging.getLogger(__name__)
-        self.dev_mode = kwargs.get("dev_mode", False)
-
-        super().__init__(*args, **kwargs)
+    def __init__(self, command_prefix, logger, dev_mode=False, intents=None, **kwargs):
+        super().__init__(command_prefix=command_prefix, intents=intents, **kwargs)
+        self.logger = logger
+        self.dev_mode = dev_mode
+        self.summary_now = False
 
         # Session management (optional, if you want to track session IDs):
         self._last_session_id: Optional[str] = None
@@ -35,10 +35,22 @@ class BaseDiscordBot(commands.Bot):
         self.summarizer_ready = False
 
     async def setup_hook(self):
-        """
-        Called before the bot starts running. Removed custom health-check tasks.
-        """
-        pass  # Rely on discord.py's internal heartbeat & reconnect logic
+        """Called when the bot is starting up."""
+        # Add the sync command
+        @self.command()
+        @commands.is_owner()
+        async def sync(ctx):
+            """Force sync slash commands."""
+            try:
+                synced = await self.tree.sync()
+                await ctx.send(f"Synced {len(synced)} command(s) globally")
+                
+                if self.dev_mode:
+                    for guild in self.guilds:
+                        guild_synced = await self.tree.sync(guild=guild)
+                        await ctx.send(f"Synced {len(guild_synced)} command(s) to guild {guild.id}")
+            except Exception as e:
+                await ctx.send(f"Failed to sync commands: {e}")
 
     async def start(self, *args, **kwargs):
         """Start the bot."""
@@ -114,8 +126,10 @@ class BaseDiscordBot(commands.Bot):
             self.logger.debug(traceback.format_exc())
 
     async def on_ready(self):
-        """When the bot is fully connected."""
-        self.logger.info(f"Bot {self.user} successfully connected to Discord")
+        """Called when the bot is ready."""
+        self.logger.info(f"Bot is ready! Logged in as {self.user.name} (ID: {self.user.id})")
+        self.logger.info(f"Dev mode: {self.dev_mode}")
+        self.logger.info(f"Connected to {len(self.guilds)} guilds")
         # Initialize error handler (if you have a custom one)
         try:
             from src.common.error_handler import ErrorHandler

@@ -50,58 +50,109 @@ def _truncate_with_ellipsis(text: str, max_length: int) -> str:
         return text[:max_length-4] + "..."
 
 def _build_tweet_caption(base_description: str, user_details: Dict, original_content: Optional[str]) -> str:
-    """Builds the final tweet caption, adding user handles and context."""
-    caption_parts = [base_description]
-    max_len = 280 # Twitter limit
-    current_len = len(base_description)
-
-    # Add Artist Credit
-    artist_credit = "" 
-    twitter_handle = user_details.get('twitter_handle')
-    user_name = user_details.get('global_name') or user_details.get('username', 'the artist') # Fallback name
+    """Builds the final tweet caption, prioritizing Twitter handle for tagging."""
     
-    if twitter_handle:
-        # Format handle correctly (@username or full URL)
-        if twitter_handle.startswith('http'):
-             handle_text = twitter_handle
-        elif not twitter_handle.startswith('@'):
-             handle_text = f"@{twitter_handle}"
-        else:
-             handle_text = twitter_handle
-        artist_credit = f" by {handle_text}"
-    else:
-        artist_credit = f" by {user_name}"
+    user_global_name = user_details.get('global_name')
+    user_discord_name = user_details.get('username')
+
+    # Determine the artist credit text
+    artist_credit_text = None # Default to None, fallbacks will set it
     
-    if current_len + len(artist_credit) <= max_len:
-         caption_parts.append(artist_credit)
-         current_len += len(artist_credit)
-    else:
-         logger.warning("Caption too long to add artist credit.")
+    # Try to process twitter_handle first
+    raw_twitter_handle = user_details.get('twitter_handle')
 
-    # Add Original Comment (if space permits)
-    if original_content and len(original_content.strip()) > 0:
-        comment_prefix = "\n\nArtist Comment: \""
-        comment_suffix = "\""
-        available_len = max_len - current_len - len(comment_prefix) - len(comment_suffix)
-        if available_len > 20: # Need some minimum space for the comment
-             truncated_comment = _truncate_with_ellipsis(original_content.strip(), available_len)
-             caption_parts.append(f"{comment_prefix}{truncated_comment}{comment_suffix}")
-             current_len += len(comment_prefix) + len(truncated_comment) + len(comment_suffix)
+    if raw_twitter_handle:
+        handle_val = raw_twitter_handle.strip()
+        extracted_username = None
+
+        # 1. Handle leading '@' if it's part of a recognized URL structure
+        #    (e.g. @https://x.com/user, @x.com/user)
+        is_url_like_structure = '://' in handle_val or \
+                               'x.com/' in handle_val.lower() or \
+                               'twitter.com/' in handle_val.lower()
+        if handle_val.startswith('@') and is_url_like_structure:
+            handle_val = handle_val[1:]
+
+        # 2. Process URLs (containing ://)
+        if '://' in handle_val:
+            path_after_scheme = handle_val.split('://', 1)[-1]
+            # Use original casing from path_after_scheme for username part
+            # Use lowercased domain_and_path_lower for matching domain patterns
+            domain_and_path_lower = path_after_scheme.lower() 
+            
+            if domain_and_path_lower.startswith('twitter.com/'):
+                extracted_username = path_after_scheme[len('twitter.com/'):].split('/')[0]
+            elif domain_and_path_lower.startswith('www.twitter.com/'):
+                extracted_username = path_after_scheme[len('www.twitter.com/'):].split('/')[0]
+            elif domain_and_path_lower.startswith('x.com/'):
+                extracted_username = path_after_scheme[len('x.com/'):].split('/')[0]
+            elif domain_and_path_lower.startswith('www.x.com/'):
+                extracted_username = path_after_scheme[len('www.x.com/'):].split('/')[0]
+            # No generic fallback for other URLs to avoid misinterpreting them as Twitter handles
+                
+        # 3. Process non-URL strings that might contain x.com/ or twitter.com/
+        #    (e.g., x.com/user, twitter.com/user)
+        elif 'x.com/' in handle_val.lower():
+            match_pattern = 'x.com/'
+            # Find start of username after "x.com/" case-insensitively from original handle_val
+            start_idx = handle_val.lower().find(match_pattern) + len(match_pattern)
+            extracted_username = handle_val[start_idx:].split('/')[0]
+        elif 'twitter.com/' in handle_val.lower():
+            match_pattern = 'twitter.com/'
+            start_idx = handle_val.lower().find(match_pattern) + len(match_pattern)
+            extracted_username = handle_val[start_idx:].split('/')[0]
+        
+        # 4. If no URL/domain pattern matched, assume handle_val is the username itself
+        #    (e.g. "username" or "@username")
         else:
-             logger.warning("Caption too long to add original comment.")
+            extracted_username = handle_val
 
-    # Add Website (if space permits)
-    website = user_details.get('website')
-    if website:
-        website_prefix = "\n\nMore from them: "
-        available_len = max_len - current_len - len(website_prefix)
-        if available_len > len(website): # Check if the full URL fits
-             caption_parts.append(f"{website_prefix}{website}")
-             current_len += len(website_prefix) + len(website)
+        # 5. Clean and format the extracted username
+        if extracted_username:
+            # Remove query parameters or fragments
+            cleaned_username = extracted_username.split('?')[0].split('#')[0]
+            
+            # Remove any existing leading '@' from the cleaned part
+            if cleaned_username.startswith('@'):
+                cleaned_username = cleaned_username[1:]
+            
+            if cleaned_username: # Ensure not empty after all cleaning
+                artist_credit_text = f"@{cleaned_username}"
+
+    # Fallbacks if twitter handle processing didn't yield a result or no handle was provided
+    if not artist_credit_text: 
+        if user_global_name:
+            artist_credit_text = user_global_name
+        elif user_discord_name:
+            artist_credit_text = user_discord_name
         else:
-             logger.warning("Caption too long to add website link.")
+            artist_credit_text = "the artist"
+    
+    caption = f"Top art post of the day by {artist_credit_text}"
+    
+    # Add Original Comment (if available and not just whitespace)
+    if original_content and original_content.strip():
+        comment = original_content.strip()
+        # Calculate base length for comment section (prefix, suffix, and newlines)
+        comment_format_overhead = len("\n\nComment by artists: \"\"") 
+        
+        full_comment_section = f"\n\nComment by artists: \"{comment}\""
 
-    return "".join(caption_parts).strip()
+        if len(caption) + len(full_comment_section) <= 280:
+            caption += full_comment_section
+        else:
+            # Attempt to truncate the comment
+            # Available length for the comment text itself (inside the quotes)
+            available_len_for_comment_text = 280 - len(caption) - comment_format_overhead
+            
+            if available_len_for_comment_text > 10: # Min meaningful length for a truncated comment
+                truncated_comment = _truncate_with_ellipsis(comment, available_len_for_comment_text)
+                caption += f"\n\nComment by artists: \"{truncated_comment}\""
+            else:
+                 # Log warning if even a truncated comment doesn't fit
+                 logger.warning(f"Caption too long to add even a truncated artist comment for {artist_credit_text}.")
+            
+    return caption.strip()
 
 # Added helper for building Zapier captions/payloads
 # Note: This is simplified. You might want different caption logic per platform.
