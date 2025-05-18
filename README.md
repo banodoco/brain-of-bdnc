@@ -13,9 +13,13 @@ This is the Brain of BNDC, a friendly robot dedicated to helping our around the 
 - 📣 **Social Sharing:** Shares curated content or summaries to external platforms like Twitter (`sharing`).
 - 🧠 **Question Answering:** Answers questions about past discussions using the community's conversation history (`answering`) (Coming Soon).
 
+## Code Structure
+
+For a detailed LLM-friendly overview of the code structure, see [structure.md](structure.md). This file provides a comprehensive breakdown of each directory and module that can be used to help understand or extend the codebase.
+
 ## Live Demo
 
-Want to see it in action? Join the [Banodoco Discord server](https://discord.gg/NnFxGvx94b) to see the bot's daily summaries and features live!
+Want to see it in action? Join the [Banodoco Discord server](https://discord.gg/NnFxGvx94b)!
 
 ## Setup
 
@@ -23,8 +27,8 @@ Want to see it in action? Join the [Banodoco Discord server](https://discord.gg/
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/peteromallet/bndc-engine.git
-cd bndc-engine
+git clone https://github.com/banodoco/brain-of-bdnc.git
+cd brain-of-bdnc
 
 ```
 
@@ -46,7 +50,7 @@ Basic operation:
 python main.py
 ```
 
-Development mode:
+Development mode - using test data and channels:
 ```bash
 python main.py --dev
 ```
@@ -54,6 +58,11 @@ python main.py --dev
 Run summary immediately:
 ```bash
 python main.py --run-now
+```
+
+Archive historical messages (e.g., from the past 30 days):
+```bash
+python scripts/archive_discord.py --days 30
 ```
 
 ### Bot Permissions
@@ -69,13 +78,6 @@ The bot requires the following Discord permissions:
 - Add Reactions
 - View Channel
 - Manage Threads
-
-### Development Mode
-
-Run the bot in development mode to:
-- Use test data instead of live channels
-- Test in a development server
-- Avoid affecting production data
 
 ## Contributing
 
