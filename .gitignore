@@ -110,3 +110,7 @@ test_art_query.py
 
 # Project specific results/output
 results/
+
+# Workflow and Supabase temp files
+supabase/temp/
+bdnc_code.workflow
