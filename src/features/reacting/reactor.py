@@ -31,6 +31,9 @@ from .subfeatures.openmuse_uploader import handle_upload_to_openmuse
 # --- BEGIN NEW IMPORT FOR TWEET SHARER BRIDGE ---
 from .subfeatures.tweet_sharer_bridge import handle_send_tweet_about_message
 # --- END NEW IMPORT FOR TWEET SHARER BRIDGE ---
+# --- BEGIN NEW IMPORT FOR OPENMUSE MESSENGER ---
+from .subfeatures.openmuse_messenger import ask_to_share_to_openmuse
+# --- END NEW IMPORT FOR OPENMUSE MESSENGER ---
 
 # Environment variable for watchlist configuration
 # Example format:
@@ -330,6 +333,17 @@ class Reactor:
             logger=self.logger
         )
 
+    # Action name in JSON: "prompt_openmuse_share"
+    async def _react_action_prompt_openmuse_share(self, reaction: discord.Reaction, user: discord.User):
+        """[Reaction Action] Sends a DM asking the user to share to OpenMuse via the subfeature handler."""
+        await ask_to_share_to_openmuse(
+            bot=self.bot,
+            reaction=reaction, 
+            user=user, 
+            logger=self.logger, 
+            rate_limiter=self.bot.rate_limiter
+        )
+
     # --- Message-Triggered Actions ---
     # Action name in JSON: "log_special_keyword" (Example)
     async def _msg_action_log_special_keyword(self, message: discord.Message):
@@ -350,4 +364,22 @@ class Reactor:
     # e.g., async def _react_action_some_other_reaction(...)
     # e.g., async def _msg_action_process_file(...)
 
-    # --- Add other action methods as defined in your watchlist (reaction or message based) --- 
+    # --- Add other action methods as defined in your watchlist (reaction or message based) ---
+
+    # [This entire method block should be removed]
+    # async def ask_to_share_to_openmuse(self, user: discord.User):
+    #     """Sends a DM asking the user if they want to share their workflow to OpenMuse."""
+    #     username = user.name
+    #     message_content = (
+    #         f"Hello @{username}, \n\n"
+    #         "This looks like a workflow that may be useful to others. \n\n"
+    #         "Would you be up for sharing it on [OpenMuse](<https://openmuse.ai/>)? (\U0001F64F)"
+    #     )
+    #     try:
+    #         await user.send(message_content)
+    #         self.logger.info(f"[Reactor] Sent OpenMuse share request DM to {user.name} ({user.id}).")
+    #     except discord.Forbidden:
+    #         self.logger.warning(f"[Reactor] Could not send OpenMuse share request DM to {user.name} ({user.id}) - DM disabled or bot blocked.")
+    #     except Exception as e:
+    #         self.logger.error(f"[Reactor] Error sending OpenMuse share request DM to {user.name} ({user.id}): {e}")
+    #         self.logger.error(traceback.format_exc()) 

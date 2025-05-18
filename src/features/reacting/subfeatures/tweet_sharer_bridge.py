@@ -261,8 +261,13 @@ Reply with that and nothing else"""
 
         if sharer_instance:
             success, tweet_url = await sharer_instance.send_tweet(
-                content=tweet_text, image_urls=media_urls if media_urls else None,
-                message_id=str(message_to_share.id), user_id=str(original_poster.id)
+                content=tweet_text, 
+                image_urls=media_urls if media_urls else None,
+                message_id=str(message_to_share.id), 
+                user_id=original_poster.id, 
+                author_display_name=original_poster.display_name, # Added author's display name
+                original_message_content=message_to_share.content, 
+                original_message_jump_url=message_to_share.jump_url
             )
             if success:
                 reactor_dm_confirm_msg = f"Your comment on {message_to_share.jump_url} has been tweeted! View it here: {tweet_url}"

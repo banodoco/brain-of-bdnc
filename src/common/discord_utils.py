@@ -1,7 +1,7 @@
 import discord
 import asyncio
 import logging
-from typing import Union, Optional
+from typing import Union, Optional, List
 
 from src.common.rate_limiter import RateLimiter
 from src.common.error_handler import handle_errors
@@ -15,8 +15,9 @@ async def safe_send_message(
     content: Optional[str] = None,
     embed: Optional[discord.Embed] = None,
     file: Optional[discord.File] = None,
-    files: Optional[list[discord.File]] = None,
-    reference: Optional[Union[discord.Message, discord.MessageReference, discord.PartialMessage]] = None
+    files: Optional[List[discord.File]] = None,
+    reference: Optional[Union[discord.Message, discord.MessageReference, discord.PartialMessage]] = None,
+    view: Optional[discord.ui.View] = None
 ) -> Optional[discord.Message]:
     """
     Safely sends a message to a given channel, handling rate limits and common errors.
@@ -31,6 +32,7 @@ async def safe_send_message(
         file: A file to send with the message.
         files: A list of files to send with the message.
         reference: A message to reply to.
+        view: A discord.ui.View to send with the message.
 
     Returns:
         The sent discord.Message object if successful, None otherwise.
@@ -41,14 +43,14 @@ async def safe_send_message(
             # Key for rate limiting can be channel.id
             # The rate_limiter now expects a factory
             coroutine_factory = lambda: channel.send(
-                content=content, embed=embed, file=file, files=files, reference=reference
+                content=content, embed=embed, file=file, files=files, reference=reference, view=view
             )
             return await rate_limiter.execute(channel.id, coroutine_factory)
         else:
             # Fallback if no rate limiter is provided (though generally expected)
             logger.warning(f"Sending message to {getattr(channel, 'name', channel.id)} without a rate limiter.")
             send_task = channel.send(
-                content=content, embed=embed, file=file, files=files, reference=reference
+                content=content, embed=embed, file=file, files=files, reference=reference, view=view
             )
             return await asyncio.wait_for(send_task, timeout=10)
 

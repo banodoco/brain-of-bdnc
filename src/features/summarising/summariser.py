@@ -1021,7 +1021,7 @@ class ChannelSummarizer:
                                 
                                 if thread:
                                     self.logger.info(f"Using summary thread in channel {post_channel_id}: {thread.id}")
-                                    date_headline = f"# {current_date.strftime('%A, %B %d, %Y')}\\n"
+                                    date_headline = f"# {current_date.strftime('%A, %B %d, %Y')}\n"
                                     # UPDATED CALL
                                     header_msg = await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=date_headline)
                                     await asyncio.sleep(1)
@@ -1050,10 +1050,10 @@ class ChannelSummarizer:
                                          short_summary_text = await self.news_summarizer.generate_short_summary(channel_summary, len(messages))
                                          link = f"https://discord.com/channels/{channel_obj.guild.id}/{thread.id}/{header_msg.id}"
                                          # UPDATED CALL
-                                         await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=f"\\n---\\n\\n***Click here to jump to the beginning of today's summary:***{link}")
+                                         await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=f"\n---\n\n***Click here to jump to the beginning of today's summary:***{link}")
                                          channel_header = f"**### Channel summary for {current_date.strftime('%A, %B %d, %Y')}**"
                                          # UPDATED CALL
-                                         await discord_utils.safe_send_message(self.bot, channel_obj, self.rate_limiter, self.logger, content=f"{channel_header}{short_summary_text}\\n[Click here to jump to the summary thread]({link})")
+                                         await discord_utils.safe_send_message(self.bot, channel_obj, self.rate_limiter, self.logger, content=f"{channel_header}{short_summary_text}\n[Click here to jump to the summary thread]({link})")
                         
                         success = await self._post_summary_with_transaction(channel_id, channel_summary, messages, current_date, db_handler)
                         if success: channel_summaries.append(channel_summary)
@@ -1070,7 +1070,7 @@ class ChannelSummarizer:
                     if overall_summary and overall_summary not in ["[NOTHING OF NOTE]", "[NO SIGNIFICANT NEWS]", "[NO MESSAGES TO ANALYZE]"]:
                         formatted_summary = self.news_summarizer.format_news_for_discord(overall_summary)
                         # UPDATED CALL
-                        header = await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\\n\\n# Daily Summary - {current_date.strftime('%A, %B %d, %Y')}\\n\\n")
+                        header = await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\n\n# Daily Summary - {current_date.strftime('%A, %B %d, %Y')}\n\n")
                         if header is not None: self.first_message = header
                         else: self.logger.error("Failed to post header message; first_message remains unset.")
                         
@@ -1108,7 +1108,7 @@ class ChannelSummarizer:
                 if self.first_message:
                     link_to_start = self.first_message.jump_url
                     # UPDATED CALL
-                    await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\\n---\\n\\n***Click here to jump to the beginning of today's summary:*** {link_to_start}")
+                    await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\n---\n\n***Click here to jump to the beginning of today's summary:*** {link_to_start}")
                 else:
                     self.logger.warning("No first_message found, cannot send link back")
 
@@ -1117,7 +1117,7 @@ class ChannelSummarizer:
             if summary_channel: # Check if summary_channel was successfully fetched
                 try:
                     # UPDATED CALL
-                    await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"⚠️ Critical error during summary generation: {e}")
+                    await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"⚠️ Critical error during summary generation: {str(e)[:500]}") # Truncate error for safety
                 except Exception: pass
         finally:
             if self.summary_lock.locked(): self.summary_lock.release()

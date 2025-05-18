@@ -26,8 +26,11 @@ from .subfeatures.social_poster import (
     _build_zapier_payload, # Also import the payload builder
     generate_media_title, # Now correctly references the moved function
 )
+from src.common import discord_utils # Ensure this is imported
 
 logger = logging.getLogger('DiscordBot')
+
+ANNOUNCEMENT_CHANNEL_ID = 1246615722164224141 # User provided ID
 
 class Sharer:
     # Remove claude_client from init
@@ -93,7 +96,11 @@ class Sharer:
                 safe_filename_from_url = f"media_{item_index}" 
             
             save_path = self.temp_dir / f"tweet_media_{message_id}_{item_index}_{safe_filename_from_url}"
-            save_path = save_path.with_suffix(Path(filename_from_url).suffix) # Ensure correct suffix
+            # Ensure the suffix is preserved or correctly added
+            original_suffix = Path(filename_from_url).suffix
+            if original_suffix:
+                save_path = save_path.with_suffix(original_suffix)
+            # else: # if no suffix in URL, might try to guess or leave as is based on Content-Type later
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:
@@ -127,7 +134,9 @@ class Sharer:
         image_urls: Optional[List[str]], 
         message_id: str, # Original Discord message ID for context/logging
         user_id: int,      # Original Discord user ID for fetching details
-        original_message_content: Optional[str] = None # Original Discord message text
+        author_display_name: str, # NEW parameter for display name
+        original_message_content: Optional[str] = None, # Original Discord message text
+        original_message_jump_url: Optional[str] = None
     ) -> Tuple[bool, Optional[str]]:
         """Prepares data and posts a tweet using the social_poster.post_tweet function."""
         self.logger.info(f"Sharer.send_tweet called for message_id {message_id} by user_id {user_id} with content: '{content[:50]}...'")
@@ -175,6 +184,12 @@ class Sharer:
 
         if tweet_url:
             self.logger.info(f"Sharer.send_tweet: Successfully posted tweet for message_id {message_id}. URL: {tweet_url}")
+            await self._announce_tweet_url(
+                tweet_url=tweet_url, 
+                author_display_name=author_display_name, 
+                original_message_jump_url=original_message_jump_url, 
+                context_message_id=message_id
+            )
             return True, tweet_url
         else:
             self.logger.error(f"Sharer.send_tweet: Failed to post tweet for message_id {message_id} (post_tweet returned None).")
@@ -251,6 +266,8 @@ class Sharer:
         if not message_object:
              self.logger.error(f"Cannot finalize sharing: Failed to fetch message {message_id} from channel {channel_id}.")
              return
+
+        author_display_name = message_object.author.display_name
 
         # 3. Download Attachments
         downloaded_attachments = []
@@ -396,6 +413,11 @@ class Sharer:
         )
         if tweet_url:
             self.logger.info(f"Successfully posted message {message_id} to Twitter: {tweet_url}")
+            await self._announce_tweet_url(
+                tweet_url=tweet_url, 
+                author_display_name=author_display_name, 
+                original_message_jump_url=message_object.jump_url
+            )
         else:
             self.logger.error(f"Failed to post message {message_id} to Twitter.")
             
@@ -425,7 +447,7 @@ class Sharer:
             self.logger.info(f"Skipping Zapier posts for GIF message {message_id}.")
 
         # 6. Cleanup Downloaded Files
-        self._cleanup_files([a['local_path'] for a in downloaded_attachments])
+        self._cleanup_files([a['local_path'] for a in downloaded_attachments if 'local_path' in a])
 
     def _cleanup_files(self, file_paths: List[str]):
         """Removes temporary files."""
@@ -443,9 +465,10 @@ class Sharer:
             channel = self.bot.get_channel(channel_id)
             if not channel:
                 # Fallback: try fetching channel if not in cache
+                self.logger.info(f"[Sharer._fetch_message] Channel {channel_id} not in cache, fetching.")
                 channel = await self.bot.fetch_channel(channel_id)
                 
-            if isinstance(channel, (discord.TextChannel, discord.Thread)):
+            if isinstance(channel, (discord.TextChannel, discord.Thread)): # Added discord.Thread
                  message = await channel.fetch_message(message_id)
                  self.logger.info(f"Successfully fetched message {message_id} from channel {channel_id}")
                  return message
@@ -461,3 +484,48 @@ class Sharer:
         except Exception as e:
             self.logger.error(f"Unexpected error fetching message {message_id} from channel {channel_id}: {e}", exc_info=True)
             return None 
+
+    async def _announce_tweet_url(self, tweet_url: str, author_display_name: str, original_message_jump_url: Optional[str] = None, context_message_id: Optional[str] = None):
+        if not ANNOUNCEMENT_CHANNEL_ID:
+            self.logger.info("[Sharer] Tweet announcement channel ID not configured. Skipping announcement.")
+            return
+
+        try:
+            channel = self.bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+            if not channel:
+                self.logger.info(f"[Sharer] Announcement channel {ANNOUNCEMENT_CHANNEL_ID} not in cache, fetching.")
+                channel = await self.bot.fetch_channel(ANNOUNCEMENT_CHANNEL_ID)
+            
+            if not isinstance(channel, discord.TextChannel):
+                self.logger.error(f"[Sharer] Announcement channel {ANNOUNCEMENT_CHANNEL_ID} is not a text channel or could not be fetched.")
+                return
+
+            message_content = f"Tweet: {tweet_url}"
+            if original_message_jump_url:
+                message_content += f"\n\nBased on this post by {author_display_name}: {original_message_jump_url}"
+            elif context_message_id: # Fallback for context if jump_url somehow not available
+                message_content += f"\n\nBased on this post by {author_display_name} (Original Discord Message ID for context: {context_message_id})"
+            else: # Absolute fallback
+                message_content += f"\n\n(Shared content by {author_display_name})"
+            
+            if hasattr(self.bot, 'rate_limiter') and self.bot.rate_limiter is not None:
+                await discord_utils.safe_send_message(
+                    self.bot,
+                    channel,
+                    self.bot.rate_limiter,
+                    self.logger,
+                    content=message_content
+                )
+                self.logger.info(f"[Sharer] Announced tweet {tweet_url} to channel {ANNOUNCEMENT_CHANNEL_ID} via safe_send_message.")
+            else:
+                # Fallback to direct send if rate_limiter is not available
+                self.logger.warning(f"[Sharer] Bot instance does not have a rate_limiter or it's None. Sending announcement for {tweet_url} directly to {ANNOUNCEMENT_CHANNEL_ID}.")
+                await channel.send(content=message_content)
+                self.logger.info(f"[Sharer] Announced tweet {tweet_url} to channel {ANNOUNCEMENT_CHANNEL_ID} (direct send).")
+
+        except discord.NotFound:
+            self.logger.error(f"[Sharer] Could not find announcement channel {ANNOUNCEMENT_CHANNEL_ID} via get_channel or fetch_channel.")
+        except discord.Forbidden:
+            self.logger.error(f"[Sharer] Bot lacks permissions to send message to announcement channel {ANNOUNCEMENT_CHANNEL_ID} or to fetch it.")
+        except Exception as e:
+            self.logger.error(f"[Sharer] Error announcing tweet to channel {ANNOUNCEMENT_CHANNEL_ID}: {e}", exc_info=True) 
