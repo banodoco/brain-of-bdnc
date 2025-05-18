@@ -35,13 +35,18 @@ class RateLimiter:
                     jitter = random.uniform(-self.jitter, self.jitter)
                     await asyncio.sleep(self.backoff_times[key] * (1 + jitter))
                 
-                # If it's a factory function, call it to get the coroutine
-                if callable(coroutine_or_factory) and not asyncio.iscoroutine(coroutine_or_factory):
-                    coroutine = coroutine_or_factory()
-                else:
-                    coroutine = coroutine_or_factory
+                # Ensure coroutine_or_factory is a callable factory
+                if not callable(coroutine_or_factory):
+                    self.logger.error("RateLimiter.execute expects a callable coroutine factory.")
+                    raise TypeError("coroutine_or_factory must be a callable that returns a coroutine")
+
+                # Get a new coroutine object from the factory for each attempt
+                current_coro = coroutine_or_factory()
+                if not asyncio.iscoroutine(current_coro):
+                    self.logger.error("Coroutine factory did not return a coroutine.")
+                    raise TypeError("coroutine_or_factory must return a coroutine")
                 
-                result = await coroutine
+                result = await current_coro
                 
                 # Reset backoff on success
                 self.backoff_times[key] = self.base_delay

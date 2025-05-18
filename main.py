@@ -15,6 +15,7 @@ from src.common.log_handler import LogHandler
 from src.common.base_bot import BaseDiscordBot
 from src.common.db_handler import DatabaseHandler
 from src.common.openmuse_interactor import OpenMuseInteractor
+from src.common.llm.claude_client import ClaudeClient
 from src.features.curating.curator_cog import CuratorCog
 from src.features.summarising.summariser_cog import SummarizerCog
 from src.features.logging.logger_cog import LoggerCog
@@ -71,9 +72,10 @@ async def main_async(args):
         bot.db_handler = DatabaseHandler(dev_mode=args.dev)
         logger.info("DatabaseHandler initialized and attached to bot.")
 
-        # 2. Claude Client (REMOVED - Cogs should use get_llm_response)
-        # bot.claude_client = ClaudeClient() 
-        # logger.info("ClaudeClient initialized and attached to bot.")
+        # 2. Claude Client (NEW - for Reactor and potentially other direct uses)
+        claude_client_instance = ClaudeClient()
+        bot.claude_client = claude_client_instance # Attach to bot if needed by other cogs directly, or for general access
+        logger.info("ClaudeClient initialized and attached to bot.")
 
         # 3. Sharing Cog & Sharer Instance
         await bot.load_extension("src.features.sharing.sharing_cog")
@@ -102,12 +104,14 @@ async def main_async(args):
         bot.openmuse_interactor_instance = openmuse_interactor_instance # Optional: Attach to bot if needed elsewhere
         logger.info("OpenMuseInteractor instance created.")
 
-        # Pass the DB handler and OpenMuse interactor to the Reactor constructor
+        # Pass the DB handler, OpenMuse interactor, and LLM client to the Reactor constructor
         reactor_instance = Reactor(
             logger=logger,
             sharer_instance=sharer_instance,
             db_handler=bot.db_handler, # Pass the db_handler instance
             openmuse_interactor=openmuse_interactor_instance, # Pass the interactor instance
+            bot_instance=bot,
+            llm_client=claude_client_instance, # Pass the ClaudeClient instance
             dev_mode=args.dev,
         )
         bot.reactor_instance = reactor_instance

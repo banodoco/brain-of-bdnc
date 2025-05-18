@@ -8,6 +8,7 @@ import discord
 from supabase import create_client, Client
 from supabase.lib.client_options import ClientOptions
 from postgrest.exceptions import APIError # For specific Postgrest errors
+import re  # For URL validation
 
 # --- Added imports needed for upload logic ---
 import cv2
@@ -236,6 +237,13 @@ class OpenMuseInteractor:
             self.logger.error(f"[OpenMuseInteractor] Unexpected error during find_or_create_profile for {discord_user_id_str}: {e}", exc_info=True)
             return None, None
 
+    def _is_valid_url(self, url: str) -> bool:
+        """Return True if the URL is a valid HTTP(S) URL."""
+        if not url or not isinstance(url, str):
+            return False
+        # Simple regex for http(s) URLs
+        return re.match(r"^https?://[\w\-\.]+(:\d+)?(/[\w\-\.~:/?#\[\]@!$&'()*+,;=%]*)?$", url) is not None
+
     async def upload_discord_attachment(
         self,
         attachment: discord.Attachment,
@@ -431,6 +439,15 @@ class OpenMuseInteractor:
                 )
                 public_url = public_url_response
                 self.logger.info(f"[OpenMuseInteractor] <-- Got public URL for original file: {public_url}")
+                # --- URL TRIMMING & VALIDATION ---
+                if isinstance(public_url, str):
+                    trimmed_url = public_url.strip()
+                    if trimmed_url != public_url:
+                        self.logger.info(f"[OpenMuseInteractor] Trimmed whitespace from video URL: '{public_url}' -> '{trimmed_url}'")
+                    public_url = trimmed_url
+                if not self._is_valid_url(public_url):
+                    self.logger.warning(f"[OpenMuseInteractor] Invalid or empty video URL after trimming: '{public_url}'. Setting to None.")
+                    public_url = None
             except Exception as url_ex:
                 self.logger.error(f"[OpenMuseInteractor] Failed to get public URL for uploaded original file '{storage_path}': {url_ex}")
                 # Proceed without public URL, but log it
@@ -438,6 +455,16 @@ class OpenMuseInteractor:
              # This path should technically not be reachable due to return in retry loop
              self.logger.error("[OpenMuseInteractor] Reached code after main upload failure - should not happen.")
              return None, profile_data
+
+        # Trim and validate thumbnail URL if present
+        if placeholder_image_url and isinstance(placeholder_image_url, str):
+            trimmed_thumb = placeholder_image_url.strip()
+            if trimmed_thumb != placeholder_image_url:
+                self.logger.info(f"[OpenMuseInteractor] Trimmed whitespace from thumbnail URL: '{placeholder_image_url}' -> '{trimmed_thumb}'")
+            placeholder_image_url = trimmed_thumb
+            if not self._is_valid_url(placeholder_image_url):
+                self.logger.warning(f"[OpenMuseInteractor] Invalid or empty thumbnail URL after trimming: '{placeholder_image_url}'. Setting to None.")
+                placeholder_image_url = None
 
         # --- 7. Insert Media Record --- Requires successful profile step
         classification = 'art' if message.channel and hasattr(message.channel, 'name') and message.channel.name.lower().startswith('art') else 'gen'

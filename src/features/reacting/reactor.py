@@ -9,9 +9,11 @@ import re # Added for text matching
 from typing import Optional # Added for Optional type hint
 from urllib.parse import quote # <<<--- Added Import
 from discord.ui import View, Button, button # <<< Added for Views
+from discord.ext import commands # <<< ADDED for bot_instance type hint and usage
 from src.features.sharing.sharer import Sharer # Import the Sharer class
 from src.common.db_handler import DatabaseHandler # <<< Added DB Handler import
 from src.common.openmuse_interactor import OpenMuseInteractor # <<< Added OpenMuse Interactor import
+from src.common.llm.claude_client import ClaudeClient # Added LLM Client import
 from .subfeatures.permission_handler import handle_request_curation_permission, PermissionRequestView
 import logging # Added to define logger for constants section if needed
 from datetime import datetime, timedelta, timezone # For dispute resolution timing & timezone.utc
@@ -44,12 +46,14 @@ BASE_RETRY_DELAY_SECONDS = 2
 
 
 class Reactor:
-    def __init__(self, logger, sharer_instance: Sharer, db_handler: DatabaseHandler, openmuse_interactor: OpenMuseInteractor, dev_mode=False):
+    def __init__(self, logger, sharer_instance: Sharer, db_handler: DatabaseHandler, openmuse_interactor: OpenMuseInteractor, bot_instance: commands.Bot, llm_client: ClaudeClient, dev_mode=False):
         self.logger = logger
         self.dev_mode = dev_mode
         self.sharer = sharer_instance # Store the Sharer instance
         self.db_handler = db_handler # Store DB Handler instance
         self.openmuse_interactor = openmuse_interactor # <<< Store OpenMuse Interactor instance
+        self.bot = bot_instance # <<< ADDED to store bot_instance
+        self.llm_client = llm_client # Store LLM client instance
         self.watchlist = []
         self._load_watchlist()
 
@@ -83,6 +87,12 @@ class Reactor:
                 valid = False
                 if trigger_type == 'reaction':
                     if 'user_id' in rule and 'emoji' in rule:
+                        # Ensure user_id is a list or '*'
+                        if isinstance(rule['user_id'], str) and rule['user_id'] != '*':
+                            rule['user_id'] = [rule['user_id']]
+                        elif not isinstance(rule['user_id'], list) and rule['user_id'] != '*':
+                            self.logger.warning(f"[Reactor] Skipping invalid 'reaction' rule #{i+1} ('user_id' must be a string, a list of strings, or '*'): {rule}")
+                            continue # Skip to next rule
                         valid = True
                     else:
                         self.logger.warning(f"[Reactor] Skipping invalid 'reaction' rule #{i+1} (missing 'user_id' or 'emoji'): {rule}")
@@ -164,9 +174,14 @@ class Reactor:
 
         for i, rule in enumerate(reaction_rules):
             # Rule structure already validated in _load_watchlist
-            user_match = (rule['user_id'] == '*' or rule['user_id'] == user_id_str)
+            user_match = False
+            if rule['user_id'] == '*':
+                user_match = True
+            elif isinstance(rule['user_id'], list):
+                user_match = user_id_str in rule['user_id']
+            
             emoji_match = (rule['emoji'] == '*' or rule['emoji'] == emoji_str)
-            self.logger.debug(f"[Reactor] Rule {i+1} Check: Target User='{rule['user_id']}', Target Emoji='{rule['emoji']}'. Incoming User='{user_id_str}', Incoming Emoji='{emoji_str}'. User Match: {user_match}, Emoji Match: {emoji_match}")
+            self.logger.debug(f"[Reactor] Rule {i+1} Check: Target User(s)='{rule['user_id']}', Target Emoji='{rule['emoji']}'. Incoming User='{user_id_str}', Incoming Emoji='{emoji_str}'. User Match: {user_match}, Emoji Match: {emoji_match}")
 
             if user_match and emoji_match:
                 action_name = rule['action']
@@ -278,6 +293,7 @@ class Reactor:
         """[Reaction Action] Sends a DM requesting permission or uploads if permission granted."""
         # Call the refactored handler
         await handle_request_curation_permission(
+            bot=self.bot, # Added bot instance
             reaction=reaction,
             curator=curator,
             db_handler=self.db_handler,
@@ -292,7 +308,10 @@ class Reactor:
             reaction=reaction,
             user=user,
             sharer_instance=self.sharer, # Pass the Reactor's sharer instance
-            logger=self.logger
+            logger=self.logger,
+            db_handler=self.db_handler, # <<< ADDED db_handler
+            bot_instance=self.bot, # <<< ADDED bot_instance
+            llm_client=self.llm_client # Pass the LLM client instance
         )
 
     # Added new reaction action method for general logging of reactions

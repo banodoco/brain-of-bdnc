@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import random
 
 from src.common.db_handler import DatabaseHandler
+from src.common import discord_utils
 # Assuming constants.py has get_project_root()
 # If not, we might need os.path.dirname multiple times
 # try:
@@ -304,7 +305,18 @@ class AdminDashboardView(discord.ui.View):
         # 4. Send the final result/error as a NEW message in the channel
         if target_channel:
             try:
-                await target_channel.send(content=final_content, embed=final_embed)
+                if not hasattr(self.bot, 'rate_limiter'):
+                    logger.error("[AdminDashboardView] Rate limiter not found on self.bot. Sending shortlist result directly.")
+                    await target_channel.send(content=final_content, embed=final_embed)
+                else:
+                    await discord_utils.safe_send_message(
+                        self.bot, 
+                        target_channel, 
+                        self.bot.rate_limiter, 
+                        logger, # Global logger
+                        content=final_content, 
+                        embed=final_embed
+                    )
                 logger.info(f"Sent final shortlist result/error message to channel {target_channel.id}")
             except discord.Forbidden:
                 logger.error(f"Failed to send final shortlist message to channel {target_channel.id}: Forbidden.")
@@ -325,6 +337,7 @@ class AdminCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db_handler = bot.db_handler if hasattr(bot, 'db_handler') else None
+        # Assuming self.bot will have self.bot.rate_limiter initialized by main bot setup
         logger.info("AdminCog initialized")
 
     async def cog_load(self):
@@ -389,36 +402,36 @@ class AdminCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Ignore messages from the bot itself
-        if message.author == self.bot.user:
-            return
+        if message.author == self.bot.user: return
+        if message.guild is not None: return
 
-        # Check if it's a DM (no guild)
-        if message.guild is not None:
-            return
-
-        # Check if the author is a bot owner using the built-in check
-        # This uses bot.owner_id or bot.owner_ids internally
         if not await self.bot.is_owner(message.author):
             logger.info(f"Received DM from non-owner user {message.author.id}. Replying with robot sounds.")
-            # Define robot sounds
             robot_sounds = ["beep", "boop", "blarp", "zorp", "clank", "whirr", "buzz", "vroom"]
             try:
-                # Select 3 random sounds and join them
                 reply_content = " ".join(random.sample(robot_sounds, 3)).capitalize() + "."
-                await message.channel.send(reply_content)
+                await message.channel.send(reply_content) # Keep this direct send for simplicity
             except discord.Forbidden:
-                logger.warning(f"Cannot send robot sounds DM reply to {message.author.id}. Missing permissions or user blocked bot?")
+                logger.warning(f"Cannot send robot sounds DM reply to {message.author.id}.")
             except Exception as e:
                 logger.error(f"Failed to send robot sounds DM reply to {message.author.id}: {e}", exc_info=True)
-            return # Stop processing after replying
+            return
 
-        # It's a DM from a bot owner, send the admin dashboard
         logger.info(f"Received DM from owner {message.author.id}. Sending admin dashboard.")
         try:
-             # We need to create a new instance of the view to send it,
-             # but interactions are handled by the persistent view registered in setup.
-             await message.channel.send("Admin Dashboard:", view=AdminDashboardView(self.bot))
+            # UPDATED CALL for sending Admin Dashboard DM
+            if not hasattr(self.bot, 'rate_limiter'):
+                logger.error("Rate limiter not found on self.bot for AdminCog. Sending dashboard directly.")
+                await message.channel.send("Admin Dashboard:", view=AdminDashboardView(self.bot))
+            else:
+                await discord_utils.safe_send_message(
+                    self.bot,
+                    message.channel, # DM channel with the owner
+                    self.bot.rate_limiter,
+                    logger, # Global logger from the file
+                    content="Admin Dashboard:",
+                    view=AdminDashboardView(self.bot)
+                )
         except discord.Forbidden:
              logger.warning(f"Cannot send admin dashboard DM to {message.author.id}. Missing permissions or user blocked bot?")
         except Exception as e:

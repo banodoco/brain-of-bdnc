@@ -26,6 +26,7 @@ from src.common.errors import *
 from src.common.error_handler import ErrorHandler, handle_errors
 from src.common.rate_limiter import RateLimiter
 from src.common.log_handler import LogHandler
+from src.common import discord_utils
 # from src.common.base_bot import BaseDiscordBot 
 
 # Import the new summarizer that handles queries/Claude calls
@@ -549,31 +550,6 @@ class ChannelSummarizer:
             self.logger.debug(traceback.format_exc())
             return []
 
-    @handle_errors("safe_send_message")
-    async def safe_send_message(self, channel, content=None, embed=None, file=None, files=None, reference=None):
-        """Safely send a message with concurrency-limited retry logic."""
-        try:
-            send_task = self.rate_limiter.execute(
-                f"channel_{channel.id}",
-                channel.send(
-                    content=content,
-                    embed=embed,
-                    file=file,
-                    files=files,
-                    reference=reference
-                )
-            )
-            return await asyncio.wait_for(send_task, timeout=10)
-        except asyncio.TimeoutError:
-            self.logger.error(f"Timeout sending message to channel {channel.id}")
-            raise
-        except discord.HTTPException as e:
-            self.logger.error(f"HTTP error sending message: {e}")
-            raise
-        except Exception as e:
-            self.logger.error(f"Error sending message: {e}")
-            raise
-
     async def create_media_content(self, files: List[Tuple[discord.File, int, str, str]], max_media: int = 4) -> Optional[discord.File]:
         """Create a collage of images or a combined video, depending on attachments."""
         try:
@@ -985,10 +961,7 @@ class ChannelSummarizer:
         try:
             async with self.summary_lock:
                 self.logger.info("Generating requested summary...")
-                # Use the instance db_handler
                 db_handler = self.db_handler 
-                
-                # Get summary channel first to avoid undefined variable issues
                 summary_channel = await self._get_channel_with_retry(self.summary_channel_id)
                 if not summary_channel:
                     self.logger.error(f"Could not find summary channel {self.summary_channel_id}")
@@ -1004,6 +977,8 @@ class ChannelSummarizer:
                 
                 if not active_channels:
                     self.logger.warning("No active channels found")
+                    # Send a message to summary_channel if no active channels found
+                    await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content="_No active channels with sufficient messages found to summarize._")
                     return
 
                 channel_summaries = []
@@ -1011,7 +986,6 @@ class ChannelSummarizer:
                 
                 for channel_info in active_channels:
                     channel_id = channel_info['channel_id']
-                    # Use post_channel_id if available (for dev mode), else use channel_id
                     post_channel_id = channel_info.get('post_channel_id', channel_id)
                     
                     try:
@@ -1020,245 +994,133 @@ class ChannelSummarizer:
                              self.logger.info(f"Skipping channel {channel_id}: Not enough messages ({len(messages)}).")
                              continue
                         
-                        # === Call into NewsSummarizer to summarize these messages ===
                         channel_summary = await self.news_summarizer.generate_news_summary(messages)
-                        if not channel_summary or channel_summary in [
-                            "[NOTHING OF NOTE]", 
-                            "[NO SIGNIFICANT NEWS]",
-                            "[NO MESSAGES TO ANALYZE]"
-                        ]:
+                        if not channel_summary or channel_summary in ["[NOTHING OF NOTE]", "[NO SIGNIFICANT NEWS]", "[NO MESSAGES TO ANALYZE]"]:
                             self.logger.info(f"No significant news for channel {channel_id}.")
                             continue
                         
-                        # Post to the channel (unless it's a forum)
                         if not self.is_forum_channel(post_channel_id):
                             channel_obj = await self._get_channel_with_retry(post_channel_id)
                             if channel_obj:
                                 formatted_summary = self.news_summarizer.format_news_for_discord(channel_summary)
-                                loop = asyncio.get_running_loop()
-                                def get_existing_thread_id():
-                                    # ... (get thread id logic as before) ...
-                                    pass
-                                
-                                # existing_thread_id = await loop.run_in_executor(None, get_existing_thread_id)
-                                # For simplicity in restoration, let's always create a new thread for now
                                 existing_thread_id = None 
                                 thread = None
-                                if existing_thread_id:
-                                    # ... (fetch thread logic as before) ...
-                                    pass
-                                
-                                # Create new thread if needed
                                 if not thread:
                                     self.logger.info(f"Creating new summary thread for channel {channel_id}...")
                                     thread_title = f"#{channel_obj.name} - Summary - {current_date.strftime('%B %d, %Y')}"
-                                    summary_message = await self.safe_send_message(channel_obj, f"Summary thread for {current_date.strftime('%B %d, %Y')}")
-                                    if summary_message:
-                                        thread = await self.create_summary_thread(summary_message, thread_title)
+                                    # UPDATED CALL
+                                    summary_message_starter = await discord_utils.safe_send_message(self.bot, channel_obj, self.rate_limiter, self.logger, content=f"Summary thread for {current_date.strftime('%B %d, %Y')}")
+                                    if summary_message_starter: # check if message was sent
+                                        thread = await self.create_summary_thread(summary_message_starter, thread_title) # create_summary_thread is a method of self
                                         if thread:
                                              self.logger.info(f"Successfully created summary thread for channel {channel_id}: {thread.id}")
-                                             # Consider updating DB with thread ID here if needed
                                         else:
                                              self.logger.error(f"Failed to create thread for channel {channel_id}")
                                     else:
-                                         self.logger.error(f"Failed to send header message to channel {channel_id}")
+                                         self.logger.error(f"Failed to send header message to channel {channel_id} for thread creation")
                                 
                                 if thread:
                                     self.logger.info(f"Using summary thread in channel {post_channel_id}: {thread.id}")
-                                    date_headline = f"# {current_date.strftime('%A, %B %d, %Y')}\n"
-                                    header_msg = await self.safe_send_message(thread, date_headline)
+                                    date_headline = f"# {current_date.strftime('%A, %B %d, %Y')}\\n"
+                                    # UPDATED CALL
+                                    header_msg = await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=date_headline)
                                     await asyncio.sleep(1)
-                                    # Post each portion of the summary
                                     for item in formatted_summary:
-                                        # ... (posting formatted summary items, including media references as before) ...
                                         if item.get('type') == 'media_reference':
-                                            # --- Start Edit 1 ---
                                             try:
-                                                # Extract IDs, converting to int
-                                                source_channel_id = int(item['channel_id'])
+                                                source_channel_id_media = int(item['channel_id'])
                                                 message_id_to_fetch = int(item['message_id'])
-                                                self.logger.debug(f"Processing media reference: Channel={source_channel_id}, Message={message_id_to_fetch}")
-
-                                                # Fetch the source channel
-                                                source_channel = await self._get_channel_with_retry(source_channel_id)
-                                                if not source_channel:
-                                                    self.logger.warning(f"Could not find source channel {source_channel_id} for media message {message_id_to_fetch}")
-                                                    continue # Skip this media item
-
-                                                # Fetch the original message
-                                                try:
-                                                    original_message = await source_channel.fetch_message(message_id_to_fetch)
-                                                    self.logger.debug(f"Fetched original message {message_id_to_fetch} from channel {source_channel_id}.")
-                                                except discord.NotFound:
-                                                    self.logger.warning(f"Original message {message_id_to_fetch} not found in channel {source_channel_id}.")
-                                                    continue # Skip this media item
-                                                except discord.Forbidden:
-                                                    self.logger.error(f"Forbidden to fetch message {message_id_to_fetch} from channel {source_channel_id}.")
-                                                    continue # Skip this media item
-                                                except discord.HTTPException as e:
-                                                    self.logger.error(f"HTTP error fetching message {message_id_to_fetch}: {e}")
-                                                    continue # Skip this media item
-
-                                                # Post attachments if they exist
+                                                source_channel_media = await self._get_channel_with_retry(source_channel_id_media)
+                                                if not source_channel_media: continue
+                                                original_message = await source_channel_media.fetch_message(message_id_to_fetch)
                                                 if original_message.attachments:
-                                                    self.logger.info(f"Posting {len(original_message.attachments)} attachments from message {message_id_to_fetch}")
                                                     for attachment in original_message.attachments:
-                                                        # Post the URL of the attachment
-                                                        await self.safe_send_message(thread, attachment.url)
-                                                        await asyncio.sleep(0.5) # Small delay between attachments
-                                                else:
-                                                    self.logger.info(f"Message {message_id_to_fetch} referenced for media has no attachments.")
-
-                                            except KeyError as e:
-                                                self.logger.error(f"Missing key in media reference item {item}: {e}")
-                                            except ValueError as e:
-                                                 self.logger.error(f"Invalid ID format in media reference item {item}: {e}")
-                                            except Exception as e:
-                                                self.logger.error(f"Unexpected error processing media reference {item}: {e}")
-                                                self.logger.debug(traceback.format_exc())
-                                            # --- End Edit 1 ---
+                                                        # UPDATED CALL
+                                                        await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=attachment.url)
+                                                        await asyncio.sleep(0.5)
+                                            except Exception as e_media:
+                                                self.logger.error(f"Error processing media reference {item}: {e_media}")
                                         else:
-                                             await self.safe_send_message(thread, item.get('content', ''))
+                                             # UPDATED CALL
+                                             await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=item.get('content', ''))
                                              await asyncio.sleep(1)
                                     
-                                    # Post top gens for the specific channel into this thread
                                     await self.top_generations.post_top_gens_for_channel(thread, channel_id)
-                                    # Generate and post short summary with link back using the header message's id
                                     if header_msg:
-                                         short_summary = await self.news_summarizer.generate_short_summary(channel_summary, len(messages))
+                                         short_summary_text = await self.news_summarizer.generate_short_summary(channel_summary, len(messages))
                                          link = f"https://discord.com/channels/{channel_obj.guild.id}/{thread.id}/{header_msg.id}"
-                                         await self.safe_send_message(thread, f"\n---\n\n***Click here to jump to the beginning of today's summary:***{link}")
+                                         # UPDATED CALL
+                                         await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=f"\\n---\\n\\n***Click here to jump to the beginning of today's summary:***{link}")
                                          channel_header = f"**### Channel summary for {current_date.strftime('%A, %B %d, %Y')}**"
-                                         await self.safe_send_message(channel_obj, f"{channel_header}{short_summary}\n[Click here to jump to the summary thread]({link})")
-                                    else:
-                                         self.logger.warning("Header message for thread summary was not sent or found, cannot post short summary link.")
-                                else:
-                                    self.logger.error(f"Failed to create or fetch thread for channel {channel_id}")
+                                         # UPDATED CALL
+                                         await discord_utils.safe_send_message(self.bot, channel_obj, self.rate_limiter, self.logger, content=f"{channel_header}{short_summary_text}\\n[Click here to jump to the summary thread]({link})")
                         
-                        # Store result in DB regardless of posting success
-                        success = await self._post_summary_with_transaction(
-                            channel_id,
-                            channel_summary,
-                            messages,
-                            current_date,
-                            db_handler
-                        )
-                        if success:
-                            channel_summaries.append(channel_summary)
-                        else:
-                            self.logger.error(f"Failed to save summary to DB for channel {channel_id}")
+                        success = await self._post_summary_with_transaction(channel_id, channel_summary, messages, current_date, db_handler)
+                        if success: channel_summaries.append(channel_summary)
+                        else: self.logger.error(f"Failed to save summary to DB for channel {channel_id}")
 
                     except Exception as e:
                         self.logger.error(f"Error processing channel {channel_id}: {e}", exc_info=True)
-                        continue # Move to next channel
+                        continue
 
-                # Combine summaries for overall summary
                 if channel_summaries:
                     self.logger.info(f"Combining summaries from {len(channel_summaries)} channels...")
                     overall_summary = await self.news_summarizer.combine_channel_summaries(channel_summaries)
                     
-                    if overall_summary and overall_summary not in [
-                        "[NOTHING OF NOTE]", 
-                        "[NO SIGNIFICANT NEWS]",
-                        "[NO MESSAGES TO ANALYZE]"
-                    ]:
+                    if overall_summary and overall_summary not in ["[NOTHING OF NOTE]", "[NO SIGNIFICANT NEWS]", "[NO MESSAGES TO ANALYZE]"]:
                         formatted_summary = self.news_summarizer.format_news_for_discord(overall_summary)
-                        header = await self.safe_send_message(summary_channel, f"\n\n# Daily Summary - {current_date.strftime('%A, %B %d, %Y')}\n\n")
-                        if header is not None:
-                            self.first_message = header
-                        else:
-                            self.logger.error("Failed to post header message; first_message remains unset.")
+                        # UPDATED CALL
+                        header = await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\\n\\n# Daily Summary - {current_date.strftime('%A, %B %d, %Y')}\\n\\n")
+                        if header is not None: self.first_message = header
+                        else: self.logger.error("Failed to post header message; first_message remains unset.")
                         
                         self.logger.info("Posting main summary to summary channel")
                         for item in formatted_summary:
-                            # ... (posting combined summary items, including media references as before) ...
                              if item.get('type') == 'media_reference':
-                                 # --- Start Edit 2 ---
                                  try:
-                                     # Extract IDs, converting to int
-                                     source_channel_id = int(item['channel_id'])
-                                     message_id_to_fetch = int(item['message_id'])
-                                     self.logger.debug(f"Processing media reference for main summary: Channel={source_channel_id}, Message={message_id_to_fetch}")
-
-                                     # Fetch the source channel
-                                     source_channel = await self._get_channel_with_retry(source_channel_id)
-                                     if not source_channel:
-                                         self.logger.warning(f"Could not find source channel {source_channel_id} for media message {message_id_to_fetch}")
-                                         continue # Skip this media item
-
-                                     # Fetch the original message
-                                     try:
-                                         original_message = await source_channel.fetch_message(message_id_to_fetch)
-                                         self.logger.debug(f"Fetched original message {message_id_to_fetch} from channel {source_channel_id}.")
-                                     except discord.NotFound:
-                                         self.logger.warning(f"Original message {message_id_to_fetch} not found in channel {source_channel_id}.")
-                                         continue # Skip this media item
-                                     except discord.Forbidden:
-                                         self.logger.error(f"Forbidden to fetch message {message_id_to_fetch} from channel {source_channel_id}.")
-                                         continue # Skip this media item
-                                     except discord.HTTPException as e:
-                                         self.logger.error(f"HTTP error fetching message {message_id_to_fetch}: {e}")
-                                         continue # Skip this media item
-
-                                     # Post attachments if they exist
-                                     if original_message.attachments:
-                                         self.logger.info(f"Posting {len(original_message.attachments)} attachments from message {message_id_to_fetch} to main summary channel")
-                                         for attachment in original_message.attachments:
-                                             # Post the URL of the attachment
-                                             await self.safe_send_message(summary_channel, attachment.url)
-                                             await asyncio.sleep(0.5) # Small delay between attachments
-                                     else:
-                                         self.logger.info(f"Message {message_id_to_fetch} referenced for media has no attachments.")
-
-                                 except KeyError as e:
-                                     self.logger.error(f"Missing key in media reference item {item}: {e}")
-                                 except ValueError as e:
-                                      self.logger.error(f"Invalid ID format in media reference item {item}: {e}")
-                                 except Exception as e:
-                                     self.logger.error(f"Unexpected error processing media reference {item}: {e}")
-                                     self.logger.debug(traceback.format_exc())
-                                 # --- End Edit 2 ---
+                                     source_channel_id_media_main = int(item['channel_id'])
+                                     message_id_to_fetch_main = int(item['message_id'])
+                                     source_channel_media_main = await self._get_channel_with_retry(source_channel_id_media_main)
+                                     if not source_channel_media_main: continue
+                                     original_message_main = await source_channel_media_main.fetch_message(message_id_to_fetch_main)
+                                     if original_message_main.attachments:
+                                         for attachment in original_message_main.attachments:
+                                             # UPDATED CALL
+                                             await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=attachment.url)
+                                             await asyncio.sleep(0.5)
+                                 except Exception as e_media_main:
+                                     self.logger.error(f"Error processing media reference in main summary {item}: {e_media_main}")
                              else:
-                                 await self.safe_send_message(summary_channel, item.get('content', ''))
+                                 # UPDATED CALL
+                                 await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=item.get('content', ''))
                                  await asyncio.sleep(1)
                     else:
-                        await self.safe_send_message(summary_channel, "_No significant activity to summarize in the last 24 hours._")
+                        # UPDATED CALL
+                        await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content="_No significant activity to summarize in the last 24 hours._")
                 else:
-                    await self.safe_send_message(summary_channel, "_No messages found in the last 24 hours for overall summary._")
+                    # UPDATED CALL
+                    await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content="_No messages found in the last 24 hours for overall summary._")
 
-                # Step 4) Post top generations
                 await self.top_generations.post_top_x_generations(summary_channel, limit=4)
-
-                # Step 5) Post top art sharing (which now initiates the sharing process)
                 await self.top_art_sharer.post_top_art_share(summary_channel)
-                
-                # Link back to the start
+
                 self.logger.info("Attempting to send link back to start...")
                 if self.first_message:
-                    self.logger.info(f"First message exists with ID: {self.first_message.id}")
-                    link_to_start = self.first_message.jump_url # Use jump_url property
-                    self.logger.info(f"Generated link: {link_to_start}")
-                    await self.safe_send_message(summary_channel, f"\n---\n\n***Click here to jump to the beginning of today's summary:*** {link_to_start}")
-                    self.logger.info("Sent link back to start message")
+                    link_to_start = self.first_message.jump_url
+                    # UPDATED CALL
+                    await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\\n---\\n\\n***Click here to jump to the beginning of today's summary:*** {link_to_start}")
                 else:
                     self.logger.warning("No first_message found, cannot send link back")
 
         except Exception as e:
             self.logger.error(f"Critical error in summary generation: {e}", exc_info=True)
-            # Consider notifying admin or sending error to summary channel
-            try:
-                 await self.safe_send_message(summary_channel, f"⚠️ Critical error during summary generation: {e}")
-            except Exception:
-                 pass # Avoid errors during error reporting
-            # Potentially re-raise if this is fatal for the bot run?
-            # raise e 
+            if summary_channel: # Check if summary_channel was successfully fetched
+                try:
+                    # UPDATED CALL
+                    await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"⚠️ Critical error during summary generation: {e}")
+                except Exception: pass
         finally:
-            # Ensure lock is released even on error
-            if self.summary_lock.locked():
-                 self.summary_lock.release()
-            # Close DB handler if it was opened specifically for this run
-            # (If db_handler is instance attr, close it in bot cleanup)
-            # db_handler.close()
+            if self.summary_lock.locked(): self.summary_lock.release()
 
     # --- Utility and Helper Methods --- 
     def register_events(self):

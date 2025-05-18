@@ -11,6 +11,8 @@ import os
 import discord
 from discord.ext import commands
 
+from src.common.rate_limiter import RateLimiter
+
 class BaseDiscordBot(commands.Bot):
     """
     Base class for all Discord bots, relying on discord.py's built-in
@@ -22,6 +24,7 @@ class BaseDiscordBot(commands.Bot):
         self.logger = logger
         self.dev_mode = dev_mode
         self.summary_now = False
+        self.rate_limiter = RateLimiter()
 
         # Session management (optional, if you want to track session IDs):
         self._last_session_id: Optional[str] = None

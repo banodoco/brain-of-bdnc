@@ -4,6 +4,7 @@ import discord
 import logging
 from discord.ext import commands
 from src.common.db_handler import DatabaseHandler
+from src.common import discord_utils # Added import
 # Import Sharer using a relative path or adjust sys.path if needed
 # This assumes sharer.py is in the parent directory
 # If sharer.py is in src/features/sharing/sharer.py:
@@ -188,17 +189,17 @@ class SharingRequestView(discord.ui.View):
 
     def _update_button_states(self):
         # Update button labels based on current state
-        consent_button = self.get_item("toggle_consent")
+        consent_button = next((item for item in self.children if isinstance(item, discord.ui.Button) and item.custom_id == "toggle_consent"), None)
         if consent_button:
             consent_button.label = "Allow Feature" if not self.user_details.get('sharing_consent', False) else "Revoke Feature"
             consent_button.style = discord.ButtonStyle.success if not self.user_details.get('sharing_consent', False) else discord.ButtonStyle.danger
 
-        curation_button = self.get_item("toggle_curation")
+        curation_button = next((item for item in self.children if isinstance(item, discord.ui.Button) and item.custom_id == "toggle_curation"), None)
         if curation_button:
             curation_button.label = "Allow Curation" if not self.user_details.get('permission_to_curate', False) else "Revoke Curation"
             curation_button.style = discord.ButtonStyle.success if not self.user_details.get('permission_to_curate', False) else discord.ButtonStyle.danger
 
-        dm_button = self.get_item("toggle_dms")
+        dm_button = next((item for item in self.children if isinstance(item, discord.ui.Button) and item.custom_id == "toggle_dms"), None)
         if dm_button:
             dm_button.label = "Disable DMs" if self.user_details.get('dm_preference', True) else "Enable DMs"
             dm_button.style = discord.ButtonStyle.danger if self.user_details.get('dm_preference', True) else discord.ButtonStyle.success
@@ -375,12 +376,38 @@ async def send_sharing_request_dm(bot: commands.Bot, user: discord.User, message
         if is_redirected:
             dm_message_content = f"**(DEV MODE: This DM was intended for {original_author.name} ({original_author.id}))**\n\n" + dm_message_content
 
-        sent_dm = await dm_channel.send(content=dm_message_content, view=view)
-        view.message = sent_dm # Store reference for timeout editing
-        if is_redirected:
-            logger.info(f"Sent REDIRECTED sharing request DM to admin {target_user.id} (originally for {original_author.id}, message {message.id}).")
+        # UPDATED CALL to use discord_utils.safe_send_message
+        # Assuming bot.rate_limiter attribute exists on the bot instance
+        if not hasattr(bot, 'rate_limiter'):
+            logger.error("Rate limiter not found on bot object. Cannot use safe_send_message for sharing request DM.")
+            # Fallback or raise error - for now, let's log and attempt direct send as a fallback
+            # This indicates a setup issue that needs to be addressed in main bot initialization.
+            try:
+                sent_dm = await dm_channel.send(content=dm_message_content, view=view)
+            except Exception as direct_send_error:
+                 logger.error(f"Fallback direct send failed for sharing request DM: {direct_send_error}", exc_info=True)
+                 return # Abort if direct send also fails
         else:
-            logger.info(f"Sent sharing request DM to user {target_user.id} for message {message.id}.")
+            sent_dm = await discord_utils.safe_send_message(
+                bot,                             # bot instance
+                dm_channel,                      # channel to send to
+                bot.rate_limiter,                # RateLimiter instance from bot
+                logger,                          # logger instance
+                content=dm_message_content,      # message content
+                view=view                        # message view
+            )
+
+        if sent_dm: # Check if message was successfully sent
+            view.message = sent_dm # Store reference for timeout editing
+            if is_redirected:
+                logger.info(f"Sent REDIRECTED sharing request DM to admin {target_user.id} (originally for {original_author.id}, message {message.id}).")
+            else:
+                logger.info(f"Sent sharing request DM to user {target_user.id} for message {message.id}.")
+        else:
+            # This case implies safe_send_message returned None (e.g., after exhausting retries or an unhandled error within it before raising)
+            # or the fallback direct send failed and returned.
+            logger.error(f"Failed to send sharing request DM (target: {target_user.id}, original: {original_author.id}, msg: {message.id}) after attempts.")
+            # No further action here, error already logged extensively by safe_send_message or the fallback.
 
     except discord.Forbidden:
         logger.warning(f"Could not send DM to target user {target_user.id} (Forbidden). They may have DMs disabled globally or blocked the bot.")

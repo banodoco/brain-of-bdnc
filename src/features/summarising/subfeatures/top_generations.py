@@ -8,13 +8,15 @@ import discord
 from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 
+from src.common import discord_utils
+
 class TopGenerations:
-    def __init__(self, bot):
+    def __init__(self, summarizer_instance):
         """
-        bot is an instance of your ChannelSummarizer (or a compatible class).
-        We store it so we can access bot.db, bot.logger, bot.safe_send_message, etc.
+        summarizer_instance is an instance of ChannelSummarizer.
+        We store it to access its bot, db_handler, logger, rate_limiter etc.
         """
-        self.bot = bot
+        self.summarizer = summarizer_instance
 
     async def post_top_x_generations(
         self,
@@ -29,25 +31,25 @@ class TopGenerations:
         and post them in a thread.
         """
         try:
-            self.bot.logger.info("Starting post_top_x_generations")
+            self.summarizer.logger.info("Starting post_top_x_generations")
             yesterday = datetime.utcnow() - timedelta(hours=24)
 
-            art_channel_id = int(os.getenv('DEV_ART_CHANNEL_ID' if self.bot.dev_mode else 'ART_CHANNEL_ID', 0))
+            art_channel_id = int(os.getenv('DEV_ART_CHANNEL_ID' if self.summarizer.dev_mode else 'ART_CHANNEL_ID', 0))
             
             channel_condition = ""
             query_params = []
             
             # If dev mode, we only consider test channels – otherwise use your real channels
-            if self.bot.dev_mode:
+            if self.summarizer.dev_mode:
                 # We might have "test" channels defined via env
                 test_channels_str = os.getenv("TEST_DATA_CHANNEL", "")
                 if not test_channels_str:
-                    self.bot.logger.error("TEST_DATA_CHANNEL not set")
+                    self.summarizer.logger.error("TEST_DATA_CHANNEL not set")
                     return
                 
                 test_channel_ids = [int(cid.strip()) for cid in test_channels_str.split(',') if cid.strip()]
                 if not test_channel_ids:
-                    self.bot.logger.error("No valid channel IDs found in TEST_DATA_CHANNEL")
+                    self.summarizer.logger.error("No valid channel IDs found in TEST_DATA_CHANNEL")
                     return
                 
                 # We'll skip date filtering if you do local debug, or adapt as needed
@@ -64,8 +66,8 @@ class TopGenerations:
                     channel_condition = "AND m.channel_id = ?"
                     query_params.append(channel_id)
                 else:
-                    if self.bot.channels_to_monitor:
-                        channels_str = ','.join(str(c) for c in self.bot.channels_to_monitor)
+                    if self.summarizer.channels_to_monitor:
+                        channels_str = ','.join(str(c) for c in self.summarizer.channels_to_monitor)
                         # Include sub-channels in the same categories
                         channel_condition = (
                             f" AND (m.channel_id IN ({channels_str}) "
@@ -120,15 +122,15 @@ class TopGenerations:
                 LIMIT {limit}
             """
 
-            self.bot.db_handler.conn.row_factory = sqlite3.Row
-            cursor = self.bot.db_handler.conn.cursor()
+            self.summarizer.db_handler.conn.row_factory = sqlite3.Row
+            cursor = self.summarizer.db_handler.conn.cursor()
             cursor.execute(query, query_params)
             top_generations = [dict(row) for row in cursor.fetchall()]
             cursor.close()
-            self.bot.db_handler.conn.row_factory = None
+            self.summarizer.db_handler.conn.row_factory = None
             
             if not top_generations:
-                self.bot.logger.info(f"No qualifying videos found - skipping top {limit} gens post.")
+                self.summarizer.logger.info(f"No qualifying videos found - skipping top {limit} gens post.")
                 return None
             
             first_gen = top_generations[0]
@@ -157,22 +159,28 @@ class TopGenerations:
             desc.append(f"🔥 {first_gen['unique_reactor_count']} unique reactions")
             desc.append(video_attachment['url'])
             # Generate jump URL dynamically
-            jump_url = f"https://discord.com/channels/{self.bot.guild_id}/{first_gen['channel_id']}/{first_gen['message_id']}"
+            jump_url = f"https://discord.com/channels/{self.summarizer.guild_id}/{first_gen['channel_id']}/{first_gen['message_id']}"
             desc.append(f"🔗 Original post: {jump_url}")
             msg_text = "\n".join(desc)
             
-            header_message = await self.bot.safe_send_message(summary_channel, msg_text)
+            header_message = await discord_utils.safe_send_message(
+                self.summarizer.bot, 
+                summary_channel, 
+                self.summarizer.rate_limiter, 
+                self.summarizer.logger, 
+                content=msg_text
+            )
             
             # If multiple top gens, create a thread to list them
-            if len(top_generations) > 1:
-                thread = await self.bot.create_summary_thread(
+            if len(top_generations) > 1 and header_message:
+                thread = await self.summarizer.create_summary_thread(
                     header_message,
-                    f"Top Generations - {self.bot._get_today_str()}",
+                    f"Top Generations - {self.summarizer._get_today_str()}",
                     is_top_generations=True
                 )
                 
                 if not thread:
-                    self.bot.logger.error("Failed to create thread for top generations")
+                    self.summarizer.logger.error("Failed to create thread for top generations")
                     return None
                 
                 # Post the rest (2..N)
@@ -197,19 +205,25 @@ class TopGenerations:
                     desc.append(f"🔥 {gen['unique_reactor_count']} unique reactions")
                     desc.append(video_attachment['url'])
                     # Generate jump URL dynamically
-                    jump_url = f"https://discord.com/channels/{self.bot.guild_id}/{gen['channel_id']}/{gen['message_id']}"
+                    jump_url = f"https://discord.com/channels/{self.summarizer.guild_id}/{gen['channel_id']}/{gen['message_id']}"
                     desc.append(f"🔗 Original post: {jump_url}")
                     msg_text = "\n".join(desc)
                     
-                    await self.bot.safe_send_message(thread, msg_text)
+                    await discord_utils.safe_send_message(
+                        self.summarizer.bot, 
+                        thread, 
+                        self.summarizer.rate_limiter, 
+                        self.summarizer.logger, 
+                        content=msg_text
+                    )
                     await asyncio.sleep(1)
             
-            self.bot.logger.info("Posted top X gens successfully.")
+            self.summarizer.logger.info("Posted top X gens successfully.")
             return top_generations[0] if top_generations else None
 
         except Exception as e:
-            self.bot.logger.error(f"Error in post_top_x_generations: {e}")
-            self.bot.logger.debug(traceback.format_exc())
+            self.summarizer.logger.error(f"Error in post_top_x_generations: {e}")
+            self.summarizer.logger.debug(traceback.format_exc())
             return None
 
     async def post_top_gens_for_channel(self, thread: discord.Thread, channel_id: int):
@@ -218,7 +232,7 @@ class TopGenerations:
         i.e., with over 3 reactions, in the last 24 hours.
         """
         try:
-            self.bot.logger.info(f"Posting top gens for channel {channel_id} in thread {thread.name}")
+            self.summarizer.logger.info(f"Posting top gens for channel {channel_id} in thread {thread.name}")
             
             yesterday = datetime.utcnow() - timedelta(hours=24)
             
@@ -258,18 +272,24 @@ class TopGenerations:
                 LIMIT 5
             """
             
-            self.bot.db_handler.conn.row_factory = sqlite3.Row
-            cursor = self.bot.db_handler.conn.cursor()
+            self.summarizer.db_handler.conn.row_factory = sqlite3.Row
+            cursor = self.summarizer.db_handler.conn.cursor()
             cursor.execute(query, (channel_id, yesterday.isoformat()))
             results = [dict(row) for row in cursor.fetchall()]
             cursor.close()
-            self.bot.db_handler.conn.row_factory = None
+            self.summarizer.db_handler.conn.row_factory = None
             
             if not results:
-                self.bot.logger.info(f"No top generations found for channel {channel_id}")
+                self.summarizer.logger.info(f"No top generations found for channel {channel_id}")
                 return
 
-            await self.bot.safe_send_message(thread, "\n## Top Generations\n")
+            await discord_utils.safe_send_message(
+                self.summarizer.bot, 
+                thread, 
+                self.summarizer.rate_limiter, 
+                self.summarizer.logger, 
+                content="\\n## Top Generations\\n"
+            )
             
             for i, row in enumerate(results, start=1):
                 try:
@@ -292,29 +312,35 @@ class TopGenerations:
                     
                     desc.append(video_attachment['url'])
                     # Generate jump URL dynamically
-                    jump_url = f"https://discord.com/channels/{self.bot.guild_id}/{row['m_channel_id']}/{row['message_id']}"
+                    jump_url = f"https://discord.com/channels/{self.summarizer.guild_id}/{row['m_channel_id']}/{row['message_id']}"
                     desc.append(f"🔗 Original post: {jump_url}")
                     msg_text = "\n".join(desc)
                     
-                    await self.bot.safe_send_message(thread, msg_text)
+                    await discord_utils.safe_send_message(
+                        self.summarizer.bot, 
+                        thread, 
+                        self.summarizer.rate_limiter, 
+                        self.summarizer.logger, 
+                        content=msg_text
+                    )
                     await asyncio.sleep(1)
                     
                 except Exception as e:
-                    self.bot.logger.error(f"Error processing generation {i}: {e}")
-                    self.bot.logger.debug(traceback.format_exc())
+                    self.summarizer.logger.error(f"Error processing generation {i}: {e}")
+                    self.summarizer.logger.debug(traceback.format_exc())
                     continue
 
-            self.bot.logger.info(f"Successfully posted top generations for channel {channel_id}")
+            self.summarizer.logger.info(f"Successfully posted top generations for channel {channel_id}")
 
         except Exception as e:
-            self.bot.logger.error(f"Error in post_top_gens_for_channel: {e}")
-            self.bot.logger.debug(traceback.format_exc())
+            self.summarizer.logger.error(f"Error in post_top_gens_for_channel: {e}")
+            self.summarizer.logger.debug(traceback.format_exc())
 
     def _replace_user_mentions(self, text: str) -> str:
         """
         Replace <@123...> with @username lookups from DB for more readable messages.
         """
-        cursor = self.bot.db_handler.conn.cursor()
+        cursor = self.summarizer.db_handler.conn.cursor()
 
         def replace_mention(match):
             user_id = match.group(1)

@@ -10,6 +10,7 @@ from src.common.db_handler import DatabaseHandler
 import datetime
 from src.common.base_bot import BaseDiscordBot
 from src.common.error_handler import handle_errors
+from src.common import discord_utils
 
 class ArtCurator(BaseDiscordBot):
     def __init__(self, logger=None, dev_mode=False):
@@ -238,7 +239,9 @@ class ArtCurator(BaseDiscordBot):
                                         "BNDC"
                                     )
                                     try:
-                                        await message.author.send(notification_msg)
+                                        await discord_utils.safe_send_message(
+                                            self, message.author, self.rate_limiter, self.logger, content=notification_msg
+                                        )
                                         self.logger.info(f"Sent non-video link notification to {message.author}")
                                         
                                         # Add notification to user's list
@@ -287,7 +290,10 @@ class ArtCurator(BaseDiscordBot):
         # Check if curator is already processing a rejection
         if user.id in self._active_rejections:
             try:
-                await user.send("Please complete your current rejection process before starting a new one. Reply to the above message with your reason for rejection or reply 'forget' to stop that rejection.")
+                await discord_utils.safe_send_message(
+                    self, user, self.rate_limiter, self.logger, 
+                    content="Please complete your current rejection process before starting a new one. Reply to the above message with your reason for rejection or reply 'forget' to stop that rejection."
+                )
                 await message.remove_reaction('❌', user)
                 self.logger.info(f"Curator {user.name} attempted multiple rejections - blocked.")
                 return
@@ -316,7 +322,7 @@ class ArtCurator(BaseDiscordBot):
                 prompt += f": {content_url}"
             prompt += "\n\nPlease reply with the reason for rejection within 5 minutes or reply 'forget' to stop rejection:"
             
-            await user.send(prompt)
+            await discord_utils.safe_send_message(self, user, self.rate_limiter, self.logger, content=prompt)
             if self.dev_mode:
                 self.logger.debug(f"Sent DM to curator {user.name} for reason.")
 
@@ -330,7 +336,7 @@ class ArtCurator(BaseDiscordBot):
                 
                 # Check if curator wants to cancel
                 if reason.lower().strip() == 'forget':
-                    await user.send("Rejection cancelled.")
+                    await discord_utils.safe_send_message(self, user, self.rate_limiter, self.logger, content="Rejection cancelled.")
                     await message.remove_reaction('❌', user)
                     self.logger.warning(f"Curator {user.name} cancelled the rejection.")
                     return
@@ -398,8 +404,10 @@ class ArtCurator(BaseDiscordBot):
                         message_parts.append(f"If you would like to discuss this further, please DM <@{user.id}> directly.")
 
                         # Join all parts and send
-                        final_message = ''.join(message_parts)
-                        await author.send(final_message)
+                        final_message_to_author = ''.join(message_parts)
+                        await discord_utils.safe_send_message(
+                            self, author, self.rate_limiter, self.logger, content=final_message_to_author
+                        )
                         if self.dev_mode:
                             self.logger.info(f"Sent removal reason DM to {author}.")
                         
@@ -457,7 +465,10 @@ class ArtCurator(BaseDiscordBot):
                         self.logger.warning(f"Empty reason provided by {user.name}. Reaction removed.")
                 
             except asyncio.TimeoutError:
-                await user.send("No reason provided within 5 minutes. Post will not be deleted.")
+                await discord_utils.safe_send_message(
+                    self, user, self.rate_limiter, self.logger, 
+                    content="No reason provided within 5 minutes. Post will not be deleted."
+                )
                 try:
                     await message.remove_reaction('❌', user)
                 except Exception as e:

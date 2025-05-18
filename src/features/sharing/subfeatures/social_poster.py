@@ -50,36 +50,24 @@ def _truncate_with_ellipsis(text: str, max_length: int) -> str:
         return text[:max_length-4] + "..."
 
 def _build_tweet_caption(base_description: str, user_details: Dict, original_content: Optional[str]) -> str:
-    """Builds the final tweet caption, prioritizing Twitter handle for tagging."""
+    """Builds the final tweet caption, prioritizing base_description and then adding credit."""
     
     user_global_name = user_details.get('global_name')
     user_discord_name = user_details.get('username')
-
-    # Determine the artist credit text
-    artist_credit_text = None # Default to None, fallbacks will set it
-    
-    # Try to process twitter_handle first
     raw_twitter_handle = user_details.get('twitter_handle')
+    artist_credit_text = None
 
     if raw_twitter_handle:
         handle_val = raw_twitter_handle.strip()
         extracted_username = None
-
-        # 1. Handle leading '@' if it's part of a recognized URL structure
-        #    (e.g. @https://x.com/user, @x.com/user)
         is_url_like_structure = '://' in handle_val or \
                                'x.com/' in handle_val.lower() or \
                                'twitter.com/' in handle_val.lower()
         if handle_val.startswith('@') and is_url_like_structure:
             handle_val = handle_val[1:]
-
-        # 2. Process URLs (containing ://)
         if '://' in handle_val:
             path_after_scheme = handle_val.split('://', 1)[-1]
-            # Use original casing from path_after_scheme for username part
-            # Use lowercased domain_and_path_lower for matching domain patterns
             domain_and_path_lower = path_after_scheme.lower() 
-            
             if domain_and_path_lower.startswith('twitter.com/'):
                 extracted_username = path_after_scheme[len('twitter.com/'):].split('/')[0]
             elif domain_and_path_lower.startswith('www.twitter.com/'):
@@ -88,71 +76,67 @@ def _build_tweet_caption(base_description: str, user_details: Dict, original_con
                 extracted_username = path_after_scheme[len('x.com/'):].split('/')[0]
             elif domain_and_path_lower.startswith('www.x.com/'):
                 extracted_username = path_after_scheme[len('www.x.com/'):].split('/')[0]
-            # No generic fallback for other URLs to avoid misinterpreting them as Twitter handles
-                
-        # 3. Process non-URL strings that might contain x.com/ or twitter.com/
-        #    (e.g., x.com/user, twitter.com/user)
         elif 'x.com/' in handle_val.lower():
             match_pattern = 'x.com/'
-            # Find start of username after "x.com/" case-insensitively from original handle_val
             start_idx = handle_val.lower().find(match_pattern) + len(match_pattern)
             extracted_username = handle_val[start_idx:].split('/')[0]
         elif 'twitter.com/' in handle_val.lower():
             match_pattern = 'twitter.com/'
             start_idx = handle_val.lower().find(match_pattern) + len(match_pattern)
             extracted_username = handle_val[start_idx:].split('/')[0]
-        
-        # 4. If no URL/domain pattern matched, assume handle_val is the username itself
-        #    (e.g. "username" or "@username")
         else:
             extracted_username = handle_val
-
-        # 5. Clean and format the extracted username
         if extracted_username:
-            # Remove query parameters or fragments
             cleaned_username = extracted_username.split('?')[0].split('#')[0]
-            
-            # Remove any existing leading '@' from the cleaned part
             if cleaned_username.startswith('@'):
                 cleaned_username = cleaned_username[1:]
-            
-            if cleaned_username: # Ensure not empty after all cleaning
+            if cleaned_username:
                 artist_credit_text = f"@{cleaned_username}"
 
-    # Fallbacks if twitter handle processing didn't yield a result or no handle was provided
     if not artist_credit_text: 
         if user_global_name:
             artist_credit_text = user_global_name
         elif user_discord_name:
             artist_credit_text = user_discord_name
         else:
-            artist_credit_text = "the artist"
+            artist_credit_text = "the artist" # Fallback if no names found
     
-    caption = f"Top art post of the day by {artist_credit_text}"
-    
-    # Add Original Comment (if available and not just whitespace)
-    if original_content and original_content.strip():
-        comment = original_content.strip()
-        # Calculate base length for comment section (prefix, suffix, and newlines)
-        comment_format_overhead = len("\n\nComment by artists: \"\"") 
-        
-        full_comment_section = f"\n\nComment by artists: \"{comment}\""
+    was_base_description_provided = base_description and base_description.strip()
 
-        if len(caption) + len(full_comment_section) <= 280:
-            caption += full_comment_section
-        else:
-            # Attempt to truncate the comment
-            # Available length for the comment text itself (inside the quotes)
-            available_len_for_comment_text = 280 - len(caption) - comment_format_overhead
-            
-            if available_len_for_comment_text > 10: # Min meaningful length for a truncated comment
-                truncated_comment = _truncate_with_ellipsis(comment, available_len_for_comment_text)
-                caption += f"\n\nComment by artists: \"{truncated_comment}\""
+    if was_base_description_provided:
+        final_caption = base_description.strip() # Use the provided base_description directly
+    else:
+        # If no base_description, construct the default "Top art post..." and add artist comment
+        final_caption = f"Top art post of the day by {artist_credit_text}"
+
+        if original_content and original_content.strip():
+            comment_to_add = original_content.strip()
+            # Using a simpler format for the artist comment part from the default flow
+            # to distinguish from the potentially more custom format passed in base_description.
+            # Max length for tweet is 280. Ellipsis is 3 chars. "\n\nArtist's Comment: \"...\"" is ~24 chars.
+            # So, caption + comment_structure should be less than 280.
+            # Available for comment_to_add = 280 - len(final_caption) - 24
+            comment_format_overhead = len("\n\nArtist's Comment: \"\"") 
+            full_comment_section = f"\n\nArtist's Comment: \"{comment_to_add}\""
+
+            if len(final_caption) + len(full_comment_section) <= 280:
+                final_caption += full_comment_section
             else:
-                 # Log warning if even a truncated comment doesn't fit
-                 logger.warning(f"Caption too long to add even a truncated artist comment for {artist_credit_text}.")
+                available_len_for_comment_text = 280 - len(final_caption) - comment_format_overhead
+                if available_len_for_comment_text > 10: # Ensure some space for a meaningful truncated comment
+                    truncated_comment = _truncate_with_ellipsis(comment_to_add, available_len_for_comment_text)
+                    final_caption += f"\n\nArtist's Comment: \"{truncated_comment}\""
+                else:
+                     # Not enough space to add even a truncated comment meaningfully.
+                     logger.warning(f"Caption (default flow) for '{artist_credit_text}' too long to add artist comment: '{comment_to_add[:30]}...'")
             
-    return caption.strip()
+    # Final length check and truncation if necessary (applies to both cases)
+    if len(final_caption) > 280:
+        logger.warning(f"Final constructed caption exceeds 280 chars. Truncating. Original: '{final_caption}'")
+        # A more generic truncation if it still exceeds, regardless of how it was formed.
+        final_caption = _truncate_with_ellipsis(final_caption, 280)
+
+    return final_caption.strip()
 
 # Added helper for building Zapier captions/payloads
 # Note: This is simplified. You might want different caption logic per platform.

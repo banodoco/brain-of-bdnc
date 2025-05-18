@@ -2,6 +2,9 @@ import discord
 import asyncio
 import logging # Added to define logger for constants section if needed
 from urllib.parse import quote
+from discord.ext import commands # Added for commands.Bot type hint
+
+from src.common import discord_utils # Added import
 
 # Assuming DatabaseHandler and OpenMuseInteractor will be passed or imported appropriately
 # from src.common.db_handler import DatabaseHandler
@@ -9,8 +12,9 @@ from urllib.parse import quote
 
 # --- BEGIN VIEW DEFINITION ---
 class PermissionRequestView(discord.ui.View):
-    def __init__(self, *, timeout=86400, author: discord.User, curator: discord.User, message: discord.Message, message_link: str, db_handler, logger, openmuse_interactor):
+    def __init__(self, *, bot: commands.Bot, timeout=86400, author: discord.User, curator: discord.User, message: discord.Message, message_link: str, db_handler, logger, openmuse_interactor):
         super().__init__(timeout=timeout)
+        self.bot = bot # Store bot instance
         self.author = author
         self.curator = curator
         self.message = message
@@ -144,14 +148,18 @@ class PermissionRequestView(discord.ui.View):
                   final_content += " Some uploads may have failed, please check with curators."
 
         try:
-             await self.author.send(content=final_content)
-             self.logger.info(f"[Reactor][PermissionView] Sent final confirmation DM to author {self.author.id}.")
+            await discord_utils.safe_send_message(
+                self.bot, self.author, self.bot.rate_limiter, self.logger, content=final_content
+            )
+            self.logger.info(f"[Reactor][PermissionView] Sent final confirmation DM to author {self.author.id}.")
         except (discord.HTTPException, discord.Forbidden) as send_err:
              self.logger.error(f"[Reactor][PermissionView] Failed to send final confirmation DM to author {self.author.id}: {send_err}")
 
         curator_feedback = f"{self.author.mention} granted permission for {self.message_link}. Upload result: {upload_success_count} succeeded, {upload_fail_count} failed."
         try:
-            await self.curator.send(curator_feedback)
+            await discord_utils.safe_send_message(
+                self.bot, self.curator, self.bot.rate_limiter, self.logger, content=curator_feedback
+            )
             self.logger.info(f"[Reactor][PermissionView] Sent upload status feedback to curator {self.curator.id}.")
         except discord.Forbidden:
             self.logger.warning(f"[Reactor][PermissionView] Could not send upload status DM feedback to curator {self.curator.id}.")
@@ -198,14 +206,18 @@ class PermissionRequestView(discord.ui.View):
 
         final_content = "No problem, thank you for your response!"
         try:
-            await self.author.send(content=final_content)
+            await discord_utils.safe_send_message(
+                self.bot, self.author, self.bot.rate_limiter, self.logger, content=final_content
+            )
             self.logger.info(f"[Reactor][PermissionView] Sent denial confirmation DM to author {self.author.id}.")
         except (discord.HTTPException, discord.Forbidden) as send_err:
             self.logger.error(f"[Reactor][PermissionView] Failed to send denial confirmation DM to author {self.author.id}: {send_err}")
 
         curator_feedback = f"{self.author.mention} denied permission for {self.message_link}."
         try:
-            await self.curator.send(curator_feedback)
+            await discord_utils.safe_send_message(
+                self.bot, self.curator, self.bot.rate_limiter, self.logger, content=curator_feedback
+            )
             self.logger.info(f"[Reactor][PermissionView] Sent denial feedback to curator {self.curator.id}.")
         except discord.Forbidden:
             self.logger.warning(f"[Reactor][PermissionView] Could not send denial DM feedback to curator {self.curator.id}.")
@@ -227,6 +239,7 @@ class PermissionRequestView(discord.ui.View):
 # --- END VIEW DEFINITION ---
 
 async def handle_request_curation_permission(
+    bot: commands.Bot, # Added bot parameter
     reaction: discord.Reaction,
     curator: discord.User,
     db_handler, # Expected: DatabaseHandler instance
@@ -276,6 +289,20 @@ async def handle_request_curation_permission(
         else:
             permission_status = author_member_data.get('permission_to_curate')
             logger.info(f"[Reactor][PermissionHandler] Author {author.id} found in DB. Current permission_to_curate status: {permission_status}")
+            author_dm_preference = author_member_data.get('dm_preference', True)
+            if not author_dm_preference:
+                logger.info(f"[Reactor][PermissionHandler] Author {author.id} has DMs disabled. Skipping DM.")
+                try:
+                    await discord_utils.safe_send_message(
+                        bot, curator, bot.rate_limiter, logger, 
+                        content=f"Could not send curation permission request to {author.mention} for {message_link}. They have disabled DMs for these requests."
+                    )
+                    logger.info(f"[Reactor][PermissionHandler] Notified curator {curator.id} that author {author.id} has DMs disabled.")
+                except discord.Forbidden:
+                    logger.warning(f"[Reactor][PermissionHandler] Could not send DM to curator {curator.id} about author's disabled DMs (curator DMs might be closed).")
+                except Exception as e:
+                    logger.error(f"[Reactor][PermissionHandler] Error sending DM to curator {curator.id} about author's disabled DMs: {e}")
+                return
 
         if permission_status is not None:
             if permission_status:
@@ -307,8 +334,10 @@ async def handle_request_curation_permission(
                 
                 feedback_msg = f"Attempted upload for {author.display_name}'s message ({message_link}) based on existing permission: {upload_success_count} succeeded, {upload_fail_count} failed."
                 try:
-                     await curator.send(feedback_msg)
-                     logger.info(f"[Reactor][PermissionHandler] Sent upload status feedback to curator {curator.id}.")
+                    await discord_utils.safe_send_message(
+                        bot, curator, bot.rate_limiter, logger, content=feedback_msg
+                    )
+                    logger.info(f"[Reactor][PermissionHandler] Sent upload status feedback to curator {curator.id}.")
                 except discord.Forbidden:
                      logger.warning(f"[Reactor][PermissionHandler] Could not send upload status DM feedback to curator {curator.id}.")
                 except Exception as react_ex:
@@ -319,13 +348,14 @@ async def handle_request_curation_permission(
                 logger.info(f"[Reactor][PermissionHandler] Author {author.id} has already {status_str} permission (status: {permission_status}). No action needed.")
                 return
 
-        logger.info(f"[Reactor][PermissionHandler] Permission status for author {author.id} is NULL. Sending permission request DM.")
+        logger.info(f"[Reactor][PermissionHandler] Permission status for author {author.id} is NULL and DMs are enabled. Sending permission request DM.")
         dm_content = (
             f"Hi {author.mention}! {curator.mention} would like to curate your work to [OpenMuse](https://openmuse.ai/. ): {message_link}\\n\\n"
             f"It will be hosted under your profile name there - for you to edit and update if/when you claim an account by signing up with your Discord account.\\n\\n"
             f"Do you give permission? (This request expires in 24 hours)"
         )
         view = PermissionRequestView(
+            bot=bot,
             author=author,
             curator=curator,
             message=message,
@@ -335,9 +365,14 @@ async def handle_request_curation_permission(
             openmuse_interactor=openmuse_interactor
         )
         try:
-            sent_message = await author.send(content=dm_content, view=view)
-            view.response_message = sent_message
-            logger.info(f"[Reactor][PermissionHandler] Successfully sent permission request DM to author {author.id} for message {message.id}. DM ID: {sent_message.id}")
+            sent_dm = await discord_utils.safe_send_message(
+                bot, author, bot.rate_limiter, logger, content=dm_content, view=view
+            )
+            if sent_dm:
+                view.response_message = sent_dm
+                logger.info(f"[Reactor][PermissionHandler] Successfully sent permission request DM to author {author.id} for message {message.id}. DM ID: {sent_dm.id}")
+            else:
+                logger.error(f"[Reactor][PermissionHandler] Failed to send permission request DM to author {author.id} for message {message.id} (safe_send_message returned None).")
         except discord.Forbidden:
             logger.warning(f"[Reactor][PermissionHandler] Could not send permission request DM to author {author.id}. They may have DMs disabled.")
         except Exception as e:
