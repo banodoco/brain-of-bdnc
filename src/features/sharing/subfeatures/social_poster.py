@@ -138,81 +138,6 @@ def _build_tweet_caption(base_description: str, user_details: Dict, original_con
 
     return final_caption.strip()
 
-# Added helper for building Zapier captions/payloads
-# Note: This is simplified. You might want different caption logic per platform.
-def _build_zapier_payload(platform: str, user_details: Dict, attachment: Dict, generated_title: str, generated_description: str, original_content: Optional[str]) -> Dict:
-    """Builds the payload for Zapier webhooks."""
-    payload = {}
-    attachment_url = attachment.get('url') # Use the original Discord URL for Zapier
-    post_jump_url = attachment.get('post_jump_url', '') # Need to ensure this is passed
-
-    # --- Common elements ---
-    # Get user's display name (prioritize global, fallback to username)
-    user_name = user_details.get('global_name') or user_details.get('username', 'the artist')
-
-    # Initialize credit (will be overridden per platform if handle exists)
-    credit = user_name
-
-    website = user_details.get('website')
-    website_text = f"\n\nMore from them: {website}" if website else ""
-
-    # --- Platform specific ---
-    if platform == "instagram":
-        handle = user_details.get('instagram_handle')
-        if handle:
-             if handle.startswith('http'): credit = handle
-             elif not handle.startswith('@'): credit = f"@{handle}"
-             else: credit = handle
-        # else: credit remains user_name
-
-        caption = f"{generated_description} by {credit}"
-        if original_content:
-             caption += f"\n\nArtist Comment: \"{_truncate_with_ellipsis(original_content, 1800)}\"" # Approx limit
-        caption += website_text
-        payload = {
-            "jump_url": post_jump_url,
-            "video_url": attachment_url,
-            "caption": caption.strip()
-        }
-    elif platform == "tiktok":
-        handle = user_details.get('tiktok_handle')
-        if handle:
-             if handle.startswith('http'): credit = handle
-             elif not handle.startswith('@'): credit = f"@{handle}"
-             else: credit = handle
-        # else: credit remains user_name
-
-        caption = f"{generated_description} by {credit}"
-        if original_content:
-             caption += f"\n\nArtist Comment: \"{_truncate_with_ellipsis(original_content, 1800)}\"" # Approx limit
-        caption += website_text
-        payload = {
-            "video_url": attachment_url,
-            "caption": caption.strip()
-        }
-    elif platform == "youtube":
-        # Always use the user's display name for the credit in the YouTube title.
-        # We don't need to check the youtube_handle for the title itself.
-        credit_for_title = user_name
-
-        # Construct title using the display name
-        video_title = f"\"{generated_title}\" by {credit_for_title}"
-
-        # Description remains the same
-        description = f"{generated_description}"
-        if original_content:
-             description += f"\n\nArtist Comment: \"{_truncate_with_ellipsis(original_content, 4500)}\""
-        description += website_text
-
-        payload = {
-            "jump_url": post_jump_url,
-            "video_url": attachment_url,
-            "video_title_yt": video_title.strip(),
-            "caption": description.strip() # Zapier example used 'caption' for description
-        }
-        
-    return payload
-
 # --- Added Title Generation Helpers ---
 
 def _image_to_base64(image_path: str) -> Optional[str]:
@@ -537,47 +462,81 @@ async def post_tweet(generated_description: str, user_details: Dict, attachments
 
 # --- Added Zapier Posting Functions ---
 
-def post_to_instagram_via_zapier(payload: Dict):
-    """Sends data to the Instagram Zapier webhook."""
-    if not ZAPIER_INSTAGRAM_URL:
-        logger.error("Cannot post to Instagram, ZAPIER_INSTAGRAM_URL not set.")
-        return False
-    try:
-        headers = {'Content-Type': 'application/json'}
-        response = requests.post(ZAPIER_INSTAGRAM_URL, headers=headers, data=json.dumps(payload), timeout=30)
-        response.raise_for_status() # Raise exception for bad status codes (4xx or 5xx)
-        logger.info(f"Successfully sent post data to Instagram Zapier webhook for jump_url: {payload.get('jump_url')}. Status: {response.status_code}")
-        return True
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error posting to Instagram Zapier webhook: {e}", exc_info=True)
-        return False
+async def post_to_instagram_via_zapier(user_details: Dict, attachments: List[Dict], caption: str, jump_url: str):
+    """Posts media to Instagram using a Zapier webhook."""
+    # TODO: Replace with the correct ZAPIER_INSTAGRAM_URL from environment variables
+    zapier_url = ZAPIER_INSTAGRAM_URL or "https://hooks.zapier.com/hooks/catch/19278166/your_instagram_hook/"
+    if not zapier_url or "your_instagram_hook" in zapier_url:
+        logger.error("Cannot post to Instagram: ZAPIER_INSTAGRAM_URL is not set or is a placeholder.")
+        return
+    if not attachments:
+        logger.warning("post_to_instagram_via_zapier called without attachments.")
+        return
 
-def post_to_tiktok_via_zapier(payload: Dict):
-    """Sends data to the TikTok Zapier webhook (via Buffer in example)."""
-    if not ZAPIER_TIKTOK_BUFFER_URL:
-        logger.error("Cannot post to TikTok, ZAPIER_TIKTOK_BUFFER_URL not set.")
-        return False
+    payload = {
+        "user_details": user_details,
+        "media_url": attachments[0].get('url'),
+        "caption": caption,
+        "jump_url": jump_url
+    }
+    
     try:
-        headers = {'Content-Type': 'application/json'}
-        response = requests.post(ZAPIER_TIKTOK_BUFFER_URL, headers=headers, data=json.dumps(payload), timeout=30)
+        response = await asyncio.to_thread(requests.post, zapier_url, json=payload)
         response.raise_for_status()
-        logger.info(f"Successfully sent post data to TikTok Zapier webhook for video_url: {payload.get('video_url')}. Status: {response.status_code}")
-        return True
+        logger.info(f"Successfully sent post data to Instagram Zapier webhook for jump_url: {jump_url}. Status: {response.status_code}")
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error posting to TikTok Zapier webhook: {e}", exc_info=True)
-        return False
+        logger.error(f"Error posting to Instagram Zapier webhook: {e}")
 
-def post_to_youtube_via_zapier(payload: Dict):
-    """Sends data to the YouTube Zapier webhook."""
+async def post_to_tiktok_via_zapier(user_details: Dict, attachments: List[Dict], caption: str, jump_url: str):
+    """Posts a video to TikTok using a Zapier Buffer webhook."""
+    # TODO: Replace with the correct ZAPIER_TIKTOK_BUFFER_URL from environment variables
+    zapier_url = ZAPIER_TIKTOK_BUFFER_URL or "https://hooks.zapier.com/hooks/catch/19278166/your_tiktok_hook/"
+    if not zapier_url or "your_tiktok_hook" in zapier_url:
+        logger.error("Cannot post to TikTok: ZAPIER_TIKTOK_BUFFER_URL is not set or is a placeholder.")
+        return
+    if not attachments:
+        logger.warning("post_to_tiktok_via_zapier called without attachments.")
+        return
+
+    payload = {
+        "user_details": user_details,
+        "media_url": attachments[0].get('url'),
+        "caption": caption,
+        "jump_url": jump_url
+    }
+
+    try:
+        response = await asyncio.to_thread(requests.post, zapier_url, json=payload)
+        response.raise_for_status()
+        logger.info(f"Successfully sent post data to TikTok Zapier webhook for jump_url: {jump_url}. Status: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error posting to TikTok Zapier webhook: {e}")
+
+async def post_to_youtube_via_zapier(user_details: Dict, attachments: List[Dict], title: str, description: str, jump_url: str):
+    """Uploads a video to YouTube via a Zapier webhook."""
     if not ZAPIER_YOUTUBE_URL:
-        logger.error("Cannot post to YouTube, ZAPIER_YOUTUBE_URL not set.")
-        return False
+        logger.error("Cannot post to YouTube: ZAPIER_YOUTUBE_URL is not set.")
+        return
+    if not attachments:
+        logger.warning("post_to_youtube_via_zapier called without attachments.")
+        return
+
+    payload = {
+        "user_details": user_details,
+        "media_url": attachments[0].get('url'),
+        "video_title": title,
+        "video_description": description,
+        "jump_url": jump_url
+    }
+
     try:
-        headers = {'Content-Type': 'application/json'}
-        response = requests.post(ZAPIER_YOUTUBE_URL, headers=headers, data=json.dumps(payload), timeout=30)
+        response = await asyncio.to_thread(requests.post, ZAPIER_YOUTUBE_URL, json=payload)
         response.raise_for_status()
-        logger.info(f"Successfully sent post data to YouTube Zapier webhook for jump_url: {payload.get('jump_url')}. Status: {response.status_code}")
-        return True
+        logger.info(f"Successfully sent post data to YouTube Zapier webhook for jump_url: {jump_url}. Status: {response.status_code}")
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error posting to YouTube Zapier webhook: {e}", exc_info=True)
-        return False 
+        logger.error(f"Error posting to YouTube Zapier webhook: {e}")
+
+    if not tweet_url:
+        logger.error(f"Failed to post tweet for attachments: {[att.get('filename') for att in attachments]}")
+    
+    return tweet_url 
