@@ -126,32 +126,33 @@ class TopArtSharing:
             jump_url = message_object.jump_url
             
             # Construct message in the desired format
-            content_parts = [
-                f"## Top Art Post By **{author_display_name}**\n" # Combined header and author
-            ]
+            # content_parts = [
+            #     f"## Top Art Post By **{author_display_name}**\n" # Combined header and author
+            # ]
+            # 
+            # if message_object.content:
+            #      # Format original content as a quote block
+            #      quoted_content = '\n'.join([f'> {line}' for line in message_object.content.split('\n')])
+            #      content_parts.append(quoted_content)
+            #      
+            # content_parts.append(attachment_url)
+            # content_parts.append(f"🔗 Original post: {jump_url}")
+            # 
+            # content_to_post = "\n".join(content_parts)
+            #      
+            # await discord_utils.safe_send_message(
+            #     self.summarizer.bot, # The actual bot instance
+            #     summary_channel,
+            #     self.summarizer.rate_limiter,
+            #     self.summarizer.logger,
+            #     content=content_to_post
+            # )
+            # self.summarizer.logger.info(f"Posted top art post {message_id} directly to summary channel.")
             
-            if message_object.content:
-                 # Format original content as a quote block
-                 quoted_content = '\n'.join([f'> {line}' for line in message_object.content.split('\n')])
-                 content_parts.append(quoted_content)
-                 
-            content_parts.append(attachment_url)
-            content_parts.append(f"🔗 Original post: {jump_url}")
-            
-            content_to_post = "\n".join(content_parts)
-                 
-            await discord_utils.safe_send_message(
-                self.summarizer.bot, # The actual bot instance
-                summary_channel,
-                self.summarizer.rate_limiter,
-                self.summarizer.logger,
-                content=content_to_post
-            )
-            self.summarizer.logger.info(f"Posted top art post {message_id} directly to summary channel.")
-            
-            # Now, initiate the DM process with the author
+            # Now, initiate the DM process with the author, passing the summary_channel
             self.summarizer.logger.info(f"Initiating sharing DM process for top art post {message_id} by author {author_id}")
-            await self.sharer.initiate_sharing_process_from_summary(message_object)
+            # Pass summary_channel to the sharer process
+            await self.sharer.initiate_sharing_process_from_summary(message_object, summary_channel)
             self.summarizer.logger.info(f"Sharing DM process initiated for {message_id}.")
 
         except Exception as e:

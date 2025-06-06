@@ -16,22 +16,17 @@ class DatabaseHandler:
     def __init__(self, db_path: Optional[str] = None, dev_mode: bool = False, pool_size: int = 5):
         """Initialize database path and ensure directory exists."""
         try:
-            # Use provided path or get appropriate path based on mode
             self.db_path = db_path if db_path else get_database_path(dev_mode)
-            self.dev_mode = dev_mode  # Store dev_mode setting
+            self.dev_mode = dev_mode
             
-            # Ensure the directory exists
             db_dir = Path(self.db_path).parent
             db_dir.mkdir(parents=True, exist_ok=True)
             
-            # Initialize connection pool
-            self.pool_size = pool_size
             self.connection_pool = queue.Queue(maxsize=pool_size)
             for _ in range(pool_size):
                 conn = sqlite3.connect(self.db_path, check_same_thread=False)
                 self.connection_pool.put(conn)
             
-            # Initialize the database schema
             self.write_lock = threading.Lock()
             self._init_db()
             
@@ -41,24 +36,13 @@ class DatabaseHandler:
 
     def _get_connection_from_pool(self):
         try:
-            # Try to get a connection within 5 seconds
             conn = self.connection_pool.get(timeout=5)
             if self.dev_mode:
                 logger.debug(f"Retrieved connection from pool, remaining connections: {self.connection_pool.qsize()}")
             return conn
         except queue.Empty:
-            # Pool is exhausted, log a warning and create a new connection
             logger.warning('Connection pool exhausted. Creating a new connection.')
             return sqlite3.connect(self.db_path, check_same_thread=False)
-
-    def _get_connection(self):
-        """Get a new database connection with proper configuration."""
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=60000")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA temp_store=MEMORY")
-        return conn
 
     def _return_connection_to_pool(self, conn):
         self.connection_pool.put(conn)
@@ -76,7 +60,6 @@ class DatabaseHandler:
     def _execute_with_retry(self, operation, max_retries=5, initial_delay=0.2):
         """Execute a database operation with retry logic."""
         last_error = None
-        
         for attempt in range(max_retries):
             conn = self._get_connection_from_pool()
             try:
@@ -93,7 +76,6 @@ class DatabaseHandler:
                     raise
             finally:
                 self._return_connection_to_pool(conn)
-        
         if last_error:
             raise last_error
         raise Exception("Maximum retries exceeded")
@@ -103,7 +85,6 @@ class DatabaseHandler:
         def init_operation(conn):
             cursor = conn.cursor()
             
-            # Create tables
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS channels (
                     channel_id BIGINT PRIMARY KEY,
@@ -119,7 +100,6 @@ class DatabaseHandler:
                 )
             """)
 
-            # Channel summary threads table with foreign key
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS channel_summary (
                     channel_id BIGINT,
@@ -131,7 +111,6 @@ class DatabaseHandler:
                 )
             """)
             
-            # Daily summaries table with foreign key
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS daily_summaries (
                     daily_summary_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,7 +123,6 @@ class DatabaseHandler:
                 )
             """)
             
-            # Members table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS members (
                     member_id BIGINT PRIMARY KEY,
@@ -159,7 +137,7 @@ class DatabaseHandler:
                     banner_url TEXT,
                     discord_created_at TEXT,
                     guild_join_date TEXT,
-                    role_ids TEXT,  /* JSON array of role IDs */
+                    role_ids TEXT,
                     twitter_handle TEXT,
                     instagram_handle TEXT,
                     youtube_handle TEXT,
@@ -173,7 +151,6 @@ class DatabaseHandler:
                 )
             """)
             
-            # Messages table with FTS support
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     message_id BIGINT PRIMARY KEY,
@@ -196,7 +173,6 @@ class DatabaseHandler:
                 )
             """)
             
-            # Full-text search for messages
             cursor.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                     content,
@@ -205,7 +181,6 @@ class DatabaseHandler:
                 )
             """)
             
-            # Create indexes
             self._create_indexes(cursor)
             
             cursor.close()
@@ -226,13 +201,11 @@ class DatabaseHandler:
         
         for index_name, index_def in indexes:
             try:
-                cursor.execute(f"""
-                    CREATE INDEX IF NOT EXISTS {index_name} ON {index_def}
-                """)
+                cursor.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON {index_def}")
             except sqlite3.Error as e:
                 logger.error(f"Error creating index {index_name}: {e}")
 
-    def execute_query(self, query: str, params: tuple = ()) -> List[tuple]:
+    def execute_query(self, query: str, params: tuple = ()) -> List[dict]:
         """Execute a SQL query and return the results."""
         def query_operation(conn):
             conn.row_factory = sqlite3.Row
@@ -250,341 +223,169 @@ class DatabaseHandler:
         with self.write_lock:
             def store_operation(conn):
                 cursor = conn.cursor()
-                
-                for message in messages:
-                    try:
-                        # Get and validate message ID
-                        message_id = message.get('message_id')
-                        if message_id is None:
-                            # Fall back to 'id' if message_id isn't present
-                            message_id = message.get('id')
-                            if message_id is None:
-                                raise ValueError("Message must have either 'message_id' or 'id' field")
-
-                        # Ensure all fields are properly serialized
-                        attachments = message.get('attachments', [])
-                        embeds = message.get('embeds', [])
-                        reactors = message.get('reactors', [])
-                        
-                        # Convert to empty lists if None or 'null'
-                        if attachments is None or attachments == 'null':
-                            attachments = []
-                        if embeds is None or embeds == 'null':
-                            embeds = []
-                        if reactors is None or reactors == 'null':
-                            reactors = []
-                        
-                        attachments_json = json.dumps(attachments if isinstance(attachments, (list, dict)) else [])
-                        embeds_json = json.dumps(embeds if isinstance(embeds, (list, dict)) else [])
-                        reactors_json = json.dumps(reactors if isinstance(reactors, (list, dict)) else [])
-                        
-                        created_at = message.get('created_at')
-                        if created_at:
-                            created_at = created_at.isoformat() if hasattr(created_at, 'isoformat') else str(created_at)
-                        edited_at = message.get('edited_at')
-                        if edited_at:
-                            edited_at = edited_at.isoformat() if hasattr(edited_at, 'isoformat') else str(edited_at)
-                        
-                        try:
-                            cursor.execute("""
-                                INSERT OR REPLACE INTO messages 
-                                (message_id, channel_id, author_id,
-                                 content, created_at, attachments, embeds, reaction_count, 
-                                 reactors, reference_id, edited_at, is_pinned, thread_id, 
-                                 message_type, flags, is_deleted, indexed_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, CURRENT_TIMESTAMP)
-                            """, (
-                                message_id,
-                                message.get('channel_id'),
-                                message.get('author_id') or (message.get('author', {}).get('id')),
-                                message.get('content'),
-                                created_at,
-                                attachments_json,
-                                embeds_json,
-                                message.get('reaction_count', 0),
-                                reactors_json,
-                                message.get('reference_id'),
-                                edited_at,
-                                message.get('is_pinned', False),
-                                message.get('thread_id'),
-                                message.get('message_type'),
-                                message.get('flags', 0)
-                            ))
-                        except sqlite3.Error as e:
-                            logger.error(f"Database error storing message {message_id}: {e}")
-                            continue
-                    except Exception as e:
-                        logger.error(f"Error processing individual message: {e}")
-                        continue
+                for msg in messages:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO messages (
+                            message_id, channel_id, author_id, content, created_at,
+                            attachments, embeds, reaction_count, reactors, reference_id,
+                            edited_at, is_pinned, thread_id, message_type, flags, is_deleted
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        msg.get('message_id'), msg.get('channel_id'), msg.get('author_id'),
+                        msg.get('content'), msg.get('created_at'), json.dumps(msg.get('attachments')),
+                        json.dumps(msg.get('embeds')), msg.get('reaction_count'), json.dumps(msg.get('reactors')),
+                        msg.get('reference_id'), msg.get('edited_at'), msg.get('is_pinned'),
+                        msg.get('thread_id'), msg.get('message_type'), msg.get('flags'),
+                        msg.get('is_deleted', False)
+                    ))
+                    
+                    if msg.get('content'):
+                        cursor.execute("""
+                            INSERT OR REPLACE INTO messages_fts (rowid, content) VALUES (?, ?)
+                        """, (msg.get('message_id'), msg.get('content')))
                 cursor.close()
-                if self.dev_mode:
-                    logger.debug(f"Stored {len(messages)} messages")
             self._execute_with_retry(store_operation)
 
     def store_messages(self, messages: List[Dict]):
-        self._store_messages(messages)
+        asyncio.to_thread(self._store_messages, messages)
 
     def get_last_message_id(self, channel_id: int) -> Optional[int]:
-        """Get the ID of the last archived message for a channel."""
         def get_last_message_operation(conn):
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT MAX(message_id) FROM messages WHERE channel_id = ?
-            """, (channel_id,))
+            cursor.execute("SELECT MAX(message_id) FROM messages WHERE channel_id = ?", (channel_id,))
             result = cursor.fetchone()
             cursor.close()
             return result[0] if result and result[0] else None
-            
         return self._execute_with_retry(get_last_message_operation)
 
     def search_messages(self, query: str, channel_id: Optional[int] = None) -> List[Dict]:
-        """Search messages using FTS index."""
         def search_operation(conn):
-            try:
-                sql = """
-                    SELECT m.*
-                    FROM messages_fts fts
-                    JOIN messages m ON fts.rowid = m.message_id
-                    WHERE fts.content MATCH ?
-                """
-                params = [query]
-                
-                if channel_id:
-                    sql += " AND m.channel_id = ?"
-                    params.append(channel_id)
-                    
-                sql += " ORDER BY m.created_at DESC LIMIT 100"
-                
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-                cursor.execute(sql, params)
-                results = [dict(row) for row in cursor.fetchall()]
-                cursor.close()
-                return results
-                
-            except Exception as e:
-                logger.error(f"Error searching messages: {e}")
-                return []
-            
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            sql_query = """
+                SELECT m.* FROM messages m JOIN messages_fts fts ON m.message_id = fts.rowid
+                WHERE fts.content MATCH ?
+            """
+            params = [query]
+            if channel_id:
+                sql_query += " AND m.channel_id = ?"
+                params.append(channel_id)
+            cursor.execute(sql_query, params)
+            results = [dict(row) for row in cursor.fetchall()]
+            cursor.close()
+            return results
         return self._execute_with_retry(search_operation)
 
-    # Summary Methods
-    def store_daily_summary(self, 
-                          channel_id: int,
-                          full_summary: Optional[str],
-                          short_summary: Optional[str],
-                          date: Optional[datetime] = None) -> bool:
-        """Store daily channel summary."""
+    def store_daily_summary(self, channel_id: int, full_summary: Optional[str], short_summary: Optional[str], date: Optional[datetime] = None) -> bool:
         def summary_operation(conn):
-            if date is None:
-                date_str = datetime.utcnow().date().isoformat()
-            else:
-                date_str = date.isoformat() if isinstance(date, datetime) else date
-                
             cursor = conn.cursor()
+            summary_date = date.strftime('%Y-%m-%d') if date else datetime.now().strftime('%Y-%m-%d')
             cursor.execute("""
-                INSERT OR REPLACE INTO daily_summaries 
-                (date, channel_id, full_summary, short_summary)
+                INSERT INTO daily_summaries (date, channel_id, full_summary, short_summary)
                 VALUES (?, ?, ?, ?)
-            """, (
-                date_str,
-                channel_id,
-                full_summary,
-                short_summary
-            ))
+                ON CONFLICT(date, channel_id) DO UPDATE SET
+                full_summary = excluded.full_summary,
+                short_summary = excluded.short_summary,
+                created_at = CURRENT_TIMESTAMP
+            """, (summary_date, channel_id, full_summary, short_summary))
             cursor.close()
-            return True
-            
+            return cursor.rowcount > 0
         return self._execute_with_retry(summary_operation)
 
-    # Thread Management Methods
     def get_summary_thread_id(self, channel_id: int) -> Optional[int]:
-        """Get the summary thread ID for a channel."""
         def get_thread_operation(conn):
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT summary_thread_id 
-                FROM channel_summary 
-                WHERE channel_id = ?
-            """, (channel_id,))
+            cursor.execute("SELECT summary_thread_id FROM channel_summary WHERE channel_id = ? ORDER BY created_at DESC LIMIT 1", (channel_id,))
             result = cursor.fetchone()
             cursor.close()
-            return result['summary_thread_id'] if result else None
-            
+            return result[0] if result else None
         return self._execute_with_retry(get_thread_operation)
 
     def update_summary_thread(self, channel_id: int, thread_id: Optional[int]):
-        """Update or delete the summary thread ID for a channel for the current month."""
         def update_thread_operation(conn):
             cursor = conn.cursor()
-            try:
-                # First, delete any existing entries for this channel for the current month
-                cursor.execute(
-                    """
-                    DELETE FROM channel_summary 
-                    WHERE channel_id = ? 
-                    AND strftime('%Y-%m', created_at) = strftime('%Y-%m', CURRENT_TIMESTAMP)
-                    """,
-                    (channel_id,)
-                )
-                
-                if thread_id is not None:
-                    # Insert the new thread ID
-                    cursor.execute(
-                        """
-                        INSERT INTO channel_summary 
-                        (channel_id, summary_thread_id, created_at, updated_at)
-                        VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                        """,
-                        (channel_id, thread_id)
-                    )
-                conn.commit()
-            except Exception as e:
-                self.logger.error(f"Error updating summary thread: {e}")
-                conn.rollback()
-                raise
-            finally:
-                cursor.close()
-            return True
-            
-        return self._execute_with_retry(update_thread_operation)
+            if thread_id:
+                cursor.execute("""
+                    INSERT INTO channel_summary (channel_id, summary_thread_id, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(channel_id, created_at) DO UPDATE SET
+                    summary_thread_id = excluded.summary_thread_id,
+                    updated_at = CURRENT_TIMESTAMP
+                """, (channel_id, thread_id))
+            else:
+                cursor.execute("DELETE FROM channel_summary WHERE channel_id = ?", (channel_id,))
+            cursor.close()
+        self._execute_with_retry(update_thread_operation)
 
     def get_all_message_ids(self, channel_id: int) -> List[int]:
-        """Get all message IDs that have been archived for a channel."""
         def get_ids_operation(conn):
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT message_id FROM messages WHERE channel_id = ?",
-                (channel_id,)
-            )
-            results = [row[0] for row in cursor.fetchall()]
+            cursor.execute("SELECT message_id FROM messages WHERE channel_id = ?", (channel_id,))
+            ids = [row[0] for row in cursor.fetchall()]
             cursor.close()
-            return results
-            
+            return ids
         return self._execute_with_retry(get_ids_operation)
 
     def get_message_date_range(self, channel_id: int) -> Tuple[Optional[datetime], Optional[datetime]]:
-        """Get the earliest and latest message dates for a channel."""
         def get_range_operation(conn):
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT MIN(created_at), MAX(created_at)
-                FROM messages 
-                WHERE channel_id = ?
-            """, (channel_id,))
+            cursor.execute("SELECT MIN(created_at), MAX(created_at) FROM messages WHERE channel_id = ?", (channel_id,))
             result = cursor.fetchone()
             cursor.close()
-            
             if result and result[0] and result[1]:
-                return (
-                    datetime.fromisoformat(result[0]),
-                    datetime.fromisoformat(result[1])
-                )
-            return None, None
-            
+                return (datetime.fromisoformat(result[0]), datetime.fromisoformat(result[1]))
+            return (None, None)
         return self._execute_with_retry(get_range_operation)
 
     def get_message_dates(self, channel_id: int) -> List[str]:
-        """Get all message dates for a channel to check for gaps."""
         def get_dates_operation(conn):
-            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT created_at
-                FROM messages 
-                WHERE channel_id = ?
-                ORDER BY created_at
-            """, (channel_id,))
-            results = [dict(row)['created_at'] for row in cursor.fetchall()]
+            cursor.execute("SELECT DISTINCT strftime('%Y-%m-%d', created_at) FROM messages WHERE channel_id = ? ORDER BY 1", (channel_id,))
+            dates = [row[0] for row in cursor.fetchall()]
             cursor.close()
-            return results
-            
+            return dates
         return self._execute_with_retry(get_dates_operation)
 
     def get_member(self, member_id: int) -> Optional[Dict]:
-        """Get a member by their ID."""
+        """Fetch a member from the database by their ID."""
         def get_member_operation(conn):
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT *
-                FROM members
-                WHERE member_id = ?
-            """, (member_id,))
+            cursor.execute("SELECT * FROM members WHERE member_id = ?", (member_id,))
             result = cursor.fetchone()
             cursor.close()
             return dict(result) if result else None
-            
         return self._execute_with_retry(get_member_operation)
 
     def message_exists(self, message_id: int) -> bool:
-        """Check if a message exists in the database."""
         def check_message_operation(conn):
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT 1 FROM messages WHERE message_id = ?
-            """, (message_id,))
+            cursor.execute("SELECT 1 FROM messages WHERE message_id = ?", (message_id,))
             result = cursor.fetchone()
             cursor.close()
-            return bool(result)
-            
+            return result is not None
         return self._execute_with_retry(check_message_operation)
 
     def update_message(self, message: Dict) -> bool:
-        """Update an existing message with new data."""
         def update_operation(conn):
             cursor = conn.cursor()
-            
-            # Get and validate message ID
-            message_id = message.get('message_id') or message.get('id')
-            if message_id is None:
-                raise ValueError("Message must have either 'message_id' or 'id' field")
-
-            # Process attachments, embeds, and reactors
-            attachments = message.get('attachments', [])
-            embeds = message.get('embeds', [])
-            reactors = message.get('reactors', [])
-            
-            # Convert to empty lists if None or 'null'
-            attachments = [] if attachments is None or attachments == 'null' else attachments
-            embeds = [] if embeds is None or embeds == 'null' else embeds
-            reactors = [] if reactors is None or reactors == 'null' else reactors
-            
-            attachments_json = json.dumps(attachments if isinstance(attachments, (list, dict)) else [])
-            embeds_json = json.dumps(embeds if isinstance(embeds, (list, dict)) else [])
-            reactors_json = json.dumps(reactors if isinstance(reactors, (list, dict)) else [])
-            
-            edited_at = message.get('edited_at')
-            if edited_at:
-                edited_at = edited_at.isoformat() if hasattr(edited_at, 'isoformat') else str(edited_at)
-
             cursor.execute("""
-                UPDATE messages 
-                SET content = COALESCE(?, content),
-                    attachments = COALESCE(?, attachments),
-                    embeds = COALESCE(?, embeds),
-                    reaction_count = COALESCE(?, reaction_count),
-                    reactors = COALESCE(?, reactors),
-                    edited_at = COALESCE(?, edited_at),
-                    is_pinned = COALESCE(?, is_pinned),
-                    flags = COALESCE(?, flags),
-                    indexed_at = CURRENT_TIMESTAMP
+                UPDATE messages SET
+                    content = ?,
+                    edited_at = ?,
+                    reaction_count = ?,
+                    reactors = ?,
+                    is_pinned = ?,
+                    is_deleted = ?
                 WHERE message_id = ?
             """, (
-                message.get('content'),
-                attachments_json,
-                embeds_json,
-                message.get('reaction_count', 0),
-                reactors_json,
-                edited_at,
-                message.get('is_pinned'),
-                message.get('flags'),
-                message_id
+                message.get('content'), message.get('edited_at'),
+                message.get('reaction_count'), json.dumps(message.get('reactors')),
+                message.get('is_pinned'), message.get('is_deleted', False),
+                message.get('message_id')
             ))
-            
             cursor.close()
-            return True
-            
+            return cursor.rowcount > 0
         return self._execute_with_retry(update_operation)
 
     def create_or_update_member(self, member_id: int, username: str, display_name: Optional[str] = None, 
@@ -597,271 +398,124 @@ class DatabaseHandler:
                               youtube_handle: Optional[str] = None, tiktok_handle: Optional[str] = None,
                               website: Optional[str] = None, sharing_consent: Optional[bool] = None,
                               dm_preference: Optional[bool] = None, permission_to_curate: Optional[bool] = None) -> bool:
-        """Create or update a member in the database."""
         def member_operation(conn):
             cursor = conn.cursor()
-            
-            # Check if member exists
             cursor.execute("SELECT * FROM members WHERE member_id = ?", (member_id,))
             existing_member = cursor.fetchone()
             
             if existing_member:
-                # Update existing member if fields changed
-                update_fields = []
-                update_values = []
+                update_fields = {
+                    'username': username, 'global_name': global_name, 'server_nick': display_name, 
+                    'avatar_url': avatar_url, 'discriminator': discriminator, 'bot': bot, 'system': system,
+                    'accent_color': accent_color, 'banner_url': banner_url, 
+                    'discord_created_at': discord_created_at, 'guild_join_date': guild_join_date,
+                    'role_ids': role_ids, 'twitter_handle': twitter_handle, 'instagram_handle': instagram_handle,
+                    'youtube_handle': youtube_handle, 'tiktok_handle': tiktok_handle, 'website': website,
+                    'sharing_consent': sharing_consent, 'dm_preference': dm_preference, 
+                    'permission_to_curate': permission_to_curate, 'updated_at': datetime.now().isoformat()
+                }
                 
-                # Build update query dynamically based on provided values
-                if username is not None:
-                    update_fields.append("username = ?")
-                    update_values.append(username)
-                if display_name is not None:
-                    update_fields.append("server_nick = ?")
-                    update_values.append(display_name)
-                if global_name is not None:
-                    update_fields.append("global_name = ?")
-                    update_values.append(global_name)
-                if avatar_url is not None:
-                    update_fields.append("avatar_url = ?")
-                    update_values.append(avatar_url)
-                if discriminator is not None:
-                    update_fields.append("discriminator = ?")
-                    update_values.append(discriminator)
-                if bot is not None:
-                    update_fields.append("bot = ?")
-                    update_values.append(bot)
-                if system is not None:
-                    update_fields.append("system = ?")
-                    update_values.append(system)
-                if accent_color is not None:
-                    update_fields.append("accent_color = ?")
-                    update_values.append(accent_color)
-                if banner_url is not None:
-                    update_fields.append("banner_url = ?")
-                    update_values.append(banner_url)
-                if discord_created_at is not None:
-                    update_fields.append("discord_created_at = ?")
-                    update_values.append(discord_created_at)
-                if guild_join_date is not None:
-                    update_fields.append("guild_join_date = ?")
-                    update_values.append(guild_join_date)
-                if role_ids is not None:
-                    update_fields.append("role_ids = ?")
-                    update_values.append(role_ids)
-                if twitter_handle is not None:
-                    update_fields.append("twitter_handle = ?")
-                    update_values.append(twitter_handle)
-                if instagram_handle is not None:
-                    update_fields.append("instagram_handle = ?")
-                    update_values.append(instagram_handle)
-                if youtube_handle is not None:
-                    update_fields.append("youtube_handle = ?")
-                    update_values.append(youtube_handle)
-                if tiktok_handle is not None:
-                    update_fields.append("tiktok_handle = ?")
-                    update_values.append(tiktok_handle)
-                if website is not None:
-                    update_fields.append("website = ?")
-                    update_values.append(website)
-                if sharing_consent is not None:
-                    update_fields.append("sharing_consent = ?")
-                    update_values.append(sharing_consent)
-                if dm_preference is not None:
-                    update_fields.append("dm_preference = ?")
-                    update_values.append(dm_preference)
-                if permission_to_curate is not None:
-                    update_fields.append("permission_to_curate = ?")
-                    update_values.append(permission_to_curate)
+                set_clauses = []
+                params = []
+                for key, value in update_fields.items():
+                    if value is not None:
+                        set_clauses.append(f"{key} = ?")
+                        params.append(value)
+                params.append(member_id)
                 
-                if update_fields:
-                    update_fields.append("updated_at = CURRENT_TIMESTAMP")
-                    update_values.append(member_id)
-                    
-                    update_sql = f"""
-                        UPDATE members
-                        SET {', '.join(update_fields)}
-                        WHERE member_id = ?
-                    """
-                    cursor.execute(update_sql, tuple(update_values))
+                if set_clauses:
+                    cursor.execute(f"UPDATE members SET {', '.join(set_clauses)} WHERE member_id = ?", tuple(params))
             else:
-                # Create new member
-                # Set default values for consent and preference if not provided
-                final_sharing_consent = sharing_consent if sharing_consent is not None else False
-                final_dm_preference = dm_preference if dm_preference is not None else True
-                final_curation_permission = permission_to_curate if permission_to_curate is not None else False
-
                 cursor.execute("""
-                    INSERT INTO members 
-                    (member_id, username, server_nick, global_name, avatar_url, 
-                     discriminator, bot, system, accent_color, banner_url, 
-                     discord_created_at, guild_join_date, role_ids,
-                     twitter_handle, instagram_handle, youtube_handle, tiktok_handle, 
-                     website, sharing_consent, dm_preference, permission_to_curate)
+                    INSERT INTO members (member_id, username, global_name, server_nick, avatar_url, discriminator, bot, system, accent_color, banner_url, discord_created_at, guild_join_date, role_ids, twitter_handle, instagram_handle, youtube_handle, tiktok_handle, website, sharing_consent, dm_preference, permission_to_curate)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (member_id, username, display_name, global_name, avatar_url,
-                      discriminator, bot, system, accent_color, banner_url,
-                      discord_created_at, guild_join_date, role_ids,
-                      twitter_handle, instagram_handle, youtube_handle, tiktok_handle,
-                      website, final_sharing_consent, final_dm_preference, final_curation_permission))
-            
+                """, (
+                    member_id, username, global_name, display_name, avatar_url, discriminator, bot, system,
+                    accent_color, banner_url, discord_created_at, guild_join_date, role_ids, twitter_handle,
+                    instagram_handle, youtube_handle, tiktok_handle, website, sharing_consent, dm_preference, permission_to_curate
+                ))
             cursor.close()
-            return True
-            
+            return cursor.rowcount > 0
         return self._execute_with_retry(member_operation)
 
     def update_member_permission_status(self, member_id: int, permission_status: Optional[bool]) -> bool:
-        """Update the permission_to_curate status for a specific member."""
         def update_permission_operation(conn):
             cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    UPDATE members
-                    SET permission_to_curate = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE member_id = ?
-                """, (permission_status, member_id))
-                updated = cursor.rowcount > 0
-                if updated:
-                    logger.info(f"Updated permission_to_curate for member {member_id} to {permission_status}")
-                else:
-                    logger.warning(f"Attempted to update permission_to_curate for non-existent member {member_id}")
-                cursor.close()
-                return updated
-            except sqlite3.Error as e:
-                logger.error(f"Database error updating permission for member {member_id}: {e}")
-                cursor.close()
-                return False
-
+            cursor.execute("""
+                UPDATE members SET permission_to_curate = ?, updated_at = CURRENT_TIMESTAMP WHERE member_id = ?
+            """, (permission_status, member_id))
+            cursor.close()
+            return cursor.rowcount > 0
         return self._execute_with_retry(update_permission_operation)
 
     def get_channel(self, channel_id: int) -> Optional[Dict]:
-        """Get a channel by its ID."""
         def get_channel_operation(conn):
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT channel_id, channel_name, description, suitable_posts, 
-                       unsuitable_posts, rules, setup_complete, nsfw, enriched, category_id
-                FROM channels
-                WHERE channel_id = ?
-            """, (channel_id,))
+            cursor.execute("SELECT * FROM channels WHERE channel_id = ?", (channel_id,))
             result = cursor.fetchone()
             cursor.close()
             return dict(result) if result else None
-            
         return self._execute_with_retry(get_channel_operation)
 
     def create_or_update_channel(self, channel_id: int, channel_name: str, nsfw: bool = False, category_id: Optional[int] = None) -> bool:
-        """Create or update a channel in the database."""
         def channel_operation(conn):
             cursor = conn.cursor()
-            # Check if channel exists
-            cursor.execute("SELECT * FROM channels WHERE channel_id = ?", (channel_id,))
-            existing_channel = cursor.fetchone()
-            
-            if existing_channel:
-                cursor.execute("""
-                    UPDATE channels
-                    SET channel_name = ?, nsfw = ?, category_id = ?
-                    WHERE channel_id = ?
-                """, (channel_name, nsfw, category_id, channel_id))
+            cursor.execute("SELECT 1 FROM channels WHERE channel_id = ?", (channel_id,))
+            exists = cursor.fetchone()
+            if exists:
+                cursor.execute("UPDATE channels SET channel_name = ?, nsfw = ?, category_id = ? WHERE channel_id = ?", (channel_name, nsfw, category_id, channel_id))
             else:
-                cursor.execute("""
-                    INSERT INTO channels 
-                    (channel_id, channel_name, description, suitable_posts, 
-                     unsuitable_posts, rules, setup_complete, nsfw, enriched, category_id)
-                    VALUES (?, ?, '', '', '', '', FALSE, ?, FALSE, ?)
-                """, (channel_id, channel_name, nsfw, category_id))
+                cursor.execute("INSERT INTO channels (channel_id, channel_name, nsfw, category_id) VALUES (?, ?, ?, ?)", (channel_id, channel_name, nsfw, category_id))
             cursor.close()
-            return True
+            return cursor.rowcount > 0
         return self._execute_with_retry(channel_operation)
 
     def get_messages_after(self, date: datetime) -> List[Dict]:
-        """Get all messages after a given date."""
         def get_messages_operation(conn):
+            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM messages 
-                WHERE created_at > ?
-                ORDER BY created_at ASC
-            """, (date.isoformat(),))
-            columns = [col[0] for col in cursor.description]
-            results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            cursor.execute("SELECT * FROM messages WHERE created_at > ?", (date.isoformat(),))
+            results = [dict(row) for row in cursor.fetchall()]
             cursor.close()
             return results
-            
         return self._execute_with_retry(get_messages_operation)
 
     def get_messages_by_ids(self, message_ids: List[int]) -> List[Dict]:
-        """Get messages by their IDs."""
         def get_messages_operation(conn):
+            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            placeholders = ','.join('?' * len(message_ids))
-            cursor.execute(f"""
-                SELECT * FROM messages 
-                WHERE message_id IN ({placeholders})
-            """, tuple(message_ids))
-            columns = [col[0] for col in cursor.description]
-            results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            placeholders = ','.join('?' for _ in message_ids)
+            cursor.execute(f"SELECT * FROM messages WHERE message_id IN ({placeholders})", message_ids)
+            results = [dict(row) for row in cursor.fetchall()]
             cursor.close()
             return results
-            
         return self._execute_with_retry(get_messages_operation)
 
     def get_messages_in_range(self, start_date: datetime, end_date: datetime, channel_id: Optional[int] = None) -> List[Dict]:
-        """Get all messages within a specific date range, optionally filtered by channel."""
         def get_range_operation(conn):
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            
-            sql = """
-                SELECT * FROM messages 
-                WHERE created_at >= ? AND created_at <= ?
-            """
+            query = "SELECT * FROM messages WHERE created_at BETWEEN ? AND ?"
             params = [start_date.isoformat(), end_date.isoformat()]
-            
             if channel_id:
-                sql += " AND channel_id = ?"
+                query += " AND channel_id = ?"
                 params.append(channel_id)
-                
-            sql += " ORDER BY created_at ASC"
-            
-            cursor.execute(sql, tuple(params))
+            cursor.execute(query, params)
             results = [dict(row) for row in cursor.fetchall()]
             cursor.close()
             return results
-            
         return self._execute_with_retry(get_range_operation)
 
     def get_messages_by_authors_in_range(self, author_ids: List[int], start_date: datetime, end_date: datetime) -> List[Dict]:
-        """Get all messages from a list of authors within a specific date range."""
-        if not author_ids:
-            return []
-
         def get_messages_operation(conn):
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            
-            placeholders = ','.join('?' * len(author_ids))
-            sql = f"""
-                SELECT * FROM messages 
-                WHERE author_id IN ({placeholders})
-                AND created_at >= ? AND created_at <= ?
-                ORDER BY created_at ASC
-            """
-            params = list(author_ids) + [start_date.isoformat(), end_date.isoformat()]
-            
-            cursor.execute(sql, tuple(params))
+            placeholders = ','.join('?' for _ in author_ids)
+            query = f"SELECT * FROM messages WHERE author_id IN ({placeholders}) AND created_at BETWEEN ? AND ?"
+            params = author_ids + [start_date.isoformat(), end_date.isoformat()]
+            cursor.execute(query, params)
             results = [dict(row) for row in cursor.fetchall()]
             cursor.close()
             return results
-            
         return self._execute_with_retry(get_messages_operation)
-
-    @property
-    def conn(self):
-        # Return an existing connection or create a new one if not available
-        if not hasattr(self, '_conn') or self._conn is None:
-            import sqlite3
-            self._conn = sqlite3.connect(self.db_path)
-            # Optionally, set row_factory if needed
-            self._conn.row_factory = sqlite3.Row
-        return self._conn

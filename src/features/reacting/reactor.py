@@ -31,9 +31,9 @@ from .subfeatures.openmuse_uploader import handle_upload_to_openmuse
 # --- BEGIN NEW IMPORT FOR TWEET SHARER BRIDGE ---
 from .subfeatures.tweet_sharer_bridge import handle_send_tweet_about_message
 # --- END NEW IMPORT FOR TWEET SHARER BRIDGE ---
-# --- BEGIN NEW IMPORT FOR OPENMUSE MESSENGER ---
-from .subfeatures.openmuse_messenger import ask_to_share_to_openmuse
-# --- END NEW IMPORT FOR OPENMUSE MESSENGER ---
+# --- BEGIN UPDATED IMPORT FOR WORKFLOW UPLOADER ---
+from .subfeatures.workflow_uploader import process_workflow_upload_request # UPDATED
+# --- END UPDATED IMPORT FOR WORKFLOW UPLOADER ---
 
 # Environment variable for watchlist configuration
 # Example format:
@@ -333,15 +333,20 @@ class Reactor:
             logger=self.logger
         )
 
-    # Action name in JSON: "prompt_openmuse_share"
-    async def _react_action_prompt_openmuse_share(self, reaction: discord.Reaction, user: discord.User):
-        """[Reaction Action] Sends a DM asking the user to share to OpenMuse via the subfeature handler."""
-        await ask_to_share_to_openmuse(
+    # Action name in JSON: "prompt_openmuse_share" or a new name like "initiate_workflow_upload"
+    async def _react_action_initiate_workflow_upload(self, reaction: discord.Reaction, user: discord.User):
+        """[Reaction Action] Initiates the full workflow upload process via the subfeature handler."""
+        # user here is the curator who added the reaction
+        self.logger.info(f"[Reactor] Action 'initiate_workflow_upload' triggered by curator {user.id} for message {reaction.message.id}")
+        await process_workflow_upload_request(
             bot=self.bot,
             reaction=reaction, 
-            user=user, 
+            curator_user=user, # This 'user' is the one who reacted (the curator)
             logger=self.logger, 
-            rate_limiter=self.bot.rate_limiter
+            rate_limiter=self.bot.rate_limiter, # Assuming bot has a RateLimiter instance
+            db_handler=self.db_handler,
+            claude_client=self.llm_client, # Pass the reactor's Claude client instance
+            openmuse_interactor=self.openmuse_interactor # Pass the reactor's OpenMuse interactor instance
         )
 
     # --- Message-Triggered Actions ---

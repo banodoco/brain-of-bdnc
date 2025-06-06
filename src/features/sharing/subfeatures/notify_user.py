@@ -10,7 +10,7 @@ from src.common import discord_utils # Added import
 # If sharer.py is in src/features/sharing/sharer.py:
 # from ..sharer import Sharer # REMOVED to break circular import
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 import os # Added
 
 # Use TYPE_CHECKING block for type hint only
@@ -92,7 +92,7 @@ class UpdateSocialsModal(discord.ui.Modal, title='Update Your Preferences'):
         self.user_details = user_details
         self.db_handler = db_handler
         self.original_message = original_message # Message that triggered the DM
-        self.parent_view = parent_view # To update the original DM view
+        self.parent_view = parent_view # To update the original DM view, and access sharer_instance, summary_channel
 
         # Pre-fill modal
         self.twitter_input.default = user_details.get('twitter_handle')
@@ -161,6 +161,19 @@ class UpdateSocialsModal(discord.ui.Modal, title='Update Your Preferences'):
                         view=self.parent_view
                     )
                     logger.info(f"User {interaction.user.id} updated preferences via modal for message {self.original_message.id}. Data: {updated_data}")
+                    
+                    # If sharing consent was set to True (1) in the modal, trigger finalize_sharing
+                    if final_sharing_consent == 1:
+                        logger.info(f"User {interaction.user.id} GRANTED/CONFIRMED sharing consent via modal for message {self.original_message.id}. Triggering finalize.")
+                        if self.parent_view.sharer_instance and hasattr(self.parent_view, 'summary_channel'): # Ensure parent_view has what we need
+                            asyncio.create_task(self.parent_view.sharer_instance.finalize_sharing(
+                                interaction.user.id, 
+                                self.original_message.id, 
+                                self.original_message.channel.id, 
+                                summary_channel=self.parent_view.summary_channel # Pass summary_channel from parent view
+                            ))
+                        else:
+                            logger.error(f"Cannot trigger finalize_sharing from modal: parent_view missing sharer_instance or summary_channel for msg {self.original_message.id}")
                 else:
                     # This case should ideally not happen if create_or_update_member was successful
                     # and get_member is reliable.
@@ -179,12 +192,14 @@ class UpdateSocialsModal(discord.ui.Modal, title='Update Your Preferences'):
                 await interaction.followup.send("An error occurred after the initial response while updating your preferences.", ephemeral=True)
 
 class SharingRequestView(discord.ui.View):
-    def __init__(self, user_details: dict, db_handler: DatabaseHandler, sharer_instance: 'Sharer', original_message: discord.Message, timeout=1800): # Timeout 30 mins
+    def __init__(self, user_details: dict, db_handler: DatabaseHandler, sharer_instance: 'Sharer', original_message: discord.Message, summary_channel: Optional[discord.TextChannel] = None, timeout=1800): # Added summary_channel, Timeout 30 mins
         super().__init__(timeout=timeout)
         self.user_details = user_details
         self.db_handler = db_handler
         self.sharer_instance = sharer_instance
         self.original_message = original_message
+        self.summary_channel = summary_channel # Store summary_channel
+        self.message: Optional[discord.Message] = None # To store the DM message reference for editing on timeout
         self._update_button_states()
 
     def _update_button_states(self):
@@ -234,11 +249,14 @@ class SharingRequestView(discord.ui.View):
         new_consent = not self.user_details.get('sharing_consent', False)
         await self._update_db_and_view(interaction, {'sharing_consent': new_consent})
         
-        # If consent is now True, trigger the finalize_sharing process
         if new_consent:
              logger.info(f"User {interaction.user.id} GRANTED sharing consent for message {self.original_message.id}. Triggering finalize.")
-             # Pass channel_id along with user_id and message_id
-             asyncio.create_task(self.sharer_instance.finalize_sharing(interaction.user.id, self.original_message.id, self.original_message.channel.id))
+             asyncio.create_task(self.sharer_instance.finalize_sharing(
+                interaction.user.id, 
+                self.original_message.id, 
+                self.original_message.channel.id, 
+                summary_channel=self.summary_channel # Pass stored summary_channel
+            ))
         else:
              logger.info(f"User {interaction.user.id} REVOKED sharing consent for message {self.original_message.id}.")
 
@@ -269,150 +287,153 @@ class SharingRequestView(discord.ui.View):
         await self._update_db_and_view(interaction, {'dm_preference': new_dm_pref})
 
     async def on_timeout(self):
-        user_id = self.user_details.get('member_id')
-        message_id = self.original_message.id if self.original_message else None
-        channel_id = self.original_message.channel.id if self.original_message else None # Get channel ID
-        sharer = self.sharer_instance
-
-        # Check if consent is still True when the view times out
-        if user_id and message_id and channel_id and sharer and self.user_details.get('sharing_consent', False):
-            logger.info(f"Sharing request DM timed out for user {user_id}, message {message_id}. Consent is TRUE. Triggering finalize_sharing automatically.")
-            # Trigger finalize_sharing asynchronously, passing channel_id
-            asyncio.create_task(sharer.finalize_sharing(user_id, message_id, channel_id))
+        # When the DM times out, check if the user has consent and auto-proceed if they do
+        user_id = self.user_details.get('member_id') if self.user_details else self.original_message.author.id
+        message_id = self.original_message.id
+        
+        logger.info(f"Sharing request DM for user {user_id}, message {message_id} timed out.")
+        
+        # Check current consent status - if True, proceed with sharing automatically
+        current_user_details = self.db_handler.get_member(user_id)
+        if current_user_details and current_user_details.get('sharing_consent', False):
+            logger.info(f"User {user_id} has sharing consent but didn't respond to DM for message {message_id}. Auto-proceeding with sharing.")
+            # Trigger finalize_sharing with current details (may not have updated socials, but that's ok)
+            asyncio.create_task(self.sharer_instance.finalize_sharing(
+                user_id,
+                self.original_message.id,
+                self.original_message.channel.id,
+                summary_channel=self.summary_channel
+            ))
         else:
-            consent_status = self.user_details.get('sharing_consent', 'Unknown')
-            logger.info(f"Sharing request DM timed out for user {user_id}, message {message_id}. Consent is {consent_status}. Finalize not triggered automatically.")
-            if not user_id or not message_id or not channel_id or not sharer:
-                 logger.warning(f"Missing data needed for automatic finalize on timeout: user_id={user_id}, message_id={message_id}, channel_id={channel_id}, sharer_present={sharer is not None}")
+            logger.info(f"User {user_id} does not have sharing consent for message {message_id}. Not auto-proceeding after timeout.")
 
-        # Disable buttons and edit message regardless of consent status
-        for item in self.children:
-            item.disabled = True
-        try:
-            # Edit the original DM message if possible
-            dm_message = getattr(self, 'message', None) # Get the sent DM message reference
-            if dm_message:
-                await dm_message.edit(content=f"{dm_message.content}\n\n_(This interaction has expired.)_", view=self)
-            else:
-                 logger.warning(f"Could not edit DM for user {user_id} after timeout (DM message reference not found on view). Message ID {message_id}")
-        except discord.NotFound:
-            logger.warning(f"Could not edit DM for user {user_id} after timeout (message not found). Message ID {message_id}")
-        except Exception as e:
-            logger.error(f"Error editing DM on timeout for user {user_id}, message ID {message_id}: {e}", exc_info=True)
+        # Edit the DM to show it timed out (regardless of whether we auto-proceeded)
+        if self.message: # If the DM message reference was stored
+            try:
+                self.clear_items() # Remove all components (buttons)
+                timeout_message_content = _format_dm_message(self.original_message, self.user_details)
+                if current_user_details and current_user_details.get('sharing_consent', False):
+                    timeout_message_content += "\n\n_(This request has timed out. Since you had previously given consent, we've proceeded with sharing using your current settings.)_\n\n**You can update your Twitter handle and consent settings at any time using `/update_details`**"
+                else:
+                    timeout_message_content += "\n\n_(This request has timed out. Please trigger the process again if needed.)_\n\n**You can update your Twitter handle and consent settings at any time using `/update_details`**"
+                await self.message.edit(content=timeout_message_content, view=self) # view=self (now empty)
+                logger.info(f"Edited DM on timeout for user {user_id}, message {message_id}.")
+            except discord.HTTPException as e:
+                logger.warning(f"Failed to edit DM message on timeout for user {user_id}, message {message_id}: {e}")
+            except Exception as e: # Catch any other potential error during edit
+                logger.error(f"Unexpected error editing DM on timeout for user {user_id}, message {message_id}: {e}", exc_info=True)
+        else:
+            logger.warning(f"Cannot edit DM on timeout for user {user_id}, message {message_id}: DM message reference not found.")
 
 # --- Main Function ---
 
-async def send_sharing_request_dm(bot: commands.Bot, user: discord.User, message: discord.Message, db_handler: DatabaseHandler, sharer_instance: 'Sharer'):
+async def send_sharing_request_dm(bot: commands.Bot, user: discord.User, message: discord.Message, db_handler: DatabaseHandler, sharer_instance: 'Sharer', summary_channel: Optional[discord.TextChannel] = None): # Added summary_channel
     """Sends a DM asking for sharing consent. In dev mode, redirects DM to ADMIN_USER_ID."""
     
-    original_author = user # Keep track of the original author
-    target_user = user # Default target is the original author
+    original_author = user 
+    target_user_for_dm = user # Default target is the original author
     is_redirected = False
 
+    logger.info(f"Attempting to send sharing request DM for original_author {original_author.id}, message {message.id}. Summary Channel: {summary_channel.id if summary_channel else 'None'}")
+
     # --- Dev Mode Redirect Logic --- 
-    if bot.dev_mode:
-        logger.debug("Dev mode active. Checking for ADMIN_USER_ID to redirect DM.")
+    if getattr(bot, 'dev_mode', False): # Safely check for dev_mode
         admin_user_id_str = os.getenv('ADMIN_USER_ID')
         if admin_user_id_str:
             try:
                 admin_user_id = int(admin_user_id_str)
-                admin_user = await bot.fetch_user(admin_user_id)
-                if admin_user:
-                    target_user = admin_user
+                fetched_admin_user = await bot.fetch_user(admin_user_id)
+                if fetched_admin_user:
+                    target_user_for_dm = fetched_admin_user
                     is_redirected = True
-                    logger.info(f"Redirecting sharing request DM for user {original_author.id} (msg: {message.id}) to ADMIN_USER_ID {admin_user_id}.")
-                else:
-                    logger.error(f"Could not fetch admin user with ID {admin_user_id}. Sending DM to original author.")
+                    logger.info(f"Redirecting sharing request DM for original_author {original_author.id} (msg: {message.id}) to ADMIN_USER_ID {admin_user_id}.")
+                else: # Should not happen if fetch_user doesn't raise NotFoud
+                    logger.error(f"Could not fetch admin user with ID {admin_user_id} (fetch_user returned None). Sending DM to original author.")
             except ValueError:
                 logger.error(f"Invalid ADMIN_USER_ID format: '{admin_user_id_str}'. Sending DM to original author.")
             except discord.NotFound:
                 logger.error(f"Admin user with ID {admin_user_id_str} not found. Sending DM to original author.")
-            except Exception as e:
-                logger.error(f"Error fetching admin user {admin_user_id_str}: {e}. Sending DM to original author.")
+            except Exception as e_fetch_admin: # Catch other potential errors during fetch
+                logger.error(f"Error fetching admin user {admin_user_id_str}: {e_fetch_admin}. Sending DM to original author.")
         else:
             logger.warning("Dev mode active but ADMIN_USER_ID not set in .env. Sending DM to original author.")
     # --- End Redirect Logic --- 
 
-    if target_user.bot:
-        # Check if the *final* target is a bot (could be the admin)
-        logger.warning(f"Attempted to send sharing request DM to bot user {target_user.id}. Skipping.")
+    if target_user_for_dm.bot:
+        logger.warning(f"Target user for DM ({target_user_for_dm.id}) is a bot. Skipping sharing request DM.")
         return
 
     try:
-        # Fetch details for the *original* author to show correct info
-        user_details = db_handler.get_member(original_author.id)
+        # Fetch details for the *original* author to show correct info in the DM content
+        user_details_for_dm_content = db_handler.get_member(original_author.id)
 
-        if not user_details:
-            logger.info(f"User {original_author.id} not found in DB. Creating entry with default consent=True.")
+        if not user_details_for_dm_content:
+            logger.info(f"Original author {original_author.id} not found in DB. Creating entry with default consent=True, dm_preference=True.")
             db_handler.create_or_update_member(
                 member_id=original_author.id,
                 username=original_author.name,
-                global_name=original_author.global_name,
-                sharing_consent=True,
+                global_name=getattr(original_author, 'global_name', None),
+                display_name=getattr(original_author, 'nick', None) or original_author.name,
+                sharing_consent=True, # Default to True, user can change via DM
                 dm_preference=True 
             )
-            user_details = db_handler.get_member(original_author.id) # Re-fetch
-            if not user_details:
-                 logger.error(f"Failed to create DB entry for user {original_author.id} during sharing request.")
+            user_details_for_dm_content = db_handler.get_member(original_author.id) # Re-fetch
+            if not user_details_for_dm_content:
+                 logger.error(f"Failed to create/fetch DB entry for original author {original_author.id} during sharing request setup.")
                  return
 
         # Check DM preference of the *original* author, even if redirecting
-        # We might still want to respect their preference about initiating the process
-        # Alternatively, you could ignore this check in dev mode if desired.
-        if not user_details.get('dm_preference', True):
-            logger.info(f"Original author {original_author.id} has DMs disabled. Skipping sharing request DM for message {message.id} (even if redirected).")
+        if not user_details_for_dm_content.get('dm_preference', True):
+            logger.info(f"Original author {original_author.id} has DMs disabled (dm_preference=False). Skipping sharing request DM for message {message.id}.")
             return
 
-        # Create DM with the *target* user (original author or admin)
-        dm_channel = await target_user.create_dm()
+        dm_channel = await target_user_for_dm.create_dm()
         
-        # The view still operates on the *original* author's details and message
-        view = SharingRequestView(user_details, db_handler, sharer_instance, message)
+        # The view operates on the *original* author's details for content and DB updates
+        # It also needs the sharer_instance and the specific summary_channel for this top_art flow
+        view = SharingRequestView(
+            user_details=user_details_for_dm_content, 
+            db_handler=db_handler, 
+            sharer_instance=sharer_instance, 
+            original_message=message, # The message object that might be shared
+            summary_channel=summary_channel # Pass the specific summary_channel for this flow
+        )
         
-        # Format message using original author details
-        dm_message_content = _format_dm_message(message, user_details)
+        dm_message_content = _format_dm_message(message, user_details_for_dm_content)
         
-        # Add a note if redirected
         if is_redirected:
-            dm_message_content = f"**(DEV MODE: This DM was intended for {original_author.name} ({original_author.id}))**\n\n" + dm_message_content
+            dm_message_content = f"**(DEV MODE: This DM was intended for {original_author.display_name} ({original_author.id}))**\n\n" + dm_message_content
 
-        # UPDATED CALL to use discord_utils.safe_send_message
-        # Assuming bot.rate_limiter attribute exists on the bot instance
-        if not hasattr(bot, 'rate_limiter'):
-            logger.error("Rate limiter not found on bot object. Cannot use safe_send_message for sharing request DM.")
-            # Fallback or raise error - for now, let's log and attempt direct send as a fallback
-            # This indicates a setup issue that needs to be addressed in main bot initialization.
+        # Use discord_utils.safe_send_message
+        rate_limiter = getattr(bot, 'rate_limiter', None)
+        if not rate_limiter:
+            logger.error("Rate limiter not found on bot object. Cannot use safe_send_message for sharing request DM. Attempting direct send.")
+            # Fallback direct send (consider if this should raise an error instead)
             try:
-                sent_dm = await dm_channel.send(content=dm_message_content, view=view)
+                sent_dm_message = await dm_channel.send(content=dm_message_content, view=view)
             except Exception as direct_send_error:
-                 logger.error(f"Fallback direct send failed for sharing request DM: {direct_send_error}", exc_info=True)
+                 logger.error(f"Fallback direct send failed for sharing request DM to {target_user_for_dm.id}: {direct_send_error}", exc_info=True)
                  return # Abort if direct send also fails
         else:
-            sent_dm = await discord_utils.safe_send_message(
-                bot,                             # bot instance
-                dm_channel,                      # channel to send to
-                bot.rate_limiter,                # RateLimiter instance from bot
-                logger,                          # logger instance
-                content=dm_message_content,      # message content
-                view=view                        # message view
+            sent_dm_message = await discord_utils.safe_send_message(
+                bot, dm_channel, rate_limiter, logger,
+                content=dm_message_content, view=view
             )
 
-        if sent_dm: # Check if message was successfully sent
-            view.message = sent_dm # Store reference for timeout editing
+        if sent_dm_message:
+            view.message = sent_dm_message # Store reference for timeout editing
+            log_msg = f"Sent sharing request DM to {target_user_for_dm.id}"
             if is_redirected:
-                logger.info(f"Sent REDIRECTED sharing request DM to admin {target_user.id} (originally for {original_author.id}, message {message.id}).")
-            else:
-                logger.info(f"Sent sharing request DM to user {target_user.id} for message {message.id}.")
+                log_msg += f" (redirected, originally for {original_author.id})"
+            log_msg += f" for message {message.id}."
+            logger.info(log_msg)
         else:
-            # This case implies safe_send_message returned None (e.g., after exhausting retries or an unhandled error within it before raising)
-            # or the fallback direct send failed and returned.
-            logger.error(f"Failed to send sharing request DM (target: {target_user.id}, original: {original_author.id}, msg: {message.id}) after attempts.")
-            # No further action here, error already logged extensively by safe_send_message or the fallback.
+            logger.error(f"Failed to send sharing request DM (target: {target_user_for_dm.id}, original_author: {original_author.id}, msg: {message.id}) after all attempts.")
 
     except discord.Forbidden:
-        logger.warning(f"Could not send DM to target user {target_user.id} (Forbidden). They may have DMs disabled globally or blocked the bot.")
-        # If redirected, log who it was originally for
+        log_forbidden = f"Could not send DM to target user {target_user_for_dm.id} (Forbidden)."
         if is_redirected:
-             logger.warning(f"(DM was originally intended for {original_author.id})")
+            log_forbidden += f" (DM was for {original_author.id})"
+        logger.warning(log_forbidden)
     except Exception as e:
-        logger.error(f"Failed to send sharing request DM (target: {target_user.id}, original: {original_author.id}, msg: {message.id}): {e}", exc_info=True) 
+        logger.error(f"Failed to send sharing request DM (target: {target_user_for_dm.id}, original_author: {original_author.id}, msg: {message.id}): {e}", exc_info=True) 

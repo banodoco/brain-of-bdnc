@@ -112,16 +112,23 @@ async def _process_moderation_and_sharing(
     """Handles LLM moderation, tweeting, and notifications."""
     logger.info(f"[TweetSharerBridge] Starting moderation and sharing process for message {message_to_share.id} via {path_type}.")
 
-    system_moderation_prompt = """Can you determine whether or not this is a suitable post for an open source AI art commmunity's twitter.
+    system_moderation_prompt = """Can you determine whether this TEXT CONTENT is suitable for sharing on an open source AI art community's Twitter to showcase cool AI creations and celebrate creativity?
 
-Bad posts include:
+IMPORTANT: You are only moderating the text content - you cannot see any images, GIFs, or other media attachments. If there's no text content but the message has media attachments, you should generally approve it since this community is about showcasing visual AI art.
 
-- rude, explicit, insulting or inappropriate
-- excessively hypey and over the top
-- exccessively self-promotional
-- other obvious reason
+This community loves to highlight:
+- Amazing AI-generated art and creative works
+- Innovative techniques and experiments  
+- Cool discoveries and breakthroughs
+- Community members showing off their creations
+- Enthusiasm and excitement about AI art
 
-Determine whether 
+Only reject TEXT content that is:
+- Clearly offensive, hateful, or inappropriate language
+- Spam or completely unrelated to AI/art
+- Contains personal attacks or harassment
+
+Be permissive and err on the side of sharing - we want to celebrate creativity and show off cool things! Enthusiasm and self-promotion of creative work is encouraged. If there's no text content but media is present, approve it.
 
 Your reply should be in this format:
 
@@ -129,7 +136,7 @@ Your reply should be in this format:
 
 Make sure to use lowercase. For example:
 
-yes|good post
+yes|great creative work to showcase
 
 Reply with that and nothing else"""
     user_content_for_moderation = (

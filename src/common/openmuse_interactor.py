@@ -20,6 +20,40 @@ from io import BytesIO # Keep for potential use, though temp file might be suffi
 from urllib.parse import quote # For profile URL generation
 # --- End Added imports ---
 
+# Helper function for logging truncation (can be outside class or a private method)
+def _get_truncated_data_for_logging(data_obj: Any, avatar_key: str = 'discord_avatar_base64', max_len: int = 70) -> Any:
+    if isinstance(data_obj, dict):
+        copied_dict = data_obj.copy()
+        if avatar_key in copied_dict and isinstance(copied_dict[avatar_key], str):
+            full_avatar_string = copied_dict[avatar_key]
+            prefix_to_keep = ""
+            if "base64," in full_avatar_string:
+                parts = full_avatar_string.split("base64,", 1)
+                prefix_to_keep = parts[0] + "base64,"
+                actual_b64_data = parts[1]
+            else:
+                actual_b64_data = full_avatar_string
+            
+            if len(actual_b64_data) > max_len:
+                copied_dict[avatar_key] = prefix_to_keep + actual_b64_data[:max_len] + "... (truncated)"
+        return copied_dict
+    elif isinstance(data_obj, list):
+        return [_get_truncated_data_for_logging(item, avatar_key, max_len) for item in data_obj]
+    # Add handling for Supabase response objects if needed, by accessing their .data attribute
+    elif hasattr(data_obj, 'data'): # Heuristic for Supabase response like objects
+        # Don't modify original object, create a representation for logging
+        class ResponseLogWrapper:
+            def __init__(self, original_response, truncated_data):
+                self.original_response = original_response
+                self.truncated_data = truncated_data
+            def __repr__(self):
+                original_attrs = {attr: getattr(self.original_response, attr) for attr in dir(self.original_response) if not attr.startswith('_') and not callable(getattr(self.original_response, attr)) and attr != 'data'}
+                return f"SupabaseResponse(data={self.truncated_data}, {original_attrs})"
+
+        truncated_data_list = _get_truncated_data_for_logging(data_obj.data, avatar_key, max_len)
+        return ResponseLogWrapper(data_obj, truncated_data_list)
+    return data_obj
+
 # Define the structure based on provided schema (for reference)
 # ProfileTable = {
 #     'id': 'uuid',
@@ -40,12 +74,34 @@ PROFILES_TABLE = "profiles" # Define table name as a constant
 MEDIA_TABLE = "media" # Define table name as a constant
 VIDEO_BUCKET_NAME = "videos" # Define bucket name
 THUMBNAIL_BUCKET_NAME = "thumbnails" # Define bucket name
+WORKFLOWS_BUCKET_NAME = "workflows" # Added for workflow JSONs
 
 # --- Added constants for upload logic ---
 MAX_UPLOAD_ATTEMPTS = 3
 BASE_RETRY_DELAY_SECONDS = 2
 MAX_FILE_SIZE_BYTES = 512 * 1024 * 1024 # 512 MiB - Make this configurable?
 # --- End Added constants ---
+
+# Refined helper function for truncating avatar string within a dictionary for logging
+def _truncate_avatar_in_dict_for_logging(data_dict: Optional[Dict], avatar_key: str = 'discord_avatar_base64', max_len: int = 70) -> Optional[Dict]:
+    if not isinstance(data_dict, dict):
+        return data_dict # Return as is if not a dict (e.g., None)
+    copied_dict = data_dict.copy() # Work on a copy for logging
+    if avatar_key in copied_dict and isinstance(copied_dict[avatar_key], str):
+        full_avatar_string = copied_dict[avatar_key]
+        prefix_to_keep = ""
+        actual_b64_data = full_avatar_string
+        try:
+            prefix_end_idx = full_avatar_string.find("base64,")
+            if prefix_end_idx != -1:
+                prefix_to_keep = full_avatar_string[:prefix_end_idx + len("base64,")]
+                actual_b64_data = full_avatar_string[len(prefix_to_keep):]
+        except Exception:
+            pass # If string operations fail, proceed with actual_b64_data as full_avatar_string
+        
+        if len(actual_b64_data) > max_len:
+            copied_dict[avatar_key] = prefix_to_keep + actual_b64_data[:max_len] + "... (truncated)"
+    return copied_dict
 
 class OpenMuseInteractor:
     """Handles interactions with the OpenMuse Supabase backend."""
@@ -110,12 +166,13 @@ class OpenMuseInteractor:
                 .execute
             )
 
-            self.logger.debug(f"[OpenMuseInteractor] Supabase select response: {select_response}")
+            self.logger.debug(f"[OpenMuseInteractor] Supabase select response: {_truncate_avatar_in_dict_for_logging(select_response)}")
 
             if select_response.data:
                 # --- 2a. Profile Found - Check for updates ---
                 existing_profile = select_response.data[0]
                 profile_id_uuid = existing_profile['id']
+                self.logger.debug(f"[OpenMuseInteractor] Existing profile data (pre-update check): {_truncate_avatar_in_dict_for_logging(existing_profile)}")
                 self.logger.info(f"[OpenMuseInteractor] Found existing profile. UUID: {profile_id_uuid}, Supabase Username: {existing_profile.get('username')}")
 
                 update_data = {}
@@ -157,14 +214,14 @@ class OpenMuseInteractor:
                     except APIError as update_err:
                          self.logger.error(f"[OpenMuseInteractor] Supabase API error updating profile {profile_id_uuid}: {update_err}")
                          # Decide whether to return the old data or None on update failure
-                         return existing_profile, profile_id_uuid # Return potentially stale data but with ID
+                         return _truncate_avatar_in_dict_for_logging(existing_profile), profile_id_uuid # Return potentially stale data but with ID
                     except Exception as update_ex:
                          self.logger.error(f"[OpenMuseInteractor] Unexpected error updating profile {profile_id_uuid}: {update_ex}", exc_info=True)
-                         return existing_profile, profile_id_uuid # Return potentially stale data but with ID
+                         return _truncate_avatar_in_dict_for_logging(existing_profile), profile_id_uuid # Return potentially stale data but with ID
                 else:
                     self.logger.info(f"[OpenMuseInteractor] Profile {profile_id_uuid} data is up-to-date. No update needed.")
 
-                return existing_profile, profile_id_uuid # Return existing profile and its ID
+                return _truncate_avatar_in_dict_for_logging(existing_profile), profile_id_uuid # Return existing profile and its ID
 
             else:
                 # --- 2b. Profile Not Found - Create New One ---
@@ -191,7 +248,7 @@ class OpenMuseInteractor:
                     'background_image_url': None
                 }
 
-                self.logger.debug(f"[OpenMuseInteractor] Attempting to insert new profile data: {new_profile_data}")
+                self.logger.debug(f"[OpenMuseInteractor] Attempting to insert new profile data: {_truncate_avatar_in_dict_for_logging(new_profile_data)}")
 
                 try:
                     insert_response = await asyncio.to_thread(
@@ -199,13 +256,14 @@ class OpenMuseInteractor:
                         .insert(new_profile_data)
                         .execute
                     )
-                    self.logger.debug(f"[OpenMuseInteractor] Supabase insert response: {insert_response}")
+                    self.logger.debug(f"[OpenMuseInteractor] Supabase insert response: {_truncate_avatar_in_dict_for_logging(insert_response)}")
 
                     if insert_response.data:
                         created_profile = insert_response.data[0]
                         profile_id_uuid = created_profile.get('id')
+                        self.logger.debug(f"[OpenMuseInteractor] Created profile data: {_truncate_avatar_in_dict_for_logging(created_profile)}")
                         self.logger.info(f"[OpenMuseInteractor] Successfully created new profile. UUID: {profile_id_uuid}, Username: {created_profile.get('username')}")
-                        return created_profile, profile_id_uuid # Return newly created profile and its ID
+                        return _truncate_avatar_in_dict_for_logging(created_profile), profile_id_uuid # Return newly created profile and its ID
                     else:
                         # This case might indicate an error even without an exception (e.g., RLS preventing insert/return)
                         self.logger.error("[OpenMuseInteractor] Supabase insert executed but returned no data. Profile creation might have failed silently.")
@@ -243,6 +301,143 @@ class OpenMuseInteractor:
             return False
         # Simple regex for http(s) URLs
         return re.match(r"^https?://[\w\-\.]+(:\d+)?(/[\w\-\.~:/?#\[\]@!$&'()*+,;=%]*)?$", url) is not None
+
+    async def _upload_bytes_to_storage(
+        self,
+        file_bytes: bytes,
+        bucket_name: str,
+        storage_path: str,
+        content_type: str,
+        upsert: bool = True
+    ) -> Optional[str]:
+        """
+        Uploads raw bytes to a specified Supabase storage bucket with retry logic.
+
+        Args:
+            file_bytes: The raw bytes of the file to upload.
+            bucket_name: The name of the target Supabase storage bucket.
+            storage_path: The desired path (including filename) within the bucket.
+            content_type: The MIME type of the file.
+            upsert: Whether to overwrite the file if it already exists.
+
+        Returns:
+            The public URL of the uploaded file if successful, otherwise None.
+        """
+        if not self.supabase:
+            self.logger.error(f"[OpenMuseInteractor_UploadBytes] Supabase client not initialized. Cannot upload to {bucket_name}/{storage_path}.")
+            return None
+
+        self.logger.info(f"[OpenMuseInteractor_UploadBytes] --> Attempting to upload {len(file_bytes)} bytes to bucket '{bucket_name}' at path '{storage_path}' (Content-Type: {content_type}).")
+        
+        upload_successful = False
+        for attempt in range(MAX_UPLOAD_ATTEMPTS):
+            try:
+                await asyncio.to_thread(
+                    self.supabase.storage.from_(bucket_name).upload,
+                    path=storage_path,
+                    file=file_bytes,
+                    file_options={"content-type": content_type, "upsert": str(upsert).lower()} # upsert needs to be string "true" or "false"
+                )
+                self.logger.info(f"[OpenMuseInteractor_UploadBytes] <-- Successfully uploaded to '{bucket_name}/{storage_path}' (Attempt {attempt + 1}).")
+                upload_successful = True
+                break
+            except (Exception, httpx.WriteError) as upload_ex: # Catch generic Exception and specific httpx.WriteError
+                self.logger.warning(f"[OpenMuseInteractor_UploadBytes] Upload attempt {attempt + 1}/{MAX_UPLOAD_ATTEMPTS} for '{bucket_name}/{storage_path}' failed: {upload_ex}")
+                if attempt + 1 < MAX_UPLOAD_ATTEMPTS:
+                    delay = BASE_RETRY_DELAY_SECONDS * (2 ** attempt)
+                    self.logger.info(f"[OpenMuseInteractor_UploadBytes] Retrying upload in {delay} seconds...")
+                    await asyncio.sleep(delay)
+                else:
+                    self.logger.error(f"[OpenMuseInteractor_UploadBytes] Upload for '{bucket_name}/{storage_path}' failed after {MAX_UPLOAD_ATTEMPTS} attempts.")
+        
+        if not upload_successful:
+            return None
+
+        # Get Public URL
+        try:
+            self.logger.info(f"[OpenMuseInteractor_UploadBytes] --> Getting public URL for '{bucket_name}/{storage_path}'.")
+            public_url_response = await asyncio.to_thread(
+                self.supabase.storage.from_(bucket_name).get_public_url, storage_path
+            )
+            public_url = public_url_response
+            self.logger.info(f"[OpenMuseInteractor_UploadBytes] <-- Got public URL: {public_url}")
+
+            if isinstance(public_url, str):
+                trimmed_url = public_url.strip()
+                if trimmed_url != public_url:
+                    self.logger.info(f"[OpenMuseInteractor_UploadBytes] Trimmed whitespace from URL: '{public_url}' -> '{trimmed_url}'")
+                public_url = trimmed_url
+            
+            if not self._is_valid_url(public_url):
+                self.logger.warning(f"[OpenMuseInteractor_UploadBytes] Invalid or empty URL after trimming: '{public_url}' for '{bucket_name}/{storage_path}'. Setting to None.")
+                return None
+            return public_url
+        except Exception as url_ex:
+            self.logger.error(f"[OpenMuseInteractor_UploadBytes] Failed to get public URL for '{bucket_name}/{storage_path}': {url_ex}")
+            return None
+
+    async def upload_file_to_storage(
+        self,
+        file_source: discord.Attachment | bytes,
+        bucket_name: str,
+        storage_path: str,
+        content_type: Optional[str] = None,
+        upsert: bool = True
+    ) -> Optional[str]:
+        """
+        Generalized method to upload a file (from discord.Attachment or raw bytes)
+        to a specified Supabase storage bucket.
+
+        Args:
+            file_source: A discord.Attachment object or raw bytes of the file.
+            bucket_name: The target Supabase storage bucket (e.g., "workflows", "videos").
+            storage_path: The desired path (including filename) within the bucket.
+            content_type: The MIME type of the file. If None and file_source is
+                          discord.Attachment, it's inferred from the attachment.
+                          Defaults to 'application/octet-stream' if not determinable.
+            upsert: Whether to overwrite the file if it already exists.
+
+        Returns:
+            The public URL of the uploaded file if successful, otherwise None.
+        """
+        if not self.supabase:
+            self.logger.error(f"[OpenMuseInteractor_UploadFile] Supabase client not initialized. Cannot upload.")
+            return None
+
+        file_bytes: Optional[bytes] = None
+        final_content_type: str
+
+        if isinstance(file_source, discord.Attachment):
+            self.logger.info(f"[OpenMuseInteractor_UploadFile] Reading bytes from discord.Attachment '{file_source.filename}'.")
+            try:
+                file_bytes = await file_source.read()
+                final_content_type = content_type or file_source.content_type or 'application/octet-stream'
+                self.logger.info(f"[OpenMuseInteractor_UploadFile] Read {len(file_bytes)} bytes. Determined content type: {final_content_type}.")
+            except discord.HTTPException as e:
+                self.logger.error(f"[OpenMuseInteractor_UploadFile] Discord HTTP error reading attachment {file_source.filename}: {e}")
+                return None
+            except Exception as e:
+                self.logger.error(f"[OpenMuseInteractor_UploadFile] Error reading attachment {file_source.filename}: {e}", exc_info=True)
+                return None
+        elif isinstance(file_source, bytes):
+            file_bytes = file_source
+            final_content_type = content_type or 'application/octet-stream'
+            self.logger.info(f"[OpenMuseInteractor_UploadFile] Using provided {len(file_bytes)} bytes. Content type: {final_content_type}.")
+        else:
+            self.logger.error(f"[OpenMuseInteractor_UploadFile] Invalid file_source type: {type(file_source)}. Must be discord.Attachment or bytes.")
+            return None
+
+        if not file_bytes: # Should be caught above, but as a safeguard
+            self.logger.error(f"[OpenMuseInteractor_UploadFile] File bytes are empty. Cannot upload.")
+            return None
+
+        return await self._upload_bytes_to_storage(
+            file_bytes=file_bytes,
+            bucket_name=bucket_name,
+            storage_path=storage_path,
+            content_type=final_content_type,
+            upsert=upsert
+        )
 
     async def upload_discord_attachment(
         self,
@@ -290,7 +485,7 @@ class OpenMuseInteractor:
         if attachment.size > MAX_FILE_SIZE_BYTES:
             self.logger.warning(f"[OpenMuseInteractor] Attachment '{attachment.filename}' ({attachment.size} bytes) from message {message.id} exceeds max size ({MAX_FILE_SIZE_BYTES} bytes). Aborting upload.")
             # Caller (Reactor) should handle informing the user
-            return None, profile_data # Return profile data even if upload fails
+            return None, _truncate_avatar_in_dict_for_logging(profile_data) # Return profile data even if upload fails
 
         # --- 3. Download File Content --- Download only if size is okay
         try:
@@ -299,10 +494,10 @@ class OpenMuseInteractor:
             self.logger.info(f"[OpenMuseInteractor] <-- Read {len(file_bytes)} bytes for attachment '{attachment.filename}'.")
         except discord.HTTPException as e:
             self.logger.error(f"[OpenMuseInteractor] Discord HTTP error reading attachment {attachment.filename} from message {message.id}: {e}")
-            return None, profile_data
+            return None, _truncate_avatar_in_dict_for_logging(profile_data)
         except Exception as e:
             self.logger.error(f"[OpenMuseInteractor] Error reading attachment {attachment.filename} from message {message.id}: {e}", exc_info=True)
-            return None, profile_data
+            return None, _truncate_avatar_in_dict_for_logging(profile_data)
 
         # --- 4. Process Video Thumbnail & Aspect Ratio (if applicable) ---
         content_type = attachment.content_type or 'application/octet-stream'
@@ -348,41 +543,21 @@ class OpenMuseInteractor:
 
                             thumbnail_filename = f"{os.path.splitext(attachment.filename)[0]}_thumb.jpg"
                             thumbnail_storage_path = f"user_media/{profile_id_uuid}/{message.id}_{thumbnail_filename}"
-                            self.logger.info(f"[OpenMuseInteractor] --> Attempting to upload thumbnail to bucket '{THUMBNAIL_BUCKET_NAME}' at path '{thumbnail_storage_path}'.")
+                            
+                            placeholder_image_url = await self._upload_bytes_to_storage(
+                                file_bytes=thumbnail_bytes,
+                                bucket_name=THUMBNAIL_BUCKET_NAME,
+                                storage_path=thumbnail_storage_path,
+                                content_type="image/jpeg",
+                                upsert=True # Typically true for thumbnails derived from same source
+                            )
 
-                            # --- Thumbnail Upload Retry Logic ---
-                            for attempt in range(MAX_UPLOAD_ATTEMPTS):
-                                try:
-                                    await asyncio.to_thread(
-                                        self.supabase.storage.from_(THUMBNAIL_BUCKET_NAME).upload,
-                                        path=thumbnail_storage_path,
-                                        file=thumbnail_bytes,
-                                        file_options={"content-type": "image/jpeg", "upsert": "true"}
-                                    )
-                                    self.logger.info(f"[OpenMuseInteractor] <-- Successfully uploaded thumbnail '{thumbnail_filename}' (Attempt {attempt + 1}).")
-                                    thumbnail_upload_success = True
-                                    break
-                                except (Exception, httpx.WriteError) as upload_ex:
-                                    self.logger.warning(f"[OpenMuseInteractor] Thumbnail upload attempt {attempt + 1}/{MAX_UPLOAD_ATTEMPTS} failed: {upload_ex}")
-                                    if attempt + 1 < MAX_UPLOAD_ATTEMPTS:
-                                        delay = BASE_RETRY_DELAY_SECONDS * (2 ** attempt)
-                                        self.logger.info(f"[OpenMuseInteractor] Retrying thumbnail upload in {delay} seconds...")
-                                        await asyncio.sleep(delay)
-                                    else:
-                                        self.logger.error(f"[OpenMuseInteractor] Thumbnail upload failed after {MAX_UPLOAD_ATTEMPTS} attempts.")
-                                        # thumbnail_upload_success remains False - Logged, but continue main file upload
-                            # --- End Thumbnail Retry ---
-
-                            if thumbnail_upload_success:
-                                try:
-                                    self.logger.info(f"[OpenMuseInteractor] --> Getting public URL for thumbnail '{thumbnail_storage_path}'.")
-                                    thumb_url_resp = await asyncio.to_thread(
-                                        self.supabase.storage.from_(THUMBNAIL_BUCKET_NAME).get_public_url, thumbnail_storage_path
-                                    )
-                                    placeholder_image_url = thumb_url_resp
-                                    self.logger.info(f"[OpenMuseInteractor] <-- Got thumbnail public URL: {placeholder_image_url}")
-                                except Exception as url_ex:
-                                    self.logger.error(f"[OpenMuseInteractor] Failed to get public URL for uploaded thumbnail '{thumbnail_storage_path}': {url_ex}")
+                            if placeholder_image_url:
+                                self.logger.info(f"[OpenMuseInteractor] Thumbnail uploaded successfully. URL: {placeholder_image_url}")
+                                thumbnail_upload_success = True # Mark as success if URL is obtained
+                            else:
+                                self.logger.error(f"[OpenMuseInteractor] Thumbnail upload failed for '{thumbnail_storage_path}' (no URL returned or error in _upload_bytes_to_storage).")
+                                # thumbnail_upload_success remains False
                         else:
                             self.logger.error("[OpenMuseInteractor] Failed to encode video frame to JPEG using OpenCV.")
                     else:
@@ -403,68 +578,34 @@ class OpenMuseInteractor:
         # --- 5. Upload Original File --- Always attempt this
         storage_path = f"user_media/{profile_id_uuid}/{message.id}_{attachment.filename}"
         self.logger.info(f"[OpenMuseInteractor] --> Attempting to upload original file '{attachment.filename}' to bucket '{VIDEO_BUCKET_NAME}' at path '{storage_path}'.")
-        public_url = None
-        main_upload_success = False
+        
+        public_url = await self._upload_bytes_to_storage(
+            file_bytes=file_bytes, # These are the bytes of the original attachment read earlier
+            bucket_name=VIDEO_BUCKET_NAME, # Or more generic like 'media_files_bucket'
+            storage_path=storage_path,
+            content_type=content_type, # Original content type of the attachment
+            upsert=True # Standard upsert policy
+        )
 
-        # --- Original File Upload Retry Logic ---
-        for attempt in range(MAX_UPLOAD_ATTEMPTS):
-            try:
-                await asyncio.to_thread(
-                    self.supabase.storage.from_(VIDEO_BUCKET_NAME).upload,
-                    path=storage_path,
-                    file=file_bytes,
-                    file_options={"content-type": content_type, "upsert": "true"}
-                )
-                self.logger.info(f"[OpenMuseInteractor] <-- Successfully uploaded original file '{attachment.filename}' (Attempt {attempt + 1}).")
-                main_upload_success = True
-                break
-            except (Exception, httpx.WriteError) as upload_ex:
-                 self.logger.warning(f"[OpenMuseInteractor] Original file upload attempt {attempt + 1}/{MAX_UPLOAD_ATTEMPTS} failed: {upload_ex}")
-                 if attempt + 1 < MAX_UPLOAD_ATTEMPTS:
-                     delay = BASE_RETRY_DELAY_SECONDS * (2 ** attempt)
-                     self.logger.info(f"[OpenMuseInteractor] Retrying original file upload in {delay} seconds...")
-                     await asyncio.sleep(delay)
-                 else:
-                     self.logger.error(f"[OpenMuseInteractor] Original file upload failed after {MAX_UPLOAD_ATTEMPTS} attempts. Aborting.")
-                     # Caller (Reactor) should inform user
-                     return None, profile_data # Return profile data even on failure
-        # --- End Original File Retry ---
+        if not public_url:
+            self.logger.error(f"[OpenMuseInteractor] Original file upload failed for '{storage_path}'. Aborting media record creation.")
+            return None, _truncate_avatar_in_dict_for_logging(profile_data)
+        
+        self.logger.info(f"[OpenMuseInteractor] Original file uploaded successfully. URL: {public_url}")
+        main_upload_success = True # If public_url is not None, it was successful.
 
         # --- 6. Get Original File Public URL (if upload succeeded) ---
-        if main_upload_success:
-            try:
-                self.logger.info(f"[OpenMuseInteractor] --> Getting public URL for original file '{storage_path}'.")
-                public_url_response = await asyncio.to_thread(
-                     self.supabase.storage.from_(VIDEO_BUCKET_NAME).get_public_url, storage_path
-                )
-                public_url = public_url_response
-                self.logger.info(f"[OpenMuseInteractor] <-- Got public URL for original file: {public_url}")
-                # --- URL TRIMMING & VALIDATION ---
-                if isinstance(public_url, str):
-                    trimmed_url = public_url.strip()
-                    if trimmed_url != public_url:
-                        self.logger.info(f"[OpenMuseInteractor] Trimmed whitespace from video URL: '{public_url}' -> '{trimmed_url}'")
-                    public_url = trimmed_url
-                if not self._is_valid_url(public_url):
-                    self.logger.warning(f"[OpenMuseInteractor] Invalid or empty video URL after trimming: '{public_url}'. Setting to None.")
-                    public_url = None
-            except Exception as url_ex:
-                self.logger.error(f"[OpenMuseInteractor] Failed to get public URL for uploaded original file '{storage_path}': {url_ex}")
-                # Proceed without public URL, but log it
-        else:
-             # This path should technically not be reachable due to return in retry loop
+        # This step is now integrated into _upload_bytes_to_storage and its return value (public_url)
+        # Validation of the URL also happens within _upload_bytes_to_storage.
+        # So, no separate "Get Original File Public URL" section needed here.
+        
+        # main_upload_success is true if public_url is not None
+        if not main_upload_success: # Should be redundant if logic above is correct
              self.logger.error("[OpenMuseInteractor] Reached code after main upload failure - should not happen.")
-             return None, profile_data
+             return None, _truncate_avatar_in_dict_for_logging(profile_data)
 
-        # Trim and validate thumbnail URL if present
-        if placeholder_image_url and isinstance(placeholder_image_url, str):
-            trimmed_thumb = placeholder_image_url.strip()
-            if trimmed_thumb != placeholder_image_url:
-                self.logger.info(f"[OpenMuseInteractor] Trimmed whitespace from thumbnail URL: '{placeholder_image_url}' -> '{trimmed_thumb}'")
-            placeholder_image_url = trimmed_thumb
-            if not self._is_valid_url(placeholder_image_url):
-                self.logger.warning(f"[OpenMuseInteractor] Invalid or empty thumbnail URL after trimming: '{placeholder_image_url}'. Setting to None.")
-                placeholder_image_url = None
+        # Trim and validate thumbnail URL if present (already handled by _upload_bytes_to_storage for placeholder_image_url)
+        # The placeholder_image_url is already validated or None if it failed.
 
         # --- 7. Insert Media Record --- Requires successful profile step
         classification = 'art' if message.channel and hasattr(message.channel, 'name') and message.channel.name.lower().startswith('art') else 'gen'
@@ -499,7 +640,7 @@ class OpenMuseInteractor:
             insert_response = await asyncio.to_thread(
                  self.supabase.table(MEDIA_TABLE).insert(media_data).execute
             )
-            self.logger.debug(f"[OpenMuseInteractor] Media insert response: {insert_response}")
+            self.logger.debug(f"[OpenMuseInteractor] Media insert response: {_truncate_avatar_in_dict_for_logging(insert_response)}")
 
             if insert_response.data:
                 inserted_media_record = insert_response.data[0]
@@ -548,18 +689,152 @@ class OpenMuseInteractor:
                     self.logger.info(f"[OpenMuseInteractor] Skipping Welcome DM for profile {profile_id_uuid} (Initial Connected Status: {initial_discord_connected}).")
 
                 # Return successful media record and the (potentially updated) profile data
-                return inserted_media_record, profile_data
+                return inserted_media_record, _truncate_avatar_in_dict_for_logging(profile_data)
             else:
                 self.logger.error(f"[OpenMuseInteractor] Supabase media insert for message {message.id} executed but returned no data. Insert failed? RLS?",
-                                 extra={"response": insert_response}) # Log full response if possible
-                return None, profile_data # Return profile, but indicate media insert failure
+                                 extra={"response": _truncate_avatar_in_dict_for_logging(insert_response)}), _truncate_avatar_in_dict_for_logging(profile_data) # Log full response if possible
+                return None, _truncate_avatar_in_dict_for_logging(profile_data) # Return profile, but indicate media insert failure
 
         except APIError as insert_err:
              self.logger.error(f"[OpenMuseInteractor] Supabase API error inserting media record for message {message.id}: {insert_err}")
-             return None, profile_data
+             return None, _truncate_avatar_in_dict_for_logging(profile_data)
         except Exception as insert_ex:
             self.logger.error(f"[OpenMuseInteractor] Unexpected error inserting media record for message {message.id}: {insert_ex}", exc_info=True)
-            return None, profile_data
+            return None, _truncate_avatar_in_dict_for_logging(profile_data)
+
+    async def create_media_record(
+        self,
+        user_id_uuid: str,
+        media_url: str,
+        filename: str, 
+        content_type: str,
+        file_size: int, 
+        description: Optional[str], 
+        message: discord.Message, 
+        author_discord_user: discord.User, 
+        profile_data: Dict[str, Any], 
+        admin_status: str = "Listed",
+        user_status: str = "Listed",
+        title: Optional[str] = None,
+        placeholder_image_url: Optional[str] = None,
+        calculated_aspect_ratio: Optional[float] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Creates a media record in the Supabase 'media' table.
+        This is a more direct way to insert a media record when the file is already uploaded
+        or when detailed processing like thumbnailing is handled externally or skipped.
+        Args:
+            user_id_uuid: The UUID of the user's profile.
+            media_url: The public URL of the uploaded media.
+            filename: The filename of the media (e.g., original_filename or new .mp4 filename).
+            content_type: The MIME type of the media.
+            file_size: The size of the media file in bytes.
+            description: Optional description for the media (e.g., from the Discord message content).
+            message: The discord.Message object for additional metadata (channel, guild ID).
+            author_discord_user: The discord.User who created the media, for welcome DM.
+            profile_data: The profile data dictionary for the author, used for welcome DM logic.
+            admin_status: Admin status for the media record.
+            user_status: User status for the media record.
+            title: Optional title for the media.
+            placeholder_image_url: Optional URL for a placeholder/thumbnail image.
+            calculated_aspect_ratio: Optional aspect ratio of the media.
+        Returns:
+            A dictionary representing the inserted media record if successful, otherwise None.
+        """
+        if not self.supabase:
+            self.logger.error("[OpenMuseInteractor_CreateMedia] Supabase client not initialized. Cannot create media record.")
+            return None
+
+        self.logger.info(f"[OpenMuseInteractor_CreateMedia] Creating media record for URL: {media_url}, Filename: {filename}")
+
+        classification = 'art' if message.channel and hasattr(message.channel, 'name') and message.channel.name.lower().startswith('art') else 'gen'
+        media_type = 'video' if content_type.startswith('video/') else content_type 
+        
+        if title is None and media_type != 'video': 
+            title = filename
+
+        media_data_payload = {
+            'user_id': user_id_uuid,
+            'title': title,
+            'url': media_url,
+            'placeholder_image': placeholder_image_url,
+            'type': media_type,
+            'classification': classification,
+            'admin_status': admin_status,
+            'user_status': user_status,
+            'description': description,
+            'metadata': {
+                "discord_message_id": str(message.id),
+                "discord_channel_id": str(message.channel.id),
+                "discord_guild_id": str(message.guild.id) if message.guild else None,
+                "aspectRatio": calculated_aspect_ratio,
+                "original_filename": filename, 
+                "original_content_type": content_type,
+                "file_size": file_size 
+            }
+        }
+        # Remove None keys from metadata before insert if Supabase prefers that
+        media_data_payload['metadata'] = {k: v for k, v in media_data_payload['metadata'].items() if v is not None}
+
+
+        try:
+            self.logger.info(f"[OpenMuseInteractor_CreateMedia] --> Attempting to insert record into Supabase table '{MEDIA_TABLE}' with payload: {_truncate_avatar_in_dict_for_logging(media_data_payload)}")
+            insert_response = await asyncio.to_thread(
+                 self.supabase.table(MEDIA_TABLE).insert(media_data_payload).execute
+            )
+            self.logger.debug(f"[OpenMuseInteractor_CreateMedia] Media insert response: {_truncate_avatar_in_dict_for_logging(insert_response)}")
+
+            if insert_response.data:
+                inserted_media_record = insert_response.data[0]
+                self.logger.info(f"[OpenMuseInteractor_CreateMedia] <-- Successfully inserted media record. Media ID: {inserted_media_record.get('id')}")
+
+                # --- Handle Welcome DM logic (similar to upload_discord_attachment) ---
+                initial_discord_connected = profile_data.get('discord_connected')
+                supabase_username = profile_data.get('username') # From the passed profile_data
+
+                if initial_discord_connected == False:
+                    self.logger.info(f"[OpenMuseInteractor_CreateMedia] Profile {user_id_uuid} discord_connected is False. Attempting to update status and send Welcome DM.")
+                    try:
+                        username_for_url = supabase_username or author_discord_user.name # Fallback to discord username
+                        formatted_username = quote(username_for_url, safe='')
+                        profile_url = f"https://openmuse.ai/profile/{formatted_username}"
+                        dm_message_content = (
+                            f"Your first upload to OpenMuse via Discord has been successful!\\n\\n"
+                            f"You can see your profile here: {profile_url}"
+                        )
+                        
+                        self.logger.info(f"[OpenMuseInteractor_CreateMedia] --> Sending Welcome DM to user {author_discord_user.id}.")
+                        await author_discord_user.send(dm_message_content)
+                        self.logger.info(f"[OpenMuseInteractor_CreateMedia] <-- Successfully sent Welcome DM to user {author_discord_user.id}.")
+                        
+                        self.logger.info(f"[OpenMuseInteractor_CreateMedia] --> Attempting to update discord_connected to True for profile {user_id_uuid}.")
+                        await asyncio.to_thread(
+                            self.supabase.table(PROFILES_TABLE)
+                            .update({'discord_connected': True})
+                            .eq('id', user_id_uuid)
+                            .execute
+                        )
+                        self.logger.info(f"[OpenMuseInteractor_CreateMedia] <-- discord_connected status updated for profile {user_id_uuid}.")
+                        # Note: The profile_data dict passed in is not mutated here. If the caller needs the updated
+                        # profile_data (with discord_connected=True), it should be aware or refetch.
+                    except discord.Forbidden:
+                         self.logger.warning(f"[OpenMuseInteractor_CreateMedia] Failed to send Welcome DM to user {author_discord_user.id}. DMs disabled?")
+                    except Exception as dm_update_ex:
+                         self.logger.error(f"[OpenMuseInteractor_CreateMedia] Error sending Welcome DM or updating discord_connected for profile {user_id_uuid}: {dm_update_ex}", exc_info=True)
+                else:
+                    self.logger.info(f"[OpenMuseInteractor_CreateMedia] Skipping Welcome DM for profile {user_id_uuid} (Initial Connected Status: {initial_discord_connected}).")
+                
+                return inserted_media_record
+            else:
+                self.logger.error(f"[OpenMuseInteractor_CreateMedia] Supabase media insert executed but returned no data. Insert failed? RLS?",
+                                 extra={"response": _truncate_avatar_in_dict_for_logging(insert_response)})
+                return None
+        except APIError as insert_err:
+             self.logger.error(f"[OpenMuseInteractor_CreateMedia] Supabase API error inserting media record: {insert_err}")
+             return None
+        except Exception as insert_ex:
+            self.logger.error(f"[OpenMuseInteractor_CreateMedia] Unexpected error inserting media record: {insert_ex}", exc_info=True)
+            return None
 
     # --- Add other Supabase interaction methods here as needed ---
     # Example: async def get_media_by_id(self, media_id: str): ...

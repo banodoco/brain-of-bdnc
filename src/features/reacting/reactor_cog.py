@@ -9,6 +9,8 @@ import asyncio
 import logging
 # Import necessary libraries for your actions (e.g., tweepy for Twitter)
 # import tweepy # Example
+# Import the new subfeature
+from .subfeatures import message_linker # Adjusted import path
 
 # Core Reactor logic class is no longer imported or instantiated here
 # from .reactor import Reactor 
@@ -26,8 +28,64 @@ class ReactorCog(commands.Cog):
         # self.reactor = Reactor(logger=logger, dev_mode=dev_mode) # REMOVED - Reactor instance is created in main.py
         if dev_mode:
             self.logger.info(f"Initializing ReactorCog in development mode (Reactor instance expected on bot object)")
+        self.message_linker_channel_ids = [] # Initialize attribute
+
+    def _load_message_linker_config(self):
+        """Loads message_linker channel configurations from the environment watchlist."""
+        watchlist_json = os.getenv('REACTION_WATCHLIST', '[]')
+        try:
+            watchlist = json.loads(watchlist_json)
+            self.message_linker_channel_ids = [] # Reset before loading
+            for item in watchlist:
+                if item.get("feature") == "message_linker" and "channel_id" in item:
+                    try:
+                        channel_id_str = item["channel_id"]
+                        if channel_id_str == "*": # Wildcard for all channels
+                            self.logger.info("[ReactorCog] MessageLinker configured for all channels ('*').")
+                            # Represent "all channels" with a special value, e.g., None or an empty list
+                            # For now, if "*" is found, we'll make it process all channels by not restricting.
+                            # However, the current MessageLinker logic requires specific IDs or it does nothing.
+                            # For true wildcard, MessageLinker.process_message_links would need adjustment.
+                            # Let's assume for now "*" means no specific channel filtering by the cog, 
+                            # and MessageLinker would need to be initialized with an empty list or special flag.
+                            # For this implementation, we will treat '*' as an invalid specific ID and log a warning.
+                            # Or, better, let MessageLinker handle it if we pass None.
+                            # Let's stick to specific IDs and ignore '*' for now, or treat it as "enabled everywhere".
+                            # For now, if '*' is set, let's enable it everywhere by setting allowed_channel_ids to None in MessageLinker's init.
+                            # This means message_linker.py needs to be robust if allowed_channel_ids is None.
+                            # Let's adjust: if "*", we pass an empty list, and MessageLinker must be updated to treat empty list as "all channels".
+                            # Revising: Current MessageLinker treats empty list as "no channels".
+                            # So, for "*", we should perhaps pass a special sentinel or not filter in the cog.
+                            # For now, let's assume channel_id will always be a specific ID for message_linker feature.
+                            # We will simply log if '*' is used for 'message_linker' and not add it.
+                            self.logger.warning("[ReactorCog] MessageLinker 'channel_id: "*"' is ambiguous. Please specify channel IDs or update MessageLinker to handle wildcard.")
+                            # To enable for all channels, the MessageLinker itself should not have channel restrictions.
+                            # The MessageLinker class currently allows an empty list, meaning no channels.
+                            # If we want '*' to mean all, we would pass None to MessageLinker's allowed_channel_ids and it would skip the check.
+                            # Let's keep current MessageLinker behavior: an empty list = disabled. Non-empty list = only those channels.
+                            # So, '*' in watchlist for message_linker won't enable it unless MessageLinker changes.
+                            # For current request, we only care about specific ID 1376260046945648720.
+                            continue # Skip '*' for now for message_linker feature
+                        
+                        channel_id = int(channel_id_str)
+                        if channel_id not in self.message_linker_channel_ids:
+                            self.message_linker_channel_ids.append(channel_id)
+                    except ValueError:
+                        self.logger.error(f"[ReactorCog] Invalid channel_id '{item['channel_id']}' for message_linker in REACTION_WATCHLIST. Must be an integer.")
+            
+            if self.message_linker_channel_ids:
+                self.logger.info(f"[ReactorCog] Loaded MessageLinker config. Allowed channel IDs: {self.message_linker_channel_ids}")
+            else:
+                self.logger.info("[ReactorCog] No specific channel IDs found for MessageLinker in REACTION_WATCHLIST. It will be disabled or follow its default behavior.")
+
+        except json.JSONDecodeError:
+            self.logger.error(f"Error decoding REACTION_WATCHLIST JSON: {watchlist_json}")
+            self.message_linker_channel_ids = [] # Ensure it's empty on error
 
     async def cog_load(self):
+        # Load the configuration for MessageLinker channels
+        self._load_message_linker_config()
+
         # You might want to check here if the bot has the reactor instance
         if not hasattr(self.bot, 'reactor_instance') or self.bot.reactor_instance is None:
              self.logger.error("Reactor instance not found on bot object during ReactorCog load!")
@@ -35,7 +93,18 @@ class ReactorCog(commands.Cog):
         else:
             if self.dev_mode:
                 self.logger.debug("ReactorCog loaded. Found reactor_instance on bot object.")
-        pass
+        
+        # Setup for MessageLinker
+        # We need to ensure the setup function from message_linker.py is called.
+        # It's an async function, so we need to await it or create a task.
+        # Since cog_load can be async, we can await it here.
+        try:
+            # Pass the loaded channel IDs to the setup function
+            await message_linker.setup(self.bot, self.logger, allowed_channel_ids=self.message_linker_channel_ids)
+            if self.dev_mode:
+                self.logger.debug(f"MessageLinker setup initiated from ReactorCog with channels: {self.message_linker_channel_ids}")
+        except Exception as e:
+            self.logger.error(f"Error during MessageLinker setup in ReactorCog: {e}", exc_info=True)
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -44,11 +113,30 @@ class ReactorCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Handles message events to check for text/attachment triggers."""
+        """Handles message events to check for text/attachment triggers AND message links."""
         # Ignore messages from bots or messages without content/attachments in non-DM channels
         if message.author.bot or not message.guild:
             return
-        # Also ignore messages without content AND without attachments
+        
+        # --- Message Linker Processing ---
+        # Check for message links first, independently of other reactor logic
+        # Get the MessageLinker instance
+        linker_instance = getattr(self.bot, 'message_linker_instance', None)
+        if linker_instance:
+            try:
+                # Create a task to avoid blocking other on_message processing
+                asyncio.create_task(linker_instance.process_message_links(message))
+                if self.dev_mode:
+                    self.logger.debug(f"[ReactorCog] Task created for MessageLinker.process_message_links for message {message.id}")
+            except Exception as e:
+                self.logger.error(f"[ReactorCog] Error creating task for MessageLinker for message {message.id}: {e}", exc_info=True)
+        elif not getattr(self, '_message_linker_instance_error_logged', False): # Log error once
+            self.logger.error("[ReactorCog] MessageLinker instance not found on bot object in on_message.")
+            self._message_linker_instance_error_logged = True
+        # --- End Message Linker Processing ---
+
+        # Also ignore messages without content AND without attachments for the main reactor logic
+        # This check is now after the message linker, as message linker only needs message.content for links
         if not message.content and not message.attachments:
              return
 
@@ -138,8 +226,41 @@ class ReactorCog(commands.Cog):
             try:
                 self.logger.info(f"[ReactorCog] Fetching channel {payload.channel_id}") # Use INFO
                 channel = self.bot.get_channel(payload.channel_id)
-                if not channel or not isinstance(channel, discord.TextChannel):
-                    self.logger.warning(f"[ReactorCog] Could not find text channel {payload.channel_id}, ignoring raw reaction.")
+                if not channel:
+                    try:
+                        self.logger.info(f"[ReactorCog] Channel {payload.channel_id} not in cache, attempting to fetch via API...")
+                        channel = await self.bot.fetch_channel(payload.channel_id)
+                        self.logger.info(f"[ReactorCog] Successfully fetched channel {payload.channel_id} ({channel.name}) via API.")
+                    except discord.NotFound:
+                        self.logger.warning(f"[ReactorCog] Could not find channel {payload.channel_id} via API (NotFound). Ignoring raw reaction.")
+                        return
+                    except discord.Forbidden:
+                        self.logger.error(f"[ReactorCog] Permissions error fetching channel {payload.channel_id} via API (Forbidden). Ignoring raw reaction.")
+                        return
+                    except discord.HTTPException as e:
+                        self.logger.error(f"[ReactorCog] HTTP error fetching channel {payload.channel_id} via API: {e}. Ignoring raw reaction.")
+                        return
+                
+                # DIAGNOSTIC LOG
+                if hasattr(discord, "threads") and hasattr(discord.threads, "Thread") and hasattr(discord, "TextChannel"):
+                    self.logger.info(f"[ReactorCog] DIAGNOSTIC: issubclass(discord.threads.Thread, discord.TextChannel) = {issubclass(discord.threads.Thread, discord.TextChannel)}")
+                else:
+                    self.logger.warning("[ReactorCog] DIAGNOSTIC: discord.threads.Thread or discord.TextChannel not found for issubclass check.")
+
+                # Type check after attempting to fetch
+                expected_text_channel_types = (
+                    discord.ChannelType.text,
+                    discord.ChannelType.news,
+                    discord.ChannelType.public_thread,
+                    discord.ChannelType.private_thread,
+                    discord.ChannelType.news_thread,
+                    discord.ChannelType.group, # For completeness, though less common for reaction triggers
+                    discord.ChannelType.forum # Forum channels themselves might not be where reactions happen, but threads within them.
+                                              # Threads are covered by public_thread/private_thread.
+                                              # This check is primarily for the channel object the message is in.
+                )
+                if not channel or not hasattr(channel, 'type') or channel.type not in expected_text_channel_types:
+                    self.logger.warning(f"[ReactorCog] Channel {payload.channel_id} (type: {getattr(channel, 'type', 'UnknownType')} / object type: {type(channel)}) is not a recognized text-based guild channel, ignoring raw reaction.")
                     return
                 
                 self.logger.info(f"[ReactorCog] Found channel: {channel.name} ({channel.id}). Fetching message {payload.message_id}") # Use INFO
@@ -263,8 +384,37 @@ class ReactorCog(commands.Cog):
         # Fetch necessary objects
         try:
             channel = self.bot.get_channel(payload.channel_id)
-            if not channel or not isinstance(channel, discord.TextChannel):
-                self.logger.warning(f"[ReactorCog] Could not find text channel {payload.channel_id} for reaction remove.")
+            if not channel:
+                try:
+                    self.logger.info(f"[ReactorCog][Remove] Channel {payload.channel_id} not in cache, attempting to fetch via API...")
+                    channel = await self.bot.fetch_channel(payload.channel_id)
+                    self.logger.info(f"[ReactorCog][Remove] Successfully fetched channel {payload.channel_id} ({channel.name}) via API.")
+                except discord.NotFound:
+                    self.logger.warning(f"[ReactorCog][Remove] Could not find channel {payload.channel_id} via API (NotFound) for reaction remove.")
+                    return
+                except discord.Forbidden:
+                    self.logger.error(f"[ReactorCog][Remove] Permissions error fetching channel {payload.channel_id} via API (Forbidden) for reaction remove.")
+                    return
+                except discord.HTTPException as e:
+                    self.logger.error(f"[ReactorCog][Remove] HTTP error fetching channel {payload.channel_id} via API for reaction remove: {e}.")
+                    return
+
+            # DIAGNOSTIC LOG
+            if hasattr(discord, "threads") and hasattr(discord.threads, "Thread") and hasattr(discord, "TextChannel"):
+                self.logger.info(f"[ReactorCog][Remove] DIAGNOSTIC: issubclass(discord.threads.Thread, discord.TextChannel) = {issubclass(discord.threads.Thread, discord.TextChannel)}")
+            else:
+                self.logger.warning("[ReactorCog][Remove] DIAGNOSTIC: discord.threads.Thread or discord.TextChannel not found for issubclass check.")
+
+            expected_text_channel_types_remove = (
+                discord.ChannelType.text,
+                discord.ChannelType.news,
+                discord.ChannelType.public_thread,
+                discord.ChannelType.private_thread,
+                discord.ChannelType.news_thread,
+                discord.ChannelType.group
+            )
+            if not channel or not hasattr(channel, 'type') or channel.type not in expected_text_channel_types_remove:
+                self.logger.warning(f"[ReactorCog][Remove] Channel {payload.channel_id} (type: {getattr(channel, 'type', 'UnknownType')} / object type: {type(channel)}) is not a recognized text-based guild channel for reaction remove.")
                 return
             message = await channel.fetch_message(payload.message_id)
             emoji = payload.emoji
