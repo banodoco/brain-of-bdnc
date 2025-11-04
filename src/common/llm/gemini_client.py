@@ -55,7 +55,7 @@ class GeminiClient(BaseLLMClient):
                  # Consider raising the error depending on desired behavior
                  # raise
 
-    def _convert_message_format(self, system_prompt: Optional[str], messages: List[Dict[str, Union[str, List[Dict[str, Any]]]]]) -> List[types.Content]: # Expect list of types.Content
+    def _convert_message_format(self, system_prompt: Optional[str], messages: List[Dict[str, Union[str, List[Dict[str, Any]]]]]):
         """Converts the BaseLLMClient message format to types.Content format."""
         gemini_contents = []
 
