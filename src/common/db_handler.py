@@ -405,45 +405,102 @@ class DatabaseHandler:
         return self._execute_with_retry(search_operation)
 
     def store_daily_summary(self, channel_id: int, full_summary: Optional[str], short_summary: Optional[str], date: Optional[datetime] = None) -> bool:
-        def summary_operation(conn):
-            cursor = conn.cursor()
-            summary_date = date.strftime('%Y-%m-%d') if date else datetime.now().strftime('%Y-%m-%d')
-            cursor.execute("""
-                INSERT INTO daily_summaries (date, channel_id, full_summary, short_summary)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(date, channel_id) DO UPDATE SET
-                full_summary = excluded.full_summary,
-                short_summary = excluded.short_summary,
-                created_at = CURRENT_TIMESTAMP
-            """, (summary_date, channel_id, full_summary, short_summary))
-            cursor.close()
-            return cursor.rowcount > 0
-        return self._execute_with_retry(summary_operation)
+        success = True
+        
+        # Store to Supabase if configured
+        if self.storage_backend in [STORAGE_SUPABASE, STORAGE_BOTH]:
+            if self.storage_handler:
+                logger.info(f"Storing summary to Supabase for channel {channel_id}")
+                supabase_result = self._run_async_in_thread(
+                    self.storage_handler.store_daily_summary_to_supabase(channel_id, full_summary, short_summary, date)
+                )
+                if not supabase_result:
+                    logger.error(f"Failed to store summary to Supabase for channel {channel_id}")
+                    success = False
+            else:
+                logger.warning("Storage handler not initialized, cannot store to Supabase")
+                success = False
+        
+        # Store to SQLite if configured
+        if self.storage_backend in [STORAGE_SQLITE, STORAGE_BOTH]:
+            def summary_operation(conn):
+                cursor = conn.cursor()
+                summary_date = date.strftime('%Y-%m-%d') if date else datetime.now().strftime('%Y-%m-%d')
+                cursor.execute("""
+                    INSERT INTO daily_summaries (date, channel_id, full_summary, short_summary)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(date, channel_id) DO UPDATE SET
+                    full_summary = excluded.full_summary,
+                    short_summary = excluded.short_summary,
+                    created_at = CURRENT_TIMESTAMP
+                """, (summary_date, channel_id, full_summary, short_summary))
+                cursor.close()
+                return cursor.rowcount > 0
+            sqlite_result = self._execute_with_retry(summary_operation)
+            if not sqlite_result:
+                logger.error(f"Failed to store summary to SQLite for channel {channel_id}")
+                success = False
+        
+        return success
 
     def get_summary_thread_id(self, channel_id: int) -> Optional[int]:
-        def get_thread_operation(conn):
-            cursor = conn.cursor()
-            cursor.execute("SELECT summary_thread_id FROM channel_summary WHERE channel_id = ? ORDER BY created_at DESC LIMIT 1", (channel_id,))
-            result = cursor.fetchone()
-            cursor.close()
-            return result[0] if result else None
-        return self._execute_with_retry(get_thread_operation)
+        # Query from Supabase if configured
+        if self._should_use_supabase_for_reads():
+            if self.query_handler:
+                try:
+                    logger.debug(f"Fetching summary thread ID from Supabase for channel {channel_id}")
+                    return self._run_async_in_thread(
+                        self.query_handler.get_summary_thread_id(channel_id)
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to get summary thread ID from Supabase: {e}")
+                    if self.storage_backend == STORAGE_SUPABASE:
+                        raise
+                    logger.warning("Falling back to SQLite for thread ID lookup")
+            else:
+                logger.warning("Query handler not initialized, cannot query Supabase")
+                if self.storage_backend == STORAGE_SUPABASE:
+                    return None
+        
+        # Query from SQLite if configured
+        if self.storage_backend in [STORAGE_SQLITE, STORAGE_BOTH]:
+            def get_thread_operation(conn):
+                cursor = conn.cursor()
+                cursor.execute("SELECT summary_thread_id FROM channel_summary WHERE channel_id = ? ORDER BY created_at DESC LIMIT 1", (channel_id,))
+                result = cursor.fetchone()
+                cursor.close()
+                return result[0] if result else None
+            return self._execute_with_retry(get_thread_operation)
+        
+        return None
 
     def update_summary_thread(self, channel_id: int, thread_id: Optional[int]):
-        def update_thread_operation(conn):
-            cursor = conn.cursor()
-            if thread_id:
-                cursor.execute("""
-                    INSERT INTO channel_summary (channel_id, summary_thread_id, updated_at)
-                    VALUES (?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(channel_id) DO UPDATE SET
-                    summary_thread_id = excluded.summary_thread_id,
-                    updated_at = CURRENT_TIMESTAMP
-                """, (channel_id, thread_id))
+        # Update in Supabase if configured
+        if self.storage_backend in [STORAGE_SUPABASE, STORAGE_BOTH]:
+            if self.storage_handler:
+                logger.debug(f"Updating summary thread ID in Supabase for channel {channel_id}: {thread_id}")
+                self._run_async_in_thread(
+                    self.storage_handler.update_summary_thread_to_supabase(channel_id, thread_id)
+                )
             else:
-                cursor.execute("DELETE FROM channel_summary WHERE channel_id = ?", (channel_id,))
-            cursor.close()
-        self._execute_with_retry(update_thread_operation)
+                logger.warning("Storage handler not initialized, cannot update Supabase")
+        
+        # Update in SQLite if configured
+        if self.storage_backend in [STORAGE_SQLITE, STORAGE_BOTH]:
+            def update_thread_operation(conn):
+                cursor = conn.cursor()
+                if thread_id:
+                    cursor.execute("""
+                        INSERT INTO channel_summary (channel_id, summary_thread_id, updated_at)
+                        VALUES (?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(channel_id) DO UPDATE SET
+                        summary_thread_id = excluded.summary_thread_id,
+                        updated_at = CURRENT_TIMESTAMP
+                    """, (channel_id, thread_id))
+                else:
+                    cursor.execute("DELETE FROM channel_summary WHERE channel_id = ?", (channel_id,))
+                cursor.close()
+            self._execute_with_retry(update_thread_operation)
 
     def get_all_message_ids(self, channel_id: int) -> List[int]:
         def get_ids_operation(conn):

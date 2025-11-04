@@ -15,7 +15,7 @@ def get_database_path(dev_mode: bool = False) -> str:
     """Get the appropriate database path based on mode."""
     # Ensure data directory exists
     os.makedirs(DATA_DIR, exist_ok=True)
-    return DEV_DATABASE_PATH if dev_mode else PROD_DATABASE_PATH
+    return DEV_DATABASE_PATH if dev_mode else PROD_DATABASE_PATH 
 
 def get_storage_backend(backend_arg: str = None) -> str:
     """

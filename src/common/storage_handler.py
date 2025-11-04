@@ -299,4 +299,84 @@ class StorageHandler:
         except Exception as e:
             logger.error(f"Error storing channels to Supabase: {e}", exc_info=True)
             return 0
+    
+    async def store_daily_summary_to_supabase(self, channel_id: int, full_summary: Optional[str], short_summary: Optional[str], date: Optional[datetime] = None) -> bool:
+        """
+        Store a daily summary to Supabase.
+        
+        Args:
+            channel_id: The channel ID
+            full_summary: Full summary text
+            short_summary: Short summary text
+            date: Date of the summary (defaults to today)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.supabase_client:
+            logger.error("Supabase client not initialized")
+            return False
+        
+        try:
+            summary_date = (date or datetime.now()).strftime('%Y-%m-%d')
+            
+            summary_data = {
+                'date': summary_date,
+                'channel_id': channel_id,
+                'full_summary': full_summary,
+                'short_summary': short_summary,
+                'created_at': datetime.utcnow().isoformat()
+            }
+            
+            await asyncio.to_thread(
+                self.supabase_client.table('daily_summaries').upsert(summary_data).execute
+            )
+            
+            logger.debug(f"Stored daily summary to Supabase for channel {channel_id}, date {summary_date}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error storing daily summary to Supabase: {e}", exc_info=True)
+            return False
+    
+    async def update_summary_thread_to_supabase(self, channel_id: int, thread_id: Optional[int]) -> bool:
+        """
+        Update or delete a summary thread ID in Supabase.
+        
+        Args:
+            channel_id: The channel ID
+            thread_id: The thread ID (None to delete)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.supabase_client:
+            logger.error("Supabase client not initialized")
+            return False
+        
+        try:
+            if thread_id:
+                # Upsert the thread ID
+                thread_data = {
+                    'channel_id': channel_id,
+                    'summary_thread_id': thread_id,
+                    'updated_at': datetime.utcnow().isoformat()
+                }
+                
+                await asyncio.to_thread(
+                    self.supabase_client.table('channel_summary').upsert(thread_data).execute
+                )
+                logger.debug(f"Updated summary thread ID to {thread_id} for channel {channel_id} in Supabase")
+            else:
+                # Delete the entry
+                await asyncio.to_thread(
+                    self.supabase_client.table('channel_summary').delete().eq('channel_id', channel_id).execute
+                )
+                logger.debug(f"Deleted summary thread entry for channel {channel_id} in Supabase")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error updating summary thread in Supabase: {e}", exc_info=True)
+            return False
 
