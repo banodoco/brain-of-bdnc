@@ -69,12 +69,14 @@ async def get_llm_response(client_name: str, model: str, system_prompt: str,
 
     try:
         # Call the standardized method - now awaited
+        logger.info(f"Making LLM call to {client_name} with model {model}")
         response = await client_instance.generate_chat_completion(
             model=model,
             system_prompt=system_prompt,
             messages=messages,
             **kwargs
         )
+        logger.info(f"LLM call to {client_name} completed successfully")
         # Ensure response is string
         if not isinstance(response, str):
              logger.warning(f"LLM client '{client_name}' returned a non-string response type: {type(response)}. Attempting conversion.")

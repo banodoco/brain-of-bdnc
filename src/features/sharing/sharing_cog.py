@@ -42,9 +42,17 @@ async def setup(bot: commands.Bot):
     #      logger.error("Claude client not found on bot object. Cannot load SharingCog.")
     #      return
 
-    # Pass only required instances to the Cog
-    await bot.add_cog(SharingCog(bot, bot.db_handler))
-    logger.info("SharingCog added to bot.")
+    try:
+        logger.info("About to create SharingCog instance...")
+        cog_instance = SharingCog(bot, bot.db_handler)
+        logger.info("SharingCog instance created, adding to bot...")
+        await bot.add_cog(cog_instance)
+        logger.info("SharingCog added to bot.")
+    except Exception as e:
+        logger.error(f"Error in SharingCog setup: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise
 
     # IMPORTANT: Update Reactor initialization in main bot file as noted before
     # to get the sharer_instance from the loaded cog:

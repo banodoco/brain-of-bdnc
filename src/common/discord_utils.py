@@ -52,7 +52,7 @@ async def safe_send_message(
             send_task = channel.send(
                 content=content, embed=embed, file=file, files=files, reference=reference, view=view
             )
-            return await asyncio.wait_for(send_task, timeout=10)
+            return await asyncio.wait_for(send_task, timeout=30)
 
     except discord.HTTPException as e:
         # Logged by @handle_errors, but specific logging here can be useful too.
@@ -62,6 +62,10 @@ async def safe_send_message(
         # Only for the direct asyncio.wait_for in the else block
         logger.error(f"Timeout during direct safe_send_message to {getattr(channel, 'name', channel.id)} (no rate_limiter).")
         raise # Re-raise
+    except (OSError, ConnectionError, TimeoutError) as e:
+        # Handle network connectivity issues
+        logger.error(f"Network connectivity error during safe_send_message to {getattr(channel, 'name', channel.id)}: {e}")
+        raise
     except Exception as e:
         # Catch any other unexpected error during the send logic itself.
         # @handle_errors will catch this too if it's not caught here.

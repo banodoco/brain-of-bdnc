@@ -315,11 +315,7 @@ class ChannelSummarizer:
         self.sharer = sharer_instance # Use self.sharer consistently
 
         # Initialize DB Handler
-        try:
-             self.db_handler = DatabaseHandler(dev_mode=self.dev_mode, logger=self.logger) 
-        except TypeError: # If logger arg not supported by DBHandler
-             self.logger.warning("DB Handler init does not accept logger. Initializing without.")
-             self.db_handler = DatabaseHandler(dev_mode=self.dev_mode)
+        self.db_handler = DatabaseHandler(dev_mode=self.dev_mode)
         self.logger.info(f"DB Handler initialized in ChannelSummarizer. Dev mode: {self.dev_mode}")
 
         # Initialize sub-features correctly (pass dependencies, NOT bot=self)
@@ -402,7 +398,12 @@ class ChannelSummarizer:
              art_channel_key = f'{env_prefix}ART_CHANNEL_ID'
              self.art_channel_id = int(os.getenv(art_channel_key))
              
-             self.logger.info(f"Loaded {'DEV' if self.dev_mode else 'PROD'} config: Guild={self.guild_id}, Summary={self.summary_channel_id}, Monitor={self.channels_to_monitor}, Art={self.art_channel_id}")
+             # Load Top Gens Channel ID based on mode (optional, defaults to summary channel)
+             top_gens_key = f'{env_prefix}TOP_GENS_ID'
+             top_gens_env = os.getenv(top_gens_key)
+             self.top_gens_channel_id = int(top_gens_env) if top_gens_env else self.summary_channel_id
+             
+             self.logger.info(f"Loaded {'DEV' if self.dev_mode else 'PROD'} config: Guild={self.guild_id}, Summary={self.summary_channel_id}, TopGens={self.top_gens_channel_id}, Monitor={self.channels_to_monitor}, Art={self.art_channel_id}")
 
         except (ValueError, TypeError) as e:
              self.logger.error(f"Invalid ID format in environment variables: {e}", exc_info=True)
@@ -469,86 +470,57 @@ class ChannelSummarizer:
         self.logger.error(f"Failed to get channel {channel_id} after {self.MAX_RETRIES} retries.")
         return None
 
-    async def get_channel_history(self, channel_id: int, db_handler: Optional[DatabaseHandler] = None) -> List[dict]:
-        """Get message history for a channel from the database (past 24h)."""
-        self.logger.info(f"Getting message history for channel {channel_id} from database")
+    async def get_channel_history(self, channel_id: int) -> List[dict]:
+        """
+        Fetches the message history for a given channel from the database,
+        joining with the channels table to include the channel name.
+        """
+        # Calculate the timestamp for 24 hours ago
+        time_24_hours_ago = datetime.utcnow() - timedelta(hours=self.DEFAULT_TIME_DELTA_HOURS)
+        time_24_hours_ago_str = time_24_hours_ago.isoformat()
+        
+        self.logger.info(f"📥 Fetching message history for channel {channel_id}")
+        self.logger.info(f"⏰ Time filter: created_at >= {time_24_hours_ago_str}")
+
+        query = """
+            SELECT
+                m.*,
+                c.channel_name,
+                COALESCE(mb.server_nick, mb.global_name, mb.username, 'Unknown User') as author_name
+            FROM
+                messages m
+            LEFT JOIN
+                channels c ON m.channel_id = c.channel_id
+            LEFT JOIN
+                members mb ON m.author_id = mb.member_id
+            WHERE
+                m.channel_id = ? AND
+                m.created_at >= ?
+            ORDER BY
+                m.created_at ASC
+        """
+        
+        self.logger.info(f"🔍 Query: {query}")
+        self.logger.info(f"📋 Params: channel_id={channel_id}, created_at>={time_24_hours_ago_str}")
         
         try:
-            yesterday = datetime.utcnow() - timedelta(hours=24)
+            # Reuse the existing db_handler instead of creating a new one
+            messages = await self._execute_db_operation(
+                self.db_handler.execute_query, 
+                query, 
+                (channel_id, time_24_hours_ago_str),
+                db_handler=self.db_handler
+            )
             
-            def get_messages():
-                # Create a new connection for this thread
-                thread_local_db = DatabaseHandler(dev_mode=self.dev_mode)
-                try:
-                    # Get total message count
-                    cursor = thread_local_db.conn.cursor()
-                    cursor.execute("""
-                        SELECT COUNT(*) as count 
-                        FROM messages 
-                        WHERE channel_id = ? 
-                        AND created_at > ?
-                    """, (channel_id, yesterday.isoformat()))
-                    total_count = cursor.fetchone()[0]
-                    cursor.close()
-
-                    self.logger.info(f"Found {total_count} messages in past 24h for channel {channel_id}")
-
-                    if total_count == 0:
-                        return []
-
-                    # Get all messages
-                    thread_local_db.conn.row_factory = sqlite3.Row
-                    cursor = thread_local_db.conn.cursor()
-                    cursor.execute("""
-                        SELECT m.*, 
-                               COALESCE(mem.username, 'Unknown') as username,
-                               COALESCE(mem.server_nick, mem.global_name, mem.username, 'Unknown') as display_name
-                        FROM messages m
-                        LEFT JOIN members mem ON m.author_id = mem.member_id
-                        WHERE m.channel_id = ?
-                        AND m.created_at > ?
-                        AND (m.is_deleted IS NULL OR m.is_deleted = FALSE)
-                        ORDER BY m.created_at DESC
-                    """, (channel_id, yesterday.isoformat()))
-                    
-                    messages = [dict(row) for row in cursor.fetchall()]
-                    cursor.close()
-                    
-                    formatted_messages = []
-                    for msg in messages:
-                        try:
-                            attachments = json.loads(msg['attachments']) if msg['attachments'] else []
-                            reactors = json.loads(msg['reactors']) if msg['reactors'] else []
-                            
-                            formatted_msg = {
-                                'message_id': msg['message_id'],
-                                'channel_id': msg['channel_id'],
-                                'author_id': msg['author_id'],
-                                'content': msg['content'],
-                                'created_at': msg['created_at'],
-                                'attachments': attachments,
-                                'reaction_count': msg['reaction_count'],
-                                'reactors': reactors,
-                                'reference_id': msg['reference_id'],
-                                'thread_id': msg['thread_id'],
-                                'author_name': msg['display_name']
-                            }
-                            formatted_messages.append(formatted_msg)
-                        except Exception as e:
-                            self.logger.error(f"Error formatting message {msg.get('message_id')}: {e}")
-                            self.logger.debug(traceback.format_exc())
-                            continue
-
-                    return formatted_messages
-                finally:
-                    thread_local_db.close()
-
-            return await asyncio.get_event_loop().run_in_executor(None, get_messages)
-
+            # Since execute_query returns a list of dicts, we just return it
+            self.logger.info(f"✅ Fetched {len(messages)} messages from the database for channel {channel_id}")
+            return messages
+        
         except Exception as e:
-            self.logger.error(f"Error retrieving message history: {e}")
+            self.logger.error(f"Failed to fetch messages for channel {channel_id} from DB: {e}")
             self.logger.debug(traceback.format_exc())
             return []
+
 
     async def create_media_content(self, files: List[Tuple[discord.File, int, str, str]], max_media: int = 4) -> Optional[discord.File]:
         """Create a collage of images or a combined video, depending on attachments."""
@@ -734,74 +706,58 @@ class ChannelSummarizer:
 
     @handle_errors("_execute_db_operation")
     async def _execute_db_operation(self, operation, *args, db_handler=None):
-        # ... (_execute_db_operation as before) ...
-        pass
+        """Execute a blocking DB call in a non-blocking way.
+
+        Parameters
+        ----------
+        operation: Callable
+            The synchronous function/method that will be executed (e.g. `db_handler.execute_query`).
+        *args: Any
+            Positional arguments that should be forwarded to the operation.
+        db_handler: DatabaseHandler | None  # noqa: D401
+            Optional database handler instance. Included only so callers do not need to repeat it in *args.
+
+        Returns
+        -------
+        Any | list
+            Whatever the `operation` returns. If the call errors the exception is logged and an
+            empty list is returned to keep downstream logic working (most callers expect an
+            iterable and will happily handle an empty one).
+        """
+
+        # NOTE: `operation` is expected to be **blocking** (SQLite access) therefore we shuttle
+        # it off to a threadpool so the asyncio event-loop does not stall.
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, lambda: operation(*args))
+            return result
+        except Exception as exc:
+            # We already have the @handle_errors decorator but this explicit handler lets us
+            # decide what to return so callers don't break on `None`.
+            self.logger.error(f"Database operation failed inside _execute_db_operation: {exc}", exc_info=True)
+            return []
 
     async def _post_summary_with_transaction(self, channel_id: int, summary: str, messages: list, current_date: datetime, db_handler: DatabaseHandler) -> bool:
         """Atomic operation for posting summary and updating database"""
         try:
             # Generate a short summary using the NewsSummarizer
-            # NOTE: Assuming generate_short_summary handles its own errors and returns fallback text
             short_summary = await self.news_summarizer.generate_short_summary(summary, len(messages))
             
-            # Use the provided db_handler for the operation
-            def transaction(db: DatabaseHandler, short_sum: str):
-                conn = None # Initialize conn to None
-                try:
-                    # Get a connection using the handler's method
-                    conn = db._get_connection() 
-                    
-                    # Define the operation to be executed with retry logic if needed
-                    def _transaction_operation(_conn):
-                        cursor = _conn.cursor()
-                        try:
-                            self.logger.debug(f"Inserting summary for channel {channel_id} into daily_summaries.")
-                            cursor.execute("""
-                                INSERT INTO daily_summaries (
-                                    date, channel_id, full_summary, short_summary, created_at
-                                ) VALUES (?, ?, ?, ?, datetime('now'))
-                            """, (
-                                current_date.strftime('%Y-%m-%d'),
-                                channel_id,
-                                summary,
-                                short_sum, # Use the passed short_summary
-                            ))
-                            summary_id = cursor.lastrowid
-                            self.logger.debug(f"Inserted summary with ID: {summary_id}.")
-                            
-                            # Commit within the operation if execute_with_retry doesn't handle it
-                            # Depending on _execute_with_retry, commit might be handled there
-                            _conn.commit()
-                            self.logger.info(f"Successfully saved summary {summary_id} for channel {channel_id} to DB.")
-                            return True
-                        except Exception as e_inner:
-                            self.logger.error(f"Error during DB transaction operation for channel {channel_id}: {e_inner}", exc_info=True)
-                            # Rollback within the operation
-                            _conn.rollback()
-                            raise # Re-raise to be caught by outer try/except or retry logic
-                    
-                    # Execute the operation, potentially with retry logic if db_handler provides it
-                    if hasattr(db, '_execute_with_retry'):
-                        return db._execute_with_retry(_transaction_operation) 
-                    else:
-                        # Execute directly if no retry mechanism
-                        return _transaction_operation(conn)
-                        
-                except Exception as e_outer:
-                    # Log error from getting connection or executing operation
-                    self.logger.error(f"DB transaction failed for channel {channel_id}: {e_outer}", exc_info=True)
-                    # Ensure rollback happens even if connection failed or retry mechanism failed
-                    if conn: 
-                        try:
-                            conn.rollback()
-                        except Exception as rb_exc:
-                             self.logger.error(f"Error during rollback attempt: {rb_exc}")
-                    raise # Re-raise the outer exception
+            # Use the dedicated method in db_handler which handles its own transaction and retries.
+            success = await asyncio.to_thread(
+                db_handler.store_daily_summary,
+                channel_id,
+                summary,
+                short_summary,
+                current_date
+            )
             
-            # Execute the transaction in a thread pool executor to avoid blocking
-            loop = asyncio.get_running_loop()
-            # Pass db_handler and short_summary to the transaction function
-            return await loop.run_in_executor(None, transaction, db_handler, short_summary)
+            if success:
+                self.logger.info(f"Successfully saved summary for channel {channel_id} to DB.")
+            else:
+                self.logger.warning(f"Failed to save summary for channel {channel_id}, store_daily_summary returned False.")
+
+            return success
             
         except Exception as e:
             # Catch errors from generate_short_summary or the transaction execution
@@ -809,8 +765,23 @@ class ChannelSummarizer:
             return False
 
     def is_forum_channel(self, channel_id: int) -> bool:
-        # ... (is_forum_channel as before) ...
-        pass
+        """Check if a channel is a ForumChannel by ID"""
+        try:
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                # Try to fetch the channel if not in cache
+                import asyncio
+                try:
+                    channel = asyncio.run_coroutine_threadsafe(
+                        self.bot.fetch_channel(channel_id), 
+                        self.bot.loop
+                    ).result(timeout=5)
+                except Exception:
+                    return False
+            return isinstance(channel, discord.ForumChannel)
+        except Exception as e:
+            self.logger.error(f"Error checking if channel {channel_id} is forum channel: {e}")
+            return False
 
     async def _wait_for_connection(self, timeout=30):
         # ... (_wait_for_connection as before) ...
@@ -821,42 +792,57 @@ class ChannelSummarizer:
         try:
             # Get source channel (where to pull messages from)
             test_channel_str = os.getenv('TEST_DATA_CHANNEL', '')
+            self.logger.info(f"[DEV MODE] TEST_DATA_CHANNEL env var = '{test_channel_str}'")
             if not test_channel_str:
-                self.logger.warning("TEST_DATA_CHANNEL not configured")
+                self.logger.error("[DEV MODE] ❌ TEST_DATA_CHANNEL not configured!")
                 return []
                 
             test_channel_ids = [int(cid.strip()) for cid in test_channel_str.split(',') if cid.strip()]
+            self.logger.info(f"[DEV MODE] Parsed test channel IDs: {test_channel_ids}")
             if not test_channel_ids:
-                self.logger.warning("No test channels configured")
+                self.logger.error("[DEV MODE] ❌ No test channels parsed!")
                 return []
 
             # Get destination channels (where to post summaries)
             dev_channels_str = os.getenv('DEV_CHANNELS_TO_MONITOR', '')
+            self.logger.info(f"[DEV MODE] DEV_CHANNELS_TO_MONITOR env var = '{dev_channels_str}'")
             if not dev_channels_str:
-                self.logger.warning("DEV_CHANNELS_TO_MONITOR not configured")
+                self.logger.error("[DEV MODE] ❌ DEV_CHANNELS_TO_MONITOR not configured!")
                 return []
 
             dev_channel_ids = [int(cid.strip()) for cid in dev_channels_str.split(',') if cid.strip()]
+            self.logger.info(f"[DEV MODE] Parsed dev channel IDs: {dev_channel_ids}")
             if not dev_channel_ids:
-                self.logger.warning("No dev channels configured")
+                self.logger.error("[DEV MODE] ❌ No dev channels parsed!")
                 return []
                 
-            self.logger.debug(f"Source channel IDs (TEST_DATA_CHANNEL): {test_channel_ids}")
-            self.logger.debug(f"Destination channel IDs (DEV_CHANNELS_TO_MONITOR): {dev_channel_ids}")
+            # Calculate 24 hours ago for consistency with get_channel_history
+            from datetime import datetime, timedelta
+            time_24_hours_ago = datetime.utcnow() - timedelta(hours=24)
+            time_24_hours_ago_str = time_24_hours_ago.isoformat()
             
             query = (
                 "SELECT DISTINCT channel_id "
                 "FROM messages "
-                "WHERE channel_id IN ({}) "
+                "WHERE channel_id IN ({}) AND created_at >= '{}' "
                 "GROUP BY channel_id "
                 "HAVING COUNT(*) >= 25"
-            ).format(",".join(str(cid) for cid in test_channel_ids))
+            ).format(",".join(str(cid) for cid in test_channel_ids), time_24_hours_ago_str)
+            
+            self.logger.info(f"[DEV MODE] Query: {query}")
             
             loop = asyncio.get_running_loop()
             try:
                 def db_operation():
                     try:
+                        self.logger.info(f"[DEV MODE] 🔍 Executing query via db_handler.execute_query...")
+                        self.logger.info(f"[DEV MODE] Storage backend: {db_handler.storage_backend}")
                         results = db_handler.execute_query(query)
+                        self.logger.info(f"[DEV MODE] Query returned {len(results) if results else 0} results")
+                        if results:
+                            self.logger.info(f"[DEV MODE] Raw results: {results}")
+                        else:
+                            self.logger.warning(f"[DEV MODE] ❌ Query returned empty results!")
                         # For each source channel that has enough messages,
                         # set its post_channel_id to the first dev channel
                         if results and dev_channel_ids:
@@ -864,12 +850,15 @@ class ChannelSummarizer:
                             processed_results = []
                             for row in results:
                                 row_dict = dict(row) # Convert row object to dict if needed
+                                self.logger.info(f"[DEV MODE] Processing row: {row_dict}")
                                 row_dict['post_channel_id'] = dev_channel_ids[0]
                                 processed_results.append(row_dict)
+                            self.logger.info(f"[DEV MODE] ✅ Returning {len(processed_results)} channels: {processed_results}")
                             return processed_results
+                        self.logger.warning("[DEV MODE] ⚠️ No results or no dev channels, returning []")
                         return [] # Return empty list if no results or no dev_channel_ids
                     except Exception as e:
-                        self.logger.error(f"Error in dev channel query db_operation: {e}", exc_info=True)
+                        self.logger.error(f"[DEV MODE] ❌ Error in db_operation: {e}", exc_info=True)
                         return []
                         
                 return await asyncio.wait_for(
@@ -877,22 +866,25 @@ class ChannelSummarizer:
                     timeout=10 # Adjust timeout as needed
                 )
             except asyncio.TimeoutError:
-                self.logger.error("Timeout while executing database query for dev channels")
+                self.logger.error("[DEV MODE] ❌ Timeout executing query!")
                 return []
             except Exception as e:
-                self.logger.error(f"Error executing dev channel query: {e}", exc_info=True)
+                self.logger.error(f"[DEV MODE] ❌ Error executing query: {e}", exc_info=True)
                 return []
         except Exception as e:
-            self.logger.error(f"Error getting dev channels: {e}", exc_info=True)
+            self.logger.error(f"[DEV MODE] ❌ Error in _get_dev_mode_channels: {e}", exc_info=True)
             return []
 
     async def _get_production_channels(self, db_handler):
         """Get active channels for production mode"""
         try:
+            self.logger.info(f"[PRODUCTION MODE] self.channels_to_monitor has {len(self.channels_to_monitor)} channels")
             channel_ids = ",".join(str(cid) for cid in self.channels_to_monitor)
             if not channel_ids:
-                 self.logger.warning("No production channels configured in self.channels_to_monitor")
+                 self.logger.error("[PRODUCTION MODE] ❌ No production channels configured!")
                  return []
+            
+            self.logger.info(f"[PRODUCTION MODE] Querying {len(self.channels_to_monitor)} channels...")
                  
             channel_query = (
                 "SELECT c.channel_id, c.channel_name, COALESCE(c2.channel_name, 'Unknown') as source, "
@@ -907,26 +899,15 @@ class ChannelSummarizer:
                 "ORDER BY msg_count DESC"
             )
             
+            self.logger.info(f"Executing query: {channel_query}")
+            
             loop = asyncio.get_running_loop()
             def db_operation():
                 try:
-                    # Ensure db_handler.execute_query is used if it exists and handles connection/cursor
-                    if hasattr(db_handler, 'execute_query'):
-                         results = db_handler.execute_query(channel_query)
-                         return results if results else []
-                    else:
-                         # Fallback to direct connection if needed (adjust based on db_handler)
-                         if not db_handler or not hasattr(db_handler, 'conn'):
-                              self.logger.error("DB handler or connection not available for production channel query")
-                              return []
-                         db_handler.conn.execute("PRAGMA busy_timeout = 5000")
-                         db_handler.conn.row_factory = sqlite3.Row
-                         cursor = db_handler.conn.cursor()
-                         cursor.execute(channel_query)
-                         results = [dict(row) for row in cursor.fetchall()]
-                         cursor.close()
-                         db_handler.conn.row_factory = None
-                         return results
+                    self.logger.info("Starting database query execution...")
+                    results = db_handler.execute_query(channel_query)
+                    self.logger.info(f"Database query returned {len(results) if results else 0} results: {results}")
+                    return results if results else []
                 except sqlite3.OperationalError as e:
                     if "database is locked" in str(e):
                         self.logger.error("Database lock timeout exceeded during production channel query")
@@ -936,10 +917,14 @@ class ChannelSummarizer:
                 except Exception as e:
                     self.logger.error(f"Error getting active production channels in db_operation: {e}", exc_info=True)
                     return []
-            return await asyncio.wait_for(
+            
+            self.logger.info("About to execute database query with timeout...")
+            result = await asyncio.wait_for(
                 loop.run_in_executor(None, db_operation),
                 timeout=10 # Adjust timeout as needed
             )
+            self.logger.info(f"Database query completed, returning {len(result) if result else 0} channels")
+            return result
         except asyncio.TimeoutError:
             self.logger.error("Timeout while executing database query for production channels")
             return []
@@ -948,6 +933,29 @@ class ChannelSummarizer:
             return []
 
     # --- Main Summary Generation Logic --- 
+    async def _check_discord_connectivity(self) -> bool:
+        """
+        Check if Discord API is reachable before attempting summary generation.
+        
+        Returns:
+            bool: True if Discord is reachable, False otherwise
+        """
+        try:
+            # Try to fetch the summary channel as a connectivity test
+            summary_channel = await self._get_channel_with_retry(self.summary_channel_id)
+            if summary_channel:
+                self.logger.info("Discord connectivity check passed")
+                return True
+            else:
+                self.logger.warning("Discord connectivity check failed: Could not fetch summary channel")
+                return False
+        except (OSError, ConnectionError, TimeoutError, asyncio.TimeoutError) as e:
+            self.logger.warning(f"Discord connectivity check failed with network error: {e}")
+            return False
+        except Exception as e:
+            self.logger.warning(f"Discord connectivity check failed with unexpected error: {e}")
+            return False
+
     @handle_errors("generate_summary")
     async def generate_summary(self):
         """
@@ -960,6 +968,10 @@ class ChannelSummarizer:
         """
         try:
             async with self.summary_lock:
+                # Check Discord connectivity before starting
+                if not await self._check_discord_connectivity():
+                    self.logger.error("Discord connectivity check failed. Aborting summary generation.")
+                    return
                 self.logger.info("Generating requested summary...")
                 db_handler = self.db_handler 
                 summary_channel = await self._get_channel_with_retry(self.summary_channel_id)
@@ -970,36 +982,55 @@ class ChannelSummarizer:
                 current_date = datetime.utcnow()
 
                 # We'll handle channel picking ourselves:
+                self.logger.info(f"════════════════════════════════════════")
+                self.logger.info(f"Running in {'DEV' if self.dev_mode else 'PRODUCTION'} mode")
+                self.logger.info(f"════════════════════════════════════════")
                 if self.dev_mode:
                     active_channels = await self._get_dev_mode_channels(db_handler)
+                    self.logger.info(f"════════════════════════════════════════")
+                    self.logger.info(f"✅ _get_dev_mode_channels returned {len(active_channels) if active_channels else 0} channels")
+                    self.logger.info(f"════════════════════════════════════════")
                 else:
                     active_channels = await self._get_production_channels(db_handler)
+                    self.logger.info(f"✅ _get_production_channels returned {len(active_channels) if active_channels else 0} channels")
                 
                 if not active_channels:
-                    self.logger.warning("No active channels found")
+                    self.logger.info("No active channels found")
                     # Send a message to summary_channel if no active channels found
                     await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content="_No active channels with sufficient messages found to summarize._")
                     return
 
                 channel_summaries = []
-                self.logger.info("Processing individual summaries for channels with 25+ messages:")
                 
-                for channel_info in active_channels:
+                self.logger.info(f"Processing {len(active_channels)} channel{'s' if len(active_channels) != 1 else ''} with 25+ messages")
+                
+                for i, channel_info in enumerate(active_channels):
                     channel_id = channel_info['channel_id']
+                    channel_name = channel_info.get('channel_name', 'Unknown')
                     post_channel_id = channel_info.get('post_channel_id', channel_id)
                     
+                    self.logger.debug(f"[{i+1}/{len(active_channels)}] Processing channel {channel_id} ({channel_name})")
+                    
                     try:
-                        messages = await self.get_channel_history(channel_id, db_handler)
+                        self.logger.info(f"Getting message history for channel {channel_id} from last 24 hours...")
+                        messages = await self.get_channel_history(channel_id)
+                        self.logger.info(f"Retrieved {len(messages) if messages else 0} messages for channel {channel_id} from last 24 hours")
+                        
                         if not messages or len(messages) < 25:
-                             self.logger.info(f"Skipping channel {channel_id}: Not enough messages ({len(messages)}).")
+                             self.logger.info(f"⚠️ Skipping channel {channel_id}: Not enough messages from last 24 hours ({len(messages) if messages else 0}/25 required).")
                              continue
                         
+                        self.logger.info(f"Generating news summary for channel {channel_id} with {len(messages)} messages...")
                         channel_summary = await self.news_summarizer.generate_news_summary(messages)
+                        self.logger.info(f"News summary generated for channel {channel_id}. Length: {len(channel_summary) if channel_summary else 0} chars")
                         if not channel_summary or channel_summary in ["[NOTHING OF NOTE]", "[NO SIGNIFICANT NEWS]", "[NO MESSAGES TO ANALYZE]"]:
                             self.logger.info(f"No significant news for channel {channel_id}.")
                             continue
                         
-                        if not self.is_forum_channel(post_channel_id):
+                        if self.is_forum_channel(post_channel_id):
+                            # Skip forum channels - don't post updates to them
+                            self.logger.info(f"Skipping ForumChannel {post_channel_id} for channel {channel_id} - forum channels are not supported for summary posting")
+                        else:
                             channel_obj = await self._get_channel_with_retry(post_channel_id)
                             if channel_obj:
                                 formatted_summary = self.news_summarizer.format_news_for_discord(channel_summary)
@@ -1008,16 +1039,26 @@ class ChannelSummarizer:
                                 if not thread:
                                     self.logger.info(f"Creating new summary thread for channel {channel_id}...")
                                     thread_title = f"#{channel_obj.name} - Summary - {current_date.strftime('%B %d, %Y')}"
-                                    # UPDATED CALL
-                                    summary_message_starter = await discord_utils.safe_send_message(self.bot, channel_obj, self.rate_limiter, self.logger, content=f"Summary thread for {current_date.strftime('%B %d, %Y')}")
-                                    if summary_message_starter: # check if message was sent
-                                        thread = await self.create_summary_thread(summary_message_starter, thread_title) # create_summary_thread is a method of self
-                                        if thread:
-                                             self.logger.info(f"Successfully created summary thread for channel {channel_id}: {thread.id}")
+                                    try:
+                                        # UPDATED CALL with network error handling
+                                        summary_message_starter = await discord_utils.safe_send_message(self.bot, channel_obj, self.rate_limiter, self.logger, content=f"Summary thread for {current_date.strftime('%B %d, %Y')}")
+                                        if summary_message_starter: # check if message was sent
+                                            thread = await self.create_summary_thread(summary_message_starter, thread_title) # create_summary_thread is a method of self
+                                            if thread:
+                                                 self.logger.info(f"Successfully created summary thread for channel {channel_id}: {thread.id}")
+                                            else:
+                                                 self.logger.error(f"Failed to create thread for channel {channel_id}")
                                         else:
-                                             self.logger.error(f"Failed to create thread for channel {channel_id}")
-                                    else:
-                                         self.logger.error(f"Failed to send header message to channel {channel_id} for thread creation")
+                                             self.logger.error(f"Failed to send header message to channel {channel_id} for thread creation")
+                                    except (OSError, ConnectionError, TimeoutError, asyncio.TimeoutError) as network_error:
+                                        self.logger.warning(f"Network error creating summary thread for channel {channel_id}: {network_error}. Skipping channel summary posting.")
+                                        # Still add to channel_summaries for overall summary
+                                        channel_summaries.append({
+                                            'channel_id': channel_id,
+                                            'summary': channel_summary,
+                                            'message_count': len(messages)
+                                        })
+                                        continue
                                 
                                 if thread:
                                     self.logger.info(f"Using summary thread in channel {post_channel_id}: {thread.id}")
@@ -1098,10 +1139,21 @@ class ChannelSummarizer:
                         # UPDATED CALL
                         await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content="_No significant activity to summarize in the last 24 hours._")
                 else:
-                    # UPDATED CALL
-                    await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content="_No messages found in the last 24 hours for overall summary._")
+                    try:
+                        # UPDATED CALL with network error handling
+                        await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content="_No messages found in the last 24 hours for overall summary._")
+                    except (OSError, ConnectionError, TimeoutError, asyncio.TimeoutError) as network_error:
+                        self.logger.error(f"Network error sending fallback message to summary channel: {network_error}")
+                        # Don't re-raise - this is just a fallback message
 
-                await self.top_generations.post_top_x_generations(summary_channel, limit=4)
+                # Get the top gens channel (may be different from summary channel in dev mode)
+                top_gens_channel = await self._get_channel_with_retry(self.top_gens_channel_id)
+                if not top_gens_channel:
+                    self.logger.error(f"Could not find top gens channel {self.top_gens_channel_id}, falling back to summary channel")
+                    top_gens_channel = summary_channel
+                
+                self.logger.info(f"Posting Top Generations to channel {top_gens_channel.name} (ID: {self.top_gens_channel_id})")
+                await self.top_generations.post_top_x_generations(top_gens_channel, limit=20, also_post_to_channel_id=1385774922118336513)
                 await self.top_art_sharer.post_top_art_share(summary_channel)
 
                 self.logger.info("Attempting to send link back to start...")
@@ -1128,8 +1180,9 @@ class ChannelSummarizer:
         pass
 
     def _get_today_str(self):
-        # ... (_get_today_str as before) ...
-        pass
+        """Return today's date as a formatted string"""
+        from datetime import datetime
+        return datetime.utcnow().strftime("%B %d, %Y")
 
     async def cleanup(self):
         # ... (cleanup as before) ...

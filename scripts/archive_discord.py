@@ -10,7 +10,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
 from dotenv import load_dotenv
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union
 import json
 from src.common.db_handler import DatabaseHandler
 from src.common.constants import get_database_path
@@ -35,11 +35,21 @@ logger = logging.getLogger(__name__)
 # Thread-local storage for database connections
 thread_local = threading.local()
 
+def to_aware_utc(dt_str: str) -> datetime:
+    """Convert an ISO format string to a timezone-aware datetime object."""
+    dt = datetime.fromisoformat(dt_str)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
 def get_db(db_path):
     """Get thread-local database connection."""
     if not hasattr(thread_local, "db"):
         thread_local.db = DatabaseHandler(db_path)
-        thread_local.db._init_db()
+        # Only initialize SQLite if we're using it (not in Supabase-only mode)
+        storage_backend = os.getenv('STORAGE_BACKEND', 'both')
+        if storage_backend in ['sqlite', 'both']:
+            thread_local.db._init_db()
     return thread_local.db
 
 class MessageArchiver(BaseDiscordBot):
@@ -169,6 +179,9 @@ class MessageArchiver(BaseDiscordBot):
     def _db_worker(self):
         """Worker thread for database operations."""
         db = get_db(self.db_path)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         while True:
             try:
                 # Get the next operation from the queue
@@ -180,6 +193,9 @@ class MessageArchiver(BaseDiscordBot):
                 func, args, kwargs, future = operation
                 try:
                     result = func(db, *args, **kwargs)
+                    if asyncio.iscoroutine(result):
+                        result = loop.run_until_complete(result)
+
                     # Only try to set result if the future is not done
                     if not future.done():
                         try:
@@ -207,6 +223,8 @@ class MessageArchiver(BaseDiscordBot):
             except Exception as e:
                 logger.error(f"Error in database worker: {e}")
                 continue
+        
+        loop.close()
 
     async def _db_operation(self, func, *args, **kwargs):
         """Execute a database operation in the worker thread."""
@@ -396,6 +414,28 @@ class MessageArchiver(BaseDiscordBot):
         except Exception as e:
             logger.error(f"Error during shutdown: {e}")
 
+    async def _fetch_archived_threads(self, channel: Union[discord.TextChannel, discord.ForumChannel]) -> List[discord.Thread]:
+        """Fetches archived threads with retry logic for Discord API errors."""
+        max_retries = 3
+        delay = 5  # seconds
+        for attempt in range(max_retries):
+            try:
+                return [t async for t in channel.archived_threads()]
+            except discord.DiscordServerError as e:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Discord API error (503) fetching archived threads for #{channel.name}. "
+                        f"Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        f"Failed to fetch archived threads for #{channel.name} after {max_retries} attempts. Skipping threads for this channel.",
+                        exc_info=True
+                    )
+                    return [] # Return empty list to continue execution
+        return []
+
     async def on_ready(self):
         """Called when bot is ready."""
         try:
@@ -414,30 +454,63 @@ class MessageArchiver(BaseDiscordBot):
             if self.target_channel_id:
                 channel = self.get_channel(self.target_channel_id)
                 if channel:
-                    items_to_process.append(("channel", channel, None))
-                    if isinstance(channel, discord.TextChannel): 
-                        # Add threads within the target channel
-                        archived_threads = [t async for t in channel.archived_threads()]
+                    # If a category was provided, expand to its child channels
+                    if isinstance(channel, discord.CategoryChannel):
+                        logger.info(f"Target is a CategoryChannel: #{channel.name}. Expanding to child channels...")
+                        try:
+                            for child in channel.channels:
+                                if isinstance(child, discord.TextChannel):
+                                    items_to_process.append(("channel", child, None))
+                                    # Include threads for each text channel
+                                    archived_threads = await self._fetch_archived_threads(child)
+                                    active_threads = child.threads
+                                    for thread in archived_threads + active_threads:
+                                        items_to_process.append(("thread", thread, child.name))
+                                elif isinstance(child, discord.ForumChannel):
+                                    # Include all forum threads
+                                    archived_threads = await self._fetch_archived_threads(child)
+                                    active_threads = child.threads
+                                    for thread in archived_threads + active_threads:
+                                        items_to_process.append(("forum_thread", thread, child.name))
+                                else:
+                                    # Skip non-text/forum channel types (voice, stage, etc.)
+                                    continue
+                        except Exception as e:
+                            logger.error(f"Failed to expand CategoryChannel {channel.id}: {e}", exc_info=True)
+                    elif isinstance(channel, discord.TextChannel):
+                        items_to_process.append(("channel", channel, None))
+                        # Add threads within the target text channel
+                        archived_threads = await self._fetch_archived_threads(channel)
                         active_threads = channel.threads
                         for thread in archived_threads + active_threads:
-                             items_to_process.append(("thread", thread, channel.name))
+                            items_to_process.append(("thread", thread, channel.name))
+                    elif isinstance(channel, discord.ForumChannel):
+                        # For a forum channel, pull all threads
+                        archived_threads = await self._fetch_archived_threads(channel)
+                        active_threads = channel.threads
+                        for thread in archived_threads + active_threads:
+                            items_to_process.append(("forum_thread", thread, channel.name))
+                    elif isinstance(channel, discord.Thread):
+                        items_to_process.append(("thread", channel, getattr(channel.parent, 'name', None)))
+                    else:
+                        logger.warning(f"Provided --channel {self.target_channel_id} is an unsupported type. Skipping.")
                 else:
-                     logger.error(f"Could not find target channel with ID {self.target_channel_id}")
+                    logger.error(f"Could not find target channel with ID {self.target_channel_id}")
             else:
                 # Collect all text channels
                 all_text_channels = [c for c in guild.text_channels if c.id not in self.skip_channels]
                 for channel in all_text_channels:
                     items_to_process.append(("channel", channel, None))
                     # Collect threads within text channels
-                    archived_threads = [t async for t in channel.archived_threads()]
+                    archived_threads = await self._fetch_archived_threads(channel)
                     active_threads = channel.threads
                     for thread in archived_threads + active_threads:
                         items_to_process.append(("thread", thread, channel.name))
                 
                 # Collect all forum threads
-                all_forums = [f for f in guild.forums if f.id not in self.skip_channels]
+                all_forums = [f for f in guild.channels if isinstance(f, discord.ForumChannel) and f.id not in self.skip_channels]
                 for forum in all_forums:
-                    archived_threads = [t async for t in forum.archived_threads()]
+                    archived_threads = await self._fetch_archived_threads(forum)
                     active_threads = forum.threads
                     for thread in archived_threads + active_threads:
                          items_to_process.append(("forum_thread", thread, forum.name))
@@ -501,7 +574,7 @@ class MessageArchiver(BaseDiscordBot):
 
     async def archive_channel(self, channel_id: int) -> None:
         """Archive all messages from a channel."""
-        channel_start_time = datetime.now()
+        channel_start_time = datetime.now(timezone.utc)
         try:
             # Skip welcome channel
             if channel_id in self.skip_channels:
@@ -990,14 +1063,14 @@ class MessageArchiver(BaseDiscordBot):
                 if message_dates:
                     # Filter dates based on cutoff if set
                     if cutoff_date:
-                        message_dates = [d for d in message_dates if datetime.fromisoformat(d) >= cutoff_date]
+                        message_dates = [d for d in message_dates if to_aware_utc(d) >= cutoff_date]
                     
                     # Sort dates based on order setting
                     message_dates.sort(reverse=not self.oldest_first)
                     gaps = []
                     for i in range(len(message_dates) - 1):
-                        current = datetime.fromisoformat(message_dates[i])
-                        next_date = datetime.fromisoformat(message_dates[i + 1])
+                        current = to_aware_utc(message_dates[i])
+                        next_date = to_aware_utc(message_dates[i + 1])
                         # Compare dates based on order
                         date_diff = (next_date - current).days if self.oldest_first else (current - next_date).days
                         if date_diff > 7:
@@ -1078,7 +1151,7 @@ class MessageArchiver(BaseDiscordBot):
                 logger.info(f"Archive complete - processed {new_message_count} new messages")
                 self.total_messages_archived += new_message_count
                 
-                channel_duration = (datetime.now() - channel_start_time).total_seconds()
+                channel_duration = (datetime.now(timezone.utc) - channel_start_time).total_seconds()
                 logger.info(f"Finished archive of #{channel.name} in {channel_duration:.2f}s")
                 
         except discord.HTTPException as e:
@@ -1102,7 +1175,9 @@ class MessageArchiver(BaseDiscordBot):
             if not self.db or not self.db.conn:
                 logger.info("Database connection lost, reconnecting...")
                 self.db = DatabaseHandler(self.db_path)
-                self.db._init_db()
+                storage_backend = os.getenv('STORAGE_BACKEND', 'both')
+                if storage_backend in ['sqlite', 'both']:
+                    self.db._init_db()
                 logger.info("Successfully reconnected to database")
             else:
                 # Test if connection is actually working
@@ -1113,7 +1188,9 @@ class MessageArchiver(BaseDiscordBot):
                 if self.db:
                     self.db.close()
                 self.db = DatabaseHandler(self.db_path)
-                self.db._init_db()
+                storage_backend = os.getenv('STORAGE_BACKEND', 'both')
+                if storage_backend in ['sqlite', 'both']:
+                    self.db._init_db()
                 logger.info("Successfully reconnected to database")
             except Exception as e:
                 logger.error(f"Failed to reconnect to database: {e}")
@@ -1137,6 +1214,9 @@ def main():
                       help='ID of a specific channel to archive')
     parser.add_argument('--fetch-reactions', action='store_true',
                       help='Fetch reactions for all messages in range, not just new ones')
+    parser.add_argument('--storage-backend', type=str, choices=['sqlite', 'supabase', 'both'],
+                      default='both',
+                      help='Storage backend: sqlite (local only), supabase (cloud only), or both (default: both)')
     args = parser.parse_args()
     
     # Validate arguments
@@ -1158,6 +1238,10 @@ def main():
 
     if args.dev:
         logger.info("Running in development mode")
+    
+    # Set storage backend (defaults to supabase)
+    os.environ['STORAGE_BACKEND'] = args.storage_backend
+    logger.info(f"Storage backend set to: {args.storage_backend}")
     
     bot = None
     try:

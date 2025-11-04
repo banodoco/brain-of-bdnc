@@ -77,11 +77,11 @@ local_settings.py
 # New file
 channel_descriptions.json
 
-# Docker related files
-Dockerfile*
+# Docker related files - Allow Dockerfile for Railway deployment
+# Dockerfile (now allowed for Railway)
+# .dockerignore (now allowed for Railway)
 docker-compose*.yml
 .docker
-.dockerignore
 
 # Data directory
 data/
@@ -110,7 +110,45 @@ test_art_query.py
 
 # Project specific results/output
 results/
+equity_holders.txt
 
 # Workflow and Supabase temp files
 supabase/temp/
 bdnc_code.workflow
+
+# Downloaded media and temp files (not needed in git)
+downloaded_daily_art/
+downloaded_videos/
+download_log.txt
+role_*_members.txt
+role_*_user_ids_only.txt
+example_storage_backend_usage.py
+
+# Internal documentation (not needed in repo)
+QUERY_METHODS_ANALYSIS.md
+QUICK_START_STORAGE_BACKEND.md
+STORAGE_BACKEND_CHANGELOG.md
+SUPABASE_FINAL_VALIDATION.md
+SUPABASE_QUERY_SYSTEM_COMPLETE.md
+SUPABASE_VALIDATION_RESULTS.md
+
+# Utility scripts (not core functionality)
+scripts/channel_message_retriever.py
+scripts/check_channel_format.py
+scripts/check_single_message.py
+scripts/delete_recent_bot_messages.py
+scripts/delete_user_messages.py
+scripts/download_channel_videos.py
+scripts/find_supabase_connection.py
+scripts/find_supabase_connection_fixed.py
+scripts/get_equity_holders.py
+scripts/get_members_by_role.py
+scripts/list_members_by_role.py
+scripts/sync_members_to_supabase.py
+scripts/test_daily_update_queries.py
+scripts/test_direct_connection.py
+scripts/test_supabase_rpc.py
+scripts/test_supabase_sync.py
+scripts/DOWNLOAD_DAILY_ART_README.md
+scripts/requirements_download_art.txt
+scripts/download_daily_art.py

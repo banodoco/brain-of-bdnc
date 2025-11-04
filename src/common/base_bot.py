@@ -7,6 +7,7 @@ from typing import Optional, Any, Dict
 import random
 import traceback
 import os
+import aiohttp
 
 import discord
 from discord.ext import commands
@@ -20,6 +21,32 @@ class BaseDiscordBot(commands.Bot):
     """
 
     def __init__(self, command_prefix, logger, dev_mode=False, intents=None, **kwargs):
+        # Create HTTP connector/timeouts only if an event loop is already running.
+        # This avoids "no running event loop" when scripts instantiate the bot
+        # before starting the loop (e.g., archive_discord.py main()).
+        try:
+            _ = asyncio.get_running_loop()
+            connector = aiohttp.TCPConnector(
+                limit=100,  # Total connection pool size
+                limit_per_host=30,  # Connections per host
+                ttl_dns_cache=300,  # DNS cache TTL
+                use_dns_cache=True,
+            )
+
+            timeout = aiohttp.ClientTimeout(
+                total=60,   # Total timeout for request
+                connect=30, # Connection timeout
+                sock_read=30,
+            )
+
+            kwargs.update({
+                'connector': connector,
+                'timeout': timeout
+            })
+        except RuntimeError:
+            # No running loop yet; fall back to discord.py defaults.
+            pass
+        
         super().__init__(command_prefix=command_prefix, intents=intents, **kwargs)
         self.logger = logger
         self.dev_mode = dev_mode

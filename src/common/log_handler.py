@@ -12,8 +12,12 @@ class LineCountRotatingFileHandler(RotatingFileHandler):
         
         # Initialize line count from existing file
         if os.path.exists(filename):
-            with open(filename, 'r', encoding=encoding or 'utf-8') as f:
-                self.line_count = sum(1 for _ in f)
+            try:
+                with open(filename, 'r', encoding=encoding or 'utf-8', errors='replace') as f:
+                    self.line_count = sum(1 for _ in f)
+            except Exception:
+                # If we can't read the file, start with 0 lines
+                self.line_count = 0
         else:
             self.line_count = 0
     
@@ -24,18 +28,24 @@ class LineCountRotatingFileHandler(RotatingFileHandler):
             self.stream = None
             
         if self.max_lines:
-            # Read all lines from the current file
-            with open(self.baseFilename, 'r', encoding=self.encoding) as f:
-                lines = f.readlines()
-            
-            # Keep only the last max_lines
-            lines = lines[-self.max_lines:]
-            
-            # Write the last max_lines back to the file
-            with open(self.baseFilename, 'w', encoding=self.encoding) as f:
-                f.writelines(lines)
-            
-            self.line_count = len(lines)
+            try:
+                # Read all lines from the current file
+                with open(self.baseFilename, 'r', encoding=self.encoding, errors='replace') as f:
+                    lines = f.readlines()
+                
+                # Keep only the last max_lines
+                lines = lines[-self.max_lines:]
+                
+                # Write the last max_lines back to the file
+                with open(self.baseFilename, 'w', encoding=self.encoding) as f:
+                    f.writelines(lines)
+                
+                self.line_count = len(lines)
+            except Exception as e:
+                # If we can't rotate properly, just truncate the file
+                with open(self.baseFilename, 'w', encoding=self.encoding) as f:
+                    f.write('')
+                self.line_count = 0
         
         if not self.delay:
             self.stream = self._open()
@@ -103,29 +113,30 @@ class LogHandler:
                 if dev_log_dir and not os.path.exists(dev_log_dir):
                     os.makedirs(dev_log_dir)
             
-            # Console handler - show INFO and above in prod for important operational logs
+            # Console handler - show INFO and above for clean operational logs
+            # DEBUG logs still go to dev file, but console stays clean
             console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.DEBUG if dev_mode else logging.INFO)  # Only show DEBUG in dev mode
+            console_handler.setLevel(logging.INFO)  # Always INFO on console, DEBUG goes to file
             console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             console_handler.setFormatter(console_formatter)
             logger.addHandler(console_handler)
             
-            # Production file handler - log INFO and above for important operational logs
+            # Production file handler - log WARNING and above for important operational logs
             try:
                 prod_handler = LineCountRotatingFileHandler(
                     self.prod_log_file,
-                    maxBytes=1024 * 1024,  # 1MB per file
-                    backupCount=5,
+                    maxBytes=2 * 1024 * 1024,  # 2MB per file
+                    backupCount=3,  # Keep fewer backup files
                     encoding='utf-8',
-                    max_lines=10000  # Keep last 10000 lines
+                    max_lines=5000  # Reduce lines to keep
                 )
-                prod_handler.setLevel(logging.INFO)  # Keep INFO level for production logs
+                prod_handler.setLevel(logging.WARNING)  # Only log warnings and errors in production
                 prod_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
                 prod_handler.setFormatter(prod_formatter)
                 logger.addHandler(prod_handler)
             except Exception as e:
                 print(f"Failed to setup production log file handler: {e}")
-                console_handler.error(f"Failed to setup production log file handler: {e}")
+                logger.error(f"Failed to setup production log file handler: {e}")
             
             # Development file handler (only when in dev mode)
             if dev_mode and self.dev_log_file:

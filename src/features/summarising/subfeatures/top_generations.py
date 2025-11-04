@@ -23,7 +23,8 @@ class TopGenerations:
         summary_channel: discord.TextChannel,
         limit: int = 5,
         channel_id: Optional[int] = None,
-        ignore_message_ids: Optional[List[int]] = None
+        ignore_message_ids: Optional[List[int]] = None,
+        also_post_to_channel_id: Optional[int] = None
     ):
         """
         (4) Send the top X gens post. 
@@ -52,9 +53,9 @@ class TopGenerations:
                     self.summarizer.logger.error("No valid channel IDs found in TEST_DATA_CHANNEL")
                     return
                 
-                # We'll skip date filtering if you do local debug, or adapt as needed
-                # For example, to keep exactly the same logic as original:
-                date_condition = "1=1"
+                # FIXED: Apply date filtering in dev mode too!
+                query_params.append(yesterday.isoformat())
+                date_condition = "m.created_at > ?"
                 channels_str = ','.join(str(c) for c in test_channel_ids)
                 channel_condition = f" AND m.channel_id IN ({channels_str})"
             else:
@@ -117,24 +118,26 @@ class TopGenerations:
                 )
                 SELECT *
                 FROM video_messages
-                WHERE unique_reactor_count >= 3
+                WHERE unique_reactor_count >= 5
                 ORDER BY unique_reactor_count DESC
                 LIMIT {limit}
             """
 
-            self.summarizer.db_handler.conn.row_factory = sqlite3.Row
-            cursor = self.summarizer.db_handler.conn.cursor()
-            cursor.execute(query, query_params)
-            top_generations = [dict(row) for row in cursor.fetchall()]
-            cursor.close()
-            self.summarizer.db_handler.conn.row_factory = None
+            top_generations = await asyncio.to_thread(
+                self.summarizer.db_handler.execute_query,
+                query,
+                tuple(query_params)
+            )
             
             if not top_generations:
                 self.summarizer.logger.info(f"No qualifying videos found - skipping top {limit} gens post.")
                 return None
             
             first_gen = top_generations[0]
-            attachments = json.loads(first_gen['attachments'])
+            # Handle both parsed list (from Supabase) and JSON string (from SQLite)
+            attachments = first_gen['attachments']
+            if isinstance(attachments, str):
+                attachments = json.loads(attachments)
             
             # Find a video attachment in the first (top) generation
             video_attachment = next(
@@ -186,7 +189,10 @@ class TopGenerations:
                 # Post the rest (2..N)
                 for i, row in enumerate(top_generations[1:], start=2):
                     gen = dict(row)
-                    attachments = json.loads(gen['attachments'])
+                    # Handle both parsed list (from Supabase) and JSON string (from SQLite)
+                    attachments = gen['attachments']
+                    if isinstance(attachments, str):
+                        attachments = json.loads(attachments)
                     video_attachment = next(
                         (a for a in attachments if any(a.get('filename', '').lower().endswith(ext)
                                                        for ext in ('.mp4', '.mov', '.webm'))),
@@ -218,6 +224,65 @@ class TopGenerations:
                     )
                     await asyncio.sleep(1)
             
+            # Also post to additional channel if specified (as individual messages, not thread)
+            if also_post_to_channel_id:
+                try:
+                    additional_channel = await self.summarizer.bot.fetch_channel(also_post_to_channel_id)
+                    if additional_channel:
+                        self.summarizer.logger.info(f"Also posting top generations to channel {also_post_to_channel_id} as individual messages in random order")
+                        
+                        # Randomize the order for the additional channel
+                        import random
+                        randomized_generations = list(top_generations)
+                        random.shuffle(randomized_generations)
+                        
+                        # Post ALL generations as individual messages (no thread)
+                        for i, row in enumerate(randomized_generations, start=1):
+                            gen = dict(row)
+                            # Handle both parsed list (from Supabase) and JSON string (from SQLite)
+                            attachments = gen['attachments']
+                            if isinstance(attachments, str):
+                                attachments = json.loads(attachments)
+                            video_attachment = next(
+                                (a for a in attachments if any(a.get('filename', '').lower().endswith(ext)
+                                                               for ext in ('.mp4', '.mov', '.webm'))),
+                                None
+                            )
+                            if not video_attachment:
+                                continue
+                            
+                            # Format message for individual posting
+                            desc = [
+                                f"By **{gen['author_name']}**" + (f" in #{gen['channel_name']}" if not channel_id else "")
+                            ]
+                            
+                            if gen['content'] and gen['content'].strip():
+                                desc.append(self._replace_user_mentions(gen['content'][:150]))
+                            
+                            desc.append(f"🔥 {gen['unique_reactor_count']} unique reactions")
+                            desc.append(video_attachment['url'])
+                            # Generate jump URL dynamically
+                            jump_url = f"https://discord.com/channels/{self.summarizer.guild_id}/{gen['channel_id']}/{gen['message_id']}"
+                            desc.append(f"🔗 Original post: {jump_url}")
+                            msg_text_individual = "\n".join(desc)
+                            
+                            await discord_utils.safe_send_message(
+                                self.summarizer.bot, 
+                                additional_channel, 
+                                self.summarizer.rate_limiter, 
+                                self.summarizer.logger, 
+                                content=msg_text_individual
+                            )
+                            await asyncio.sleep(1)
+                                    
+                        self.summarizer.logger.info(f"Successfully posted {len(top_generations)} individual top generations to additional channel {also_post_to_channel_id}")
+                    else:
+                        self.summarizer.logger.error(f"Could not fetch additional channel {also_post_to_channel_id}")
+                        
+                except Exception as e:
+                    self.summarizer.logger.error(f"Error posting to additional channel {also_post_to_channel_id}: {e}")
+                    self.summarizer.logger.debug(traceback.format_exc())
+
             self.summarizer.logger.info("Posted top X gens successfully.")
             return top_generations[0] if top_generations else None
 
@@ -272,12 +337,11 @@ class TopGenerations:
                 LIMIT 5
             """
             
-            self.summarizer.db_handler.conn.row_factory = sqlite3.Row
-            cursor = self.summarizer.db_handler.conn.cursor()
-            cursor.execute(query, (channel_id, yesterday.isoformat()))
-            results = [dict(row) for row in cursor.fetchall()]
-            cursor.close()
-            self.summarizer.db_handler.conn.row_factory = None
+            results = await asyncio.to_thread(
+                self.summarizer.db_handler.execute_query,
+                query,
+                (channel_id, yesterday.isoformat())
+            )
             
             if not results:
                 self.summarizer.logger.info(f"No top generations found for channel {channel_id}")
@@ -293,7 +357,10 @@ class TopGenerations:
             
             for i, row in enumerate(results, start=1):
                 try:
-                    attachments = json.loads(row['attachments'])
+                    # Handle both parsed list (from Supabase) and JSON string (from SQLite)
+                    attachments = row['attachments']
+                    if isinstance(attachments, str):
+                        attachments = json.loads(attachments)
                     video_attachment = next(
                         (a for a in attachments if any(a.get('filename', '').lower().endswith(ext)
                                                        for ext in ('.mp4', '.mov', '.webm'))),
@@ -340,21 +407,20 @@ class TopGenerations:
         """
         Replace <@123...> with @username lookups from DB for more readable messages.
         """
-        cursor = self.summarizer.db_handler.conn.cursor()
+        user_ids = re.findall(r'<@!?(\d+)>', text)
+        if not user_ids:
+            return text
 
-        def replace_mention(match):
+        placeholders = ','.join('?' for _ in user_ids)
+        query = f"SELECT member_id, COALESCE(server_nick, global_name, username) as display_name FROM members WHERE member_id IN ({placeholders})"
+        
+        results = self.summarizer.db_handler.execute_query(query, tuple(user_ids))
+        
+        id_to_name = {str(row['member_id']): f"@{row['display_name']}" for row in results}
+
+        def replace(match):
             user_id = match.group(1)
-            cursor.execute(
-                """
-                SELECT COALESCE(server_nick, global_name, username) as display_name 
-                FROM members 
-                WHERE member_id = ?
-                """,
-                (user_id,)
-            )
-            result = cursor.fetchone()
-            return f"@{result[0] if result else 'unknown'}"
+            return id_to_name.get(user_id, match.group(0))
 
-        escaped_content = re.sub(r'<@!?(\d+)>', replace_mention, text)
-        return escaped_content
+        return re.sub(r'<@!?(\d+)>', replace, text)
 

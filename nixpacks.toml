@@ -1,0 +1,17 @@
+# Nixpacks configuration for Railway
+# This file optimizes the build process on Railway
+
+[phases.setup]
+nixPkgs = ["python310", "ffmpeg"]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt"]
+
+[phases.build]
+cmds = ["mkdir -p /app/data"]
+
+[start]
+cmd = "python main.py"
+
+
+

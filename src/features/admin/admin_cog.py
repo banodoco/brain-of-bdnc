@@ -12,6 +12,7 @@ import random
 
 from src.common.db_handler import DatabaseHandler
 from src.common import discord_utils
+from src.common.supabase_sync_handler import SupabaseSyncHandler
 # Assuming constants.py has get_project_root()
 # If not, we might need os.path.dirname multiple times
 # try:
@@ -24,7 +25,7 @@ from src.common import discord_utils
 logger = logging.getLogger('DiscordBot')
 
 # --- Modal for Updating Socials --- 
-class AdminUpdateSocialsModal(discord.ui.Modal, title='Update Your Preferences'):
+class AdminUpdateSocialsModal(discord.ui.Modal):
     twitter_input = discord.ui.TextInput(
         label='Twitter Handle (e.g., @username)',
         required=False,
@@ -44,13 +45,13 @@ class AdminUpdateSocialsModal(discord.ui.Modal, title='Update Your Preferences')
         max_length=100
     )
     # REMOVE TIKTOK AND WEBSITE
-    # tiktok_input = discord.ui.TextInput(
+    # tiktok_input = discord.ui.InputText(
     #     label='TikTok Handle (e.g., @username or full URL)',
     #     required=False,
     #     placeholder='Leave blank to remove',
     #     max_length=100
     # )
-    # website_input = discord.ui.TextInput(
+    # website_input = discord.ui.InputText(
     #     label='Website URL',
     #     required=False,
     #     placeholder='Leave blank to remove',
@@ -75,7 +76,7 @@ class AdminUpdateSocialsModal(discord.ui.Modal, title='Update Your Preferences')
     )
 
     def __init__(self, user_details: dict, db_handler: DatabaseHandler):
-        super().__init__()
+        super().__init__(title='Update Your Preferences')
         self.user_details = user_details
         self.db_handler = db_handler
 
@@ -337,6 +338,12 @@ class AdminCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db_handler = bot.db_handler if hasattr(bot, 'db_handler') else None
+        # Initialize Supabase sync handler
+        self.supabase_sync = SupabaseSyncHandler(
+            self.db_handler, 
+            logger, 
+            sync_interval=300  # 5 minutes
+        ) if self.db_handler else None
         # Assuming self.bot will have self.bot.rate_limiter initialized by main bot setup
         logger.info("AdminCog initialized")
 
@@ -399,6 +406,18 @@ class AdminCog(commands.Cog):
                 logger.error(f"Failed to sync commands: {e}", exc_info=True)
                 # Don't set _commands_synced to True so we can retry on next ready event
                 raise  # Re-raise to ensure we know if sync fails
+        
+        # Auto-start Supabase background sync
+        if self.supabase_sync and not self.supabase_sync.get_sync_status()['is_running']:
+            try:
+                logger.info("Auto-starting Supabase background sync...")
+                success = await self.supabase_sync.start_background_sync()
+                if success:
+                    logger.info("✅ Supabase background sync started automatically on bot ready")
+                else:
+                    logger.warning("❌ Failed to auto-start Supabase background sync")
+            except Exception as sync_error:
+                logger.error(f"Error auto-starting Supabase sync: {sync_error}", exc_info=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -478,6 +497,200 @@ class AdminCog(commands.Cog):
                       await interaction.followup.send("An error occurred after the initial response.", ephemeral=True)
                  except Exception as followup_e:
                       logger.error(f"Failed to send error message for /update_details: {followup_e}")
+
+    @app_commands.command(name="supabase_sync", description="Manually trigger Supabase sync (Admin only)")
+    @app_commands.describe(
+        sync_type="Type of sync to perform",
+        limit="Limit number of records to sync (for testing)"
+    )
+    @app_commands.choices(sync_type=[
+        app_commands.Choice(name="All", value="all"),
+        app_commands.Choice(name="Messages", value="messages"),
+        app_commands.Choice(name="Members", value="members"),
+        app_commands.Choice(name="Channels", value="channels")
+    ])
+    async def supabase_sync(self, interaction: discord.Interaction, sync_type: str = "all", limit: int = None):
+        """Manually trigger a Supabase sync operation."""
+        # Check if user is bot owner
+        if not await self.bot.is_owner(interaction.user):
+            await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
+            return
+        
+        if not self.supabase_sync:
+            await interaction.response.send_message("Supabase sync is not available (missing database handler or credentials).", ephemeral=True)
+            return
+        
+        # Defer the response since sync might take time
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            logger.info(f"Admin {interaction.user.id} triggered manual Supabase sync: {sync_type}, limit: {limit}")
+            
+            # Perform the sync
+            results = await self.supabase_sync.manual_sync(sync_type, limit)
+            
+            # Create response embed
+            embed = discord.Embed(
+                title="Supabase Sync Results",
+                color=discord.Color.green() if sum(results.values()) > 0 else discord.Color.orange()
+            )
+            
+            total_synced = sum(results.values())
+            if total_synced > 0:
+                embed.description = f"Successfully synced {total_synced} records to Supabase."
+                for data_type, count in results.items():
+                    if count > 0:
+                        embed.add_field(name=data_type.title(), value=f"{count} records", inline=True)
+            else:
+                embed.description = "No new records to sync."
+            
+            # Add sync info
+            sync_status = self.supabase_sync.get_sync_status()
+            embed.add_field(
+                name="Sync Status",
+                value=f"Background sync: {'Running' if sync_status['is_running'] else 'Stopped'}",
+                inline=False
+            )
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            logger.error(f"Error during manual Supabase sync: {e}", exc_info=True)
+            error_embed = discord.Embed(
+                title="Sync Error",
+                description=f"An error occurred during sync: {str(e)}",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
+
+    @app_commands.command(name="supabase_status", description="Check Supabase sync status (Admin only)")
+    async def supabase_status(self, interaction: discord.Interaction):
+        """Check the status of Supabase sync."""
+        # Check if user is bot owner
+        if not await self.bot.is_owner(interaction.user):
+            await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
+            return
+        
+        if not self.supabase_sync:
+            await interaction.response.send_message("Supabase sync is not available (missing database handler or credentials).", ephemeral=True)
+            return
+        
+        try:
+            # Test connection first
+            connection_ok = await self.supabase_sync.test_connection()
+            
+            # Get sync status
+            status = self.supabase_sync.get_sync_status()
+            
+            # Create status embed
+            embed = discord.Embed(
+                title="Supabase Sync Status",
+                color=discord.Color.green() if connection_ok else discord.Color.red()
+            )
+            
+            embed.add_field(
+                name="Connection",
+                value="✅ Connected" if connection_ok else "❌ Connection failed",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Background Sync",
+                value="🟢 Running" if status['is_running'] else "🔴 Stopped",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Sync Interval",
+                value=f"{status['sync_interval']} seconds",
+                inline=True
+            )
+            
+            if status['last_sync_time']:
+                last_sync = datetime.fromisoformat(status['last_sync_time'].replace('Z', '+00:00'))
+                embed.add_field(
+                    name="Last Sync",
+                    value=f"<t:{int(last_sync.timestamp())}:R>",
+                    inline=True
+                )
+            
+            if status['next_sync_in'] is not None:
+                next_sync_seconds = int(status['next_sync_in'])
+                if next_sync_seconds > 0:
+                    embed.add_field(
+                        name="Next Sync",
+                        value=f"In {next_sync_seconds} seconds",
+                        inline=True
+                    )
+                else:
+                    embed.add_field(
+                        name="Next Sync",
+                        value="Due now",
+                        inline=True
+                    )
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            logger.error(f"Error checking Supabase status: {e}", exc_info=True)
+            error_embed = discord.Embed(
+                title="Status Check Error",
+                description=f"An error occurred while checking status: {str(e)}",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+
+    @app_commands.command(name="supabase_toggle", description="Start/stop background Supabase sync (Admin only)")
+    async def supabase_toggle(self, interaction: discord.Interaction):
+        """Toggle the background Supabase sync on/off."""
+        # Check if user is bot owner
+        if not await self.bot.is_owner(interaction.user):
+            await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
+            return
+        
+        if not self.supabase_sync:
+            await interaction.response.send_message("Supabase sync is not available (missing database handler or credentials).", ephemeral=True)
+            return
+        
+        try:
+            status = self.supabase_sync.get_sync_status()
+            
+            if status['is_running']:
+                # Stop the sync
+                await self.supabase_sync.stop_background_sync()
+                embed = discord.Embed(
+                    title="Background Sync Stopped",
+                    description="Supabase background sync has been stopped.",
+                    color=discord.Color.orange()
+                )
+                logger.info(f"Admin {interaction.user.id} stopped background Supabase sync")
+            else:
+                # Start the sync
+                success = await self.supabase_sync.start_background_sync()
+                if success:
+                    embed = discord.Embed(
+                        title="Background Sync Started",
+                        description=f"Supabase background sync has been started with {status['sync_interval']}s intervals.",
+                        color=discord.Color.green()
+                    )
+                    logger.info(f"Admin {interaction.user.id} started background Supabase sync")
+                else:
+                    embed = discord.Embed(
+                        title="Failed to Start Sync",
+                        description="Failed to start background sync. Check logs for details.",
+                        color=discord.Color.red()
+                    )
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            logger.error(f"Error toggling Supabase sync: {e}", exc_info=True)
+            error_embed = discord.Embed(
+                title="Toggle Error",
+                description=f"An error occurred while toggling sync: {str(e)}",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=error_embed, ephemeral=True)
 
 async def setup(bot: commands.Bot):
     """Sets up the AdminCog."""

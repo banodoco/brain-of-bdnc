@@ -394,7 +394,7 @@ class ConsentView(View):
             self.logger.error(f"[TweetSharerBridge] Error DMing reactor {self.reactor.id} about timeout: {e}")
 
     @button(label="I'm happy for my stuff to be shared", style=discord.ButtonStyle.green, custom_id="consent_share_yes")
-    async def consent_yes_button(self, interaction: discord.Interaction, button_obj: Button):
+    async def consent_yes_button(self, interaction: discord.Interaction):
         self.logger.info(f"[TweetSharerBridge] User {self.original_poster.id} GAVE consent to share message {self.message_to_share.id} reacted by {self.reactor.id}. Proceeding with LLM check.")
         self.consent_given = True
         # Disable buttons early, edit message after LLM check and potential notifications
@@ -445,7 +445,7 @@ class ConsentView(View):
             self.stop()
 
     @button(label="Please don't share", style=discord.ButtonStyle.red, custom_id="consent_share_no")
-    async def consent_no_button(self, interaction: discord.Interaction, button_obj: Button):
+    async def consent_no_button(self, interaction: discord.Interaction):
         self.logger.info(f"[TweetSharerBridge] User {self.original_poster.id} DENIED consent to share message {self.message_to_share.id} reacted by {self.reactor.id}")
         self.consent_given = False
         for item in self.children:

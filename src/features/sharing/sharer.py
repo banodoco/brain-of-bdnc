@@ -43,6 +43,8 @@ class Sharer:
         self.temp_dir.mkdir(exist_ok=True)
         self._processing_lock = asyncio.Lock()
         self._currently_processing = set()
+        self._posted_to_summary = set()  # Track messages already posted to summary channels
+        self._successfully_shared = set()  # Track messages already successfully shared to prevent duplicates
 
     async def _download_attachment(self, attachment: discord.Attachment) -> Optional[Dict]:
         """Downloads a single discord.Attachment to the temporary directory."""
@@ -256,125 +258,163 @@ class Sharer:
         This function now acts as the central point for all sharing activities for a given message.
         It is responsible for fetching content, generating descriptions, and posting to all configured platforms.
         """
+        # Acquire lock and hold it for the entire operation to prevent concurrent processing
         async with self._processing_lock:
             if message_id in self._currently_processing:
                 self.logger.warning(f"Sharing for message {message_id} is already in progress. Aborting.")
                 return
+            if message_id in self._successfully_shared:
+                self.logger.info(f"Message {message_id} has already been successfully shared. Skipping duplicate sharing attempt.")
+                return
             self._currently_processing.add(message_id)
 
-        try:
-            # Step 2: Fetch the original message
-            message = await self._fetch_message(channel_id, message_id)
-            if not message:
-                self.logger.error(f"Failed to fetch message {message_id} in finalize_sharing. Aborting.")
-                return
+            try:
+                # Step 2: Fetch the original message
+                message = await self._fetch_message(channel_id, message_id)
+                if not message:
+                    self.logger.error(f"Failed to fetch message {message_id} in finalize_sharing. Aborting.")
+                    return
 
-            # Step 3: Download attachments
-            downloaded_attachments = []
-            for attachment in message.attachments:
-                downloaded_item = await self._download_attachment(attachment)
-                if downloaded_item:
-                    downloaded_attachments.append(downloaded_item)
+                # Step 3: Download attachments
+                downloaded_attachments = []
+                for attachment in message.attachments:
+                    downloaded_item = await self._download_attachment(attachment)
+                    if downloaded_item:
+                        downloaded_attachments.append(downloaded_item)
 
-            if not downloaded_attachments:
-                self.logger.warning(f"No attachments could be downloaded for message {message_id}. Sharing might fail for platforms requiring media.")
-            
-            # Step 4: Get author details
-            user_details = self.db_handler.get_member(user_id)
-            if not user_details:
-                self.logger.error(f"Failed to get user details for user {user_id}. Aborting.")
-                self._cleanup_files([att['local_path'] for att in downloaded_attachments])
-                return
+                if not downloaded_attachments:
+                    self.logger.warning(f"No attachments could be downloaded for message {message_id}. Sharing might fail for platforms requiring media.")
+                
+                # Step 4: Get author details
+                user_details = self.db_handler.get_member(user_id)
+                if not user_details:
+                    self.logger.error(f"Failed to get user details for user {user_id}. Aborting.")
+                    self._cleanup_files([att['local_path'] for att in downloaded_attachments])
+                    return
 
-            # Step 5: Generate title and descriptions
-            is_video = any('video' in (att.get('content_type') or '') for att in downloaded_attachments)
-            media_type = 'video' if is_video else 'image'
-            
-            media_path_for_generation = next((att['local_path'] for att in downloaded_attachments if 'local_path' in att), None)
+                # Step 5: Generate title and descriptions
+                is_video = any('video' in (att.get('content_type') or '') for att in downloaded_attachments)
+                media_type = 'video' if is_video else 'image'
+                
+                first_attachment = downloaded_attachments[0] if downloaded_attachments else None
+                generated_title = None
 
-            generated_title = None
-            if media_path_for_generation:
-                self.logger.info(f"Generating media title for message {message_id} ({media_type}).")
-                generated_title = await generate_media_title(
-                    media_path=media_path_for_generation,
-                    media_type=media_type,
-                    post_id=str(message_id)
+                if first_attachment:
+                    self.logger.info(f"Generating media title for message {message_id} ({first_attachment.get('content_type')}).")
+                    generated_title = await generate_media_title(
+                        attachment=first_attachment,
+                        original_comment=message.content,
+                        post_id=message.id
+                    )
+                
+                self.logger.info(f"Generating LLM description (for non-Twitter use) via dispatcher for message {message_id}...")
+                # Build a concise prompt for the LLM. The function `get_llm_response` expects the standard
+                # arguments (client_name, model, system_prompt, messages,…). We were previously calling it
+                # with a non-existent `prompt` kwarg which caused a TypeError and aborted the sharing flow.
+                llm_description = await get_llm_response(
+                    client_name="claude",
+                    model="claude-3-5-haiku-latest",  # cheaper / faster model is fine for a short caption
+                    system_prompt=(
+                        "You are an expert social-media copywriter. Respond with exactly one engaging yet "
+                        "concise sentence (no hashtags) that describes the attached media so it can be used "
+                        "as a caption on various platforms."
+                    ),
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"Author: {message.author.display_name}\n"
+                            f"Media type: {media_type}\n"
+                            f"Original comment: {message.content}"
+                        )
+                    }],
+                    max_tokens=64,
+                    temperature=0.7,
                 )
-            
-            self.logger.info(f"Generating LLM description (for non-Twitter use) via dispatcher for message {message_id}...")
-            llm_description = await get_llm_response(
-                prompt=f"Please provide a one-sentence, engaging, descriptive caption for this content. The content is from user '{message.author.display_name}'. Original user comment: '{message.content}'",
-            )
 
-            twitter_content = ""
-            if summary_channel and "top-art-sharing" in summary_channel.name.lower():
-                self.logger.info(f"Using specific Twitter format for message {message_id}. Content: '{summary_channel.topic[:50]}...'")
-                twitter_content = summary_channel.topic
-            else:
-                 self.logger.info(f"Using Title (for non-Twitter): '{generated_title}', LLM Desc (for non-Twitter): '{llm_description[:50]}...' for message {message_id}")
-                 twitter_content = f"Check out this post by {message.author.display_name}! {message.jump_url}"
-
-            if downloaded_attachments:
-                self.logger.info(f"Attempting to post message {message_id} to Twitter.")
-                tweet_url = await post_tweet(
-                    generated_description=twitter_content,
-                    user_details=user_details,
-                    attachments=downloaded_attachments,
-                    original_content=message.content
-                )
-                if tweet_url:
-                    self.logger.info(f"Successfully posted message {message_id} to Twitter: {tweet_url}")
-                    await self._announce_tweet_url(tweet_url, message.author.display_name, message.jump_url, str(message_id))
+                twitter_content = ""
+                if summary_channel and "top-art-sharing" in summary_channel.name.lower():
+                    self.logger.info(f"Using specific Twitter format for message {message_id}. Content: '{summary_channel.topic[:50]}...'")
+                    twitter_content = summary_channel.topic
                 else:
-                    self.logger.error(f"Failed to post message {message_id} to Twitter.")
+                     self.logger.info(f"Using Title (for non-Twitter): '{generated_title}', LLM Desc (for non-Twitter): '{llm_description[:50]}...' for message {message_id}")
+                     # Check if this is from top art sharing (summary_channel exists) vs regular reaction-based sharing
+                     if summary_channel:
+                         # This is top art sharing from daily summary
+                         twitter_content = f"Top art sharing post of the day by {message.author.display_name}:"
+                     else:
+                         # This is regular reaction-based sharing
+                         twitter_content = f"Check out this post by {message.author.display_name}! {message.jump_url}"
 
-            if downloaded_attachments:
-                self.logger.info(f"Attempting to post message {message_id} to Instagram via Zapier.")
-                ig_caption = f"{generated_title}\n\n{llm_description}\n\nCredits to user: {message.author.display_name}"
-                await post_to_instagram_via_zapier(
-                    user_details=user_details,
-                    attachments=downloaded_attachments,
-                    caption=ig_caption,
-                    jump_url=message.jump_url
-                )
+                if downloaded_attachments:
+                    self.logger.info(f"Attempting to post message {message_id} to Twitter.")
+                    tweet_url = await post_tweet(
+                        generated_description=twitter_content,
+                        user_details=user_details,
+                        attachments=downloaded_attachments,
+                        original_content=message.content
+                    )
+                    if tweet_url:
+                        self.logger.info(f"Successfully posted message {message_id} to Twitter: {tweet_url}")
+                        await self._announce_tweet_url(tweet_url, message.author.display_name, message.jump_url, str(message_id))
+                        # Mark as successfully shared to prevent duplicate Twitter posts
+                        self._successfully_shared.add(message_id)
+                        self.logger.info(f"Marked message {message_id} as successfully shared to prevent duplicates.")
+                    else:
+                        self.logger.error(f"Failed to post message {message_id} to Twitter.")
 
-            if downloaded_attachments and is_video:
-                self.logger.info(f"Attempting to post message {message_id} to TikTok via Zapier.")
-                tiktok_caption = f"{generated_title} - by {message.author.display_name}. {llm_description}"
-                await post_to_tiktok_via_zapier(
-                    user_details=user_details,
-                    attachments=downloaded_attachments,
-                    caption=tiktok_caption,
-                    jump_url=message.jump_url
-                )
+                if downloaded_attachments:
+                    self.logger.info(f"Attempting to post message {message_id} to Instagram via Zapier.")
+                    ig_caption = f"{generated_title}\n\n{llm_description}\n\nCredits to user: {message.author.display_name}"
+                    await post_to_instagram_via_zapier(
+                        user_details=user_details,
+                        attachments=downloaded_attachments,
+                        caption=ig_caption,
+                        jump_url=message.jump_url
+                    )
 
-            if downloaded_attachments and is_video:
-                self.logger.info(f"Attempting to post message {message_id} to YouTube via Zapier.")
-                youtube_title = generated_title or f"Cool video by {message.author.display_name}"
-                youtube_description = f"{llm_description}\n\nOriginally posted by {message.author.display_name} on Discord.\nOriginal post: {message.jump_url}"
-                await post_to_youtube_via_zapier(
-                    user_details=user_details,
-                    attachments=downloaded_attachments,
-                    title=youtube_title,
-                    description=youtube_description,
-                    jump_url=message.jump_url
-                )
+                if downloaded_attachments and is_video:
+                    self.logger.info(f"Attempting to post message {message_id} to TikTok via Zapier.")
+                    tiktok_caption = f"{generated_title} - by {message.author.display_name}. {llm_description}"
+                    await post_to_tiktok_via_zapier(
+                        user_details=user_details,
+                        attachments=downloaded_attachments,
+                        caption=tiktok_caption,
+                        jump_url=message.jump_url
+                    )
 
-            if summary_channel:
-                 self.logger.info(f"Attempting to post summary to original summary channel {summary_channel.id} for message {message_id}")
-                 summary_content = f"Successfully shared post by <@{user_id}>: {message.jump_url}"
-                 await summary_channel.send(summary_content)
-                 self.logger.info(f"Successfully posted summary for message {message_id} to summary channel {summary_channel.id}")
+                if downloaded_attachments and is_video:
+                    self.logger.info(f"Attempting to post message {message_id} to YouTube via Zapier.")
+                    youtube_title = generated_title or f"Cool video by {message.author.display_name}"
+                    youtube_description = f"{llm_description}\n\nOriginally posted by {message.author.display_name} on Discord.\nOriginal post: {message.jump_url}"
+                    await post_to_youtube_via_zapier(
+                        user_details=user_details,
+                        attachments=downloaded_attachments,
+                        title=youtube_title,
+                        description=youtube_description,
+                        jump_url=message.jump_url
+                    )
 
-        except Exception as e:
-            self.logger.error(f"An unexpected error occurred during finalize_sharing for message {message_id}: {e}", exc_info=True)
-        finally:
-            async with self._processing_lock:
+                # Removed summary channel posting to prevent messages appearing after "jump to beginning"
+                # if summary_channel:
+                #     # Create a unique key for this message-channel combination
+                #     summary_key = f"{message_id}_{summary_channel.id}"
+                #     if summary_key not in self._posted_to_summary:
+                #         self.logger.info(f"Attempting to post summary to original summary channel {summary_channel.id} for message {message_id}")
+                #         summary_content = f"Successfully shared post by <@{user_id}>: {message.jump_url}"
+                #         await summary_channel.send(summary_content)
+                #         self._posted_to_summary.add(summary_key)
+                #         self.logger.info(f"Successfully posted summary for message {message_id} to summary channel {summary_channel.id}")
+                #     else:
+                #         self.logger.info(f"Summary for message {message_id} already posted to channel {summary_channel.id}, skipping duplicate post")
+
+            except Exception as e:
+                self.logger.error(f"An unexpected error occurred during finalize_sharing for message {message_id}: {e}", exc_info=True)
+            finally:
                 if message_id in self._currently_processing:
                     self._currently_processing.remove(message_id)
-            self.logger.info(f"Finished processing sharing for message {message_id}.")
-            if 'downloaded_attachments' in locals():
-                self._cleanup_files([att['local_path'] for att in downloaded_attachments if 'local_path' in att])
+                self.logger.info(f"Finished processing sharing for message {message_id}.")
+                if 'downloaded_attachments' in locals():
+                    self._cleanup_files([att['local_path'] for att in downloaded_attachments if 'local_path' in att])
 
     def _cleanup_files(self, file_paths: List[str]):
         """Removes temporary files."""

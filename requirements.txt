@@ -22,3 +22,6 @@ apscheduler>=3.9.0
 praw>=7.7.0
 supabase>=1.0.0
 tweepy>=4.0.0
+
+# Database
+psycopg2-binary>=2.9.0

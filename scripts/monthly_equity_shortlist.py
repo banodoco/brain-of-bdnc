@@ -9,25 +9,29 @@ import json
 from collections import defaultdict
 import asyncio
 import traceback
+from dotenv import load_dotenv
 
 # Adjust the path to import from the 'src' directory
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 
+# Load environment variables from .env file
+load_dotenv(os.path.join(project_root, '.env'))
+
 from src.common.db_handler import DatabaseHandler
 from src.common.constants import get_database_path
 from src.common.llm import get_llm_response
 
 # --- Configuration ---
-BATCH_SIZE = 1000
+BATCH_SIZE = 500
 DEFAULT_DEV_MODE = False # Set to True if you want to use the dev database by default
 LOG_PREVIEW_MESSAGE_COUNT = 3 # How many messages to preview per batch
 # --- LLM Configuration ---
 LLM1_CLIENT = "openai"
 # Using a placeholder 'o3' model name, adjust as needed.
 # See src/common/llm/openai_client.py for how 'o' models are handled.
-LLM1_MODEL = "o3-mini"
+LLM1_MODEL = "o3"
 LLM1_SYSTEM_PROMPT = """You are an AI assistant analyzing Discord messages from an open source AI art community. The community allocates monthly 'ownership' to contributors who advance the ecosystem (tools, models, workflows, help, resources).
 
 Your task is to identify potential candidates for this allocation based *solely* on the provided batch of messages. Prioritize individuals who:
@@ -65,7 +69,7 @@ LLM1_MAX_TOKENS = 99999 # Corresponds to max_completion_tokens for 'o' models
 
 # LLM2 Configuration
 LLM2_CLIENT = "openai"
-LLM2_MODEL = "o3-mini" # Can be same or different model
+LLM2_MODEL = "o3" # Can be same or different model
 LLM2_SYSTEM_PROMPT = """You are an AI assistant tasked with refining a list of potential community contributors based on justifications gathered from multiple message batches.
 
 You will receive a JSON list of candidates. Each candidate object has a "handle" and a "justification". The "justification" field may contain concatenated text from different sources, separated by '---'.
@@ -467,25 +471,29 @@ async def main():
     parser.add_argument("--dev", action='store_true', help="Use the development database.")
     parser.add_argument("--no-llm1", action='store_true', help="Skip LLM1 processing (for debugging).")
     parser.add_argument("--no-llm2", action='store_true', help="Skip LLM2 processing (for debugging).")
-    # Add the save-results flag
-    parser.add_argument("--save-results", action='store_true', help="Save intermediate and final results to a Markdown file.")
+    # Add the save-results flag (now defaults to True)
+    parser.add_argument("--no-save-results", action='store_true', help="Skip saving intermediate and final results to a Markdown file.")
     args = parser.parse_args()
 
     dev_mode = args.dev or DEFAULT_DEV_MODE
     year_month = get_month_input(args.month)
     start_date, end_date = get_month_date_range(year_month)
+    
+    # Save results by default, unless --no-save-results is specified
+    save_results = not args.no_save_results
 
     logger.info(f"Processing messages for {year_month} (from {start_date} to {end_date})")
     logger.info(f"Using {'development' if dev_mode else 'production'} database.")
     if args.no_llm1: logger.warning("LLM1 processing will be SKIPPED.")
     if args.no_llm2: logger.warning("LLM2 processing will be SKIPPED.")
-    if args.save_results: logger.info("--save-results flag detected. Results will be saved.")
+    if save_results: logger.info("Results will be saved to Markdown file (use --no-save-results to disable).")
+    else: logger.info("--no-save-results flag detected. Results will NOT be saved.")
     if dev_mode:
         logger.info("--- DEVELOPMENT MODE ACTIVE ---")
         
-    # --- Prepare results file if flag is set ---
+    # --- Prepare results file (enabled by default) ---
     results_file_path = None
-    if args.save_results:
+    if save_results:
         results_dir = os.path.join(project_root, 'results')
         results_file_path = os.path.join(results_dir, f"{year_month}_shortlist_results.md")
         try:

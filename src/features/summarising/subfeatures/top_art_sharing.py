@@ -64,20 +64,13 @@ class TopArtSharing:
             
             top_art_data = None
             try:
-                # Use await for async DB operations if your db handler supports it
-                # Assuming sync execution for now based on original code
-                loop = asyncio.get_event_loop()
-                def db_query(): 
-                    conn = self.summarizer.db_handler._get_connection() # Get connection from handler
-                    conn.row_factory = sqlite3.Row
-                    cursor = conn.cursor()
-                    cursor.execute(query, (art_channel_id, yesterday.isoformat()))
-                    result = cursor.fetchone()
-                    cursor.close()
-                    conn.row_factory = None # Reset row factory
-                    return dict(result) if result else None
-                    
-                top_art_data = await loop.run_in_executor(None, db_query)
+                # Use the new execute_query method which handles connection pooling and retries
+                results = await asyncio.to_thread(
+                    self.summarizer.db_handler.execute_query,
+                    query,
+                    (art_channel_id, yesterday.isoformat())
+                )
+                top_art_data = results[0] if results else None
 
             except Exception as e:
                 self.summarizer.logger.error(f"Database error fetching top art post: {e}", exc_info=True)

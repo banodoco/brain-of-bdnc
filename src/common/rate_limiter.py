@@ -81,6 +81,19 @@ class RateLimiter:
                     self.backoff_times[key] = next_delay
                     await asyncio.sleep(next_delay)
             
+            except (OSError, ConnectionError, TimeoutError, asyncio.TimeoutError) as e:
+                attempt += 1
+                if attempt == max_retries:
+                    self.logger.error(f"Network connectivity failed after {max_retries} attempts: {e}")
+                    raise
+                else:
+                    # Use exponential backoff for network errors
+                    current_delay = self.backoff_times.get(key, self.base_delay)
+                    next_delay = min(current_delay * 2, self.max_delay)
+                    self.backoff_times[key] = next_delay
+                    self.logger.warning(f"Network error (attempt {attempt}/{max_retries}) for {key}: {e}. Retrying in {next_delay}s")
+                    await asyncio.sleep(next_delay)
+            
             except Exception as e:
                 self.logger.error(f"Unexpected error: {e}")
                 self.logger.debug(traceback.format_exc())

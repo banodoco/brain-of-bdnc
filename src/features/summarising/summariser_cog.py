@@ -42,20 +42,54 @@ class SummarizerCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        """Handles the --summary-now flag on bot startup."""
+        """
+        Handles the --summary-now flag on bot startup.
+        
+        If --archive-days is also specified, runs archive first, then summary.
+        This ensures the summary uses the most up-to-date archived data.
+        """
         if not hasattr(self, '_ran_summary_now_check'):
             self._ran_summary_now_check = True
             run_now_flag = getattr(self.bot, 'summary_now', False)
+            archive_days = getattr(self.bot, 'archive_days', None)
+            
+            logger.info(f"SummarizerCog on_ready: summary_now={run_now_flag}, archive_days={archive_days}")
+            
             if run_now_flag:
-                logger.info("Detected --summary-now flag on startup. Triggering initial summary run.")
+                logger.info("Detected --summary-now flag on startup.")
+                
+                # If archive_days is specified, run archive first
+                if archive_days:
+                    logger.info(f"Archive days specified ({archive_days}). Running archive process first.")
+                    try:
+                        from src.common.archive_runner import ArchiveRunner
+                        
+                        dev_mode = getattr(self.bot, 'dev_mode', False)
+                        archive_runner = ArchiveRunner()
+                        success = await archive_runner.run_archive(archive_days, dev_mode, in_depth=True)
+                        
+                        if success:
+                            logger.info("Archive process completed successfully. Now starting summary.")
+                        else:
+                            logger.warning("Archive process failed. Continuing with summary anyway.")
+                            
+                    except Exception as e:
+                        logger.error(f"Error during archive process: {e}", exc_info=True)
+                        logger.info("Continuing with summary despite archive error.")
+                
+                # Run the summary
                 try:
                     if hasattr(self, 'channel_summarizer'):
                          await self.channel_summarizer.generate_summary()
                          logger.info("Initial --summary-now run finished.")
+                         # Signal that summary is complete so hourly fetch can start
+                         self.bot._summary_now_completed = True
                     else:
                          logger.error("ChannelSummarizer not found during on_ready for --summary-now run.")
                 except Exception as e:
                     logger.error(f"Error during initial --summary-now run: {e}", exc_info=True)
+                    # Even if there's an error, signal completion so hourly fetch can start
+                    self.bot._summary_now_completed = True
             else:
                 logger.debug("No --summary-now flag detected on startup.")
 

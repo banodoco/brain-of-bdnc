@@ -145,189 +145,112 @@ class LoggerCog(commands.Cog):
     #         self.logger.error(f"Error handling reaction remove: {str(e)}")
     #         self.logger.error(traceback.format_exc())
 
+    async def _update_reaction(self, reaction, user, action: str):
+        """Helper method to add or remove a reaction from the database."""
+        if user.bot:
+            return
+
+        try:
+            results = self.db.execute_query(
+                "SELECT reaction_count, reactors FROM messages WHERE message_id = ?",
+                (reaction.message.id,)
+            )
+
+            if not results:
+                if self.dev_mode:
+                    self.logger.warning(f"Message {reaction.message.id} not found in database for reaction update")
+                return
+
+            message_data = results[0]
+            current_count = message_data.get('reaction_count', 0) or 0
+            
+            # Robustly load reactors, handling double-encoded JSON for old data
+            reactors_raw = message_data.get('reactors')
+            current_reactors = []
+            if isinstance(reactors_raw, str):
+                try:
+                    loaded_reactors = json.loads(reactors_raw)
+                    if isinstance(loaded_reactors, str):
+                        # Handle double encoding
+                        current_reactors = json.loads(loaded_reactors)
+                    else:
+                        current_reactors = loaded_reactors
+                except json.JSONDecodeError:
+                    self.logger.warning(f"Could not decode reactors JSON for message {reaction.message.id}: {reactors_raw}")
+                    current_reactors = []
+            elif isinstance(reactors_raw, list):
+                current_reactors = reactors_raw
+
+            if not isinstance(current_reactors, list):
+                self.logger.warning(f"Reactors for message {reaction.message.id} is not a list, resetting.")
+                current_reactors = []
+
+            # Perform the requested action - only update if there's an actual change
+            changed = False
+            if action == 'add':
+                if user.id not in current_reactors:
+                    current_reactors.append(user.id)
+                    changed = True
+            elif action == 'remove':
+                if user.id in current_reactors:
+                    current_reactors.remove(user.id)
+                    changed = True
+            else:
+                return # Invalid action
+
+            # Only update database if there was an actual change
+            if changed:
+                new_count = len(current_reactors)
+                self.db.execute_query(
+                    "UPDATE messages SET reaction_count = ?, reactors = ? WHERE message_id = ?",
+                    (new_count, json.dumps(current_reactors), reaction.message.id)
+                )
+                
+                # Only log in dev mode
+                if self.dev_mode:
+                    self.logger.debug(f"[LoggerCog] Updated reaction {action} for message {reaction.message.id}")
+
+        except Exception as e:
+            self.logger.error(f"[LoggerCog] Error in _update_reaction (action: {action}): {e}", exc_info=True)
+
     # --- Public methods for ReactorCog to call --- 
     async def log_reaction_add(self, reaction, user):
         """Public method to be called by ReactorCog to log reaction additions."""
-        # This method replicates the logic from the original on_reaction_add listener
-        try:
-            self.logger.debug(f"[LoggerCog] log_reaction_add called for Emoji: {reaction.emoji}, User: {user.id}, Message: {reaction.message.id}")
-            # Ignore bot reactions (redundant if ReactorCog already checks, but safe)
-            if user.bot:
-                return
-
-            # Get current message data from database
-            # ... (rest of the logic from the original on_reaction_add) ...
-            self.logger.debug(f"Querying database for message {reaction.message.id}")
-            results = self.db.execute_query("""
-                SELECT reaction_count, reactors
-                FROM messages
-                WHERE message_id = ?
-            """, (reaction.message.id,))
-
-            if not results:
-                self.logger.warning(f"Message {reaction.message.id} not found in database for reaction update")
-                return
-
-            current_count = results[0].get('reaction_count', 0) or 0
-            current_reactors_json = results[0].get('reactors')
-            current_reactors = json.loads(current_reactors_json) if current_reactors_json else []
-            
-            if user.id not in current_reactors:
-                current_reactors.append(user.id)
-                self.logger.debug(f"Added new reactor {user.id} to reactors list")
-
-            self.db.execute_query("""
-                UPDATE messages
-                SET reaction_count = ?, reactors = ?
-                WHERE message_id = ?
-            """, (current_count + 1, json.dumps(current_reactors), reaction.message.id))
-            self.logger.info(f"[LoggerCog] Successfully updated reaction add in DB for message {reaction.message.id}")
-
-        except Exception as e:
-            self.logger.error(f"[LoggerCog] Error in log_reaction_add: {str(e)}")
-            self.logger.error(traceback.format_exc())
+        await self._update_reaction(reaction, user, 'add')
 
     async def log_reaction_remove(self, reaction, user):
         """Public method to be called by ReactorCog to log reaction removals."""
-        # This method replicates the logic from the original on_reaction_remove listener
-        try:
-            self.logger.debug(f"[LoggerCog] log_reaction_remove called for Emoji: {reaction.emoji}, User: {user.id}, Message: {reaction.message.id}")
-            # Ignore bot reactions
-            if user.bot:
-                return
+        await self._update_reaction(reaction, user, 'remove')
 
-            # Get current message data from database
-            # ... (rest of the logic from the original on_reaction_remove) ...
-            self.logger.debug(f"Querying database for message {reaction.message.id}")
-            try:
-                self.logger.debug(f"Querying database for message {reaction.message.id}")
-                results = self.db.execute_query("""
-                    SELECT reaction_count, reactors
-                    FROM messages
-                    WHERE message_id = ?
-                """, (reaction.message.id,))
+    # Real-time message logging disabled - now using hourly batch processing
+    # @commands.Cog.listener()
+    # async def on_message(self, message):
+    #     """Called when a message is sent in any channel the bot can see."""
+    #     try:
+    #         # Skip DMs
+    #         if not message.guild:
+    #             return
 
-                if not results:
-                    self.logger.warning(f"Message {reaction.message.id} not found in database for reaction update")
-                    return
+    #         # Ignore messages from the bot itself or the configured bot user
+    #         if message.author == self.bot.user:
+    #             return
 
-                self.logger.debug(f"Database query results: {results[0]}")
-                current_count = results[0].get('reaction_count', 0) or 0
-                current_reactors_json = results[0].get('reactors')
-                current_reactors = json.loads(current_reactors_json) if current_reactors_json else []
+    #         # Check if _prepare_message_data exists before calling
+    #         if not hasattr(self, '_prepare_message_data'):
+    #             self.logger.error(f"[LoggerCog] CRITICAL: _prepare_message_data method not found!")
+    #             return
                 
-                self.logger.debug(f"Current reaction state - Count: {current_count}, Reactors: {current_reactors}")
-
-                # Add new reactor if not already in list
-                if user.id not in current_reactors:
-                    current_reactors.append(user.id)
-                    self.logger.debug(f"Added new reactor {user.id} to reactors list")
-
-                # Update database
-                self.logger.debug(f"Updating database - New count: {current_count + 1}, New reactors: {current_reactors}")
-                self.db.execute_query("""
-                    UPDATE messages
-                    SET reaction_count = ?, reactors = ?
-                    WHERE message_id = ?
-                """, (current_count + 1, json.dumps(current_reactors), reaction.message.id))
-                self.logger.info(f"Successfully updated reaction in database for message {reaction.message.id}")
-
-            except Exception as e:
-                self.logger.error(f"Error updating reaction: {str(e)}")
-                self.logger.error(traceback.format_exc())
-
-        except Exception as e:
-            self.logger.error(f"Error handling reaction add: {str(e)}")
-            self.logger.error(traceback.format_exc())
-
-    @commands.Cog.listener()
-    async def on_reaction_remove(self, reaction, user):
-        """Handle reaction remove events"""
-        try:
-            self.logger.info(f"Reaction remove detected - Emoji: {reaction.emoji}, User: {user.name} ({user.id}), Message: {reaction.message.id}")
+    #         message_data = await self._prepare_message_data(message)
+    #         await self.db.store_messages([message_data]) 
             
-            # Ignore bot reactions
-            if user.bot:
-                self.logger.debug(f"Ignoring reaction removal from bot user: {user.id}")
-                return
+    #         # Only log in dev mode or for errors
+    #         if self.dev_mode:
+    #             self.logger.debug(f"[LoggerCog] Logged message {message.id} from {message.author.name}")
 
-            # Get current message data from database
-            try:
-                self.logger.debug(f"Querying database for message {reaction.message.id}")
-                results = self.db.execute_query("""
-                    SELECT reaction_count, reactors
-                    FROM messages
-                    WHERE message_id = ?
-                """, (reaction.message.id,))
-
-                if not results:
-                    self.logger.warning(f"Message {reaction.message.id} not found in database for reaction removal")
-                    return
-
-                self.logger.debug(f"Database query results: {results[0]}")
-                current_count = results[0].get('reaction_count', 0) or 0
-                current_reactors_json = results[0].get('reactors')
-                current_reactors = json.loads(current_reactors_json) if current_reactors_json else []
-                
-                self.logger.debug(f"Current reaction state - Count: {current_count}, Reactors: {current_reactors}")
-
-                # Remove reactor if present
-                if user.id in current_reactors:
-                    current_reactors.remove(user.id)
-                    self.logger.debug(f"Removed reactor {user.id} from reactors list")
-
-                # Update database
-                self.logger.debug(f"Updating database - New count: {max(0, current_count - 1)}, New reactors: {current_reactors}")
-                self.db.execute_query("""
-                    UPDATE messages
-                    SET reaction_count = ?, reactors = ?
-                    WHERE message_id = ?
-                """, (max(0, current_count - 1), json.dumps(current_reactors), reaction.message.id))
-                self.logger.info(f"Successfully updated reaction removal in database for message {reaction.message.id}")
-
-            except Exception as e:
-                self.logger.error(f"Error updating reaction removal: {str(e)}")
-                self.logger.error(traceback.format_exc())
-
-        except Exception as e:
-            self.logger.error(f"Error handling reaction remove: {str(e)}")
-            self.logger.error(traceback.format_exc())
-
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        """Called when a message is sent in any channel the bot can see."""
-        self.logger.debug(f"[LoggerCog] on_message triggered for message ID: {message.id} in channel {message.channel.id} by author {message.author.id}")
-        try:
-            # Skip DMs
-            if not message.guild:
-                self.logger.debug(f"[LoggerCog] Skipping DM message {message.id}")
-                return
-
-            # Ignore messages from the bot itself or the configured bot user
-            if message.author == self.bot.user:
-                self.logger.debug(f"[LoggerCog] Ignoring message from self (bot user: {self.bot.user.id})")
-                return
-
-            # TODO: Implement skip_channels check logic here
-            self.logger.debug(f"[LoggerCog] Preparing message data for message {message.id}")
-            # Check if _prepare_message_data exists before calling
-            if not hasattr(self, '_prepare_message_data'):
-                self.logger.error(f"[LoggerCog] CRITICAL: _prepare_message_data method not found on LoggerCog instance!")
-                return
-                
-            message_data = await self._prepare_message_data(message)
-            self.logger.debug(f"[LoggerCog] Message data prepared for message {message.id}. Keys: {list(message_data.keys())}")
-
-            self.logger.debug(f"[LoggerCog] Storing message {message.id} using DB handler: {self.db}")
-            self.db.store_messages([message_data]) 
-            self.logger.info(f"[LoggerCog] Successfully logged message {message.id} from {message.author.name} in #{message.channel.name}")
-
-        except AttributeError as ae:
-             self.logger.error(f"[LoggerCog] AttributeError in on_message for message {message.id}: {ae}")
-             self.logger.error(traceback.format_exc())
-        except Exception as e:
-            self.logger.error(f"[LoggerCog] Unexpected error logging message {message.id}: {e}")
-            self.logger.error(traceback.format_exc())
+    #     except AttributeError as ae:
+    #          self.logger.error(f"[LoggerCog] AttributeError in on_message for message {message.id}: {ae}")
+    #     except Exception as e:
+    #         self.logger.error(f"[LoggerCog] Unexpected error logging message {message.id}: {e}")
 
     async def _prepare_message_data(self, message: discord.Message) -> dict:
         """Convert a discord message into a format suitable for database storage."""
@@ -390,7 +313,7 @@ class LoggerCog(commands.Cog):
                 ],
                 'embeds': [embed.to_dict() for embed in message.embeds],
                 'reaction_count': reaction_count,
-                'reactors': json.dumps(reactors),
+                'reactors': reactors,
                 'reference_id': message.reference.message_id if message.reference else None,
                 'edited_at': message.edited_at.isoformat() if message.edited_at else None,
                 'is_pinned': message.pinned,

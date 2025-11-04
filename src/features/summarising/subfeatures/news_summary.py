@@ -26,8 +26,10 @@ class NewsSummarizer:
 
         if self.dev_mode:
             self.guild_id = int(os.getenv('DEV_GUILD_ID'))
+            self.top_gen_channel_id = int(os.getenv('DEV_TOP_GEN_CHANNEL')) if os.getenv('DEV_TOP_GEN_CHANNEL') else None
         else:
             self.guild_id = int(os.getenv('GUILD_ID'))
+            self.top_gen_channel_id = int(os.getenv('TOP_GEN_CHANNEL')) if os.getenv('TOP_GEN_CHANNEL') else None
 
         self.logger.info("NewsSummarizer initialized.")
 
@@ -169,6 +171,8 @@ DO NOT CHANGE THE MESSAGE COUNT LINE. IT MUST BE EXACTLY AS SHOWN ABOVE. DO NOT 
         Generate a news summary from a given list of messages
         by sending them to the LLM dispatcher in chunks if needed.
         """
+        self.logger.info(f"Starting generate_news_summary with {len(messages) if messages else 0} messages")
+        
         if not messages:
             self.logger.warning("No messages to analyze")
             return "[NO MESSAGES TO ANALYZE]"
@@ -177,12 +181,18 @@ DO NOT CHANGE THE MESSAGE COUNT LINE. IT MUST BE EXACTLY AS SHOWN ABOVE. DO NOT 
         chunk_summaries = []
         previous_summary_json = None
 
+        self.logger.info(f"Processing {len(messages)} messages in chunks of {chunk_size}")
+
         for i in range(0, len(messages), chunk_size):
             chunk = messages[i:i + chunk_size]
-            self.logger.info(f"Summarizing chunk {i//chunk_size + 1} of {(len(messages) + chunk_size - 1)//chunk_size}")
+            chunk_num = i//chunk_size + 1
+            total_chunks = (len(messages) + chunk_size - 1)//chunk_size
+            self.logger.info(f"Summarizing chunk {chunk_num} of {total_chunks} ({len(chunk)} messages)")
             
             # Format the current chunk data for the user prompt
+            self.logger.info(f"Formatting messages for user prompt...")
             user_prompt_content = self.format_messages_for_user_prompt(chunk)
+            self.logger.info(f"User prompt formatted. Length: {len(user_prompt_content)} chars")
             
             # Prepend context from previous chunks if available
             if previous_summary_json:
@@ -200,25 +210,37 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
             
             try:
                 # Call the dispatcher - Updated model name
+                self.logger.info(f"Calling LLM for chunk {chunk_num}/{total_chunks}...")
                 text = await get_llm_response(
                     client_name="claude",
-                    model="claude-3-5-sonnet-latest", 
+                    model="claude-sonnet-4-5-20250929", 
                     system_prompt=self._NEWS_GENERATION_SYSTEM_PROMPT,
                     messages=llm_messages,
                     max_tokens=8192 
                 )
                 
+                self.logger.info(f"LLM response received for chunk {chunk_num}. Length: {len(text) if text else 0} chars")
                 self.logger.debug(f"LLM response for chunk summary: {text}") 
                 
                 # Basic validation of response before adding
                 if text and isinstance(text, str) and text.strip() not in ["[NOTHING OF NOTE]", "[NO SIGNIFICANT NEWS]", "[NO MESSAGES TO ANALYZE]"]:
                     # Attempt to parse to ensure it's likely valid JSON before appending
                     try:
+                        # Strip markdown code blocks if present
+                        clean_text = text.strip()
+                        if clean_text.startswith('```json'):
+                            clean_text = clean_text[7:]  # Remove ```json
+                        if clean_text.startswith('```'):
+                            clean_text = clean_text[3:]  # Remove ```
+                        if clean_text.endswith('```'):
+                            clean_text = clean_text[:-3]  # Remove trailing ```
+                        clean_text = clean_text.strip()
+                        
                         # Check if it starts with '[' - basic JSON array check
-                        if text.strip().startswith('['):
-                             json.loads(text.strip()) # Try parsing
-                             chunk_summaries.append(text.strip()) # Add the valid JSON string
-                             previous_summary_json = text.strip() # Update context for next chunk
+                        if clean_text.startswith('['):
+                             json.loads(clean_text) # Try parsing
+                             chunk_summaries.append(clean_text) # Add the valid JSON string
+                             previous_summary_json = clean_text # Update context for next chunk
                              self.logger.info(f"Successfully processed chunk {i//chunk_size + 1}")
                         else:
                              self.logger.warning(f"LLM response for chunk {i//chunk_size + 1} was not a JSON array: {text[:100]}...")
@@ -351,7 +373,7 @@ Return just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')
             # Call the dispatcher - Updated model name
             text = await get_llm_response(
                 client_name="claude",
-                model="claude-3-5-sonnet-latest", 
+                model="claude-sonnet-4-5-20250929", 
                 system_prompt=system_prompt,
                 messages=messages,
                 max_tokens=8192 
@@ -361,21 +383,85 @@ Return just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')
             # Basic validation
             if text and isinstance(text, str) and text.strip() == "[NO SIGNIFICANT NEWS]":
                 return "[NO SIGNIFICANT NEWS]"
-            elif text and isinstance(text, str) and text.strip().startswith('['):
-                # Try parsing to be sure
-                try:
-                    json.loads(text.strip())
-                    return text.strip() # Return valid JSON string
-                except json.JSONDecodeError:
-                     self.logger.warning(f"Combined summary response looked like JSON but failed parsing: {text[:100]}...")
-                     return "[ERROR PARSING COMBINED SUMMARY]" # Indicate error
+            elif text and isinstance(text, str):
+                # Strip markdown code blocks if present
+                clean_text = text.strip()
+                if clean_text.startswith('```json'):
+                    clean_text = clean_text[7:]  # Remove ```json
+                if clean_text.startswith('```'):
+                    clean_text = clean_text[3:]  # Remove ```
+                if clean_text.endswith('```'):
+                    clean_text = clean_text[:-3]  # Remove trailing ```
+                clean_text = clean_text.strip()
+                
+                if clean_text.startswith('['):
+                    # Try parsing to be sure
+                    try:
+                        json.loads(clean_text)
+                        return clean_text # Return valid JSON string
+                    except json.JSONDecodeError:
+                         self.logger.warning(f"Combined summary response looked like JSON but failed parsing: {text[:100]}...")
+                         return "[ERROR PARSING COMBINED SUMMARY]" # Indicate error
+                else:
+                    self.logger.warning(f"Unexpected response format for combined summary: {text[:100]}...")
+                    return "[ERROR COMBINING SUMMARIES]" # Indicate error
             else:
-                self.logger.warning(f"Unexpected response format for combined summary: {text[:100]}...")
+                self.logger.warning(f"Unexpected response format for combined summary: {text[:100] if text else 'None'}...")
                 return "[ERROR COMBINING SUMMARIES]" # Indicate error
                 
         except Exception as e:
             self.logger.error(f"Error combining summaries via LLM dispatcher: {e}", exc_info=True)
             return "[ERROR COMBINING SUMMARIES]" # Indicate error
+
+    async def find_and_format_top_media(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Finds messages with media and > 5 reactions, and formats them for posting.
+        Each media item is formatted into a separate dictionary for individual posting.
+        Ignores channels with 'nsfw' in the name.
+        """
+        if not self.top_gen_channel_id:
+            self.logger.warning("TOP_GEN_CHANNEL or DEV_TOP_GEN_CHANNEL not set in .env, skipping top media posts.")
+            return []
+
+        top_media_to_post = []
+        for msg in messages:
+            # Note: This requires 'channel_name' to be present in the message dictionary.
+            channel_name = msg.get('channel_name', '').lower()
+            if 'nsfw' in channel_name:
+                continue
+
+            # Check for attachments and reaction count
+            if msg.get('attachments') and msg.get('reaction_count', 0) > 5:
+                try:
+                    attachments = json.loads(msg['attachments']) if isinstance(msg['attachments'], str) else msg['attachments']
+                    if not isinstance(attachments, list) or not attachments:
+                        continue
+                    
+                    comment_text = msg.get('content', '').strip()
+
+                    for attachment in attachments:
+                        if not isinstance(attachment, dict) or 'url' not in attachment:
+                            continue
+
+                        # Each attachment gets its own post
+                        post_data = {
+                            "type": "top_media_post",
+                            "channel_id": self.top_gen_channel_id,
+                            "content": f"Creator: **{msg['author_name']}**\n"
+                                       f"Comments: {comment_text}\n"
+                                       f"Reactions: {msg['reaction_count']}\n"
+                                       f"File:",
+                            "file_url": attachment['url'],
+                            "filename": attachment.get('filename', 'untitled')
+                        }
+                        top_media_to_post.append(post_data)
+
+                except json.JSONDecodeError:
+                    self.logger.warning(f"Could not parse attachments for message {msg['message_id']}: {msg['attachments']}")
+                except Exception as e:
+                    self.logger.error(f"Error processing message {msg['message_id']} for top media: {e}", exc_info=True)
+
+        return top_media_to_post
 
     async def generate_short_summary(self, full_summary: str, message_count: int) -> str:
         """
@@ -390,7 +476,7 @@ Return just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')
             # Call the LLM dispatcher - Use a cheaper/faster model - Updated model name
             text = await get_llm_response(
                 client_name="claude",
-                model="claude-3-5-haiku-latest", 
+                model="claude-sonnet-4-5-20250929", 
                 system_prompt=system_prompt_formatted,
                 messages=messages,
                 max_tokens=512 # Keep lower max tokens for short summary

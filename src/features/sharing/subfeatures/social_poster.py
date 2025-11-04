@@ -60,34 +60,33 @@ def _build_tweet_caption(base_description: str, user_details: Dict, original_con
     if raw_twitter_handle:
         handle_val = raw_twitter_handle.strip()
         extracted_username = None
-        is_url_like_structure = '://' in handle_val or \
-                               'x.com/' in handle_val.lower() or \
-                               'twitter.com/' in handle_val.lower()
-        if handle_val.startswith('@') and is_url_like_structure:
-            handle_val = handle_val[1:]
-        if '://' in handle_val:
-            path_after_scheme = handle_val.split('://', 1)[-1]
-            domain_and_path_lower = path_after_scheme.lower() 
-            if domain_and_path_lower.startswith('twitter.com/'):
-                extracted_username = path_after_scheme[len('twitter.com/'):].split('/')[0]
-            elif domain_and_path_lower.startswith('www.twitter.com/'):
-                extracted_username = path_after_scheme[len('www.twitter.com/'):].split('/')[0]
-            elif domain_and_path_lower.startswith('x.com/'):
-                extracted_username = path_after_scheme[len('x.com/'):].split('/')[0]
-            elif domain_and_path_lower.startswith('www.x.com/'):
-                extracted_username = path_after_scheme[len('www.x.com/'):].split('/')[0]
-        elif 'x.com/' in handle_val.lower():
-            match_pattern = 'x.com/'
-            start_idx = handle_val.lower().find(match_pattern) + len(match_pattern)
-            extracted_username = handle_val[start_idx:].split('/')[0]
-        elif 'twitter.com/' in handle_val.lower():
-            match_pattern = 'twitter.com/'
-            start_idx = handle_val.lower().find(match_pattern) + len(match_pattern)
-            extracted_username = handle_val[start_idx:].split('/')[0]
+        
+        # If it's already an @ handle, just use it
+        if handle_val.startswith('@'):
+            extracted_username = handle_val[1:]  # Remove the @ for processing
+        # If it's a URL, extract the username from the end
+        elif any(domain in handle_val.lower() for domain in ['twitter.com/', 'x.com/', '://']):
+            # Handle full URLs
+            if '://' in handle_val:
+                path_after_scheme = handle_val.split('://', 1)[-1]
+            else:
+                path_after_scheme = handle_val
+                
+            # Extract username from various URL patterns
+            path_lower = path_after_scheme.lower()
+            if 'twitter.com/' in path_lower:
+                start_idx = path_lower.find('twitter.com/') + len('twitter.com/')
+                extracted_username = path_after_scheme[start_idx:].split('/')[0]
+            elif 'x.com/' in path_lower:
+                start_idx = path_lower.find('x.com/') + len('x.com/')
+                extracted_username = path_after_scheme[start_idx:].split('/')[0]
         else:
+            # Plain username without @ - just use it
             extracted_username = handle_val
+            
         if extracted_username:
-            cleaned_username = extracted_username.split('?')[0].split('#')[0]
+            # Clean up the username (remove query params, fragments, extra @)
+            cleaned_username = extracted_username.split('?')[0].split('#')[0].strip()
             if cleaned_username.startswith('@'):
                 cleaned_username = cleaned_username[1:]
             if cleaned_username:
@@ -534,9 +533,4 @@ async def post_to_youtube_via_zapier(user_details: Dict, attachments: List[Dict]
         response.raise_for_status()
         logger.info(f"Successfully sent post data to YouTube Zapier webhook for jump_url: {jump_url}. Status: {response.status_code}")
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error posting to YouTube Zapier webhook: {e}")
-
-    if not tweet_url:
-        logger.error(f"Failed to post tweet for attachments: {[att.get('filename') for att in attachments]}")
-    
-    return tweet_url 
+        logger.error(f"Error posting to YouTube Zapier webhook: {e}") 

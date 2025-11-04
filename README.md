@@ -23,7 +23,13 @@ Want to see it in action? Join the [Banodoco Discord server](https://discord.gg/
 
 ## Setup
 
-### Installation
+### Deployment Options
+
+You can run this bot either:
+- **Locally** - On your own machine (see Local Installation below)
+- **Railway** - Deploy to the cloud with one click (see [RAILWAY_DEPLOYMENT.md](RAILWAY_DEPLOYMENT.md))
+
+### Local Installation
 
 1. Clone the repository:
 ```bash
@@ -42,6 +48,37 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 Then, open the `.env` file and fill in the required values. Refer to the comments in `.env.example` for guidance on each variable.
+
+### Railway Deployment
+
+For deploying to Railway (recommended for production):
+
+1. See the complete guide: [RAILWAY_DEPLOYMENT.md](RAILWAY_DEPLOYMENT.md)
+2. Quick start: [RAILWAY_QUICK_START.md](RAILWAY_QUICK_START.md)
+3. Railway offers:
+   - ✅ Automatic deployments from GitHub
+   - ✅ Free tier available
+   - ✅ Built-in logging and monitoring
+   - ✅ Easy environment variable management
+   - ✅ Persistent storage options
+
+### Database Storage
+
+The bot supports multiple storage backends:
+
+- **Supabase (Recommended)**: Cloud PostgreSQL with automatic backups
+  - See [SUPABASE_MIGRATION.md](SUPABASE_MIGRATION.md) for migration guide
+  - Free tier: 500MB storage, perfect for most Discord servers
+  - Better scalability and reliability than SQLite
+  
+- **SQLite**: Local database, good for development
+  - Default option for local testing
+  - Easy to get started, no external dependencies
+
+**Migrating to Supabase?** Run the automated migration:
+```bash
+python scripts/migrate_to_supabase.py
+```
 
 ### Running the Bot
 

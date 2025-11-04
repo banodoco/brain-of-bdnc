@@ -52,7 +52,7 @@ Please review and update your details/preferences below. Clicking 'Allow Feature
 
 # --- Discord UI Components ---
 
-class UpdateSocialsModal(discord.ui.Modal, title='Update Your Preferences'):
+class UpdateSocialsModal(discord.ui.Modal):
     twitter_input = discord.ui.TextInput(
         label='Twitter Handle (e.g., @username)',
         required=False,
@@ -88,7 +88,7 @@ class UpdateSocialsModal(discord.ui.Modal, title='Update Your Preferences'):
     )
 
     def __init__(self, user_details: dict, db_handler: DatabaseHandler, original_message: discord.Message, parent_view: 'SharingRequestView'):
-        super().__init__()
+        super().__init__(title='Update Your Preferences')
         self.user_details = user_details
         self.db_handler = db_handler
         self.original_message = original_message # Message that triggered the DM
