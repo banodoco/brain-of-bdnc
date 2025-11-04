@@ -8,8 +8,8 @@ from typing import List, Dict, Any, Union, Optional
 from dotenv import load_dotenv
 
 # Imports based on the user-provided example
-from google import genai
-from google.genai import types
+import google.generativeai as genai
+from google.generativeai import types
 # from google.generativeai.types import Part, GenerationConfig # Remove these imports
 
 from .base_client import BaseLLMClient
