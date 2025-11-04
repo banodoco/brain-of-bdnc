@@ -5,11 +5,11 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # Install system dependencies required by the bot
-# - libgl1-mesa-glx: Required for OpenCV (opencv-python-headless)
+# - libgl1: Required for OpenCV (opencv-python-headless)
 # - libglib2.0-0: Required for OpenCV
 # - ffmpeg: Required for moviepy video processing
 RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
