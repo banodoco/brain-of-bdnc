@@ -43,22 +43,30 @@ This document provides an overview of the `bndc` code-base, detailing the purpos
 │   ├── test_supabase_sync.py        # Test script for Supabase sync functionality
 │   └── setup_supabase_tables.py     # Script to create Supabase tables programmatically
 │
+├── supabase/                    # Supabase CLI configuration and migrations
+│   ├── config.toml                  # Supabase project configuration
+│   └── migrations/                  # SQL migration files for Supabase schema changes
+│       └── 20251104154121_add_summary_tables.sql  # Adds daily_summaries and channel_summary tables
+│
 ├── src/                         # Core application package
 │   ├── __init__.py                  # Marks directory as importable module
 │   │
 │   ├── common/                      # Shared infrastructure, utilities & abstractions
 │   │   ├── __init__.py                  # Exposes helper imports
+│   │   ├── archive_runner.py            # Unified archiving interface for scheduled/on-demand archiving
 │   │   ├── base_bot.py                  # `BaseDiscordBot` – subclass of `commands.Bot` adding common helpers
-│   │   ├── constants.py                 # Global constant values (e.g. max lengths). Developers should define new global, non-configurable constants here to avoid magic numbers/strings.
-│   │   ├── db_handler.py                # Thin wrapper around SQLite queries & schema management. All database interactions should go through this handler. Avoid raw SQL queries directly in feature code.
+│   │   ├── constants.py                 # Global constant values (e.g. max lengths, storage backend constants). Developers should define new global, non-configurable constants here to avoid magic numbers/strings.
+│   │   ├── db_handler.py                # Database abstraction layer supporting both SQLite and Supabase. All database interactions should go through this handler. Avoid raw SQL queries directly in feature code.
+│   │   ├── discord_client.py            # (Placeholder) extended Discord client if needed
 │   │   ├── discord_utils.py             # Utilities for common Discord API interactions. Developers should prefer using helpers like 'safe_send_message' from this module for sending messages to ensure consistency, rate limiting, and error handling.
 │   │   ├── error_handler.py             # Custom exception & error reporting utilities. Utilize provided utilities (e.g., `@handle_errors` decorator) for consistent error handling and reporting.
 │   │   ├── errors.py                    # Domain-specific error classes. Define and use these for domain-specific exceptions to provide more context than generic errors.
 │   │   ├── log_handler.py               # Centralised logging setup. Ensure loggers are named appropriately (e.g., logging.getLogger(__name__)) to benefit from the centralized configuration provided by this handler.
 │   │   ├── rate_limiter.py              # Simple in-memory rate-limiting helper. Use for external API calls or frequent Discord actions, often via bot.rate_limiter or integrated utilities.
 │   │   ├── schema.py                    # Pydantic data models mirroring DB tables. Use these for data validation, defining structured data, and for serialization/deserialization with the database or APIs.
+│   │   ├── storage_handler.py           # Direct Supabase write operations (upsert, delete)
+│   │   ├── supabase_query_handler.py    # Translates SQL queries to Supabase REST API calls
 │   │   ├── supabase_sync_handler.py     # Background handler for automatic Supabase synchronization
-│   │   ├── discord_client.py            # (Placeholder) extended Discord client if needed
 │   │   └── llm/                         # Language-model client abstractions
 │   │       ├── __init__.py                  # Factory returning correct LLM client. Interact with LLMs via the factory/helper functions provided here to abstract specific client implementations and centralize configuration.
 │   │       ├── base_client.py               # Interface for all LLM providers. New LLM client implementations must adhere to this interface.
@@ -67,13 +75,17 @@ This document provides an overview of the `bndc` code-base, detailing the purpos
 │   │       └── gemini_client.py             # Google Gemini implementation
 │   │
 │   └── features/                    # Modular bot capabilities (each in its own sub-package). Major new features should follow this modular structure, often with a core logic file and a _cog.py for Discord integration. Complex actions can be further modularized into a subfeatures/ directory within the feature's package. WE should try to fit new features into existing capabilities where possible.
+│       ├── admin/                      # Owner / admin only commands
+│       │   ├── __init__.py                # N/A
+│       │   └── admin_cog.py              # Commands to reload cogs, run diagnostics, manage Supabase sync, etc.
+│       │
 │       ├── answering/                  # Q&A over archived content
 │       │   ├── __init__.py                # Helper re-exports
 │       │   └── answerer.py               # Implements retrieval augmented generation to answer queries
 │       │
-│       ├── admin/                      # Owner / admin only commands
+│       ├── archive/                    # Discord server archiving and indexing
 │       │   ├── __init__.py                # N/A
-│       │   └── admin_cog.py              # Commands to reload cogs, run diagnostics, manage Supabase sync, etc.
+│       │   └── archive_cog.py            # Commands to manually trigger archiving operations
 │       │
 │       ├── curating/                   # Highlight & curation logic
 │       │   ├── __init__.py                # N/A
