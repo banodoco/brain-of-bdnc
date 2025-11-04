@@ -1240,8 +1240,8 @@ def main():
         logger.info("Running in development mode")
     
     # Set storage backend (defaults to supabase)
-    os.environ['STORAGE_BACKEND'] = args.storage_backend
-    logger.info(f"Storage backend set to: {args.storage_backend}")
+        os.environ['STORAGE_BACKEND'] = args.storage_backend
+        logger.info(f"Storage backend set to: {args.storage_backend}")
     
     bot = None
     try:

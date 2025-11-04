@@ -654,9 +654,10 @@ class SupabaseQueryHandler:
             import re
             sql_lower = sql.lower()
             
-            # Extract parameters - separate channel_id and timestamp
+            # Extract parameters - separate channel_id, message_id and timestamp
             time_filter = None
             channel_id_from_params = None
+            message_id_from_params = None
             
             if params:
                 for p in params:
@@ -666,12 +667,16 @@ class SupabaseQueryHandler:
                     # Check if it's a channel/message ID (long integer)
                     elif isinstance(p, (int, str)) and len(str(p)) >= 15:
                         try:
-                            channel_id_from_params = int(p)
+                            # Determine if it's message_id or channel_id based on SQL
+                            if 'message_id' in sql_lower and 'where message_id' in sql_lower:
+                                message_id_from_params = int(p)
+                            else:
+                                channel_id_from_params = int(p)
                         except:
                             pass
             
             # Also try to extract channel_id from SQL WHERE clause
-            if not channel_id_from_params:
+            if not channel_id_from_params and not message_id_from_params:
                 # Match patterns like: WHERE channel_id IN (123) or WHERE channel_id = 123
                 channel_match = re.search(r'channel_id\s+(?:in\s*\(|=)\s*(\d+)', sql_lower)
                 if channel_match:
@@ -680,18 +685,32 @@ class SupabaseQueryHandler:
                         logger.info(f"🔍 Extracted channel_id from SQL: {channel_id_from_params}")
                     except:
                         pass
-                else:
-                    logger.warning(f"⚠️ No channel_id found in SQL WHERE clause!")
+                
+                # Match patterns like: WHERE message_id = 123
+                message_match = re.search(r'message_id\s*=\s*(\d+)', sql_lower)
+                if message_match:
+                    try:
+                        message_id_from_params = int(message_match.group(1))
+                        logger.info(f"🔍 Extracted message_id from SQL: {message_id_from_params}")
+                    except:
+                        pass
+                
+                if not channel_id_from_params and not message_id_from_params:
+                    logger.warning(f"⚠️ No channel_id or message_id found in SQL WHERE clause!")
             
             # Start with base query
             query = self.supabase.table('discord_messages').select('*')
             
+            # Handle message_id filter (takes priority)
+            if message_id_from_params:
+                query = query.eq('message_id', str(message_id_from_params))
+                logger.info(f"✅ Applying message filter: message_id = {message_id_from_params}")
             # Handle channel_id filter
-            if channel_id_from_params:
+            elif channel_id_from_params:
                 query = query.eq('channel_id', str(channel_id_from_params))
                 logger.info(f"✅ Applying channel filter: channel_id = {channel_id_from_params}")
             else:
-                logger.warning(f"⚠️ No channel filter applied - will fetch ALL channels!")
+                logger.warning(f"⚠️ No message/channel filter applied - will fetch ALL messages!")
             
             # Try to extract time filter from SQL
             time_filter_from_sql = None
