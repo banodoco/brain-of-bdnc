@@ -538,10 +538,10 @@ class MessageArchiver(BaseDiscordBot):
                 # Call archive_channel for the item's ID
                 await self.archive_channel(item.id) 
                 # Log running total after the item is done
-                logger.info(f"Running Total New Messages Archived: {self.total_messages_archived}") 
+                logger.info(f"📊 Running Total New Messages Archived: {self.total_messages_archived} (Storage: {os.getenv('STORAGE_BACKEND', 'sqlite')})") 
             
             logger.info("Archiving complete, shutting down bot")
-            logger.info(f"Final Total New Messages Archived: {self.total_messages_archived}") 
+            logger.info(f"🎉 FINAL TOTAL: {self.total_messages_archived} new messages archived to {os.getenv('STORAGE_BACKEND', 'sqlite')}") 
             await self.close()
 
         except Exception as e:
@@ -752,7 +752,7 @@ class MessageArchiver(BaseDiscordBot):
                     except Exception as e:
                         logger.error(f"Failed to store final date range batch: {e}")
 
-                logger.info(f"Finished date range archive for #{channel.name}. Processed {message_counter} messages, found {new_message_count} new.")
+                logger.info(f"✅ Date range archive complete for #{channel.name} - Processed {message_counter} messages, saved {new_message_count} new to {os.getenv('STORAGE_BACKEND', 'sqlite')}")
                 # Log final 100% progress
                 if self.total_days_in_range > 0:
                      logger.info(f"Progress for #{channel.name}: Day {self.total_days_in_range}/{self.total_days_in_range} (100.0%) - Completed.")
@@ -852,7 +852,7 @@ class MessageArchiver(BaseDiscordBot):
                                                     new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
                                                     new_message_count += len(new_messages)
                                                     
-                                                    logger.debug(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
+                                                    logger.info(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new, {len(pre_existing)} existing)")
                                                     await self._db_operation(
                                                         lambda db: db.store_messages(processed_messages)
                                                     )
@@ -950,7 +950,7 @@ class MessageArchiver(BaseDiscordBot):
                                     new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
                                     new_message_count += len(new_messages)
                                     
-                                    logger.debug(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
+                                    logger.info(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new, {len(pre_existing)} existing)")
                                     await self._db_operation(
                                         lambda db: db.store_messages(processed_messages)
                                     )
@@ -1021,7 +1021,7 @@ class MessageArchiver(BaseDiscordBot):
                                     new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
                                     new_message_count += len(new_messages)
                                     
-                                    logger.debug(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
+                                    logger.info(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new, {len(pre_existing)} existing)")
                                     await self._db_operation(
                                         lambda db: db.store_messages(processed_messages)
                                     )
@@ -1148,7 +1148,7 @@ class MessageArchiver(BaseDiscordBot):
                             logger.info(f"Finished gap search in #{channel.name}, found {gap_message_count} messages")
                 
                 logger.info(f"Found {new_message_count} new messages to archive in #{channel.name}")
-                logger.info(f"Archive complete - processed {new_message_count} new messages")
+                logger.info(f"✅ Archive complete for #{channel.name} - {new_message_count} new messages saved to {os.getenv('STORAGE_BACKEND', 'sqlite')}")
                 self.total_messages_archived += new_message_count
                 
                 channel_duration = (datetime.now(timezone.utc) - channel_start_time).total_seconds()
