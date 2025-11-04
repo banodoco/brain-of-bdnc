@@ -705,6 +705,13 @@ class DatabaseHandler:
         return self._execute_with_retry(get_messages_operation)
 
     def get_messages_by_ids(self, message_ids: List[int]) -> List[Dict]:
+        # Route to Supabase if configured
+        if self._should_use_supabase_for_reads():
+            return self._run_async_in_thread(
+                self.query_handler.get_messages_by_ids(message_ids)
+            )
+        
+        # Otherwise use SQLite
         def get_messages_operation(conn):
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
