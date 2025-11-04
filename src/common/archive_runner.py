@@ -83,24 +83,31 @@ class ArchiveRunner:
             all_ok = True
             for cmd in commands_to_run:
                 logger.info(f"Running archive command: {' '.join(cmd)}")
-                process = subprocess.run(
+                
+                # Stream output in real-time instead of capturing it
+                process = subprocess.Popen(
                     cmd,
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     text=True,
                     cwd=self.project_root,
-                    timeout=3600
+                    bufsize=1,
+                    universal_newlines=True
                 )
+                
+                # Stream output line by line
+                if process.stdout:
+                    for line in iter(process.stdout.readline, ''):
+                        if line:
+                            logger.info(f"[Archive] {line.rstrip()}")
+                
+                process.wait(timeout=3600)
+                
                 if process.returncode == 0:
                     logger.info("Archive process completed successfully")
-                    if process.stdout:
-                        logger.debug(f"Archive output: {process.stdout}")
                 else:
                     all_ok = False
                     logger.error(f"Archive process failed with return code {process.returncode}")
-                    if process.stderr:
-                        logger.error(f"Archive error: {process.stderr}")
-                    if process.stdout:
-                        logger.error(f"Archive output: {process.stdout}")
             return all_ok
         except subprocess.TimeoutExpired:
             logger.error("Archive process timed out after 1 hour")
