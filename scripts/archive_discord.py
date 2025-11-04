@@ -977,7 +977,7 @@ class MessageArchiver(BaseDiscordBot):
                                 new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing]
                                 new_message_count += len(new_messages)
                                 
-                                logger.debug(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
+                                logger.info(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new, {len(pre_existing)} existing)")
                                 await self._db_operation(
                                     lambda db: db.store_messages(processed_messages)
                                 )
