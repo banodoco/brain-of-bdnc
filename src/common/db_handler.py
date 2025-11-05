@@ -512,6 +512,20 @@ class DatabaseHandler:
         return self._execute_with_retry(get_ids_operation)
 
     def get_message_date_range(self, channel_id: int) -> Tuple[Optional[datetime], Optional[datetime]]:
+        """Get the date range of messages in a channel. Routes to Supabase if configured."""
+        # Use Supabase if configured
+        if self._should_use_supabase_for_reads():
+            try:
+                return self._run_async_in_thread(
+                    self.query_handler.get_message_date_range(channel_id)
+                )
+            except Exception as e:
+                logger.error(f"Supabase query failed for get_message_date_range: {e}")
+                if self.storage_backend == 'supabase':
+                    raise
+                logger.warning("Falling back to SQLite for get_message_date_range")
+        
+        # Use SQLite
         def get_range_operation(conn):
             cursor = conn.cursor()
             cursor.execute("SELECT MIN(created_at), MAX(created_at) FROM messages WHERE channel_id = ?", (channel_id,))
