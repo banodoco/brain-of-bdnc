@@ -52,6 +52,52 @@ class SupabaseQueryHandler:
             logger.error(f"Failed to initialize Supabase client for queries: {e}", exc_info=True)
             raise
     
+    def _parse_timestamp(self, timestamp_str: str) -> datetime:
+        """
+        Parse a timestamp string from Supabase, handling variable decimal places.
+        
+        Python's fromisoformat() requires 0, 3, or 6 decimal places for fractional seconds,
+        but Supabase can return timestamps with 2 decimal places (e.g., '2025-09-09T19:41:22.91+00:00').
+        This method normalizes the timestamp to 6 decimal places before parsing.
+        
+        Args:
+            timestamp_str: ISO format timestamp string (may end with 'Z' or timezone offset)
+            
+        Returns:
+            Parsed datetime object
+        """
+        # Replace 'Z' with '+00:00' for UTC
+        timestamp_str = timestamp_str.replace('Z', '+00:00')
+        
+        # Find the decimal point in the fractional seconds
+        if '.' in timestamp_str:
+            # Split on the timezone indicator (+ or -)
+            if '+' in timestamp_str:
+                datetime_part, tz_part = timestamp_str.rsplit('+', 1)
+                tz_separator = '+'
+            elif timestamp_str.count('-') > 2:  # More than date separators
+                datetime_part, tz_part = timestamp_str.rsplit('-', 1)
+                tz_separator = '-'
+            else:
+                datetime_part = timestamp_str
+                tz_part = None
+                tz_separator = None
+            
+            # Split the datetime part on the decimal point
+            if '.' in datetime_part:
+                base_part, fractional = datetime_part.split('.', 1)
+                # Pad or truncate to 6 digits
+                fractional = fractional.ljust(6, '0')[:6]
+                datetime_part = f"{base_part}.{fractional}"
+            
+            # Reconstruct the full timestamp
+            if tz_part:
+                timestamp_str = f"{datetime_part}{tz_separator}{tz_part}"
+            else:
+                timestamp_str = datetime_part
+        
+        return datetime.fromisoformat(timestamp_str)
+    
     async def get_last_message_id(self, channel_id: int) -> Optional[int]:
         """Get the most recent message ID for a channel."""
         try:
@@ -187,9 +233,9 @@ class SupabaseQueryHandler:
             max_date = None
             
             if min_result.data:
-                min_date = datetime.fromisoformat(min_result.data[0]['created_at'].replace('Z', '+00:00'))
+                min_date = self._parse_timestamp(min_result.data[0]['created_at'])
             if max_result.data:
-                max_date = datetime.fromisoformat(max_result.data[0]['created_at'].replace('Z', '+00:00'))
+                max_date = self._parse_timestamp(max_result.data[0]['created_at'])
             
             return (min_date, max_date)
         except Exception as e:

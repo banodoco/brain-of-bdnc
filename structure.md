@@ -29,6 +29,7 @@ This document provides an overview of the `bndc` code-base, detailing the purpos
 │   ├── cleanup_empty_threads.py     # Remove defunct Discord threads
 │   ├── cleanup_test_data.py         # Purge development data
 │   ├── create_dev_db.py            # Generate a fresh dev SQLite database
+│   ├── delete_user_messages.py      # Delete messages from a specific user within a time range (dry run by default)
 │   ├── create_supabase_schema.sql   # SQL script to create Supabase tables for Discord data sync
 │   ├── download_files.py            # Download attachments referenced in the DB
 │   ├── download_videos.py           # Fetch remote videos for local storage

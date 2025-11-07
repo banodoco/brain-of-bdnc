@@ -137,7 +137,6 @@ scripts/channel_message_retriever.py
 scripts/check_channel_format.py
 scripts/check_single_message.py
 scripts/delete_recent_bot_messages.py
-scripts/delete_user_messages.py
 scripts/download_channel_videos.py
 scripts/find_supabase_connection.py
 scripts/find_supabase_connection_fixed.py
