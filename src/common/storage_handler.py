@@ -57,8 +57,13 @@ class StorageHandler:
             raise ValueError("Supabase credentials required when using supabase or both storage backends")
         
         try:
-            options = ClientOptions(auto_refresh_token=False, postgrest_client_timeout=60)
-            self.supabase_client = create_client(supabase_url, supabase_key, options=options)
+            # Try with ClientOptions (newer API)
+            try:
+                options = ClientOptions(auto_refresh_token=False, postgrest_client_timeout=60)
+                self.supabase_client = create_client(supabase_url, supabase_key, options=options)
+            except (AttributeError, TypeError):
+                # Fall back to creating client without options if ClientOptions API has changed
+                self.supabase_client = create_client(supabase_url, supabase_key)
             logger.debug("Supabase client initialized successfully for direct writes")
         except Exception as e:
             logger.error(f"Failed to initialize Supabase client: {e}", exc_info=True)

@@ -127,10 +127,13 @@ class OpenMuseInteractor:
             return None
         try:
             self.logger.info("[OpenMuseInteractor] Initializing Supabase client.")
-            # Set auto_refresh_token to False for service key usage
-            # Increase timeout if needed (default is 10 seconds)
-            options = ClientOptions(auto_refresh_token=False, postgrest_client_timeout=30) # Increased timeout
-            client: Client = create_client(self.supabase_url, self.supabase_key, options=options)
+            # Try with ClientOptions (newer API)
+            try:
+                options = ClientOptions(auto_refresh_token=False, postgrest_client_timeout=30)
+                client: Client = create_client(self.supabase_url, self.supabase_key, options=options)
+            except (AttributeError, TypeError):
+                # Fall back to creating client without options if ClientOptions API has changed
+                client: Client = create_client(self.supabase_url, self.supabase_key)
             self.logger.info("[OpenMuseInteractor] Supabase client initialized successfully.")
             return client
         except Exception as e:

@@ -45,8 +45,13 @@ class SupabaseQueryHandler:
             raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set for Supabase queries")
         
         try:
-            options = ClientOptions(auto_refresh_token=False, postgrest_client_timeout=60)
-            self.supabase = create_client(supabase_url, supabase_key, options=options)
+            # Try with ClientOptions (newer API)
+            try:
+                options = ClientOptions(auto_refresh_token=False, postgrest_client_timeout=60)
+                self.supabase = create_client(supabase_url, supabase_key, options=options)
+            except (AttributeError, TypeError):
+                # Fall back to creating client without options if ClientOptions API has changed
+                self.supabase = create_client(supabase_url, supabase_key)
             logger.debug("SupabaseQueryHandler initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize Supabase client for queries: {e}", exc_info=True)
