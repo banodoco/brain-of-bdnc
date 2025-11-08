@@ -34,9 +34,9 @@ class BaseDiscordBot(commands.Bot):
             )
 
             timeout = aiohttp.ClientTimeout(
-                total=60,   # Total timeout for request
-                connect=30, # Connection timeout
-                sock_read=30,
+                total=120,  # Total timeout for request (increased for slower networks)
+                connect=60, # Connection timeout (increased from 30s)
+                sock_read=60,
             )
 
             kwargs.update({
