@@ -264,6 +264,41 @@ def main():
     if args.storage_backend:
         os.environ['STORAGE_BACKEND'] = args.storage_backend
 
+    # Check for date-based environment variable triggers
+    # Priority: SUMMARY_WITH_ARCHIVE_DATE > JUST_SUMMARY_DATE
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    
+    # Check SUMMARY_WITH_ARCHIVE_DATE first (archive + summary)
+    env_archive_date = os.getenv('SUMMARY_WITH_ARCHIVE_DATE')
+    if env_archive_date:
+        env_archive_date = env_archive_date.strip()
+        try:
+            parsed_date = datetime.strptime(env_archive_date, '%Y-%m-%d')
+            parsed_date_str = parsed_date.strftime('%Y-%m-%d')
+            
+            if parsed_date_str == today_str:
+                print(f"✓ SUMMARY_WITH_ARCHIVE_DATE={env_archive_date} matches today's date ({today_str}). Triggering archive + summary...")
+                args.summary_with_archive = True
+            else:
+                print(f"ℹ SUMMARY_WITH_ARCHIVE_DATE={env_archive_date} set but doesn't match today ({today_str}). Skipping auto-trigger.")
+        except ValueError:
+            print(f"⚠ WARNING: SUMMARY_WITH_ARCHIVE_DATE='{env_archive_date}' is not a valid date format (expected YYYY-MM-DD). Ignoring.")
+    
+    # Check JUST_SUMMARY_DATE only if SUMMARY_WITH_ARCHIVE_DATE didn't trigger
+    elif os.getenv('JUST_SUMMARY_DATE'):
+        env_summary_date = os.getenv('JUST_SUMMARY_DATE').strip()
+        try:
+            parsed_date = datetime.strptime(env_summary_date, '%Y-%m-%d')
+            parsed_date_str = parsed_date.strftime('%Y-%m-%d')
+            
+            if parsed_date_str == today_str:
+                print(f"✓ JUST_SUMMARY_DATE={env_summary_date} matches today's date ({today_str}). Triggering summary only...")
+                args.summary_now = True
+            else:
+                print(f"ℹ JUST_SUMMARY_DATE={env_summary_date} set but doesn't match today ({today_str}). Skipping auto-trigger.")
+        except ValueError:
+            print(f"⚠ WARNING: JUST_SUMMARY_DATE='{env_summary_date}' is not a valid date format (expected YYYY-MM-DD). Ignoring.")
+
     # Handle the combined flag
     if args.summary_with_archive:
         args.summary_now = True
