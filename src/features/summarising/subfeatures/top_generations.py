@@ -28,7 +28,7 @@ class TopGenerations:
     ):
         """
         (4) Send the top X gens post. 
-        We'll just pick top `limit` video-type messages with >= 3 unique reactors in the last 24 hours,
+        We'll just pick top `limit` video-type messages with >= 5 unique reactors in the last 24 hours,
         and post them in a thread.
         """
         try:

@@ -726,14 +726,28 @@ class SupabaseQueryHandler:
                         except:
                             pass
             
-            # Also try to extract channel_id from SQL WHERE clause
+            # Also try to extract channel_id(s) from SQL WHERE clause
+            channel_ids_from_params = []
             if not channel_id_from_params and not message_id_from_params:
-                # Match patterns like: WHERE channel_id IN (123) or WHERE channel_id = 123
-                channel_match = re.search(r'channel_id\s+(?:in\s*\(|=)\s*(\d+)', sql_lower)
-                if channel_match:
+                # First try to match IN clause with multiple IDs: channel_id IN (123, 456, 789)
+                in_match = re.search(r'channel_id\s+in\s*\(([^)]+)\)', sql_lower)
+                if in_match:
                     try:
-                        channel_id_from_params = int(channel_match.group(1))
-                        logger.info(f"🔍 Extracted channel_id from SQL: {channel_id_from_params}")
+                        # Extract all channel IDs from the IN clause
+                        ids_str = in_match.group(1)
+                        channel_ids_from_params = [int(cid.strip()) for cid in ids_str.split(',') if cid.strip().isdigit()]
+                        logger.info(f"🔍 Extracted channel_ids from SQL IN clause: {channel_ids_from_params}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to parse channel_ids from IN clause: {e}")
+                
+                # If no IN clause, try single equality: channel_id = 123
+                if not channel_ids_from_params:
+                    eq_match = re.search(r'channel_id\s*=\s*(\d+)', sql_lower)
+                    if eq_match:
+                    try:
+                            channel_id_from_params = int(eq_match.group(1))
+                            channel_ids_from_params = [channel_id_from_params]
+                            logger.info(f"🔍 Extracted single channel_id from SQL: {channel_id_from_params}")
                     except:
                         pass
                 
@@ -746,7 +760,7 @@ class SupabaseQueryHandler:
                     except:
                         pass
                 
-                if not channel_id_from_params and not message_id_from_params:
+                if not channel_ids_from_params and not message_id_from_params:
                     logger.warning(f"⚠️ No channel_id or message_id found in SQL WHERE clause!")
             
             # Start with base query
@@ -756,10 +770,15 @@ class SupabaseQueryHandler:
             if message_id_from_params:
                 query = query.eq('message_id', str(message_id_from_params))
                 logger.info(f"✅ Applying message filter: message_id = {message_id_from_params}")
-            # Handle channel_id filter
-            elif channel_id_from_params:
-                query = query.eq('channel_id', str(channel_id_from_params))
-                logger.info(f"✅ Applying channel filter: channel_id = {channel_id_from_params}")
+            # Handle channel_id filter (single or multiple)
+            elif channel_ids_from_params:
+                if len(channel_ids_from_params) == 1:
+                    query = query.eq('channel_id', str(channel_ids_from_params[0]))
+                    logger.info(f"✅ Applying channel filter: channel_id = {channel_ids_from_params[0]}")
+                else:
+                    # Use .in_() for multiple channel IDs
+                    query = query.in_('channel_id', [str(cid) for cid in channel_ids_from_params])
+                    logger.info(f"✅ Applying channel filter: channel_id IN {channel_ids_from_params}")
             else:
                 logger.warning(f"⚠️ No message/channel filter applied - will fetch ALL messages!")
             
