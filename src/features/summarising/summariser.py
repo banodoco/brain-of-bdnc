@@ -1005,16 +1005,25 @@ class ChannelSummarizer:
                 self.logger.info(f"Processing {len(active_channels)} channel{'s' if len(active_channels) != 1 else ''} with 25+ messages")
                 
                 for i, channel_info in enumerate(active_channels):
+                    # Initialize all iteration-specific variables at the start to prevent leakage
+                    messages = None
+                    channel_summary = None
+                    channel_obj = None
+                    formatted_summary = None
+                    thread = None
+                    
                     channel_id = channel_info['channel_id']
                     channel_name = channel_info.get('channel_name', 'Unknown')
                     post_channel_id = channel_info.get('post_channel_id', channel_id)
                     
+                    self.logger.info(f"[ITERATION {i+1}/{len(active_channels)}] ===== START PROCESSING =====")
+                    self.logger.info(f"[ITERATION {i+1}] channel_id={channel_id}, channel_name={channel_name}, post_channel_id={post_channel_id}")
                     self.logger.debug(f"[{i+1}/{len(active_channels)}] Processing channel {channel_id} ({channel_name})")
                     
                     try:
-                        self.logger.info(f"Getting message history for channel {channel_id} from last 24 hours...")
+                        self.logger.info(f"[ITERATION {i+1}] Getting message history for channel {channel_id} from last 24 hours...")
                         messages = await self.get_channel_history(channel_id)
-                        self.logger.info(f"Retrieved {len(messages) if messages else 0} messages for channel {channel_id} from last 24 hours")
+                        self.logger.info(f"[ITERATION {i+1}] Retrieved {len(messages) if messages else 0} messages for channel {channel_id} from last 24 hours")
                         
                         if not messages or len(messages) < 25:
                              self.logger.info(f"⚠️ Skipping channel {channel_id}: Not enough messages from last 24 hours ({len(messages) if messages else 0}/25 required).")
@@ -1031,11 +1040,12 @@ class ChannelSummarizer:
                             # Skip forum channels - don't post updates to them
                             self.logger.info(f"Skipping ForumChannel {post_channel_id} for channel {channel_id} - forum channels are not supported for summary posting")
                         else:
+                            self.logger.info(f"[ITERATION {i+1}] Fetching channel object for post_channel_id={post_channel_id}")
                             channel_obj = await self._get_channel_with_retry(post_channel_id)
                             if channel_obj:
+                                self.logger.info(f"[ITERATION {i+1}] Got channel_obj: id={channel_obj.id}, name={channel_obj.name}")
                                 formatted_summary = self.news_summarizer.format_news_for_discord(channel_summary)
-                                existing_thread_id = None 
-                                thread = None
+                                # thread is already initialized to None at the start of the loop
                                 if not thread:
                                     self.logger.info(f"Creating new summary thread for channel {channel_id}...")
                                     thread_title = f"#{channel_obj.name} - Summary - {current_date.strftime('%B %d, %Y')}"
@@ -1045,9 +1055,9 @@ class ChannelSummarizer:
                                         if summary_message_starter: # check if message was sent
                                             thread = await self.create_summary_thread(summary_message_starter, thread_title) # create_summary_thread is a method of self
                                             if thread:
-                                                 self.logger.info(f"Successfully created summary thread for channel {channel_id}: {thread.id}")
+                                                self.logger.info(f"[ITERATION {i+1}] Successfully created summary thread for channel {channel_id}: {thread.id} in channel_obj {channel_obj.id} ({channel_obj.name})")
                                             else:
-                                                 self.logger.error(f"Failed to create thread for channel {channel_id}")
+                                                self.logger.error(f"[ITERATION {i+1}] Failed to create thread for channel {channel_id}")
                                         else:
                                              self.logger.error(f"Failed to send header message to channel {channel_id} for thread creation")
                                     except (OSError, ConnectionError, TimeoutError, asyncio.TimeoutError) as network_error:
@@ -1088,20 +1098,29 @@ class ChannelSummarizer:
                                     
                                     await self.top_generations.post_top_gens_for_channel(thread, channel_id)
                                     if header_msg:
+                                         # Validate that we have the correct variables before generating short summary
+                                         if not messages or not channel_summary or not channel_obj:
+                                             self.logger.error(f"[ITERATION {i+1}] CRITICAL: Missing required variables! messages={messages is not None}, channel_summary={channel_summary is not None}, channel_obj={channel_obj is not None}")
+                                             raise ValueError(f"Missing required variables for channel {channel_id}")
+                                         
+                                         self.logger.info(f"[ITERATION {i+1}] About to generate short summary: channel_id={channel_id}, len(messages)={len(messages)}, channel_obj.id={channel_obj.id}, channel_obj.name={channel_obj.name}")
                                          short_summary_text = await self.news_summarizer.generate_short_summary(channel_summary, len(messages))
                                          link = f"https://discord.com/channels/{channel_obj.guild.id}/{thread.id}/{header_msg.id}"
                                          # UPDATED CALL
                                          await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=f"\n---\n\n***Click here to jump to the beginning of today's summary:***{link}")
                                          channel_header = f"**### Channel summary for {current_date.strftime('%A, %B %d, %Y')}**"
+                                         self.logger.info(f"[ITERATION {i+1}] Posting short summary to channel_obj: id={channel_obj.id}, name={channel_obj.name}, message_count={len(messages)}")
                                          # UPDATED CALL
                                          await discord_utils.safe_send_message(self.bot, channel_obj, self.rate_limiter, self.logger, content=f"{channel_header}{short_summary_text}\n[Click here to jump to the summary thread]({link})")
                         
                         success = await self._post_summary_with_transaction(channel_id, channel_summary, messages, current_date, db_handler)
                         if success: channel_summaries.append(channel_summary)
                         else: self.logger.error(f"Failed to save summary to DB for channel {channel_id}")
+                        
+                        self.logger.info(f"[ITERATION {i+1}] ===== END PROCESSING channel_id={channel_id}, channel_name={channel_name} =====")
 
                     except Exception as e:
-                        self.logger.error(f"Error processing channel {channel_id}: {e}", exc_info=True)
+                        self.logger.error(f"[ITERATION {i+1}] Error processing channel {channel_id}: {e}", exc_info=True)
                         continue
 
                 if channel_summaries:
