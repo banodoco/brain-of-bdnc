@@ -744,12 +744,12 @@ class SupabaseQueryHandler:
                 if not channel_ids_from_params:
                     eq_match = re.search(r'channel_id\s*=\s*(\d+)', sql_lower)
                     if eq_match:
-                    try:
+                        try:
                             channel_id_from_params = int(eq_match.group(1))
                             channel_ids_from_params = [channel_id_from_params]
                             logger.info(f"🔍 Extracted single channel_id from SQL: {channel_id_from_params}")
-                    except:
-                        pass
+                        except:
+                            pass
                 
                 # Match patterns like: WHERE message_id = 123
                 message_match = re.search(r'message_id\s*=\s*(\d+)', sql_lower)
