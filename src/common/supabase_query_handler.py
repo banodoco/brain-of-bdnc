@@ -772,6 +772,28 @@ class SupabaseQueryHandler:
                 logger.info(f"✅ Applying message filter: message_id = {message_id_from_params}")
             # Handle channel_id filter (single or multiple)
             elif channel_ids_from_params:
+                # Check if SQL includes category_id logic (for sub-channels)
+                # Pattern: OR EXISTS (SELECT 1 FROM channels c2 WHERE c2.channel_id = m.channel_id AND c2.category_id IN (...))
+                if 'category_id' in sql_lower and 'exists' in sql_lower:
+                    logger.info("🔍 Detected category_id logic in SQL - expanding channel list to include sub-channels...")
+                    try:
+                        # Fetch all channel_ids where either channel_id OR category_id is in the monitor list
+                        channels_response = self.supabase.table('discord_channels').select('channel_id, category_id').execute()
+                        all_channels = channels_response.data if channels_response.data else []
+                        
+                        # Build expanded list: direct channels + channels whose category is in the list
+                        expanded_channel_ids = set(channel_ids_from_params)
+                        for ch in all_channels:
+                            ch_id = ch.get('channel_id')
+                            cat_id = ch.get('category_id')
+                            if cat_id and int(cat_id) in channel_ids_from_params:
+                                expanded_channel_ids.add(int(ch_id))
+                        
+                        channel_ids_from_params = list(expanded_channel_ids)
+                        logger.info(f"✅ Expanded channel list to {len(channel_ids_from_params)} channels (including sub-channels)")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to expand channel list with category logic: {e}")
+                
                 if len(channel_ids_from_params) == 1:
                     query = query.eq('channel_id', str(channel_ids_from_params[0]))
                     logger.info(f"✅ Applying channel filter: channel_id = {channel_ids_from_params[0]}")
@@ -882,6 +904,7 @@ class SupabaseQueryHandler:
     
     async def _post_process_messages(self, messages: List[Dict], sql: str, sql_lower: str, params: Tuple = None) -> List[Dict]:
         """Post-process messages for complex filters that REST API can't handle."""
+        import re
         
         # Handle NSFW channel filtering - fetch channel names if needed
         channel_names = {}
@@ -951,9 +974,15 @@ class SupabaseQueryHandler:
                     if not has_video:
                         continue
             
-            # Handle reactor count threshold
-            if '>= 3' in sql or ') >= 3' in sql:
-                if unique_reactor_count < 3:
+            # Handle reactor count threshold - parse dynamically from SQL
+            # Look for patterns like "unique_reactor_count >= X" or ") >= X"
+            reactor_threshold = None
+            reactor_match = re.search(r'(?:unique_reactor_count|reaction_count|\))\s*>=\s*(\d+)', sql_lower)
+            if reactor_match:
+                reactor_threshold = int(reactor_match.group(1))
+                logger.debug(f"Detected reactor count threshold in SQL: >= {reactor_threshold}")
+                if unique_reactor_count < reactor_threshold:
+                    logger.debug(f"Filtering out message with {unique_reactor_count} reactors (threshold: {reactor_threshold})")
                     continue
             
             # Handle NSFW filter - skip messages from NSFW channels
