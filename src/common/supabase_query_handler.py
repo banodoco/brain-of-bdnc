@@ -709,6 +709,7 @@ class SupabaseQueryHandler:
             time_filter = None
             channel_id_from_params = None
             message_id_from_params = None
+            channel_ids_from_params = []
             
             if params:
                 for p in params:
@@ -723,12 +724,14 @@ class SupabaseQueryHandler:
                                 message_id_from_params = int(p)
                             else:
                                 channel_id_from_params = int(p)
+                                # Add to the list immediately so it gets used in the query
+                                channel_ids_from_params = [channel_id_from_params]
+                                logger.info(f"🔍 Extracted channel_id from params: {channel_id_from_params}")
                         except:
                             pass
             
-            # Also try to extract channel_id(s) from SQL WHERE clause
-            channel_ids_from_params = []
-            if not channel_id_from_params and not message_id_from_params:
+            # Also try to extract channel_id(s) from SQL WHERE clause (only if not already found in params)
+            if not channel_ids_from_params and not message_id_from_params:
                 # First try to match IN clause with multiple IDs: channel_id IN (123, 456, 789)
                 in_match = re.search(r'channel_id\s+in\s*\(([^)]+)\)', sql_lower)
                 if in_match:
