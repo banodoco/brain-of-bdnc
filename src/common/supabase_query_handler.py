@@ -709,7 +709,7 @@ class SupabaseQueryHandler:
             time_filter = None
             channel_id_from_params = None
             message_id_from_params = None
-            channel_ids_from_params = []
+            channel_ids_from_params = []  # Initialize before params parsing
             
             if params:
                 for p in params:
