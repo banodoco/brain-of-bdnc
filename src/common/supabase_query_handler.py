@@ -614,15 +614,40 @@ class SupabaseQueryHandler:
                 query = query.eq('is_production', True)
             
             # Handle LIMIT
+            user_limit = None
             if 'limit' in sql_lower:
                 import re
                 limit_match = re.search(r'limit\s+(\d+)', sql_lower)
                 if limit_match:
-                    limit = int(limit_match.group(1))
-                    query = query.limit(limit)
+                    user_limit = int(limit_match.group(1))
             
-            response = query.execute()
-            return response.data if response.data else []
+            # Fetch with pagination
+            channels = []
+            offset = 0
+            batch_size = 1000
+            
+            while True:
+                paginated_query = query.range(offset, offset + batch_size - 1)
+                response = paginated_query.execute()
+                batch = response.data if response.data else []
+                
+                if not batch:
+                    break
+                
+                channels.extend(batch)
+                
+                # If user specified a LIMIT and we've reached it, stop
+                if user_limit and len(channels) >= user_limit:
+                    channels = channels[:user_limit]
+                    break
+                
+                # If we got less than batch_size, we've reached the end
+                if len(batch) < batch_size:
+                    break
+                
+                offset += batch_size
+            
+            return channels
             
         except Exception as e:
             logger.error(f"Error querying channels: {e}")
@@ -828,10 +853,29 @@ class SupabaseQueryHandler:
             else:
                 logger.warning(f"⚠️ No time filter applied - will fetch ALL messages!")
             
-            # Fetch ALL matching messages (we'll filter in Python)
-            logger.info(f"🚀 Executing Supabase query...")
-            response = query.execute()
-            messages = response.data if response.data else []
+            # Fetch ALL matching messages with pagination (we'll filter in Python)
+            logger.info(f"🚀 Executing Supabase query with pagination...")
+            messages = []
+            offset = 0
+            batch_size = 1000
+            
+            while True:
+                # Apply range for pagination
+                paginated_query = query.range(offset, offset + batch_size - 1)
+                response = paginated_query.execute()
+                batch = response.data if response.data else []
+                
+                if not batch:
+                    break
+                
+                messages.extend(batch)
+                logger.info(f"📦 Fetched batch: {len(batch)} messages (total so far: {len(messages)})")
+                
+                # If we got less than batch_size, we've reached the end
+                if len(batch) < batch_size:
+                    break
+                
+                offset += batch_size
             
             logger.info(f"✅ Fetched {len(messages)} messages from Supabase before post-processing")
             
@@ -1002,7 +1046,7 @@ class SupabaseQueryHandler:
         return filtered
     
     async def _query_members(self, sql: str, params: Tuple = None) -> List[Dict]:
-        """Query members using REST API."""
+        """Query members using REST API with pagination."""
         try:
             query = self.supabase.table('discord_members').select('*')
             
@@ -1016,8 +1060,26 @@ class SupabaseQueryHandler:
                 if member_id:
                     query = query.eq('member_id', str(member_id))
             
-            response = query.execute()
-            results = response.data if response.data else []
+            # Fetch with pagination
+            results = []
+            offset = 0
+            batch_size = 1000
+            
+            while True:
+                paginated_query = query.range(offset, offset + batch_size - 1)
+                response = paginated_query.execute()
+                batch = response.data if response.data else []
+                
+                if not batch:
+                    break
+                
+                results.extend(batch)
+                
+                # If we got less than batch_size, we've reached the end
+                if len(batch) < batch_size:
+                    break
+                
+                offset += batch_size
             
             # Handle COALESCE(server_nick, global_name, username) as display_name
             if 'display_name' in sql.lower():
