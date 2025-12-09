@@ -1,15 +1,11 @@
 import os
-import sys
 import json
 import logging
-import traceback
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 import asyncio
 
 from dotenv import load_dotenv
-
-# Add new dispatcher import
-from src.common.llm import get_llm_response 
+import anthropic
 
 # We removed direct Discord/bot usage here since SUMMARIZER handles posting logic now.
 # This class now focuses on:
@@ -23,6 +19,11 @@ class NewsSummarizer:
 
         load_dotenv()
         self.dev_mode = dev_mode
+        
+        # Initialize Anthropic client
+        self.anthropic_client = anthropic.Anthropic(
+            api_key=os.getenv("ANTHROPIC_API_KEY")
+        )
 
         if self.dev_mode:
             self.guild_id = int(os.getenv('DEV_GUILD_ID'))
@@ -33,24 +34,79 @@ class NewsSummarizer:
 
         self.logger.info("NewsSummarizer initialized.")
 
-    # Updated system prompt from user provided code
-    _NEWS_GENERATION_SYSTEM_PROMPT = """You MUST respond with ONLY a JSON array containing news items. NO introduction text, NO explanation, NO markdown formatting.
+    async def _call_anthropic_with_web_search(
+        self, 
+        system_prompt: str, 
+        user_content: str, 
+        max_tokens: int = 16000
+    ) -> str:
+        """
+        Call Anthropic API with Claude Opus 4.5 and web search capability.
+        Uses the beta API for web search tool.
+        """
+        try:
+            # Run the synchronous API call in a thread pool to not block the event loop
+            loop = asyncio.get_event_loop()
+            message = await loop.run_in_executor(
+                None,
+                lambda: self.anthropic_client.beta.messages.create(
+                    model="claude-opus-4-5-20251101",
+                    max_tokens=max_tokens,
+                    temperature=1,
+                    system=system_prompt,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": user_content
+                                }
+                            ]
+                        }
+                    ],
+                    tools=[
+                        {
+                            "name": "web_search",
+                            "type": "web_search_20250305"
+                        }
+                    ],
+                    betas=["web-search-2025-03-05"]
+                )
+            )
+            
+            # Extract text from the response content blocks
+            text_parts = []
+            for block in message.content:
+                if hasattr(block, 'text'):
+                    text_parts.append(block.text)
+            
+            return "\n".join(text_parts) if text_parts else ""
+            
+        except Exception as e:
+            self.logger.error(f"Error calling Anthropic API with web search: {e}", exc_info=True)
+            raise
 
+    # Updated system prompt - reorganized for cohesion
+    _NEWS_GENERATION_SYSTEM_PROMPT = """You are creating a news summary for a Discord community called Banodoco, focused on AI art and generative tools.
+
+=== OUTPUT FORMAT ===
+Respond with ONLY a JSON array (no introduction, explanation, or markdown formatting).
 If there are no significant news items, respond with exactly "[NO SIGNIFICANT NEWS]".
-Otherwise, respond with ONLY a JSON array in this exact format:
 
+JSON Structure:
 [
  {
    "title": "BFL ship new Controlnets for FluxText",
    "mainText": "A new ComfyUI analytics node has been developed to track and analyze data pipeline components, including inputs, outputs, and embeddings. This enhancement aims to provide more controllable prompting capabilities:",
-   "mainMediaMessageId": "4532454353425342", # ID of the message containing the single main media
-   "message_id": "4532454353425342", # ID of the primary message for the topic
+   "mainMediaMessageId": "4532454353425342", # Single main media message ID, or null if none
+   "message_id": "4532454353425342", # Primary message for the topic
    "channel_id": "1138865343314530324",
    "subTopics": [
      {
        "text": "Here's another example of **Kijai** using it in combination with **Redux** - **Kijai** noted that it worked better than the previous version:",
-       "subTopicMediaMessageIds": ["4532454353425343"], # List of message IDs containing media for this subtopic
-       "message_id": "4532454353425343", # ID of the primary message for the subtopic
+       "subTopicMediaMessageIds": ["4532454353425343"], # List of message IDs with media
+       "message_id": "4532454353425343",
        "channel_id": "1138865343314530324"
      }
    ]
@@ -58,25 +114,25 @@ Otherwise, respond with ONLY a JSON array in this exact format:
  {
    "title": "Banodocians Experiment with Animatediff Stylization",
    "mainText": "Several Banodocians have been exploring new stylization techniques with Animatediff, sharing impressive results:",
-   "mainMediaMessageId": null, # No single main media, examples are in subtopics
-   "message_id": "510987654321098765", # ID of a message introducing the topic
+   "mainMediaMessageId": null,
+   "message_id": "510987654321098765",
    "channel_id": "1221869948469776516",
    "subTopics": [
      {
        "text": "**UserA** shared a workflow combining ControlNet and custom prompts:",
-       "subTopicMediaMessageIds": ["511111111111111111"], # ID of UserA's message with the video
+       "subTopicMediaMessageIds": ["511111111111111111"],
        "message_id": "511111111111111111",
        "channel_id": "1221869948469776516"
      },
      {
        "text": "**UserB** demonstrated a different approach focusing on temporal consistency, showing before and after examples:",
-       "subTopicMediaMessageIds": ["987696564536212", "34254532453454543"], # Multiple message IDs for before/after media
-       "message_id": "522222222222222222", # ID of UserB's main explanation message
+       "subTopicMediaMessageIds": ["987696564536212", "34254532453454543"],
+       "message_id": "522222222222222222",
        "channel_id": "1221869948469776516"
      },
      {
         "text": "**UserC** found success using a specific LoRA model:",
-        "subTopicMediaMessageIds": [], # No direct media in this subtopic message, but part of the overall discussion
+        "subTopicMediaMessageIds": [],
         "message_id": "533333333333333333",
         "channel_id": "1221869948469776516"
      }
@@ -84,38 +140,51 @@ Otherwise, respond with ONLY a JSON array in this exact format:
  }
 ]
 
-Focus on these types of content:
-1. New features or tools that were announced or people are excited about
-2. Demos or images that got a lot of attention (especially messages with many reactions) - especially if there are multple examples of people using it that people remarked upon or reacted to.
-3. Focus on the things that people seem most excited about or commented/reacted to on a lot
-4. Focus on AI art and AI art-related tools and open source tools and projects
-5. Workflows (often json files) that people shared - include examples of them in action if possible
-6. Call out notable achievements or demonstrations or work that people did
-7. Don't avoid negative news but try to frame it in a positive way
+=== WHAT TO COVER ===
+Prioritize these types of content (in rough order of importance):
+1. Original creations by community members (custom nodes, workflows, tools, LoRAs, scripts) - Banodocian contributions are especially newsworthy
+2. Notable achievements, demonstrations, or impressive work shared by members
+3. Content with high engagement (many reactions/comments) - this signals community interest
+4. New features, tools, or announcements people are excited about
+5. Shared workflows (often JSON files) with examples of them in action
+6. AI art, AI art-related tools, and open source projects
+7. Negative news is okay but frame constructively
 
-IMPORTANT REQUIREMENTS FOR MEDIA AND LINKS:
-1. Each topic MUST have `message_id` and `channel_id` for linking back to the original message introducing the topic.
-2. Include `mainMediaMessageId` (as a single string ID) ONLY if there is ONE primary piece of media for the main topic. Otherwise, set it to null.
-3. For subtopics, use `subTopicMediaMessageIds` (plural) which MUST be a LIST of strings (message IDs). Include the IDs of ALL relevant messages containing media for that specific subtopic.
-4. AGGRESSIVELY search for related media - if a subtopic discusses specific images/videos, identify the `message_id`s of the messages where that media was posted and put them in the `subTopicMediaMessageIds` list. Prioritize messages with reactions or direct replies.
-5. For each subtopic, you MUST include `message_id` and `channel_id` for the subtopic's primary message (the one containing the text or starting the sub-discussion).
-6. Prioritize messages with reactions or responses when selecting which `message_id`s to reference for media.
-7. Be careful not to bias towards just the first messages about a topic.
-8. If a topic has interesting follow-up discussions or examples, include those as subtopics.
-9. Always end descriptive text (`mainText`, `text`) with a colon if it directly precedes media referenced by a `mainMediaMessageId` or `subTopicMediaMessageIds`.
+=== HOW TO WRITE ===
+Evidence & Attribution:
+- Do NOT jump to conclusions unsupported by evidence in the messages
+- Only report what is explicitly stated or clearly demonstrated
+- If unclear or ambiguous, skip it or note the uncertainty
+- If messages contain external links (GitHub, blogs, announcements), use web search to verify claims and understand context before reporting
+- Distinguish between facts, opinions, and speculation
+- Always credit creators with bold usernames: "**username**"
+- For subjective opinions, attribute them: "**Draken** felt..."
 
-Requirements for the response:
-1. Must be valid JSON in exactly the above format.
-2. Each news item must have: `title`, `mainText`, `message_id`, `channel_id`, and `subTopics`. `mainMediaMessageId` is optional (can be null).
-3. `subTopics` is an array of objects. Each subtopic object MUST have `text`, `message_id`, `channel_id`. `subTopicMediaMessageIds` (a list of strings) is optional (can be an empty list []).
-4. Always end descriptive text (`mainText`, `text`) with a colon if it directly precedes media referenced by `mainMediaMessageId` or `subTopicMediaMessageIds`.
-5. All usernames must be in bold with ** (e.g., "**username**") - ALWAYS try to give credit to the creator or state if opinions come from a specific person.
-6. If there are no significant news items, respond with exactly "[NO SIGNIFICANT NEWS]".
-7. Include NOTHING other than the JSON response or "[NO SIGNIFICANT NEWS]".
-8. Don't repeat the same item or leave any empty fields (except optional `mainMediaMessageId` and `subTopicMediaMessageIds`).
-9. When you're referring to groups of community members, refer to them as Banodocians.
-10. Don't be hyperbolic or overly enthusiastic.
-11. If something seems to be a subjective opinion but still noteworthy, mention it as such: "**Draken** felt...", etc."""
+Tone:
+- Don't be hyperbolic or overly enthusiastic
+- Refer to community members collectively as "Banodocians"
+
+=== TECHNICAL REQUIREMENTS ===
+Required fields for each news item:
+- title, mainText, message_id, channel_id, subTopics (array)
+- mainMediaMessageId: single string ID if ONE primary media, otherwise null
+
+Required fields for each subtopic:
+- text, message_id, channel_id
+- subTopicMediaMessageIds: list of message IDs (can be empty [])
+
+Media & Links:
+- Every topic and subtopic MUST have message_id and channel_id for linking back
+- AGGRESSIVELY search for related media - find message IDs where images/videos were posted
+- Prioritize messages with reactions or direct replies when selecting media references
+- Don't bias toward just the first messages about a topic
+- Include interesting follow-up discussions or examples as subtopics
+- End text with a colon if it directly precedes referenced media
+
+Formatting:
+- Must be valid JSON in exactly the format shown above
+- Don't repeat items or leave empty fields (except optional media fields)
+- No markdown formatting, introduction text, or explanation - ONLY the JSON array or "[NO SIGNIFICANT NEWS]" """
 
     # Added system prompt from user provided code
     _SHORT_SUMMARY_SYSTEM_PROMPT = """Create exactly 3 bullet points summarizing key developments. STRICT format requirements:
@@ -205,18 +274,13 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
 
 {user_prompt_content}"""
             
-            # Prepare messages for the dispatcher
-            llm_messages = [{"role": "user", "content": user_prompt_content}]
-            
             try:
-                # Call the dispatcher - Updated model name
+                # Call Anthropic API with Claude Opus 4.5 and web search
                 self.logger.info(f"Calling LLM for chunk {chunk_num}/{total_chunks}...")
-                text = await get_llm_response(
-                    client_name="claude",
-                    model="claude-sonnet-4-5-20250929", 
+                text = await self._call_anthropic_with_web_search(
                     system_prompt=self._NEWS_GENERATION_SYSTEM_PROMPT,
-                    messages=llm_messages,
-                    max_tokens=8192 
+                    user_content=user_prompt_content,
+                    max_tokens=16000
                 )
                 
                 self.logger.info(f"LLM response received for chunk {chunk_num}. Length: {len(text) if text else 0} chars")
@@ -356,6 +420,8 @@ Each summary is in the same format: an array of objects with fields:
 We want to combine them into a single JSON array that contains the top 3-5 most interesting items overall.
 You MUST keep each chosen item in the exact same structure (all fields) as it appeared in the original input. Retain the original message_id and channel_id values.
 
+IMPORTANT: Do NOT jump to conclusions that aren't supported by evidence. Only include items that are clearly substantiated in the original summaries. If you need to verify any claims or understand external links better, use web search.
+
 If no interesting items, respond with "[NO SIGNIFICANT NEWS]".
 Otherwise, respond with ONLY a JSON array. No extra text.
 
@@ -365,18 +431,13 @@ Return just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')
         user_prompt_content = "Here are the input summaries (each is a JSON array string):\n\n"
         for i, s in enumerate(summaries):
             user_prompt_content += f"--- Summary {i+1} ---\n{s}\n\n"
-        
-        # Prepare messages for dispatcher
-        messages = [{"role": "user", "content": user_prompt_content}]
 
         try:
-            # Call the dispatcher - Updated model name
-            text = await get_llm_response(
-                client_name="claude",
-                model="claude-sonnet-4-5-20250929", 
+            # Call Anthropic API with Claude Opus 4.5 and web search
+            text = await self._call_anthropic_with_web_search(
                 system_prompt=system_prompt,
-                messages=messages,
-                max_tokens=8192 
+                user_content=user_prompt_content,
+                max_tokens=16000
             )
             self.logger.debug(f"LLM response for combined summary: {text}") 
             
@@ -469,17 +530,13 @@ Return just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')
         """
         # Use the new system prompt defined above, formatting the message count in
         system_prompt_formatted = self._SHORT_SUMMARY_SYSTEM_PROMPT.format(message_count=message_count)
-        # Prepare user message content (the full summary to work from)
-        messages = [{"role": "user", "content": f"Full summary to work from:\n{full_summary}"}]
 
         try:
-            # Call the LLM dispatcher - Use a cheaper/faster model - Updated model name
-            text = await get_llm_response(
-                client_name="claude",
-                model="claude-sonnet-4-5-20250929", 
+            # Call Anthropic API with Claude Opus 4.5 (short summary doesn't need web search, but using same client for consistency)
+            text = await self._call_anthropic_with_web_search(
                 system_prompt=system_prompt_formatted,
-                messages=messages,
-                max_tokens=512 # Keep lower max tokens for short summary
+                user_content=f"Full summary to work from:\n{full_summary}",
+                max_tokens=1024  # Lower max tokens for short summary
             )
             self.logger.debug(f"LLM response for short summary: {text}")
             
