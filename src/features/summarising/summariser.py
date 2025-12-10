@@ -1009,6 +1009,11 @@ class ChannelSummarizer:
                     channel_name = channel_info.get('channel_name', 'Unknown')
                     post_channel_id = channel_info.get('post_channel_id', channel_id)
                     
+                    # Add delay between channels to respect Anthropic API rate limits (30k tokens/min)
+                    if i > 0:
+                        self.logger.info(f"Waiting 60s before processing next channel to respect rate limits...")
+                        await asyncio.sleep(60)
+                    
                     self.logger.debug(f"[{i+1}/{len(active_channels)}] Processing channel {channel_id} ({channel_name})")
                     
                     try:
@@ -1091,10 +1096,10 @@ class ChannelSummarizer:
                                          short_summary_text = await self.news_summarizer.generate_short_summary(channel_summary, len(messages))
                                          link = f"https://discord.com/channels/{channel_obj.guild.id}/{thread.id}/{header_msg.id}"
                                          # UPDATED CALL
-                                         await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=f"\n---\n\n***Click here to jump to the beginning of today's summary:***{link}")
-                                         channel_header = f"**### Channel summary for {current_date.strftime('%A, %B %d, %Y')}**"
+                                         await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=f"\n---\n\n***Click here to jump to the beginning of today's summary:*** {link}")
+                                         channel_header = f"### Channel summary for {current_date.strftime('%A, %B %d, %Y')}"
                                          # UPDATED CALL
-                                         await discord_utils.safe_send_message(self.bot, channel_obj, self.rate_limiter, self.logger, content=f"{channel_header}{short_summary_text}\n[Click here to jump to the summary thread]({link})")
+                                         await discord_utils.safe_send_message(self.bot, channel_obj, self.rate_limiter, self.logger, content=f"{channel_header}\n{short_summary_text}\n[Click here to jump to the summary thread]({link})")
                         
                         success = await self._post_summary_with_transaction(channel_id, channel_summary, messages, current_date, db_handler)
                         if success: channel_summaries.append(channel_summary)
@@ -1108,7 +1113,16 @@ class ChannelSummarizer:
                     self.logger.info(f"Combining summaries from {len(channel_summaries)} channels...")
                     overall_summary = await self.news_summarizer.combine_channel_summaries(channel_summaries)
                     
-                    if overall_summary and overall_summary not in ["[NOTHING OF NOTE]", "[NO SIGNIFICANT NEWS]", "[NO MESSAGES TO ANALYZE]"]:
+                    # List of non-content responses to skip posting
+                    skip_responses = [
+                        "[NOTHING OF NOTE]", 
+                        "[NO SIGNIFICANT NEWS]", 
+                        "[NO MESSAGES TO ANALYZE]",
+                        "[ERROR COMBINING SUMMARIES]",
+                        "[ERROR PARSING COMBINED SUMMARY]"
+                    ]
+                    
+                    if overall_summary and overall_summary not in skip_responses:
                         formatted_summary = self.news_summarizer.format_news_for_discord(overall_summary)
                         # UPDATED CALL
                         header = await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\n\n# Daily Summary - {current_date.strftime('%A, %B %d, %Y')}\n\n")

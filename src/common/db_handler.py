@@ -383,26 +383,56 @@ class DatabaseHandler:
         return self._execute_with_retry(get_last_message_operation)
 
     def search_messages(self, query: str, channel_id: Optional[int] = None) -> List[Dict]:
-        def search_operation(conn):
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            sql_query = """
-                SELECT m.*, 
-                       COALESCE(mb.server_nick, mb.global_name, mb.username) as author_name
-                FROM messages m 
-                JOIN messages_fts fts ON m.message_id = fts.rowid
-                JOIN members mb ON m.author_id = mb.member_id
-                WHERE fts.content MATCH ?
-            """
-            params = [query]
-            if channel_id:
-                sql_query += " AND m.channel_id = ?"
-                params.append(channel_id)
-            cursor.execute(sql_query, params)
-            results = [dict(row) for row in cursor.fetchall()]
-            cursor.close()
-            return results
-        return self._execute_with_retry(search_operation)
+        """Search messages by content. FTS is SQLite-specific, Supabase uses ILIKE."""
+        # Use Supabase if configured (with ILIKE for text search)
+        if self._should_use_supabase_for_reads():
+            try:
+                sql = """
+                    SELECT m.*, 
+                           COALESCE(mb.server_nick, mb.global_name, mb.username) as author_name
+                    FROM discord_messages m 
+                    JOIN discord_members mb ON m.author_id = mb.member_id
+                    WHERE m.content ILIKE ?
+                """
+                params = [f'%{query}%']
+                if channel_id:
+                    sql += " AND m.channel_id = ?"
+                    params.append(channel_id)
+                
+                result = self._run_async_in_thread(
+                    self.query_handler.execute_raw_sql(sql, tuple(params))
+                )
+                return result
+            except Exception as e:
+                logger.error(f"Supabase query failed for search_messages: {e}")
+                if self.storage_backend == 'supabase':
+                    return []
+                logger.warning("Falling back to SQLite for search_messages")
+        
+        # Use SQLite with FTS if configured
+        if self.storage_backend in [STORAGE_SQLITE, STORAGE_BOTH]:
+            def search_operation(conn):
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                sql_query = """
+                    SELECT m.*, 
+                           COALESCE(mb.server_nick, mb.global_name, mb.username) as author_name
+                    FROM messages m 
+                    JOIN messages_fts fts ON m.message_id = fts.rowid
+                    JOIN members mb ON m.author_id = mb.member_id
+                    WHERE fts.content MATCH ?
+                """
+                params = [query]
+                if channel_id:
+                    sql_query += " AND m.channel_id = ?"
+                    params.append(channel_id)
+                cursor.execute(sql_query, params)
+                results = [dict(row) for row in cursor.fetchall()]
+                cursor.close()
+                return results
+            return self._execute_with_retry(search_operation)
+        
+        return []
 
     def store_daily_summary(self, channel_id: int, full_summary: Optional[str], short_summary: Optional[str], date: Optional[datetime] = None) -> bool:
         success = True
@@ -503,13 +533,34 @@ class DatabaseHandler:
             self._execute_with_retry(update_thread_operation)
 
     def get_all_message_ids(self, channel_id: int) -> List[int]:
-        def get_ids_operation(conn):
-            cursor = conn.cursor()
-            cursor.execute("SELECT message_id FROM messages WHERE channel_id = ?", (channel_id,))
-            ids = [row[0] for row in cursor.fetchall()]
-            cursor.close()
-            return ids
-        return self._execute_with_retry(get_ids_operation)
+        """Get all message IDs for a channel. Routes to Supabase if configured."""
+        # Use Supabase if configured
+        if self._should_use_supabase_for_reads():
+            try:
+                result = self._run_async_in_thread(
+                    self.query_handler.execute_raw_sql(
+                        "SELECT message_id FROM discord_messages WHERE channel_id = ?",
+                        (channel_id,)
+                    )
+                )
+                return [row.get('message_id') for row in result if row.get('message_id')]
+            except Exception as e:
+                logger.error(f"Supabase query failed for get_all_message_ids: {e}")
+                if self.storage_backend == 'supabase':
+                    return []
+                logger.warning("Falling back to SQLite for get_all_message_ids")
+        
+        # Use SQLite if configured
+        if self.storage_backend in [STORAGE_SQLITE, STORAGE_BOTH]:
+            def get_ids_operation(conn):
+                cursor = conn.cursor()
+                cursor.execute("SELECT message_id FROM messages WHERE channel_id = ?", (channel_id,))
+                ids = [row[0] for row in cursor.fetchall()]
+                cursor.close()
+                return ids
+            return self._execute_with_retry(get_ids_operation)
+        
+        return []
 
     def get_message_date_range(self, channel_id: int) -> Tuple[Optional[datetime], Optional[datetime]]:
         """Get the date range of messages in a channel. Routes to Supabase if configured."""
@@ -537,13 +588,37 @@ class DatabaseHandler:
         return self._execute_with_retry(get_range_operation)
 
     def get_message_dates(self, channel_id: int) -> List[str]:
-        def get_dates_operation(conn):
-            cursor = conn.cursor()
-            cursor.execute("SELECT DISTINCT strftime('%Y-%m-%d', created_at) FROM messages WHERE channel_id = ? ORDER BY 1", (channel_id,))
-            dates = [row[0] for row in cursor.fetchall()]
-            cursor.close()
-            return dates
-        return self._execute_with_retry(get_dates_operation)
+        """Get distinct message dates for a channel. Routes to Supabase if configured."""
+        # Use Supabase if configured
+        if self._should_use_supabase_for_reads():
+            try:
+                # Query Supabase for distinct dates
+                result = self._run_async_in_thread(
+                    self.query_handler.execute_raw_sql(
+                        "SELECT DISTINCT DATE(created_at) as date FROM discord_messages WHERE channel_id = ? ORDER BY date",
+                        (channel_id,)
+                    )
+                )
+                return [row.get('date') for row in result if row.get('date')]
+            except Exception as e:
+                logger.error(f"Supabase query failed for get_message_dates: {e}")
+                if self.storage_backend == 'supabase':
+                    # In supabase-only mode, return empty list as graceful degradation
+                    logger.warning("Returning empty list for get_message_dates in Supabase-only mode")
+                    return []
+                logger.warning("Falling back to SQLite for get_message_dates")
+        
+        # Use SQLite if configured
+        if self.storage_backend in [STORAGE_SQLITE, STORAGE_BOTH]:
+            def get_dates_operation(conn):
+                cursor = conn.cursor()
+                cursor.execute("SELECT DISTINCT strftime('%Y-%m-%d', created_at) FROM messages WHERE channel_id = ? ORDER BY 1", (channel_id,))
+                dates = [row[0] for row in cursor.fetchall()]
+                cursor.close()
+                return dates
+            return self._execute_with_retry(get_dates_operation)
+        
+        return []
 
     def get_member(self, member_id: int) -> Optional[Dict]:
         """Fetch a member from the database by their ID. Routes to Supabase if configured."""
@@ -589,26 +664,44 @@ class DatabaseHandler:
         return self._execute_with_retry(check_message_operation)
 
     def update_message(self, message: Dict) -> bool:
-        def update_operation(conn):
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE messages SET
-                    content = ?,
-                    edited_at = ?,
-                    reaction_count = ?,
-                    reactors = ?,
-                    is_pinned = ?,
-                    is_deleted = ?
-                WHERE message_id = ?
-            """, (
-                message.get('content'), message.get('edited_at'),
-                message.get('reaction_count'), json.dumps(message.get('reactors')),
-                message.get('is_pinned'), message.get('is_deleted', False),
-                message.get('message_id')
-            ))
-            cursor.close()
-            return cursor.rowcount > 0
-        return self._execute_with_retry(update_operation)
+        """Update a message. Routes to appropriate backend(s)."""
+        result = False
+        
+        # Update in Supabase if configured
+        if self.storage_handler and self.storage_backend in ['supabase', 'both']:
+            try:
+                # Use store_messages_to_supabase with upsert
+                stored = self._run_async_in_thread(
+                    self.storage_handler.store_messages_to_supabase([message])
+                )
+                result = stored > 0
+            except Exception as e:
+                logger.error(f"Error updating message in Supabase: {e}", exc_info=True)
+        
+        # Update in SQLite if configured
+        if self.storage_backend in [STORAGE_SQLITE, STORAGE_BOTH]:
+            def update_operation(conn):
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE messages SET
+                        content = ?,
+                        edited_at = ?,
+                        reaction_count = ?,
+                        reactors = ?,
+                        is_pinned = ?,
+                        is_deleted = ?
+                    WHERE message_id = ?
+                """, (
+                    message.get('content'), message.get('edited_at'),
+                    message.get('reaction_count'), json.dumps(message.get('reactors')),
+                    message.get('is_pinned'), message.get('is_deleted', False),
+                    message.get('message_id')
+                ))
+                cursor.close()
+                return cursor.rowcount > 0
+            result = self._execute_with_retry(update_operation) or result
+        
+        return result
 
     def create_or_update_member(self, member_id: int, username: str, display_name: Optional[str] = None, 
                               global_name: Optional[str] = None, avatar_url: Optional[str] = None,
@@ -703,24 +796,67 @@ class DatabaseHandler:
         return result
 
     def update_member_permission_status(self, member_id: int, permission_status: Optional[bool]) -> bool:
-        def update_permission_operation(conn):
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE members SET permission_to_curate = ?, updated_at = CURRENT_TIMESTAMP WHERE member_id = ?
-            """, (permission_status, member_id))
-            cursor.close()
-            return cursor.rowcount > 0
-        return self._execute_with_retry(update_permission_operation)
+        """Update member permission status. Routes to appropriate backend(s)."""
+        result = False
+        
+        # Update in Supabase if configured
+        if self.storage_handler and self.storage_backend in ['supabase', 'both']:
+            try:
+                member_data = {
+                    'member_id': member_id,
+                    'permission_to_curate': permission_status,
+                    'updated_at': datetime.now().isoformat()
+                }
+                stored = self._run_async_in_thread(
+                    self.storage_handler.store_members_to_supabase([member_data])
+                )
+                result = stored > 0
+            except Exception as e:
+                logger.error(f"Error updating member permission in Supabase: {e}", exc_info=True)
+        
+        # Update in SQLite if configured
+        if self.storage_backend in [STORAGE_SQLITE, STORAGE_BOTH]:
+            def update_permission_operation(conn):
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE members SET permission_to_curate = ?, updated_at = CURRENT_TIMESTAMP WHERE member_id = ?
+                """, (permission_status, member_id))
+                cursor.close()
+                return cursor.rowcount > 0
+            result = self._execute_with_retry(update_permission_operation) or result
+        
+        return result
 
     def get_channel(self, channel_id: int) -> Optional[Dict]:
-        def get_channel_operation(conn):
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM channels WHERE channel_id = ?", (channel_id,))
-            result = cursor.fetchone()
-            cursor.close()
-            return dict(result) if result else None
-        return self._execute_with_retry(get_channel_operation)
+        """Get channel info by ID. Routes to Supabase if configured."""
+        # Use Supabase if configured
+        if self._should_use_supabase_for_reads():
+            try:
+                result = self._run_async_in_thread(
+                    self.query_handler.execute_raw_sql(
+                        "SELECT * FROM discord_channels WHERE channel_id = ? LIMIT 1",
+                        (channel_id,)
+                    )
+                )
+                return result[0] if result else None
+            except Exception as e:
+                logger.error(f"Supabase query failed for get_channel: {e}")
+                if self.storage_backend == 'supabase':
+                    return None
+                logger.warning("Falling back to SQLite for get_channel")
+        
+        # Use SQLite if configured
+        if self.storage_backend in [STORAGE_SQLITE, STORAGE_BOTH]:
+            def get_channel_operation(conn):
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM channels WHERE channel_id = ?", (channel_id,))
+                result = cursor.fetchone()
+                cursor.close()
+                return dict(result) if result else None
+            return self._execute_with_retry(get_channel_operation)
+        
+        return None
 
     def create_or_update_channel(self, channel_id: int, channel_name: str, nsfw: bool = False, category_id: Optional[int] = None) -> bool:
         # Prepare channel data for potential Supabase storage
@@ -760,20 +896,47 @@ class DatabaseHandler:
         return result
 
     def get_messages_after(self, date: datetime) -> List[Dict]:
-        def get_messages_operation(conn):
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT m.*, 
-                       COALESCE(mb.server_nick, mb.global_name, mb.username) as author_name
-                FROM messages m
-                JOIN members mb ON m.author_id = mb.member_id
-                WHERE m.created_at > ?
-            """, (date.isoformat(),))
-            results = [dict(row) for row in cursor.fetchall()]
-            cursor.close()
-            return results
-        return self._execute_with_retry(get_messages_operation)
+        """Get messages after a certain date. Routes to Supabase if configured."""
+        # Use Supabase if configured
+        if self._should_use_supabase_for_reads():
+            try:
+                result = self._run_async_in_thread(
+                    self.query_handler.execute_raw_sql(
+                        """
+                        SELECT m.*, 
+                               COALESCE(mb.server_nick, mb.global_name, mb.username) as author_name
+                        FROM discord_messages m
+                        JOIN discord_members mb ON m.author_id = mb.member_id
+                        WHERE m.created_at > ?
+                        """,
+                        (date.isoformat(),)
+                    )
+                )
+                return result
+            except Exception as e:
+                logger.error(f"Supabase query failed for get_messages_after: {e}")
+                if self.storage_backend == 'supabase':
+                    return []
+                logger.warning("Falling back to SQLite for get_messages_after")
+        
+        # Use SQLite if configured
+        if self.storage_backend in [STORAGE_SQLITE, STORAGE_BOTH]:
+            def get_messages_operation(conn):
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT m.*, 
+                           COALESCE(mb.server_nick, mb.global_name, mb.username) as author_name
+                    FROM messages m
+                    JOIN members mb ON m.author_id = mb.member_id
+                    WHERE m.created_at > ?
+                """, (date.isoformat(),))
+                results = [dict(row) for row in cursor.fetchall()]
+                cursor.close()
+                return results
+            return self._execute_with_retry(get_messages_operation)
+        
+        return []
 
     def get_messages_by_ids(self, message_ids: List[int]) -> List[Dict]:
         # Route to Supabase if configured

@@ -38,54 +38,69 @@ class NewsSummarizer:
         self, 
         system_prompt: str, 
         user_content: str, 
-        max_tokens: int = 16000
+        max_tokens: int = 16000,
+        max_retries: int = 3
     ) -> str:
         """
         Call Anthropic API with Claude Opus 4.5 and web search capability.
         Uses the beta API for web search tool.
+        Includes retry logic with exponential backoff for rate limits.
         """
-        try:
-            # Run the synchronous API call in a thread pool to not block the event loop
-            loop = asyncio.get_event_loop()
-            message = await loop.run_in_executor(
-                None,
-                lambda: self.anthropic_client.beta.messages.create(
-                    model="claude-opus-4-5-20251101",
-                    max_tokens=max_tokens,
-                    temperature=1,
-                    system=system_prompt,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": user_content
-                                }
-                            ]
-                        }
-                    ],
-                    tools=[
-                        {
-                            "name": "web_search",
-                            "type": "web_search_20250305"
-                        }
-                    ],
-                    betas=["web-search-2025-03-05"]
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                # Run the synchronous API call in a thread pool to not block the event loop
+                loop = asyncio.get_event_loop()
+                message = await loop.run_in_executor(
+                    None,
+                    lambda: self.anthropic_client.beta.messages.create(
+                        model="claude-opus-4-5-20251101",
+                        max_tokens=max_tokens,
+                        temperature=1,
+                        system=system_prompt,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": user_content
+                                    }
+                                ]
+                            }
+                        ],
+                        tools=[
+                            {
+                                "name": "web_search",
+                                "type": "web_search_20250305"
+                            }
+                        ],
+                        betas=["web-search-2025-03-05"]
+                    )
                 )
-            )
-            
-            # Extract text from the response content blocks
-            text_parts = []
-            for block in message.content:
-                if hasattr(block, 'text'):
-                    text_parts.append(block.text)
-            
-            return "\n".join(text_parts) if text_parts else ""
-            
-        except Exception as e:
-            self.logger.error(f"Error calling Anthropic API with web search: {e}", exc_info=True)
-            raise
+                
+                # Extract text from the response content blocks
+                text_parts = []
+                for block in message.content:
+                    if hasattr(block, 'text'):
+                        text_parts.append(block.text)
+                
+                return "\n".join(text_parts) if text_parts else ""
+                
+            except anthropic.RateLimitError as e:
+                last_error = e
+                wait_time = 60 * (attempt + 1)  # 60s, 120s, 180s
+                self.logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}). Waiting {wait_time}s before retry...")
+                await asyncio.sleep(wait_time)
+                continue
+            except Exception as e:
+                self.logger.error(f"Error calling Anthropic API with web search: {e}", exc_info=True)
+                raise
+        
+        # All retries exhausted
+        self.logger.error(f"All {max_retries} retries exhausted for Anthropic API call")
+        raise last_error
 
     # Updated system prompt - reorganized for cohesion
     _NEWS_GENERATION_SYSTEM_PROMPT = """You are creating a news summary for a Discord community called Banodoco, focused on AI art and generative tools.
@@ -190,18 +205,18 @@ Formatting:
     _SHORT_SUMMARY_SYSTEM_PROMPT = """Create exactly 3 bullet points summarizing key developments. STRICT format requirements:
 1. The FIRST LINE MUST BE EXACTLY: 📨 __{message_count} messages sent__
 2. Then three bullet points that:
-   - Start with - (hyphen, not bullet)
-   - Give a short summary of one of the main topics from the full summary - priotise topics that are related to the channel and are likely to be useful to others.
+   - Start with • (bullet character)
+   - Give a short summary of one of the main topics from the full summary - prioritise topics that are related to the channel and are likely to be useful to others.
    - Bold the most important finding/result/insight using **
    - Keep each to a single line
-4. DO NOT MODIFY THE MESSAGE COUNT OR FORMAT IN ANY WAY
+3. DO NOT MODIFY THE MESSAGE COUNT OR FORMAT IN ANY WAY
 
 Required format:
 "📨 __{message_count} messages sent__
-• [Main topic 1] 
+• [Main topic 1]
 • [Main topic 2]
 • [Main topic 3]"
-DO NOT CHANGE THE MESSAGE COUNT LINE. IT MUST BE EXACTLY AS SHOWN ABOVE. DO NOT ADD INCLUDE ELSE IN THE MESSAGE OTHER THAN THE ABOVE."""
+DO NOT CHANGE THE MESSAGE COUNT LINE. IT MUST BE EXACTLY AS SHOWN ABOVE. DO NOT INCLUDE ANYTHING ELSE IN THE MESSAGE OTHER THAN THE ABOVE."""
 
     def format_messages_for_user_prompt(self, messages: List[Dict[str, Any]]) -> str:
         """Formats the list of message dictionaries into a string for the user prompt."""
@@ -275,6 +290,11 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
 {user_prompt_content}"""
             
             try:
+                # Add delay between chunks to avoid rate limits (30k tokens/min limit)
+                if chunk_num > 1:
+                    self.logger.info(f"Waiting 30s before processing chunk {chunk_num} to respect rate limits...")
+                    await asyncio.sleep(30)
+                
                 # Call Anthropic API with Claude Opus 4.5 and web search
                 self.logger.info(f"Calling LLM for chunk {chunk_num}/{total_chunks}...")
                 text = await self._call_anthropic_with_web_search(
@@ -543,15 +563,15 @@ Return just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')
             # Basic validation of the response format
             if text and isinstance(text, str):
                 lines = text.strip().split('\n')
-                # Adjusted check for hyphen instead of bullet
-                if len(lines) >= 1 and lines[0].strip() == f"📨 __{message_count} messages sent__" and all(l.strip().startswith('-') for l in lines[1:]):
-                     # Further checks could be added (e.g., number of bullet points)
+                # Check for bullet character (•) at the start of content lines
+                content_lines = [l for l in lines[1:] if l.strip()]  # Skip empty lines
+                if len(lines) >= 1 and lines[0].strip() == f"📨 __{message_count} messages sent__" and all(l.strip().startswith('•') for l in content_lines):
+                     # Format is correct
                      return text.strip()
                 else:
-                    self.logger.warning(f"Short summary response did not match expected format (Message Count Line or Hyphen Mismatch): {text[:100]}...")
-                    # Fallback or attempt to fix? For now, return error indication. Might need manual fix later.
-                    # return f"📨 __{message_count} messages sent__\n• LLM response format error." # Option 1: Provide default error bullets
-                    return text.strip() # Option 2: Return the potentially incorrect text and hope it's close
+                    self.logger.warning(f"Short summary response did not match expected format: {text[:100]}...")
+                    # Return the response anyway - it's probably close enough
+                    return text.strip()
             else:
                  # Handle cases where text is None or not a string (though dispatcher should prevent None)
                  self.logger.error("LLM dispatcher returned invalid type or empty response for short summary.")
