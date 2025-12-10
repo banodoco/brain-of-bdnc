@@ -30,9 +30,6 @@ This document provides an overview of the `bndc` code-base, detailing the purpos
 │   ├── cleanup_test_data.py         # Purge development data
 │   ├── create_dev_db.py            # Generate a fresh dev SQLite database
 │   ├── delete_user_messages.py      # Delete messages from a specific user within a time range (dry run by default)
-│   ├── create_supabase_schema.sql   # SQL script to create Supabase tables for Discord data sync
-│   ├── create_system_logs_table.sql # SQL to create system_logs table for centralized logging
-│   ├── setup_logs_auto_cleanup.sql  # SQL to setup pg_cron auto-cleanup of logs (48h retention)
 │   ├── logs_view.py                 # View recent logs with filtering (level, time, logger)
 │   ├── logs_tail.py                 # Real-time log tailing from Supabase
 │   ├── logs_search.py               # Search logs by message content
@@ -54,7 +51,10 @@ This document provides an overview of the `bndc` code-base, detailing the purpos
 ├── supabase/                    # Supabase CLI configuration and migrations
 │   ├── config.toml                  # Supabase project configuration
 │   └── migrations/                  # SQL migration files for Supabase schema changes
-│       └── 20251104154121_add_summary_tables.sql  # Adds daily_summaries and channel_summary tables
+│       ├── 20251101000000_create_discord_tables.sql  # Core Discord tables (messages, members, channels)
+│       ├── 20251104154121_add_summary_tables.sql     # Adds daily_summaries and channel_summary tables
+│       ├── 20251210000000_create_system_logs.sql     # System logs table for centralized logging
+│       └── 20251210000001_setup_logs_auto_cleanup.sql # pg_cron auto-cleanup (48h retention)
 │
 ├── src/                         # Core application package
 │   ├── __init__.py                  # Marks directory as importable module
