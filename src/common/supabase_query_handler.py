@@ -559,8 +559,8 @@ class SupabaseQueryHandler:
             import re
             sql_lower = re.sub(r'\s+', ' ', sql.lower().strip())
             
-            logger.info(f"🔍 Normalized SQL (first 150 chars): {sql_lower[:150]}...")
-            logger.info(f"🔍 Routing checks: CTE={sql_lower.startswith('with ')}, FROM messages={'from messages' in sql_lower}, JOIN messages={'join messages' in sql_lower}, FROM channels={'from channels' in sql_lower}, JOIN channels={'join channels' in sql_lower}")
+            logger.debug(f"🔍 Normalized SQL (first 150 chars): {sql_lower[:150]}...")
+            logger.debug(f"🔍 Routing checks: CTE={sql_lower.startswith('with ')}, FROM messages={'from messages' in sql_lower}, JOIN messages={'join messages' in sql_lower}, FROM channels={'from channels' in sql_lower}, JOIN channels={'join channels' in sql_lower}")
             
             # Handle CTEs (WITH clause) - convert to regular query
             if sql_lower.startswith('with '):
@@ -574,11 +574,11 @@ class SupabaseQueryHandler:
                     logger.info(f"🔀 Routing to _query_production_channels (detected: FROM/JOIN channels without FROM messages/members)")
                     return await self._query_production_channels(sql, params)
                 else:
-                    logger.info(f"🔍 Skipping _query_production_channels (has FROM messages/members)")
+                    logger.debug(f"🔍 Skipping _query_production_channels (has FROM messages/members)")
             
             # Handle message queries (supports both 'discord_messages' and 'messages')
             if 'discord_messages' in sql_lower or ('from messages' in sql_lower or 'join messages' in sql_lower):
-                logger.info(f"🔀 Routing to _query_messages (detected: FROM messages or JOIN messages)")
+                logger.debug(f"🔀 Routing to _query_messages")
                 return await self._query_messages(sql, params)
             
             # Handle member queries (supports both 'discord_members' and 'members')
@@ -723,9 +723,9 @@ class SupabaseQueryHandler:
     
     async def _query_messages(self, sql: str, params: Tuple = None) -> List[Dict]:
         """Query messages using REST API, handling complex filters."""
-        logger.info(f"🎯 ENTERED _query_messages")
-        logger.info(f"🎯 SQL preview: {sql[:200]}...")
-        logger.info(f"🎯 Params: {params}")
+        logger.debug(f"🎯 ENTERED _query_messages")
+        logger.debug(f"🎯 SQL preview: {sql[:200]}...")
+        logger.debug(f"🎯 Params: {params}")
         try:
             import re
             sql_lower = sql.lower()
@@ -751,7 +751,7 @@ class SupabaseQueryHandler:
                                 channel_id_from_params = int(p)
                                 # Add to the list immediately so it gets used in the query
                                 channel_ids_from_params = [channel_id_from_params]
-                                logger.info(f"🔍 Extracted channel_id from params: {channel_id_from_params}")
+                                logger.debug(f"🔍 Extracted channel_id from params: {channel_id_from_params}")
                         except:
                             pass
             
@@ -764,7 +764,7 @@ class SupabaseQueryHandler:
                         # Extract all channel IDs from the IN clause
                         ids_str = in_match.group(1)
                         channel_ids_from_params = [int(cid.strip()) for cid in ids_str.split(',') if cid.strip().isdigit()]
-                        logger.info(f"🔍 Extracted channel_ids from SQL IN clause: {channel_ids_from_params}")
+                        logger.debug(f"🔍 Extracted channel_ids from SQL IN clause: {channel_ids_from_params}")
                     except Exception as e:
                         logger.warning(f"⚠️ Failed to parse channel_ids from IN clause: {e}")
                 
@@ -797,7 +797,7 @@ class SupabaseQueryHandler:
             # Handle message_id filter (takes priority)
             if message_id_from_params:
                 query = query.eq('message_id', str(message_id_from_params))
-                logger.info(f"✅ Applying message filter: message_id = {message_id_from_params}")
+                logger.debug(f"✅ Applying message filter: message_id = {message_id_from_params}")
             # Handle channel_id filter (single or multiple)
             elif channel_ids_from_params:
                 # Check if SQL includes category_id logic (for sub-channels)
@@ -824,11 +824,11 @@ class SupabaseQueryHandler:
                 
                 if len(channel_ids_from_params) == 1:
                     query = query.eq('channel_id', str(channel_ids_from_params[0]))
-                    logger.info(f"✅ Applying channel filter: channel_id = {channel_ids_from_params[0]}")
+                    logger.debug(f"✅ Applying channel filter: channel_id = {channel_ids_from_params[0]}")
                 else:
                     # Use .in_() for multiple channel IDs
                     query = query.in_('channel_id', [str(cid) for cid in channel_ids_from_params])
-                    logger.info(f"✅ Applying channel filter: channel_id IN {channel_ids_from_params}")
+                    logger.debug(f"✅ Applying channel filter: channel_id IN {channel_ids_from_params}")
             else:
                 logger.warning(f"⚠️ No message/channel filter applied - will fetch ALL messages!")
             
@@ -839,7 +839,7 @@ class SupabaseQueryHandler:
                 time_filter_from_sql = time_match.group(1)
                 logger.info(f"🔍 Extracted time filter from SQL: {time_filter_from_sql}")
             
-            # Handle time range filter
+            # Handle time range filter (skip if fetching by specific message_id)
             if time_filter_from_sql or time_filter or 'created_at >' in sql_lower or 'created_at >=' in sql_lower:
                 if not time_filter:
                     time_filter = time_filter_from_sql
@@ -849,12 +849,13 @@ class SupabaseQueryHandler:
                     time_filter = (datetime.utcnow() - timedelta(hours=24)).isoformat()
                 
                 query = query.gte('created_at', time_filter)
-                logger.info(f"✅ Applying time filter: created_at >= {time_filter}")
-            else:
+                logger.debug(f"✅ Applying time filter: created_at >= {time_filter}")
+            elif not message_id_from_params:
+                # Only warn if we're not fetching a specific message by ID
                 logger.warning(f"⚠️ No time filter applied - will fetch ALL messages!")
             
             # Fetch ALL matching messages with pagination (we'll filter in Python)
-            logger.info(f"🚀 Executing Supabase query with pagination...")
+            logger.debug(f"🚀 Executing Supabase query with pagination...")
             messages = []
             offset = 0
             batch_size = 1000
@@ -869,7 +870,7 @@ class SupabaseQueryHandler:
                     break
                 
                 messages.extend(batch)
-                logger.info(f"📦 Fetched batch: {len(batch)} messages (total so far: {len(messages)})")
+                logger.debug(f"📦 Fetched batch: {len(batch)} messages (total so far: {len(messages)})")
                 
                 # If we got less than batch_size, we've reached the end
                 if len(batch) < batch_size:
@@ -881,20 +882,20 @@ class SupabaseQueryHandler:
             
             # If query includes channel join, enrich with channel names
             if 'join channels' in sql_lower or 'c.channel_name' in sql_lower:
-                logger.info(f"🔧 Enriching with channel names...")
+                logger.debug(f"🔧 Enriching with channel names...")
                 messages = await self._enrich_with_channel_names(messages)
-                logger.info(f"✅ After channel enrichment: {len(messages)} messages")
+                logger.debug(f"✅ After channel enrichment: {len(messages)} messages")
             
             # Post-process messages for complex filters
-            logger.info(f"🔧 Post-processing messages...")
+            logger.debug(f"🔧 Post-processing messages...")
             messages = await self._post_process_messages(messages, sql, sql_lower, params)
-            logger.info(f"✅ After post-processing: {len(messages)} messages")
+            logger.debug(f"✅ After post-processing: {len(messages)} messages")
             
             # If query includes author_name/member, enrich with author names
             if 'author_name' in sql_lower or 'member' in sql_lower or 'join members' in sql_lower:
-                logger.info(f"🔧 Enriching with author names...")
+                logger.debug(f"🔧 Enriching with author names...")
                 messages = await self._enrich_with_author_names(messages)
-                logger.info(f"✅ After author enrichment: {len(messages)} messages")
+                logger.debug(f"✅ After author enrichment: {len(messages)} messages")
             
             # Handle ordering AFTER enrichment
             if 'order by' in sql_lower:

@@ -19,7 +19,7 @@ load_dotenv(dotenv_path=env_path, override=True)
 from discord.ext import commands
 import discord
 
-from src.common.log_handler import LogHandler
+from src.common.log_handler import LogHandler, setup_supabase_logging
 from src.common.base_bot import BaseDiscordBot
 from src.common.db_handler import DatabaseHandler
 from src.common.openmuse_interactor import OpenMuseInteractor
@@ -44,6 +44,17 @@ def setup_logging(dev_mode=False):
     if not logger:
         print("ERROR: Failed to create logger")
         sys.exit(1)
+    
+    # Add Supabase logging for WARNING and above in production
+    # In dev mode, also log INFO to track what's happening
+    supabase_level = logging.INFO if dev_mode else logging.WARNING
+    setup_supabase_logging(
+        logger,
+        min_level=supabase_level,
+        batch_size=25,  # Smaller batches for faster visibility
+        flush_interval=10.0  # Flush every 10 seconds
+    )
+    
     return logger
 
 async def run_archive_script(days, dev_mode=False, logger=None):

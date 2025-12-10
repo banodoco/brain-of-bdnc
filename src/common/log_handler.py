@@ -1,7 +1,19 @@
 import logging
 from logging.handlers import RotatingFileHandler
 import os
-from typing import Optional
+import socket
+import threading
+import traceback
+from datetime import datetime
+from queue import Queue, Empty
+from typing import Optional, List, Dict, Any
+
+# Supabase imports - optional
+try:
+    from supabase import create_client, Client
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
 
 class LineCountRotatingFileHandler(RotatingFileHandler):
     """A handler that rotates based on both size and line count"""
@@ -198,4 +210,222 @@ class LogHandler:
             return True
         except Exception as e:
             print(f"Cannot write to log file {filepath}: {e}")
-            return False 
+            return False
+
+
+class SupabaseLogHandler(logging.Handler):
+    """
+    A logging handler that writes logs to Supabase in batches.
+    
+    Logs are buffered and sent in batches to reduce API calls.
+    Uses a background thread for non-blocking writes.
+    """
+    
+    def __init__(
+        self, 
+        supabase_url: str, 
+        supabase_key: str,
+        table_name: str = 'system_logs',
+        batch_size: int = 50,
+        flush_interval: float = 5.0,
+        level: int = logging.INFO
+    ):
+        """
+        Initialize the Supabase log handler.
+        
+        Args:
+            supabase_url: Supabase project URL
+            supabase_key: Supabase service key
+            table_name: Name of the logs table
+            batch_size: Number of logs to batch before sending
+            flush_interval: Seconds between automatic flushes
+            level: Minimum log level to capture
+        """
+        super().__init__(level)
+        
+        if not SUPABASE_AVAILABLE:
+            raise ImportError("Supabase client not available. Install with: pip install supabase")
+        
+        self.supabase: Client = create_client(supabase_url, supabase_key)
+        self.table_name = table_name
+        self.batch_size = batch_size
+        self.flush_interval = flush_interval
+        self.hostname = socket.gethostname()
+        
+        # Thread-safe queue for log records
+        self._queue: Queue = Queue()
+        self._buffer: List[Dict[str, Any]] = []
+        self._lock = threading.Lock()
+        
+        # Background thread for flushing logs
+        self._shutdown = threading.Event()
+        self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
+        self._flush_thread.start()
+    
+    def emit(self, record: logging.LogRecord):
+        """Add a log record to the queue for batching."""
+        try:
+            log_entry = self._format_record(record)
+            self._queue.put(log_entry)
+        except Exception:
+            self.handleError(record)
+    
+    def _format_record(self, record: logging.LogRecord) -> Dict[str, Any]:
+        """Format a log record for Supabase insertion."""
+        # Get exception info if present
+        exception_text = None
+        if record.exc_info:
+            exception_text = ''.join(traceback.format_exception(*record.exc_info))
+        
+        # Extract extra fields (anything added via extra= parameter)
+        extra = {}
+        standard_attrs = {
+            'name', 'msg', 'args', 'created', 'filename', 'funcName', 
+            'levelname', 'levelno', 'lineno', 'module', 'msecs',
+            'pathname', 'process', 'processName', 'relativeCreated',
+            'stack_info', 'exc_info', 'exc_text', 'thread', 'threadName',
+            'message', 'asctime'
+        }
+        for key, value in record.__dict__.items():
+            if key not in standard_attrs:
+                try:
+                    # Only include JSON-serializable values
+                    import json
+                    json.dumps(value)
+                    extra[key] = value
+                except (TypeError, ValueError):
+                    extra[key] = str(value)
+        
+        return {
+            'timestamp': datetime.utcfromtimestamp(record.created).isoformat(),
+            'level': record.levelname,
+            'logger_name': record.name,
+            'message': record.getMessage(),
+            'module': record.module,
+            'function_name': record.funcName,
+            'line_number': record.lineno,
+            'exception': exception_text,
+            'extra': extra if extra else {},
+            'hostname': self.hostname
+        }
+    
+    def _flush_loop(self):
+        """Background loop that flushes logs periodically."""
+        while not self._shutdown.is_set():
+            try:
+                # Collect logs from queue
+                while True:
+                    try:
+                        log_entry = self._queue.get_nowait()
+                        with self._lock:
+                            self._buffer.append(log_entry)
+                    except Empty:
+                        break
+                
+                # Flush if buffer is full or interval elapsed
+                with self._lock:
+                    if len(self._buffer) >= self.batch_size:
+                        self._flush_buffer()
+                
+                # Wait for flush interval
+                self._shutdown.wait(self.flush_interval)
+                
+                # Flush any remaining logs
+                with self._lock:
+                    if self._buffer:
+                        self._flush_buffer()
+                        
+            except Exception as e:
+                print(f"Error in Supabase log flush loop: {e}")
+    
+    def _flush_buffer(self):
+        """Flush buffered logs to Supabase."""
+        if not self._buffer:
+            return
+        
+        logs_to_send = self._buffer.copy()
+        self._buffer.clear()
+        
+        try:
+            self.supabase.table(self.table_name).insert(logs_to_send).execute()
+        except Exception as e:
+            # Don't lose logs - print to stderr as fallback
+            print(f"Failed to send {len(logs_to_send)} logs to Supabase: {e}")
+            # Could optionally re-queue logs here, but risk infinite loop
+    
+    def flush(self):
+        """Force flush all buffered logs."""
+        # Drain queue first
+        while True:
+            try:
+                log_entry = self._queue.get_nowait()
+                with self._lock:
+                    self._buffer.append(log_entry)
+            except Empty:
+                break
+        
+        # Then flush buffer
+        with self._lock:
+            self._flush_buffer()
+    
+    def close(self):
+        """Clean up handler resources."""
+        self._shutdown.set()
+        self.flush()
+        self._flush_thread.join(timeout=5.0)
+        super().close()
+
+
+def setup_supabase_logging(
+    logger: logging.Logger,
+    supabase_url: Optional[str] = None,
+    supabase_key: Optional[str] = None,
+    min_level: int = logging.WARNING,
+    batch_size: int = 50,
+    flush_interval: float = 5.0
+) -> Optional[SupabaseLogHandler]:
+    """
+    Add Supabase logging to an existing logger.
+    
+    Args:
+        logger: The logger to add Supabase logging to
+        supabase_url: Supabase URL (defaults to SUPABASE_URL env var)
+        supabase_key: Supabase key (defaults to SUPABASE_SERVICE_KEY env var)
+        min_level: Minimum log level to send to Supabase
+        batch_size: Number of logs to batch
+        flush_interval: Seconds between flushes
+        
+    Returns:
+        The SupabaseLogHandler if successful, None otherwise
+    """
+    if not SUPABASE_AVAILABLE:
+        print("Supabase client not available - skipping Supabase logging")
+        return None
+    
+    url = supabase_url or os.getenv('SUPABASE_URL')
+    key = supabase_key or os.getenv('SUPABASE_SERVICE_KEY')
+    
+    if not url or not key:
+        print("Supabase credentials not configured - skipping Supabase logging")
+        return None
+    
+    try:
+        handler = SupabaseLogHandler(
+            supabase_url=url,
+            supabase_key=key,
+            batch_size=batch_size,
+            flush_interval=flush_interval,
+            level=min_level
+        )
+        
+        # Use a simple formatter for Supabase (message is already formatted)
+        formatter = logging.Formatter('%(message)s')
+        handler.setFormatter(formatter)
+        
+        logger.addHandler(handler)
+        logger.info("Supabase logging enabled")
+        return handler
+        
+    except Exception as e:
+        print(f"Failed to setup Supabase logging: {e}")
+        return None

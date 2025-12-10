@@ -31,6 +31,13 @@ This document provides an overview of the `bndc` code-base, detailing the purpos
 │   ├── create_dev_db.py            # Generate a fresh dev SQLite database
 │   ├── delete_user_messages.py      # Delete messages from a specific user within a time range (dry run by default)
 │   ├── create_supabase_schema.sql   # SQL script to create Supabase tables for Discord data sync
+│   ├── create_system_logs_table.sql # SQL to create system_logs table for centralized logging
+│   ├── setup_logs_auto_cleanup.sql  # SQL to setup pg_cron auto-cleanup of logs (48h retention)
+│   ├── logs_view.py                 # View recent logs with filtering (level, time, logger)
+│   ├── logs_tail.py                 # Real-time log tailing from Supabase
+│   ├── logs_search.py               # Search logs by message content
+│   ├── logs_stats.py                # Log statistics and manual cleanup utility
+│   ├── logs_debug.py                # Debug utility for testing and managing logs
 │   ├── download_files.py            # Download attachments referenced in the DB
 │   ├── download_videos.py           # Fetch remote videos for local storage
 │   ├── migrate_add_category_id.py   # Migration adding category_id column

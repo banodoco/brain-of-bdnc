@@ -172,15 +172,13 @@ class ReactorCog(commands.Cog):
         try:
             # --- STEP 1: Restore initial checks (NOW WRAPPED IN TRY/EXCEPT) ---
             
-            # VERY FIRST log to confirm event reception and show raw payload data
-            self.logger.info(f"[ReactorCog] <<< RAW on_raw_reaction_add event received: User={payload.user_id}, Emoji={payload.emoji}, Msg={payload.message_id} >>>") # Use INFO for visibility, simplified payload
+            # Log event reception at DEBUG level to reduce noise
+            self.logger.debug(f"[ReactorCog] Reaction event: User={payload.user_id}, Emoji={payload.emoji}, Msg={payload.message_id}")
             
             # --- Get LoggerCog instance --- 
             logger_cog = self.bot.get_cog("LoggerCog")
             if not logger_cog:
                 self.logger.warning("[ReactorCog] LoggerCog instance not found! Cannot log reaction add/remove to DB.")
-            else:
-                 self.logger.info("[ReactorCog] Found LoggerCog instance.") # Use INFO
             
             # Ignore reactions from bots or reactions without a user ID (shouldn't happen for add)
             if not payload.user_id:
@@ -188,24 +186,18 @@ class ReactorCog(commands.Cog):
                 return
             
             # Attempt to fetch user early for bot check
-            self.logger.info(f"[ReactorCog] Attempting to fetch user {payload.user_id}") # Use INFO
             user = self.bot.get_user(payload.user_id) # Check cache first
             if not user:
-                self.logger.info(f"[ReactorCog] User {payload.user_id} not in cache, fetching via API...") # Use INFO
+                self.logger.debug(f"[ReactorCog] User {payload.user_id} not in cache, fetching via API...")
                 try:
                     user = await self.bot.fetch_user(payload.user_id)
-                    self.logger.info(f"[ReactorCog] Fetched user {payload.user_id} via API.") # Use INFO
                 except (discord.NotFound, discord.HTTPException):
                     self.logger.warning(f"[ReactorCog] Could not fetch user {payload.user_id} for bot check, ignoring event.")
                     return # Ignore if user can't be fetched
-            else:
-                 self.logger.info(f"[ReactorCog] Found user {payload.user_id} in cache.") # Use INFO
             
             if user.bot:
-                self.logger.info(f"[ReactorCog] Ignoring raw reaction from bot: {user.name} ({user.id})") # Use INFO
+                self.logger.debug(f"[ReactorCog] Ignoring raw reaction from bot: {user.name}")
                 return
-            
-            self.logger.info("[ReactorCog] Passed initial checks (User is not bot). Proceeding...") # Use INFO
         
             # --- END STEP 1 ---
 
@@ -215,8 +207,6 @@ class ReactorCog(commands.Cog):
             if not reactor_instance:
                 self.logger.error("[ReactorCog] Reactor instance not found on bot object in on_raw_reaction_add.")
                 return
-            else:
-                self.logger.info("[ReactorCog] Found Reactor instance.") # Use INFO
             
             # Fetch necessary objects
             message = None
@@ -224,13 +214,10 @@ class ReactorCog(commands.Cog):
             emoji = None # Initialize emoji
             simulated_reaction = None # Initialize simulated_reaction
             try:
-                self.logger.info(f"[ReactorCog] Fetching channel {payload.channel_id}") # Use INFO
                 channel = self.bot.get_channel(payload.channel_id)
                 if not channel:
                     try:
-                        self.logger.info(f"[ReactorCog] Channel {payload.channel_id} not in cache, attempting to fetch via API...")
                         channel = await self.bot.fetch_channel(payload.channel_id)
-                        self.logger.info(f"[ReactorCog] Successfully fetched channel {payload.channel_id} ({channel.name}) via API.")
                     except discord.NotFound:
                         self.logger.warning(f"[ReactorCog] Could not find channel {payload.channel_id} via API (NotFound). Ignoring raw reaction.")
                         return
@@ -240,12 +227,6 @@ class ReactorCog(commands.Cog):
                     except discord.HTTPException as e:
                         self.logger.error(f"[ReactorCog] HTTP error fetching channel {payload.channel_id} via API: {e}. Ignoring raw reaction.")
                         return
-                
-                # DIAGNOSTIC LOG
-                if hasattr(discord, "threads") and hasattr(discord.threads, "Thread") and hasattr(discord, "TextChannel"):
-                    self.logger.info(f"[ReactorCog] DIAGNOSTIC: issubclass(discord.threads.Thread, discord.TextChannel) = {issubclass(discord.threads.Thread, discord.TextChannel)}")
-                else:
-                    self.logger.warning("[ReactorCog] DIAGNOSTIC: discord.threads.Thread or discord.TextChannel not found for issubclass check.")
 
                 # Type check after attempting to fetch
                 expected_text_channel_types = (
@@ -260,33 +241,11 @@ class ReactorCog(commands.Cog):
                                               # This check is primarily for the channel object the message is in.
                 )
                 if not channel or not hasattr(channel, 'type') or channel.type not in expected_text_channel_types:
-                    self.logger.warning(f"[ReactorCog] Channel {payload.channel_id} (type: {getattr(channel, 'type', 'UnknownType')} / object type: {type(channel)}) is not a recognized text-based guild channel, ignoring raw reaction.")
+                    self.logger.warning(f"[ReactorCog] Channel {payload.channel_id} (type: {getattr(channel, 'type', 'UnknownType')}) is not a recognized text-based guild channel, ignoring raw reaction.")
                     return
                 
-                self.logger.info(f"[ReactorCog] Found channel: {channel.name} ({channel.id}). Fetching message {payload.message_id}") # Use INFO
                 message = await channel.fetch_message(payload.message_id)
-                emoji = payload.emoji 
-                # User was already fetched above for the bot check
-                
-                self.logger.info(f"[ReactorCog] Fetched message {message.id}. Emoji: {emoji}, User: {user.name} ({user.id})") # Use INFO
-
-                # --- Simulate Reaction object --- (Needed for LoggerCog and Reactor)
-                # (Keep this commented for now, restore later if needed)
-                # class TempReaction:
-                #     def __init__(self, msg, emj):
-                #         self.message = msg
-                #         self.emoji = emj
-                # simulated_reaction = TempReaction(message, emoji)
-                # self.logger.info(f"[ReactorCog] Simulated reaction object created.") # Use INFO
-                
-                # --- Call LoggerCog to log the reaction add --- 
-                # (Keep this commented for now, restore later)
-                # if logger_cog:
-                #     self.logger.info(f"[ReactorCog] --> Creating task to call LoggerCog.log_reaction_add") # Use INFO
-                #     asyncio.create_task(logger_cog.log_reaction_add(simulated_reaction, user)) # Need simulated_reaction
-                #     self.logger.info(f"[ReactorCog] <-- Task created for LoggerCog.log_reaction_add") # Use INFO
-                
-                self.logger.info("[ReactorCog] Successfully fetched channel and message.") # Use INFO
+                emoji = payload.emoji
 
             except discord.NotFound:
                 self.logger.warning(f"[ReactorCog] Could not find message {payload.message_id} in channel {payload.channel_id} for raw reaction, ignoring.")
@@ -300,7 +259,6 @@ class ReactorCog(commands.Cog):
                 return
             
             # --- END STEP 2 ---
-            self.logger.info("[ReactorCog] Passed object fetching. Proceeding...") # Use INFO
 
             # --- STEP 3: Restore final logic (Simulate reaction, call logger, call reactor) ---
             # Proceed with Reactor check only if message was fetched successfully
@@ -312,30 +270,20 @@ class ReactorCog(commands.Cog):
                         self.message = msg
                         self.emoji = emj
                 simulated_reaction = TempReaction(message, emoji)
-                self.logger.info(f"[ReactorCog] Simulated reaction object created for message {message.id}.") # Use INFO
 
                 # --- Call LoggerCog to log the reaction add --- 
                 if logger_cog:
                     # Use asyncio.create_task to prevent blocking the main event flow
-                    self.logger.info(f"[ReactorCog] --> Creating task to call LoggerCog.log_reaction_add") # Use INFO
-                    # Pass the simulated reaction object
-                    asyncio.create_task(logger_cog.log_reaction_add(simulated_reaction, user)) 
-                    self.logger.info(f"[ReactorCog] <-- Task created for LoggerCog.log_reaction_add") # Use INFO
+                    asyncio.create_task(logger_cog.log_reaction_add(simulated_reaction, user))
                 
                 # --- Call Reactor --- 
-                self.logger.info(f"[ReactorCog] Message and user resolved. Proceeding to check reaction action with Reactor instance.") # Use INFO
                 try:
-                    self.logger.info(f"[ReactorCog] --> Calling reactor_instance.check_reaction for User: {user.id}, Emoji: {emoji} on Message: {message.id}") # Use INFO
                     action_name = reactor_instance.check_reaction(simulated_reaction, user) # Pass simulated object
-                    self.logger.info(f"[ReactorCog] <-- reactor_instance.check_reaction returned action: '{action_name}'") # Use INFO
 
                     if action_name:
-                        self.logger.info(f"[ReactorCog] --> Creating task for reactor_instance.execute_reaction_action with action '{action_name}'.") # Use INFO
+                        self.logger.info(f"[ReactorCog] Executing reactor action '{action_name}' for User: {user.id}, Emoji: {emoji}")
                         # Execute action needs the reaction object as well for context
                         asyncio.create_task(reactor_instance.execute_reaction_action(action_name, simulated_reaction, user))
-                        self.logger.info(f"[ReactorCog] <-- Task created for execute_reaction_action '{action_name}'.") # Use INFO
-                    else:
-                         self.logger.info(f"[ReactorCog] No matching reactor action found for raw reaction by User: {user.id}, Emoji: {emoji}") # Use INFO
                     
                 except Exception as e:
                     self.logger.error(f"[ReactorCog] Error in ReactorCog check_reaction/execute_action block: {e}")
