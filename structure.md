@@ -23,11 +23,10 @@ This document provides an overview of the `bndc` code-base, detailing the purpos
 ├── .railwayignore               # Files to ignore when deploying to Railway
 │
 ├── scripts/                     # One-off or batch maintenance / utility scripts
-│   ├── analyze_channels.py          # Analyse server channels and export stats
+│   ├── analyze_channels.py          # Analyse server channels with LLM and export stats
 │   ├── archive_discord.py           # Bulk archive messages & attachments to Supabase
 │   ├── backfill_reactions.py        # Populate missing reaction records in DB
 │   ├── cleanup_empty_threads.py     # Remove defunct Discord threads
-│   ├── cleanup_test_data.py         # Purge development data
 │   ├── delete_user_messages.py      # Delete messages from a specific user (dry run by default)
 │   ├── download_files.py            # Download attachments referenced in the DB
 │   ├── download_videos.py           # Fetch remote videos for local storage
@@ -36,8 +35,7 @@ This document provides an overview of the `bndc` code-base, detailing the purpos
 │   ├── logs_search.py               # Search logs by message content
 │   ├── logs_stats.py                # Log statistics and manual cleanup utility
 │   ├── logs_debug.py                # Debug utility for testing and managing logs
-│   ├── monthly_equity_shortlist.py  # Monthly analytics batch job
-│   └── setup_supabase_tables.py     # Script to create Supabase tables programmatically
+│   └── monthly_equity_shortlist.py  # Monthly equity allocation analysis
 │
 ├── supabase/                    # Supabase CLI configuration and migrations
 │   ├── config.toml                  # Supabase project configuration
