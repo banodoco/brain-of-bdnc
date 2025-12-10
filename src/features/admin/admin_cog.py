@@ -369,6 +369,19 @@ class AdminCog(commands.Cog):
                 try:
                     synced = await self.bot.tree.sync()
                     logger.info(f"Global sync completed. Synced {len(synced)} command(s): {[cmd.name for cmd in synced]}")
+                except discord.app_commands.errors.CommandSyncFailure as e:
+                    error_str = str(e)
+                    if "redirect_uris" in error_str:
+                        # This is a Discord Developer Portal OAuth2 configuration issue
+                        # Log once and continue - commands may still work from cache
+                        logger.warning(
+                            f"Command sync skipped due to Discord OAuth2 config issue. "
+                            f"Fix in Discord Developer Portal > OAuth2 > Redirects. Error: {error_str[:100]}"
+                        )
+                        # Don't raise - this is an external config issue, not a code bug
+                    else:
+                        logger.error(f"Command sync failure: {e}")
+                        raise
                 except discord.Forbidden as e:
                     logger.error(f"Bot lacks permissions to sync commands globally: {e}")
                     raise

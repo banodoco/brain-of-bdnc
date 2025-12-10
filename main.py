@@ -45,12 +45,10 @@ def setup_logging(dev_mode=False):
         print("ERROR: Failed to create logger")
         sys.exit(1)
     
-    # Add Supabase logging for WARNING and above in production
-    # In dev mode, also log INFO to track what's happening
-    supabase_level = logging.INFO if dev_mode else logging.WARNING
+    # Log all INFO and above to Supabase (for full visibility)
     setup_supabase_logging(
         logger,
-        min_level=supabase_level,
+        min_level=logging.INFO,  # Capture all INFO, WARNING, ERROR, CRITICAL
         batch_size=25,  # Smaller batches for faster visibility
         flush_interval=10.0  # Flush every 10 seconds
     )
