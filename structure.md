@@ -22,30 +22,21 @@ This document provides an overview of the `bndc` code-base, detailing the purpos
 ├── .dockerignore                # Files to exclude from Docker builds
 ├── .railwayignore               # Files to ignore when deploying to Railway
 │
-├── scripts/                     # One-off or batch maintenance / migration utilities
+├── scripts/                     # One-off or batch maintenance / utility scripts
 │   ├── analyze_channels.py          # Analyse server channels and export stats
-│   ├── archive_discord.py           # Bulk archive messages & attachments to local DB / storage
+│   ├── archive_discord.py           # Bulk archive messages & attachments to Supabase
 │   ├── backfill_reactions.py        # Populate missing reaction records in DB
 │   ├── cleanup_empty_threads.py     # Remove defunct Discord threads
 │   ├── cleanup_test_data.py         # Purge development data
-│   ├── create_dev_db.py            # Generate a fresh dev SQLite database
-│   ├── delete_user_messages.py      # Delete messages from a specific user within a time range (dry run by default)
+│   ├── delete_user_messages.py      # Delete messages from a specific user (dry run by default)
+│   ├── download_files.py            # Download attachments referenced in the DB
+│   ├── download_videos.py           # Fetch remote videos for local storage
 │   ├── logs_view.py                 # View recent logs with filtering (level, time, logger)
 │   ├── logs_tail.py                 # Real-time log tailing from Supabase
 │   ├── logs_search.py               # Search logs by message content
 │   ├── logs_stats.py                # Log statistics and manual cleanup utility
 │   ├── logs_debug.py                # Debug utility for testing and managing logs
-│   ├── download_files.py            # Download attachments referenced in the DB
-│   ├── download_videos.py           # Fetch remote videos for local storage
-│   ├── migrate_add_category_id.py   # Migration adding category_id column
-│   ├── migrate_channel_summary.py   # Migration for channel summary table
-│   ├── migrate_db.py                # General DB migration helper
-│   ├── migrate_summaries.py         # Backfill summaries to new schema
-│   ├── migrate_to_supabase.py       # Automated migration script from SQLite to Supabase
 │   ├── monthly_equity_shortlist.py  # Monthly analytics batch job
-│   ├── sync_to_supabase.py          # Standalone script to sync SQLite data to Supabase
-│   ├── full_sync_to_supabase.py     # Full historical sync from SQLite to Supabase
-│   ├── test_supabase_sync.py        # Test script for Supabase sync functionality
 │   └── setup_supabase_tables.py     # Script to create Supabase tables programmatically
 │
 ├── supabase/                    # Supabase CLI configuration and migrations
