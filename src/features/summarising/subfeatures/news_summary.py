@@ -55,7 +55,7 @@ class NewsSummarizer:
                 message = await loop.run_in_executor(
                     None,
                     lambda: self.anthropic_client.beta.messages.create(
-                        model="claude-opus-4-5-20251101",
+                        model="claude-sonnet-4-5-20250929",
                         max_tokens=max_tokens,
                         temperature=1,
                         system=system_prompt,
