@@ -184,7 +184,7 @@ async def generate_description_with_claude(
         logger.info(f"Sending request via dispatcher (Claude) with {len(content_blocks) - 1} media blocks.")
         generated_text = await get_llm_response(
             client_name="claude", 
-            model="claude-3-5-sonnet-20240620",
+            model="claude-sonnet-4-5-20250929",
             system_prompt=system_prompt,
             messages=messages,
             max_tokens=200, # Keep caption relatively short

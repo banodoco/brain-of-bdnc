@@ -1034,7 +1034,7 @@ async def _generate_workflow_name(
         response = await claude_client.generate_chat_completion(
             messages=messages_payload, 
             max_tokens=50, # Max tokens for the name itself, plus some buffer
-            model="claude-3-5-sonnet-latest", # UPDATED model
+            model="claude-sonnet-4-5-20250929",
             system_prompt="You are an expert in naming technical workflows concisely." # System prompt
         )
 
@@ -1214,7 +1214,7 @@ Example if model found but no specific variant and no default: {{"model": "Anoth
         response_str = await claude_client.generate_chat_completion(
             messages=messages_payload, 
             max_tokens=100, # Enough for a JSON response like {"model": "name", "variant": "name"}
-            model="claude-3-5-sonnet-latest", # UPDATED model
+            model="claude-sonnet-4-5-20250929",
             system_prompt="You are an expert in identifying software models and variants from text and a list, and responding in JSON." # System prompt
         )
 

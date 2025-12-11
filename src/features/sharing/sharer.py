@@ -313,7 +313,7 @@ class Sharer:
                 # with a non-existent `prompt` kwarg which caused a TypeError and aborted the sharing flow.
                 llm_description = await get_llm_response(
                     client_name="claude",
-                    model="claude-3-5-haiku-latest",  # cheaper / faster model is fine for a short caption
+                    model="claude-sonnet-4-5-20250929",
                     system_prompt=(
                         "You are an expert social-media copywriter. Respond with exactly one engaging yet "
                         "concise sentence (no hashtags) that describes the attached media so it can be used "

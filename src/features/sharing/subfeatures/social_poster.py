@@ -241,7 +241,7 @@ async def _make_claude_title_request(frames_dir: Path,
         logger.info("Requesting video title via dispatcher (Claude Sonnet)...")
         generated_title = await get_llm_response(
             client_name="claude",
-            model="claude-3-5-sonnet-20240620", # Or appropriate model
+            model="claude-sonnet-4-5-20250929",
             system_prompt=system_prompt,
             messages=messages_for_dispatcher,
             max_tokens=50,
@@ -338,7 +338,7 @@ async def generate_media_title(attachment: Dict, original_comment: Optional[str]
                  logger.info("Requesting image title via dispatcher (Claude Sonnet)...")
                  llm_response = await get_llm_response(
                      client_name="claude",
-                     model="claude-3-5-sonnet-20240620", # Or appropriate model
+                     model="claude-sonnet-4-5-20250929",
                      system_prompt=system_prompt,
                      messages=messages_for_dispatcher,
                      max_tokens=50,

@@ -414,7 +414,7 @@ class ConsentView(View):
                 original_poster=self.original_poster,
                 reactor=self.reactor,
                 reactor_comment=self.reactor_comment,
-                moderation_model_name="claude-3-5-haiku-latest", # Specific model for this path
+                moderation_model_name="claude-sonnet-4-5-20250929",
                 path_type="Consent Path",
                 interaction=interaction # Pass the interaction object
             )
@@ -657,7 +657,7 @@ async def handle_send_tweet_about_message(
         
         # LLM Moderation Check (Pre-approved path)
         # TODO: Replace with your desired Claude model from your available options
-        # moderation_model = "claude-3-5-sonnet-latest" # This will be passed to the helper
+        # moderation_model = "claude-sonnet-4-5-20250929"
 
         await _process_moderation_and_sharing(
             bot_instance=bot_instance,
@@ -669,7 +669,7 @@ async def handle_send_tweet_about_message(
             original_poster=original_poster,
             reactor=reactor,
             reactor_comment=reactor_comment,
-            moderation_model_name="claude-3-5-sonnet-latest", # Specific model for this path
+            moderation_model_name="claude-sonnet-4-5-20250929",
             path_type="Pre-Approved Path",
             reactor_dm_channel_override=reactor_dm_channel # Pass the already created DM channel
         )

@@ -144,7 +144,7 @@ Format as a JSON list of integers. Example: [123456789, 987654321]. Return ONLY 
             # Call the dispatcher directly (no need for run_in_executor)
             response_text = await get_llm_response(
                 client_name="claude",
-                model="claude-3-5-haiku-20240307", # Use updated Haiku model name
+                model="claude-sonnet-4-5-20250929",
                 system_prompt=system_prompt,
                 messages=messages,
                 max_tokens=500 # Keep max_tokens reasonable
@@ -214,7 +214,7 @@ Return ONLY the JSON list."""
             # Call the dispatcher directly
             response_text = await get_llm_response(
                 client_name="claude",
-                model="claude-3-5-haiku-20240307", # Use updated Haiku model name
+                model="claude-sonnet-4-5-20250929",
                 system_prompt=system_prompt,
                 messages=messages,
                 max_tokens=500
@@ -371,7 +371,7 @@ Return ONLY the JSON list."""
             # Call the dispatcher directly
             answer_text = await get_llm_response(
                 client_name="claude",
-                model="claude-3-5-sonnet-20240620", # Use Sonnet for answer quality
+                model="claude-sonnet-4-5-20250929",
                 system_prompt=system_prompt,
                 messages=messages,
                 max_tokens=1500 # Allow reasonable length for answer

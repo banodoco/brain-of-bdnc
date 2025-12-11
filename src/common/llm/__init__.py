@@ -38,7 +38,7 @@ async def get_llm_response(client_name: str, model: str, system_prompt: str,
 
     Args:
         client_name: The name of the client (e.g., 'claude', 'openai'). Case-insensitive.
-        model: The specific model name (e.g., 'claude-3-5-sonnet-20240620', 'gpt-4o').
+        model: The specific model name (e.g., 'claude-sonnet-4-5-20250929', 'gpt-4o').
         system_prompt: The system prompt for the LLM.
         messages: A list of message dictionaries. Supports text-only (content: str) 
                   and multimodal (content: List[Dict]).
