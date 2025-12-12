@@ -305,6 +305,40 @@ class StorageHandler:
             logger.error(f"Error storing channels to Supabase: {e}", exc_info=True)
             return 0
     
+    async def get_summary_for_date(self, channel_id: int, date: Optional[datetime] = None) -> Optional[str]:
+        """
+        Get the full summary for a channel on a given date.
+        
+        Args:
+            channel_id: The channel ID
+            date: Date to check (defaults to today)
+            
+        Returns:
+            The full_summary text if exists, None otherwise
+        """
+        if not self.supabase_client:
+            logger.error("Supabase client not initialized")
+            return None
+        
+        try:
+            summary_date = (date or datetime.now()).strftime('%Y-%m-%d')
+            
+            result = await asyncio.to_thread(
+                lambda: self.supabase_client.table('daily_summaries')
+                    .select('full_summary')
+                    .eq('date', summary_date)
+                    .eq('channel_id', channel_id)
+                    .execute()
+            )
+            
+            if result.data and len(result.data) > 0:
+                return result.data[0].get('full_summary')
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting summary for date: {e}", exc_info=True)
+            return None
+
     async def summary_exists_for_date(self, channel_id: int, date: Optional[datetime] = None) -> bool:
         """
         Check if a summary already exists for a channel on a given date.

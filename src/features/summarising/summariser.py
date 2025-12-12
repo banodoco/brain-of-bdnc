@@ -1017,9 +1017,12 @@ class ChannelSummarizer:
                     self.logger.debug(f"[{i+1}/{len(active_channels)}] Processing channel {channel_id} ({channel_name})")
                     
                     # Check if summary already exists for this channel today (skip in dev mode)
-                    if not self.dev_mode and db_handler.summary_exists_for_date(channel_id, current_date):
-                        self.logger.info(f"⏭️ Skipping channel {channel_id}: Summary already exists for {current_date.strftime('%Y-%m-%d')}")
-                        continue
+                    if not self.dev_mode:
+                        existing_summary = db_handler.get_summary_for_date(channel_id, current_date)
+                        if existing_summary:
+                            self.logger.info(f"⏭️ Using existing summary for channel {channel_id} from {current_date.strftime('%Y-%m-%d')}")
+                            channel_summaries.append(existing_summary)
+                            continue
                     
                     try:
                         self.logger.info(f"Getting message history for channel {channel_id} from last 24 hours...")
