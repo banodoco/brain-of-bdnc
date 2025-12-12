@@ -34,17 +34,20 @@ class NewsSummarizer:
 
         self.logger.info("NewsSummarizer initialized.")
 
-    async def _call_anthropic_with_web_search(
+    async def _call_anthropic(
         self, 
         system_prompt: str, 
         user_content: str, 
         max_tokens: int = 16000,
-        max_retries: int = 3
+        max_retries: int = 3,
+        use_web_search: bool = False
     ) -> str:
         """
-        Call Anthropic API with Claude Opus 4.5 and web search capability.
-        Uses the beta API for web search tool.
-        Includes retry logic with exponential backoff for rate limits.
+        Call Anthropic API with Claude Sonnet 4.5.
+        
+        Args:
+            use_web_search: If True, enables web search tool (beta). 
+                           Disabled by default - was causing JSON parsing issues.
         """
         last_error = None
         
@@ -52,33 +55,43 @@ class NewsSummarizer:
             try:
                 # Run the synchronous API call in a thread pool to not block the event loop
                 loop = asyncio.get_event_loop()
-                message = await loop.run_in_executor(
-                    None,
-                    lambda: self.anthropic_client.beta.messages.create(
-                        model="claude-sonnet-4-5-20250929",
-                        max_tokens=max_tokens,
-                        temperature=1,
-                        system=system_prompt,
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "text",
-                                        "text": user_content
-                                    }
-                                ]
-                            }
-                        ],
-                        tools=[
-                            {
-                                "name": "web_search",
-                                "type": "web_search_20250305"
-                            }
-                        ],
-                        betas=["web-search-2025-03-05"]
+                
+                if use_web_search:
+                    # Use beta API with web search tool
+                    message = await loop.run_in_executor(
+                        None,
+                        lambda: self.anthropic_client.beta.messages.create(
+                            model="claude-sonnet-4-5-20250929",
+                            max_tokens=max_tokens,
+                            temperature=1,
+                            system=system_prompt,
+                            messages=[
+                                {
+                                    "role": "user",
+                                    "content": [{"type": "text", "text": user_content}]
+                                }
+                            ],
+                            tools=[{"name": "web_search", "type": "web_search_20250305"}],
+                            betas=["web-search-2025-03-05"]
+                        )
                     )
-                )
+                else:
+                    # Standard API without web search
+                    message = await loop.run_in_executor(
+                        None,
+                        lambda: self.anthropic_client.messages.create(
+                            model="claude-sonnet-4-5-20250929",
+                            max_tokens=max_tokens,
+                            temperature=1,
+                            system=system_prompt,
+                            messages=[
+                                {
+                                    "role": "user",
+                                    "content": user_content
+                                }
+                            ]
+                        )
+                    )
                 
                 # Extract text from the response content blocks
                 text_parts = []
@@ -95,7 +108,7 @@ class NewsSummarizer:
                 await asyncio.sleep(wait_time)
                 continue
             except Exception as e:
-                self.logger.error(f"Error calling Anthropic API with web search: {e}", exc_info=True)
+                self.logger.error(f"Error calling Anthropic API: {e}", exc_info=True)
                 raise
         
         # All retries exhausted
@@ -170,7 +183,7 @@ Evidence & Attribution:
 - Do NOT jump to conclusions unsupported by evidence in the messages
 - Only report what is explicitly stated or clearly demonstrated
 - If unclear or ambiguous, skip it or note the uncertainty
-- If messages contain external links (GitHub, blogs, announcements), use web search to verify claims and understand context before reporting
+- If messages contain external links (GitHub, blogs, announcements), report what is stated in the messages
 - Distinguish between facts, opinions, and speculation
 - Always credit creators with bold usernames: "**username**"
 - For subjective opinions, attribute them: "**Draken** felt..."
@@ -295,9 +308,9 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
                     self.logger.info(f"Waiting 30s before processing chunk {chunk_num} to respect rate limits...")
                     await asyncio.sleep(30)
                 
-                # Call Anthropic API with Claude Opus 4.5 and web search
+                # Call Anthropic API with Claude Sonnet 4.5
                 self.logger.info(f"Calling LLM for chunk {chunk_num}/{total_chunks}...")
-                text = await self._call_anthropic_with_web_search(
+                text = await self._call_anthropic(
                     system_prompt=self._NEWS_GENERATION_SYSTEM_PROMPT,
                     user_content=user_prompt_content,
                     max_tokens=16000
@@ -440,7 +453,7 @@ Each summary is in the same format: an array of objects with fields:
 We want to combine them into a single JSON array that contains the top 3-5 most interesting items overall.
 You MUST keep each chosen item in the exact same structure (all fields) as it appeared in the original input. Retain the original message_id and channel_id values.
 
-IMPORTANT: Do NOT jump to conclusions that aren't supported by evidence. Only include items that are clearly substantiated in the original summaries. If you need to verify any claims or understand external links better, use web search.
+IMPORTANT: Do NOT jump to conclusions that aren't supported by evidence. Only include items that are clearly substantiated in the original summaries.
 
 If no interesting items, respond with "[NO SIGNIFICANT NEWS]".
 Otherwise, respond with ONLY a JSON array. No extra text.
@@ -453,8 +466,8 @@ Return just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')
             user_prompt_content += f"--- Summary {i+1} ---\n{s}\n\n"
 
         try:
-            # Call Anthropic API with Claude Opus 4.5 and web search
-            text = await self._call_anthropic_with_web_search(
+            # Call Anthropic API with Claude Sonnet 4.5
+            text = await self._call_anthropic(
                 system_prompt=system_prompt,
                 user_content=user_prompt_content,
                 max_tokens=16000
@@ -552,8 +565,8 @@ Return just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')
         system_prompt_formatted = self._SHORT_SUMMARY_SYSTEM_PROMPT.format(message_count=message_count)
 
         try:
-            # Call Anthropic API with Claude Opus 4.5 (short summary doesn't need web search, but using same client for consistency)
-            text = await self._call_anthropic_with_web_search(
+            # Call Anthropic API with Claude Sonnet 4.5
+            text = await self._call_anthropic(
                 system_prompt=system_prompt_formatted,
                 user_content=f"Full summary to work from:\n{full_summary}",
                 max_tokens=1024  # Lower max tokens for short summary

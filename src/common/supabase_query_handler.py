@@ -1023,9 +1023,10 @@ class SupabaseQueryHandler:
                         continue
             
             # Handle reactor count threshold - parse dynamically from SQL
-            # Look for patterns like "unique_reactor_count >= X" or ") >= X"
+            # Look for patterns like "unique_reactor_count >= X" or "reaction_count >= X"
+            # NOTE: Do NOT match ") >= X" as that could be COUNT(*) >= X
             reactor_threshold = None
-            reactor_match = re.search(r'(?:unique_reactor_count|reaction_count|\))\s*>=\s*(\d+)', sql_lower)
+            reactor_match = re.search(r'(?:unique_reactor_count|reaction_count)\s*>=\s*(\d+)', sql_lower)
             if reactor_match:
                 reactor_threshold = int(reactor_match.group(1))
                 logger.debug(f"Detected reactor count threshold in SQL: >= {reactor_threshold}")
