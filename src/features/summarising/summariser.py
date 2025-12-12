@@ -1016,8 +1016,8 @@ class ChannelSummarizer:
                     
                     self.logger.debug(f"[{i+1}/{len(active_channels)}] Processing channel {channel_id} ({channel_name})")
                     
-                    # Check if summary already exists for this channel today
-                    if db_handler.summary_exists_for_date(channel_id, current_date):
+                    # Check if summary already exists for this channel today (skip in dev mode)
+                    if not self.dev_mode and db_handler.summary_exists_for_date(channel_id, current_date):
                         self.logger.info(f"⏭️ Skipping channel {channel_id}: Summary already exists for {current_date.strftime('%Y-%m-%d')}")
                         continue
                     
@@ -1106,17 +1106,22 @@ class ChannelSummarizer:
                                          # UPDATED CALL
                                          await discord_utils.safe_send_message(self.bot, channel_obj, self.rate_limiter, self.logger, content=f"{channel_header}\n{short_summary_text}\n[Click here to jump to the summary thread]({link})")
                         
-                        success = await self._post_summary_with_transaction(channel_id, channel_summary, messages, current_date, db_handler)
-                        if success: channel_summaries.append(channel_summary)
-                        else: self.logger.error(f"Failed to save summary to DB for channel {channel_id}")
+                        # In dev mode, don't save to DB - just add to list for main summary
+                        if self.dev_mode:
+                            self.logger.info(f"🧪 Dev mode: Skipping DB save for channel {channel_id}")
+                            channel_summaries.append(channel_summary)
+                        else:
+                            success = await self._post_summary_with_transaction(channel_id, channel_summary, messages, current_date, db_handler)
+                            if success: channel_summaries.append(channel_summary)
+                            else: self.logger.error(f"Failed to save summary to DB for channel {channel_id}")
 
                     except Exception as e:
                         self.logger.error(f"Error processing channel {channel_id}: {e}", exc_info=True)
                         continue
 
                 if channel_summaries:
-                    # Check if main summary already exists for today
-                    if db_handler.summary_exists_for_date(self.summary_channel_id, current_date):
+                    # Check if main summary already exists for today (skip in dev mode)
+                    if not self.dev_mode and db_handler.summary_exists_for_date(self.summary_channel_id, current_date):
                         self.logger.info(f"⏭️ Skipping main summary: Already exists for {current_date.strftime('%Y-%m-%d')}")
                     else:
                         self.logger.info(f"Combining summaries from {len(channel_summaries)} channels...")
@@ -1159,14 +1164,17 @@ class ChannelSummarizer:
                                     await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=item.get('content', ''))
                                     await asyncio.sleep(1)
                             
-                            # Save main summary to database
-                            main_summary_saved = await self._post_summary_with_transaction(
-                                self.summary_channel_id, overall_summary, [], current_date, db_handler
-                            )
-                            if main_summary_saved:
-                                self.logger.info(f"✅ Main summary saved to database for {current_date.strftime('%Y-%m-%d')}")
+                            # Save main summary to database (skip in dev mode)
+                            if self.dev_mode:
+                                self.logger.info(f"🧪 Dev mode: Skipping DB save for main summary")
                             else:
-                                self.logger.error(f"Failed to save main summary to database")
+                                main_summary_saved = await self._post_summary_with_transaction(
+                                    self.summary_channel_id, overall_summary, [], current_date, db_handler
+                                )
+                                if main_summary_saved:
+                                    self.logger.info(f"✅ Main summary saved to database for {current_date.strftime('%Y-%m-%d')}")
+                                else:
+                                    self.logger.error(f"Failed to save main summary to database")
                         else:
                             # UPDATED CALL
                             await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content="_No significant activity to summarize in the last 24 hours._")
