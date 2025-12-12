@@ -932,7 +932,7 @@ async def _collect_source_material(
         return None
 
     # Concatenate text content from context messages (original message text is already in the list if present)
-    full_context_text = "\\n".join(context_messages_text_list)
+    full_context_text = "\n".join(context_messages_text_list)
 
     return {
         "json_attachment": explicit_json_attachment, 

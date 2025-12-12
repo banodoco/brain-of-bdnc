@@ -1,9 +1,7 @@
 import discord
 from discord.ext import commands
 import logging
-
-# Configuration - Consider moving this to .env or config file
-OPENMUSE_FEATURING_CHANNEL_ID = 1366067251694014506
+import os
 
 class Relayer:
     def __init__(self, bot: commands.Bot, logger: logging.Logger, dev_mode: bool = False):
@@ -33,14 +31,25 @@ class Relayer:
         """
         self.logger.info(f"[Relayer] Received openmuse_featuring request: User='{username}', Type='{content_type}', URL='{url}'")
 
+        channel_id_str = os.getenv('OPENMUSE_FEATURING_CHANNEL_ID')
+        if not channel_id_str:
+            self.logger.error("[Relayer] OPENMUSE_FEATURING_CHANNEL_ID not set in environment")
+            return
+        
         try:
-            channel = self.bot.get_channel(OPENMUSE_FEATURING_CHANNEL_ID)
+            channel_id = int(channel_id_str)
+        except ValueError:
+            self.logger.error(f"[Relayer] Invalid OPENMUSE_FEATURING_CHANNEL_ID: {channel_id_str}")
+            return
+
+        try:
+            channel = self.bot.get_channel(channel_id)
             if not channel:
-                self.logger.error(f"[Relayer] Could not find channel with ID {OPENMUSE_FEATURING_CHANNEL_ID}")
+                self.logger.error(f"[Relayer] Could not find channel with ID {channel_id}")
                 return
 
             if not isinstance(channel, discord.TextChannel):
-                 self.logger.error(f"[Relayer] Channel {OPENMUSE_FEATURING_CHANNEL_ID} is not a text channel.")
+                 self.logger.error(f"[Relayer] Channel {channel_id} is not a text channel.")
                  return
 
             # Construct the message
@@ -53,7 +62,7 @@ class Relayer:
             self.logger.info(f"[Relayer] Successfully sent 'openmuse_featuring' message to channel {channel.id}")
 
         except discord.errors.Forbidden:
-            self.logger.error(f"[Relayer] Bot lacks permissions to send messages in channel {OPENMUSE_FEATURING_CHANNEL_ID}")
+            self.logger.error(f"[Relayer] Bot lacks permissions to send messages in channel {channel_id}")
         except Exception as e:
             self.logger.error(f"[Relayer] Error processing 'openmuse_featuring' action: {e}", exc_info=True)
 

@@ -883,6 +883,10 @@ class ChannelSummarizer:
                  return []
             
             self.logger.info(f"[PRODUCTION MODE] Querying {len(self.channels_to_monitor)} channels...")
+            
+            # Calculate 24 hours ago timestamp (PostgreSQL-compatible)
+            time_24_hours_ago = datetime.utcnow() - timedelta(hours=24)
+            time_24_hours_ago_str = time_24_hours_ago.isoformat()
                  
             channel_query = (
                 "SELECT c.channel_id, c.channel_name, COALESCE(c2.channel_name, 'Unknown') as source, "
@@ -890,7 +894,7 @@ class ChannelSummarizer:
                 "FROM channels c "
                 "LEFT JOIN channels c2 ON c.category_id = c2.channel_id "
                 "LEFT JOIN messages m ON c.channel_id = m.channel_id "
-                "AND m.created_at > datetime('now', '-24 hours') "
+                f"AND m.created_at > '{time_24_hours_ago_str}' "
                 f"WHERE c.channel_id IN ({channel_ids}) OR c.category_id IN ({channel_ids}) "
                 "GROUP BY c.channel_id, c.channel_name, source "
                 "HAVING COUNT(m.message_id) >= 25 "

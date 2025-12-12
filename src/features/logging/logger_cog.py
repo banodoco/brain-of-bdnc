@@ -201,7 +201,8 @@ class LoggerCog(commands.Cog):
                 new_count = len(current_reactors)
                 self.db.execute_query(
                     "UPDATE messages SET reaction_count = ?, reactors = ? WHERE message_id = ?",
-                    (new_count, json.dumps(current_reactors), reaction.message.id)
+                    # Store reactors as an array (JSONB) in Supabase, not a JSON-encoded string
+                    (new_count, current_reactors, reaction.message.id)
                 )
                 
                 # Only log in dev mode

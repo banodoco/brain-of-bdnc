@@ -45,6 +45,7 @@
 | `REACTION_WATCHLIST` | JSON config for reaction-triggered workflows |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | LLM provider keys |
 | `DEV_MODE` | Enables verbose logging, skips "already summarized" checks |
+| `OPENMUSE_FEATURING_CHANNEL_ID` | Channel ID for OpenMuse featuring posts |
 
 ---
 

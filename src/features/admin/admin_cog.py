@@ -420,17 +420,18 @@ class AdminCog(commands.Cog):
                 # Don't set _commands_synced to True so we can retry on next ready event
                 raise  # Re-raise to ensure we know if sync fails
         
-        # Auto-start Supabase background sync
-        if self.supabase_sync and not self.supabase_sync.get_sync_status()['is_running']:
-            try:
-                logger.info("Auto-starting Supabase background sync...")
-                success = await self.supabase_sync.start_background_sync()
-                if success:
-                    logger.info("✅ Supabase background sync started automatically on bot ready")
-                else:
-                    logger.warning("❌ Failed to auto-start Supabase background sync")
-            except Exception as sync_error:
-                logger.error(f"Error auto-starting Supabase sync: {sync_error}", exc_info=True)
+        # Auto-start Supabase background sync (only if not using direct writes)
+        if self.supabase_sync and not self.supabase_sync.direct_writes_enabled:
+            if not self.supabase_sync.get_sync_status()['is_running']:
+                try:
+                    logger.info("Auto-starting Supabase background sync...")
+                    success = await self.supabase_sync.start_background_sync()
+                    if success:
+                        logger.info("✅ Supabase background sync started automatically on bot ready")
+                    else:
+                        logger.warning("❌ Failed to auto-start Supabase background sync")
+                except Exception as sync_error:
+                    logger.error(f"Error auto-starting Supabase sync: {sync_error}", exc_info=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):

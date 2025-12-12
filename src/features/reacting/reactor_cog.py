@@ -12,12 +12,12 @@ import logging
 # Import the new subfeature
 from .subfeatures import message_linker # Adjusted import path
 
-# Core Reactor logic class is no longer imported or instantiated here
-# from .reactor import Reactor 
-
-# Watchlist environment variable is primarily used by the Reactor class now
-# Example format: '[{"user_id": "12345", "emoji": "🐦", "action": "send_tweet_about_message"}, {"user_id": "*", "emoji": "📌", "action": "pin_reaction_message"}]'
-# WATCHLIST_JSON = os.getenv('REACTION_WATCHLIST', '[]') 
+# Helper class to simulate discord.Reaction for raw events
+class SimpleReaction:
+    """Lightweight reaction object for use with raw reaction events."""
+    def __init__(self, message, emoji):
+        self.message = message
+        self.emoji = emoji 
 
 class ReactorCog(commands.Cog):
     # __init__ no longer creates the Reactor instance
@@ -58,7 +58,7 @@ class ReactorCog(commands.Cog):
                             # So, for "*", we should perhaps pass a special sentinel or not filter in the cog.
                             # For now, let's assume channel_id will always be a specific ID for message_linker feature.
                             # We will simply log if '*' is used for 'message_linker' and not add it.
-                            self.logger.warning("[ReactorCog] MessageLinker 'channel_id: "*"' is ambiguous. Please specify channel IDs or update MessageLinker to handle wildcard.")
+                            self.logger.warning("[ReactorCog] MessageLinker channel_id='*' is ambiguous. Please specify channel IDs or update MessageLinker to handle wildcard.")
                             # To enable for all channels, the MessageLinker itself should not have channel restrictions.
                             # The MessageLinker class currently allows an empty list, meaning no channels.
                             # If we want '*' to mean all, we would pass None to MessageLinker's allowed_channel_ids and it would skip the check.
@@ -263,13 +263,8 @@ class ReactorCog(commands.Cog):
             # --- STEP 3: Restore final logic (Simulate reaction, call logger, call reactor) ---
             # Proceed with Reactor check only if message was fetched successfully
             if message and user:
-                # --- Simulate Reaction object --- (Needed for LoggerCog and Reactor)
-                # Create a simple class that mimics the necessary attributes
-                class TempReaction:
-                    def __init__(self, msg, emj):
-                        self.message = msg
-                        self.emoji = emj
-                simulated_reaction = TempReaction(message, emoji)
+                # Simulate Reaction object (Needed for LoggerCog and Reactor)
+                simulated_reaction = SimpleReaction(message, emoji)
 
                 # --- Call LoggerCog to log the reaction add --- 
                 if logger_cog:
@@ -368,11 +363,7 @@ class ReactorCog(commands.Cog):
             emoji = payload.emoji
 
             # Simulate Reaction object
-            class TempReaction:
-                def __init__(self, msg, emj):
-                    self.message = msg
-                    self.emoji = emj
-            simulated_reaction = TempReaction(message, emoji)
+            simulated_reaction = SimpleReaction(message, emoji)
 
             # Call LoggerCog to log the reaction removal
             asyncio.create_task(logger_cog.log_reaction_remove(simulated_reaction, user))

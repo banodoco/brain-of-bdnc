@@ -351,7 +351,7 @@ class TopGenerations:
                 thread, 
                 self.summarizer.rate_limiter, 
                 self.summarizer.logger, 
-                content="\\n## Top Generations\\n"
+                content="\n## Top Generations\n"
             )
             
             for i, row in enumerate(results, start=1):

@@ -26,12 +26,13 @@ from src.common.openmuse_interactor import OpenMuseInteractor
 from src.common.llm.claude_client import ClaudeClient
 from src.features.curating.curator_cog import CuratorCog
 from src.features.summarising.summariser_cog import SummarizerCog
+from src.features.summarising.summariser import ChannelSummarizer
 from src.features.logging.logger_cog import LoggerCog
 from src.features.sharing.sharing_cog import SharingCog
 from src.features.sharing.sharer import Sharer
 from src.features.reacting.reactor import Reactor
 from src.features.reacting.reactor_cog import ReactorCog
-from src.features.relaying.relayer import Relayer
+from src.features.archive.archive_cog import ArchiveCog
 
 def setup_logging(dev_mode=False):
     """Setup shared logging configuration for all bots"""
@@ -101,7 +102,7 @@ async def main_async(args):
         # ---- END BASIC EVENT TEST ----
 
         # ---- Initialize Core Components ----
-        logger.info("Initializing core components (DB, Sharer, Reactor, Relayer)...")
+        logger.info("Initializing core components (DB, Sharer, Reactor)...")
 
         # 1. Database Handler
         bot.db_handler = DatabaseHandler(dev_mode=args.dev)
@@ -113,8 +114,6 @@ async def main_async(args):
         logger.info("ClaudeClient initialized and attached to bot.")
 
         # 3. Sharing Cog & Sharer Instance
-        logger.info("About to load SharingCog...")
-        from src.features.sharing.sharing_cog import SharingCog
         sharing_cog_instance = SharingCog(bot, bot.db_handler)
         await bot.add_cog(sharing_cog_instance)
         logger.info("SharingCog loaded via add_cog")
@@ -155,19 +154,11 @@ async def main_async(args):
         bot.reactor_instance = reactor_instance
         logger.info("Reactor instance created and attached to bot.")
 
-        # 5. Relayer Instance (New)
-        relayer_instance = Relayer(bot=bot, logger=logger, dev_mode=args.dev)
-        bot.relayer_instance = relayer_instance
-        logger.info("Relayer instance created and attached to bot.")
 
         # ---- ADD OTHER COGS ----
         logger.info("Adding remaining cogs...")
 
-        # Summarizer Cog
-        from src.features.summarising.summariser_cog import SummarizerCog
-        from src.features.summarising.summariser import ChannelSummarizer
-        
-        # Create ChannelSummarizer instance
+        # Summarizer Cog - Create ChannelSummarizer instance
         channel_summarizer_instance = ChannelSummarizer(
             bot=bot,
             logger=logger,
@@ -179,37 +170,27 @@ async def main_async(args):
         logger.info("SummarizerCog loaded.")
 
         # Curator Cog
-        from src.features.curating.curator_cog import CuratorCog
         await bot.add_cog(CuratorCog(bot, logger, args.dev))
         logger.info("CuratorCog loaded.")
 
         # Logger Cog
-        from src.features.logging.logger_cog import LoggerCog
         await bot.add_cog(LoggerCog(bot, logger, args.dev))
         logger.info("LoggerCog loaded.")
         
-        # Admin Cog (New) - Skip for now due to import issues
+        # Admin Cog
         try:
-            logger.info("Attempting to load AdminCog...")
             from src.features.admin.admin_cog import AdminCog
             await bot.add_cog(AdminCog(bot))
-            logger.info("AdminCog successfully loaded and added to bot")
+            logger.info("AdminCog loaded.")
         except Exception as e:
             logger.warning(f"Failed to load AdminCog (skipping): {e}")
-            # Don't raise - continue without AdminCog for now
 
         # Reactor Cog (Needs bot.reactor_instance)
-        from src.features.reacting.reactor_cog import ReactorCog
         await bot.add_cog(ReactorCog(bot, logger, args.dev))
         logger.info("ReactorCog loaded.")
 
-        # Relaying Cog (New - Needs bot.relayer_instance)
-        from src.features.relaying.relaying_cog import RelayingCog
-        await bot.add_cog(RelayingCog(bot, logger, args.dev))
-        logger.info("RelayingCog loaded.")
 
         # Archive Cog (Handles standalone --archive-days operations)
-        from src.features.archive.archive_cog import ArchiveCog
         await bot.add_cog(ArchiveCog(bot))
         logger.info("ArchiveCog loaded.")
 

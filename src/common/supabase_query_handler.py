@@ -561,6 +561,16 @@ class SupabaseQueryHandler:
             logger.debug(f"🔍 Normalized SQL (first 150 chars): {sql_lower[:150]}...")
             logger.debug(f"🔍 Routing checks: CTE={sql_lower.startswith('with ')}, FROM messages={'from messages' in sql_lower}, JOIN messages={'join messages' in sql_lower}, FROM channels={'from channels' in sql_lower}, JOIN channels={'join channels' in sql_lower}")
             
+            # Handle UPDATE queries
+            if sql_lower.startswith('update '):
+                logger.info(f"🔀 Routing to _handle_update_query (detected: UPDATE)")
+                return await self._handle_update_query(sql, params)
+            
+            # Handle DELETE queries (but not SELECT...DELETE patterns)
+            if sql_lower.startswith('delete '):
+                logger.info(f"🔀 Routing to _handle_delete_query (detected: DELETE)")
+                return await self._handle_delete_query(sql, params)
+            
             # Handle CTEs (WITH clause) - convert to regular query
             if sql_lower.startswith('with '):
                 logger.info(f"🔀 Routing to _handle_cte_query (detected: WITH clause)")
@@ -677,9 +687,26 @@ class SupabaseQueryHandler:
             if category_response.data:
                 all_channels.extend(category_response.data)
             
-            # Fetch messages from last 24 hours
-            time_24h_ago = (datetime.utcnow() - timedelta(hours=24)).isoformat()
-            messages_response = self.supabase.table('discord_messages').select('channel_id,message_id').gte('created_at', time_24h_ago).execute()
+            # Fetch messages from a time window.
+            #
+            # Prefer using a timestamp literal embedded in the SQL (e.g.:
+            #   AND m.created_at > '2025-12-11T17:03:22.250156'
+            # ). This keeps behavior aligned with callers that build a window explicitly.
+            # Fall back to the last 24 hours if none is present.
+            sql_lower = re.sub(r'\s+', ' ', sql.lower().strip())
+            time_filter = None
+            time_match = re.search(r"created_at\s*(?:>=|>)\s*'([^']+)'", sql_lower)
+            if time_match:
+                time_filter = time_match.group(1)
+            else:
+                time_filter = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+
+            messages_response = (
+                self.supabase.table('discord_messages')
+                .select('channel_id,message_id')
+                .gte('created_at', time_filter)
+                .execute()
+            )
             messages = messages_response.data if messages_response.data else []
             
             # Count messages per channel
@@ -829,7 +856,33 @@ class SupabaseQueryHandler:
                     query = query.in_('channel_id', [str(cid) for cid in channel_ids_from_params])
                     logger.debug(f"✅ Applying channel filter: channel_id IN {channel_ids_from_params}")
             else:
-                logger.warning(f"⚠️ No message/channel filter applied - will fetch ALL messages!")
+                # If the SQL includes other restrictive filters (e.g. reactors/attachments), try to apply
+                # them via PostgREST so we don't accidentally pull the whole table.
+                applied_any_pushdown_filter = False
+
+                # reactors missing / empty patterns (used by scripts/backfill_reactions.py)
+                if 'reactors' in sql_lower and ('reactors is null' in sql_lower or "reactors = '[]'" in sql_lower or "reactors = 'null'" in sql_lower):
+                    # PostgREST OR syntax: "col.is.null,col.eq.value"
+                    # For JSONB arrays, `eq.[]` is supported by PostgREST.
+                    try:
+                        query = query.or_("reactors.is.null,reactors.eq.[]")
+                        applied_any_pushdown_filter = True
+                        logger.info("✅ Applied pushdown filter: reactors is null OR reactors == []")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to apply reactors pushdown filter: {e}")
+
+                # attachments non-empty patterns
+                if 'attachments' in sql_lower and ("attachments != '[]'" in sql_lower or 'attachments is not null' in sql_lower):
+                    try:
+                        # Exclude NULL and empty arrays
+                        query = query.not_.is_('attachments', 'null').neq('attachments', [])
+                        applied_any_pushdown_filter = True
+                        logger.info("✅ Applied pushdown filter: attachments not null and != []")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to apply attachments pushdown filter: {e}")
+
+                if not applied_any_pushdown_filter:
+                    logger.warning("⚠️ No message/channel filter applied - will fetch ALL messages!")
             
             # Try to extract time filter from SQL
             time_filter_from_sql = None
@@ -1023,12 +1076,21 @@ class SupabaseQueryHandler:
             
             # Handle reactor count threshold - parse dynamically from SQL
             # Look for patterns like "unique_reactor_count >= X" or "reaction_count >= X"
-            # NOTE: Do NOT match ") >= X" as that could be COUNT(*) >= X
+            # Also match CASE...END) >= X patterns used for reactor counting
             reactor_threshold = None
             reactor_match = re.search(r'(?:unique_reactor_count|reaction_count)\s*>=\s*(\d+)', sql_lower)
             if reactor_match:
                 reactor_threshold = int(reactor_match.group(1))
-                logger.debug(f"Detected reactor count threshold in SQL: >= {reactor_threshold}")
+            else:
+                # Also check for CASE...json_array_length(reactors)...END) >= X pattern
+                # This is used in top_generations.py for filtering by reactor count
+                if 'json_array_length' in sql_lower and 'reactors' in sql_lower:
+                    case_reactor_match = re.search(r'end\s*\)\s*>=\s*(\d+)', sql_lower)
+                    if case_reactor_match:
+                        reactor_threshold = int(case_reactor_match.group(1))
+                        logger.debug(f"Detected CASE...END reactor threshold in SQL: >= {reactor_threshold}")
+            
+            if reactor_threshold is not None:
                 if unique_reactor_count < reactor_threshold:
                     logger.debug(f"Filtering out message with {unique_reactor_count} reactors (threshold: {reactor_threshold})")
                     continue
@@ -1186,4 +1248,169 @@ class SupabaseQueryHandler:
                 msg['author_name'] = member_lookup.get(author_id, 'Unknown')
         
         return messages
+
+    async def _handle_update_query(self, sql: str, params: Tuple = None) -> List[Dict]:
+        """
+        Handle UPDATE queries by converting to Supabase REST API calls.
+        
+        Supports patterns like:
+        - UPDATE messages SET col1 = ?, col2 = ? WHERE message_id = ?
+        - UPDATE messages SET is_deleted = TRUE WHERE message_id = ?
+        """
+        try:
+            import re
+            sql_lower = re.sub(r'\s+', ' ', sql.lower().strip())
+            
+            # Determine the table
+            table_match = re.search(r'update\s+(\w+)', sql_lower)
+            if not table_match:
+                logger.error(f"Could not parse table name from UPDATE query: {sql}")
+                return []
+            
+            table_name = table_match.group(1)
+            # Map old table names to new Supabase table names
+            table_mapping = {
+                'messages': 'discord_messages',
+                'members': 'discord_members',
+                'channels': 'discord_channels',
+            }
+            supabase_table = table_mapping.get(table_name, table_name)
+            
+            # Parse SET clause - extract column names
+            set_match = re.search(r'set\s+(.+?)\s+where', sql_lower)
+            if not set_match:
+                logger.error(f"Could not parse SET clause from UPDATE query: {sql}")
+                return []
+            
+            set_clause = set_match.group(1)
+            # Split by comma, but be careful with values that might contain commas
+            # Pattern: col = ? or col = value
+            set_parts = re.findall(r'(\w+)\s*=\s*(\?|true|false|null|\'[^\']*\'|\d+)', set_clause)
+            
+            if not set_parts:
+                logger.error(f"Could not parse SET assignments from: {set_clause}")
+                return []
+            
+            # Parse WHERE clause to get the filter
+            where_match = re.search(r'where\s+(\w+)\s*=\s*(\?|\d+)', sql_lower)
+            if not where_match:
+                logger.error(f"Could not parse WHERE clause from UPDATE query: {sql}")
+                return []
+            
+            where_column = where_match.group(1)
+            where_value_type = where_match.group(2)
+            
+            # Build update data and determine which params go where
+            update_data = {}
+            param_index = 0
+            params_list = list(params) if params else []
+            
+            for col_name, value_placeholder in set_parts:
+                if value_placeholder == '?':
+                    if param_index < len(params_list):
+                        update_data[col_name] = params_list[param_index]
+                        param_index += 1
+                    else:
+                        logger.warning(f"Not enough params for SET clause, column: {col_name}")
+                elif value_placeholder.lower() == 'true':
+                    update_data[col_name] = True
+                elif value_placeholder.lower() == 'false':
+                    update_data[col_name] = False
+                elif value_placeholder.lower() == 'null':
+                    update_data[col_name] = None
+                else:
+                    # Literal value (number or quoted string)
+                    update_data[col_name] = value_placeholder.strip("'")
+            
+            # Get WHERE value
+            if where_value_type == '?':
+                if param_index < len(params_list):
+                    where_value = params_list[param_index]
+                else:
+                    logger.error(f"Not enough params for WHERE clause")
+                    return []
+            else:
+                where_value = int(where_value_type)
+            
+            logger.info(f"📝 UPDATE {supabase_table} SET {update_data} WHERE {where_column} = {where_value}")
+            
+            # Execute the update via Supabase REST API
+            result = await asyncio.to_thread(
+                self.supabase.table(supabase_table)
+                .update(update_data)
+                .eq(where_column, where_value)
+                .execute
+            )
+            
+            logger.info(f"✅ UPDATE successful: {len(result.data) if result.data else 0} rows affected")
+            return result.data if result.data else []
+            
+        except Exception as e:
+            logger.error(f"Error handling UPDATE query: {e}", exc_info=True)
+            logger.error(f"Query was: {sql[:500]}")
+            return []
+
+    async def _handle_delete_query(self, sql: str, params: Tuple = None) -> List[Dict]:
+        """
+        Handle DELETE queries by converting to Supabase REST API calls.
+        
+        Supports patterns like:
+        - DELETE FROM messages WHERE message_id = ?
+        """
+        try:
+            import re
+            sql_lower = re.sub(r'\s+', ' ', sql.lower().strip())
+            
+            # Determine the table
+            table_match = re.search(r'delete\s+from\s+(\w+)', sql_lower)
+            if not table_match:
+                logger.error(f"Could not parse table name from DELETE query: {sql}")
+                return []
+            
+            table_name = table_match.group(1)
+            # Map old table names to new Supabase table names
+            table_mapping = {
+                'messages': 'discord_messages',
+                'members': 'discord_members',
+                'channels': 'discord_channels',
+            }
+            supabase_table = table_mapping.get(table_name, table_name)
+            
+            # Parse WHERE clause
+            where_match = re.search(r'where\s+(\w+)\s*=\s*(\?|\d+)', sql_lower)
+            if not where_match:
+                logger.error(f"Could not parse WHERE clause from DELETE query (refusing to delete without WHERE): {sql}")
+                return []
+            
+            where_column = where_match.group(1)
+            where_value_type = where_match.group(2)
+            
+            # Get WHERE value
+            params_list = list(params) if params else []
+            if where_value_type == '?':
+                if params_list:
+                    where_value = params_list[0]
+                else:
+                    logger.error(f"No params provided for WHERE clause")
+                    return []
+            else:
+                where_value = int(where_value_type)
+            
+            logger.info(f"🗑️ DELETE FROM {supabase_table} WHERE {where_column} = {where_value}")
+            
+            # Execute the delete via Supabase REST API
+            result = await asyncio.to_thread(
+                self.supabase.table(supabase_table)
+                .delete()
+                .eq(where_column, str(where_value))
+                .execute
+            )
+            
+            logger.info(f"✅ DELETE successful: {len(result.data) if result.data else 0} rows affected")
+            return result.data if result.data else []
+            
+        except Exception as e:
+            logger.error(f"Error handling DELETE query: {e}", exc_info=True)
+            logger.error(f"Query was: {sql[:500]}")
+            return []
 
