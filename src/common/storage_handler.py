@@ -334,7 +334,10 @@ class StorageHandler:
             }
             
             await asyncio.to_thread(
-                self.supabase_client.table('daily_summaries').upsert(summary_data).execute
+                self.supabase_client.table('daily_summaries').upsert(
+                    summary_data, 
+                    on_conflict='date,channel_id'
+                ).execute
             )
             
             logger.debug(f"Stored daily summary to Supabase for channel {channel_id}, date {summary_date}")
