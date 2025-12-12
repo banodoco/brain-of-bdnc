@@ -92,6 +92,12 @@ dump_good_data.py
 fix_fts.py
 test_art_query.py
 
+# SQLite database files (no longer used, Supabase-only)
+*.db
+*.db-shm
+*.db-wal
+data/
+
 # Project specific
 /files/
 
