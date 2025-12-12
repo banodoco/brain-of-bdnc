@@ -145,7 +145,7 @@ async def process_workflow_upload_request(
                 logger.info(f"[WorkflowUpload] Author {author.id} permission_to_curate: {permission_to_curate}. Proceeding.")
             else:
                 # New member, or member not in DB. Assume permission is granted (or NULL).
-                # Spec: "This nullable flag lives in the SQLite members table". If not present, it's effectively NULL.
+                # This nullable flag lives in the members table. If not present, it's effectively NULL.
                 logger.info(f"[WorkflowUpload] Author {author.id} not found in DB or permission_to_curate is NULL. Assuming eligible.")
         except Exception as e:
             logger.error(f"[WorkflowUpload] Error checking member permission for author {author.id}: {e}")

@@ -1,3 +1,15 @@
+"""
+Download Videos Script
+
+NOTE: This is a standalone utility script for downloading videos from a LOCAL SQLite 
+database backup file (e.g., data/production.db.new). It does NOT use the main Supabase 
+database. This is useful for bulk downloading video attachments from an archived backup.
+
+To use:
+1. Download/copy a SQLite database backup to data/production.db.new
+2. Run this script
+"""
+
 import os
 import json
 import sqlite3

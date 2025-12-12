@@ -64,21 +64,12 @@ For deploying to Railway (recommended for production):
 
 ### Database Storage
 
-The bot supports multiple storage backends:
+The bot uses **Supabase** (Cloud PostgreSQL) for data storage:
+- See [SUPABASE_MIGRATION.md](SUPABASE_MIGRATION.md) for setup guide
+- Free tier: 500MB storage, perfect for most Discord servers
+- Automatic backups and high scalability
 
-- **Supabase (Recommended)**: Cloud PostgreSQL with automatic backups
-  - See [SUPABASE_MIGRATION.md](SUPABASE_MIGRATION.md) for migration guide
-  - Free tier: 500MB storage, perfect for most Discord servers
-  - Better scalability and reliability than SQLite
-  
-- **SQLite**: Local database, good for development
-  - Default option for local testing
-  - Easy to get started, no external dependencies
-
-**Migrating to Supabase?** Run the automated migration:
-```bash
-python scripts/migrate_to_supabase.py
-```
+Ensure you have `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` environment variables set.
 
 ### Running the Bot
 

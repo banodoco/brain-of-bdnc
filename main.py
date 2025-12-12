@@ -265,8 +265,6 @@ def main():
     parser.add_argument('--dev', action='store_true', help='Run in development mode')
     parser.add_argument('--archive-days', type=int, help='Number of days to archive (can be used standalone or with --summary-now)')
     parser.add_argument('--summary-with-archive', action='store_true', help='Archive past 24 hours FIRST, then run summary immediately')
-    parser.add_argument('--storage-backend', type=str, choices=['sqlite', 'supabase', 'both'],
-                      help='Storage backend: sqlite (local only), supabase (cloud only), or both (default: from STORAGE_BACKEND env var or sqlite)')
     parser.add_argument('--clear-today-summaries', action='store_true', 
                       help='Delete today\'s summaries from Supabase before running (useful for re-running)')
     args = parser.parse_args()
@@ -291,10 +289,6 @@ def main():
         except Exception as e:
             print(f"⚠️  Error clearing summaries: {e}")
     
-    # Set storage backend if specified via command line
-    if args.storage_backend:
-        os.environ['STORAGE_BACKEND'] = args.storage_backend
-
     # Check for date-based environment variable triggers
     # Priority: SUMMARY_WITH_ARCHIVE_DATE > JUST_SUMMARY_DATE
     today_str = datetime.now().strftime('%Y-%m-%d')

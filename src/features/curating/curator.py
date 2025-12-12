@@ -243,17 +243,9 @@ class ArtCurator(BaseDiscordBot):
                                             self, message.author, self.rate_limiter, self.logger, content=notification_msg
                                         )
                                         self.logger.info(f"Sent non-video link notification to {message.author}")
-                                        
-                                        # Add notification to user's list
-                                        notifications.append('no_art_share_link')
-                                        db.execute_query(
-                                            "UPDATE members SET notifications = ? WHERE member_id = ?",
-                                            (json.dumps(notifications), member.id)
-                                        )
-                                        db.conn.commit()
+                                        # Note: Notification tracking removed - no 'notifications' column in Supabase schema
                                     except discord.Forbidden:
                                         self.logger.warning(f"Could not send DM to {message.author}")
-                                db.close()
                         except Exception as e:
                             self.logger.error(f"Error handling notification for {message.author}: {e}")
                             

@@ -52,8 +52,8 @@ class ArchiveRunner:
         channels_str = os.getenv(channels_env_key, '')
         channel_ids: list[str] = [c.strip() for c in channels_str.split(',') if c.strip()]
 
-        # Get storage backend from environment to pass to archive script
-        storage_backend = os.getenv('STORAGE_BACKEND', 'sqlite')
+        # Storage backend is always supabase now
+        storage_backend = 'supabase'
 
         # If we have a channel list, run the archiver once per channel; otherwise fall back to full-guild scrape
         commands_to_run: list[list[str]] = []
@@ -64,20 +64,16 @@ class ArchiveRunner:
                     cmd.append('--in-depth')
                 if dev_mode:
                     cmd.append('--dev')
-                # Pass storage backend to archive script
-                cmd.extend(['--storage-backend', storage_backend])
                 commands_to_run.append(cmd)
-            logger.info(f"Running archive for {len(channel_ids)} monitored channel(s) from {channels_env_key} with storage backend: {storage_backend}")
+            logger.info(f"Running archive for {len(channel_ids)} monitored channel(s) from {channels_env_key}")
         else:
             cmd = [sys.executable, self.archive_script_path, '--days', str(days)]
             if in_depth:
                 cmd.append('--in-depth')
             if dev_mode:
                 cmd.append('--dev')
-            # Pass storage backend to archive script
-            cmd.extend(['--storage-backend', storage_backend])
             commands_to_run.append(cmd)
-            logger.info(f"{channels_env_key} not set; running archive over all accessible channels with storage backend: {storage_backend}")
+            logger.info(f"{channels_env_key} not set; running archive over all accessible channels")
 
         try:
             all_ok = True

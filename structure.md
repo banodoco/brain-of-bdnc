@@ -1,137 +1,196 @@
-# Project Directory Structure
+# BNDC Bot: Developer Guide
 
-This document provides an overview of the `bndc` code-base, detailing the purpose of each directory and file. Non-source-code elements like logs, databases, temporary files, and environment specifics have been omitted for clarity.
+> **How to Use This Guide**  
+> • Skim the Tech Stack & Feature tables to orient yourself.  
+> • Use the Directory Tree to find specific files.  
+> • When in doubt, the source of truth is always the code – this guide just points you in the right direction.
 
-```
-.
-├── README.md                    # Project overview, setup, and contribution guidelines
-├── DEPLOYMENT_SUMMARY.md        # Complete summary of Railway & Supabase setup (START HERE)
-├── RAILWAY_DEPLOYMENT.md        # Complete guide for deploying to Railway platform
-├── RAILWAY_QUICK_START.md       # 5-minute quick start guide for Railway deployment
-├── SUPABASE_MIGRATION.md        # Complete guide for migrating from SQLite to Supabase
-├── SUPABASE_SETUP.md            # Supabase credentials and initial setup guide
-├── SUPABASE_SYNC_README.md      # Detailed guide for setting up and using Supabase synchronization
-├── requirements.txt             # Python dependency lockfile
-├── main.py                      # Single entry-point that bootstraps and launches the Discord bot
-├── spec.md                      # (placeholder) Project specification or design document
-├── .env.example                 # Template for environment variables (documents all required config)
-├── Procfile                     # Railway deployment config - specifies how to run the bot
-├── railway.json                 # Railway advanced configuration (build & deploy settings)
-├── nixpacks.toml                # Nixpacks configuration for optimized Railway builds
-├── Dockerfile                   # Container configuration for Railway deployment
-├── .dockerignore                # Files to exclude from Docker builds
-├── .railwayignore               # Files to ignore when deploying to Railway
-│
-├── scripts/                     # One-off or batch maintenance / utility scripts
-│   ├── analyze_channels.py          # Analyse server channels with LLM and export stats
-│   ├── archive_discord.py           # Bulk archive messages & attachments to Supabase
-│   ├── backfill_reactions.py        # Populate missing reaction records in DB
-│   ├── cleanup_empty_threads.py     # Remove defunct Discord threads
-│   ├── delete_user_messages.py      # Delete messages from a specific user (dry run by default)
-│   ├── download_files.py            # Download attachments referenced in the DB
-│   ├── download_videos.py           # Fetch remote videos for local storage
-│   ├── logs_view.py                 # View recent logs with filtering (level, time, logger)
-│   ├── logs_tail.py                 # Real-time log tailing from Supabase
-│   ├── logs_search.py               # Search logs by message content
-│   ├── logs_stats.py                # Log statistics and manual cleanup utility
-│   ├── logs_debug.py                # Debug utility for testing and managing logs
-│   └── monthly_equity_shortlist.py  # Monthly equity allocation analysis
-│
-├── supabase/                    # Supabase CLI configuration and migrations
-│   ├── config.toml                  # Supabase project configuration
-│   └── migrations/                  # SQL migration files for Supabase schema changes
-│       ├── 20251101000000_create_discord_tables.sql  # Core Discord tables (messages, members, channels)
-│       ├── 20251104154121_add_summary_tables.sql     # Adds daily_summaries and channel_summary tables
-│       ├── 20251210000000_create_system_logs.sql     # System logs table for centralized logging
-│       └── 20251210000001_setup_logs_auto_cleanup.sql # pg_cron auto-cleanup (48h retention)
-│
-├── src/                         # Core application package
-│   ├── __init__.py                  # Marks directory as importable module
-│   │
-│   ├── common/                      # Shared infrastructure, utilities & abstractions
-│   │   ├── __init__.py                  # Exposes helper imports
-│   │   ├── archive_runner.py            # Unified archiving interface for scheduled/on-demand archiving
-│   │   ├── base_bot.py                  # `BaseDiscordBot` – subclass of `commands.Bot` adding common helpers
-│   │   ├── constants.py                 # Global constant values (e.g. max lengths, storage backend constants). Developers should define new global, non-configurable constants here to avoid magic numbers/strings.
-│   │   ├── db_handler.py                # Database abstraction layer supporting both SQLite and Supabase. All database interactions should go through this handler. Avoid raw SQL queries directly in feature code.
-│   │   ├── discord_client.py            # (Placeholder) extended Discord client if needed
-│   │   ├── discord_utils.py             # Utilities for common Discord API interactions. Developers should prefer using helpers like 'safe_send_message' from this module for sending messages to ensure consistency, rate limiting, and error handling.
-│   │   ├── error_handler.py             # Custom exception & error reporting utilities. Utilize provided utilities (e.g., `@handle_errors` decorator) for consistent error handling and reporting.
-│   │   ├── errors.py                    # Domain-specific error classes. Define and use these for domain-specific exceptions to provide more context than generic errors.
-│   │   ├── log_handler.py               # Centralised logging setup. Ensure loggers are named appropriately (e.g., logging.getLogger(__name__)) to benefit from the centralized configuration provided by this handler.
-│   │   ├── rate_limiter.py              # Simple in-memory rate-limiting helper. Use for external API calls or frequent Discord actions, often via bot.rate_limiter or integrated utilities.
-│   │   ├── schema.py                    # Pydantic data models mirroring DB tables. Use these for data validation, defining structured data, and for serialization/deserialization with the database or APIs.
-│   │   ├── storage_handler.py           # Direct Supabase write operations (upsert, delete)
-│   │   ├── supabase_query_handler.py    # Translates SQL queries to Supabase REST API calls
-│   │   ├── supabase_sync_handler.py     # Background handler for automatic Supabase synchronization
-│   │   └── llm/                         # Language-model client abstractions
-│   │       ├── __init__.py                  # Factory returning correct LLM client. Interact with LLMs via the factory/helper functions provided here to abstract specific client implementations and centralize configuration.
-│   │       ├── base_client.py               # Interface for all LLM providers. New LLM client implementations must adhere to this interface.
-│   │       ├── claude_client.py             # Anthropic Claude implementation
-│   │       ├── openai_client.py             # OpenAI GPT implementation
-│   │       └── gemini_client.py             # Google Gemini implementation
-│   │
-│   └── features/                    # Modular bot capabilities (each in its own sub-package). Major new features should follow this modular structure, often with a core logic file and a _cog.py for Discord integration. Complex actions can be further modularized into a subfeatures/ directory within the feature's package. WE should try to fit new features into existing capabilities where possible.
-│       ├── admin/                      # Owner / admin only commands
-│       │   ├── __init__.py                # N/A
-│       │   └── admin_cog.py              # Commands to reload cogs, run diagnostics, manage Supabase sync, etc.
-│       │
-│       ├── answering/                  # Q&A over archived content
-│       │   ├── __init__.py                # Helper re-exports
-│       │   └── answerer.py               # Implements retrieval augmented generation to answer queries
-│       │
-│       ├── archive/                    # Discord server archiving and indexing
-│       │   ├── __init__.py                # N/A
-│       │   └── archive_cog.py            # Commands to manually trigger archiving operations
-│       │
-│       ├── curating/                   # Highlight & curation logic
-│       │   ├── __init__.py                # N/A
-│       │   ├── curator.py                # Identifies high-quality posts, manages curation DB
-│       │   └── curator_cog.py            # Discord commands / listeners exposing curator
-│       │
-│       ├── logging/                    # Real-time message logging to DB
-│       │   ├── logger.py                 # Consumes Discord events and writes to DB
-│       │   └── logger_cog.py             # Cog wrapping the above for Discord.py
-│       │
-│       ├── reacting/                   # Automated reaction-based workflows. All workflows triggered by message content, reactions, or attachments should be routed through this feature via the WATCHLIST_JSON configuration.
-│       │   ├── reactor.py                # Core business logic – watches for reactions & performs actions
-│       │   └── reactor_cog.py            # Discord event listeners forwarding to `Reactor`
-│       │   └── subfeatures/              # Helper modules for specific reaction-triggered actions
-│       │       ├── __init__.py               # Marks directory as a Python package
-│       │       ├── permission_handler.py     # Handles curation permission requests and view logic
-│       │       ├── dispute_resolver.py       # Manages dispute resolution process using LLMs
-│       │       ├── tweet_sharer_bridge.py    # Bridges reaction events to the Sharer for social media posting
-│       │       ├── message_linker.py         # Unfurls Discord message links to show content/media in-channel
-│       │       └── workflow_uploader.py      # Handles reaction-triggered uploads of ComfyUI workflows to OpenMuse
-│       │
-│       ├── relaying/                   # Webhook relay of messages to external services
-│       │   ├── relayer.py                # Handles outbound webhooks respecting auth/signing
-│       │   └── relaying_cog.py           # Cog exposing relay commands & background tasks
-│       │
-│       ├── sharing/                    # Social sharing / cross-posting
-│       │   ├── __init__.py               # N/A
-│       │   ├── sharer.py                 # Schedules and posts content to Twitter, Zapier, etc.
-│       │   ├── sharing_cog.py            # Discord interface to manage sharing jobs
-│       │   └── subfeatures/              # Helper modules used by `Sharer`
-│       │       ├── __init__.py               # N/A
-│       │       ├── content_analyzer.py       # Extract hashtags, categories & media metadata
-│       │       ├── notify_user.py            # DM users about successful / failed shares
-│       │       └── social_poster.py          # Compose and send posts to specific platforms
-│       │
-│       └── summarising/                # Daily / on-demand summary generation
-│           ├── __init__.py                # N/A
-│           ├── summariser.py             # Groups messages by topic and crafts summaries using LLMs
-│           ├── summariser_cog.py         # Commands / scheduled tasks for summaries
-│           └── subfeatures/              # Specialised summary types
-│               ├── __init__.py               # N/A
-│               ├── news_summary.py           # Summaries focussed on newsworthy events
-│               ├── top_art_sharing.py        # Picks top images/videos to share externally
-│               └── top_generations.py        # Highlights most reacted-to AI generations
-```
+> **When to Update This Guide**  
+> • Add, delete, or rename files/directories.  
+> • Add new features or significantly refactor existing ones.  
+> • Modify database schema or add migrations.  
+> • Change environment variables or deployment config.  
+> • Any change that would confuse a new dev skimming this file.
+
+> **Who This Guide Is For**  
+> • 🤖 AI assistants + 👨‍💻 Human developers
 
 ---
 
-### How to Read This Document
+## Table of Contents
+- [Tech Stack](#tech-stack)
+- [Key Concepts](#key-concepts)
+- [Features Overview](#features-overview)
+- [Directory Structure](#directory-structure)
+- [Supabase Schema](#supabase-schema)
 
-• **Directories** are shown with a trailing `/` and indented tree lines.
-• This overview should help new contributors quickly locate relevant modules and understand how the bot's functionality is partitioned across the code-base. 
+---
+
+## Tech Stack
+
+| Layer | Technology | Purpose |
+|-------|------------|---------|
+| **Bot Framework** | Discord.py | Discord bot with cogs architecture |
+| **Database** | Supabase (PostgreSQL) | Message archive, member profiles, summaries, logs |
+| **LLM Providers** | Claude, OpenAI, Gemini | Summaries, content analysis, dispute resolution |
+| **Deployment** | Railway + Docker | Production hosting with Nixpacks builds |
+| **Logging** | Python logging → Supabase | Centralized logs with 48h retention |
+
+### Key Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `DISCORD_BOT_TOKEN` | Bot authentication |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | Database connection |
+| `REACTION_WATCHLIST` | JSON config for reaction-triggered workflows |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | LLM provider keys |
+| `DEV_MODE` | Enables verbose logging, skips "already summarized" checks |
+
+---
+
+## Key Concepts
+
+| Concept | Description |
+|---------|-------------|
+| **Cogs** | Discord.py's modular extension system. Each feature has a `_cog.py` that registers commands/listeners with the bot. |
+| **Feature Structure** | Features live in `src/features/[name]/` with: core logic (`reactor.py`) + Discord integration (`reactor_cog.py`) + optional `subfeatures/` for complex actions. |
+| **Reaction Watchlist** | JSON env var (`REACTION_WATCHLIST`) that configures which emoji reactions trigger which actions. Central routing for all reaction-based workflows. |
+| **Archiving** | Messages are archived from Discord → Supabase via `archive_runner.py`. Can run on-demand or scheduled. |
+| **Summaries** | LLM-generated daily digests per channel, stored in `daily_summaries` table, posted to dedicated threads. |
+| **Member Consent** | `sharing_consent` and `permission_to_curate` flags on members control what content can be shared externally. |
+
+---
+
+## Features Overview
+
+| Feature | Location | Purpose |
+|---------|----------|---------|
+| **Admin** | `src/features/admin/` | Owner commands: reload cogs, diagnostics, sync management |
+| **Answering** | `src/features/answering/` | RAG-based Q&A over archived messages |
+| **Archive** | `src/features/archive/` | Commands to trigger message archiving |
+| **Curating** | `src/features/curating/` | Identify & manage high-quality posts for external sharing |
+| **Logging** | `src/features/logging/` | Real-time message logging to Supabase |
+| **Reacting** | `src/features/reacting/` | Reaction-triggered workflows (tweets, uploads, disputes, etc.) |
+| **Relaying** | `src/features/relaying/` | Webhook relay to external services |
+| **Sharing** | `src/features/sharing/` | Social media cross-posting (Twitter, etc.) |
+| **Summarising** | `src/features/summarising/` | Daily LLM-generated channel summaries |
+
+---
+
+## Directory Structure
+
+```
+.
+├── main.py                      # Entry point – bootstraps bot, loads cogs
+├── requirements.txt             # Python dependencies
+├── Procfile / railway.json      # Railway deployment config
+├── Dockerfile / nixpacks.toml   # Container build config
+│
+├── scripts/                     # One-off maintenance utilities
+│   ├── archive_discord.py          # Bulk archive messages to Supabase
+│   ├── logs_tail.py                 # Real-time log streaming
+│   ├── logs_view.py                 # View recent logs with filters
+│   ├── logs_search.py               # Search logs by content
+│   └── ...                          # Other utilities (see tree below)
+│
+├── supabase/
+│   ├── config.toml                  # Supabase CLI config
+│   └── migrations/                  # SQL migrations (timestamped)
+│
+└── src/
+    ├── common/                      # Shared infrastructure
+    │   ├── db_handler.py                # Database abstraction layer
+    │   ├── discord_utils.py             # Discord API helpers (safe_send_message, etc.)
+    │   ├── error_handler.py             # @handle_errors decorator
+    │   ├── log_handler.py               # Centralized logging setup
+    │   ├── schema.py                    # Pydantic models for DB tables
+    │   ├── storage_handler.py           # Supabase write operations
+    │   ├── openmuse_interactor.py       # OpenMuse media uploads
+    │   └── llm/                         # LLM client abstractions
+    │       ├── __init__.py                  # Factory (get_llm_client)
+    │       ├── claude_client.py
+    │       ├── openai_client.py
+    │       └── gemini_client.py
+    │
+    └── features/                    # Bot capabilities (one per subdirectory)
+        ├── admin/
+        │   └── admin_cog.py
+        ├── answering/
+        │   └── answerer.py
+        ├── archive/
+        │   └── archive_cog.py
+        ├── curating/
+        │   ├── curator.py
+        │   └── curator_cog.py
+        ├── logging/
+        │   ├── logger.py
+        │   └── logger_cog.py
+        ├── reacting/
+        │   ├── reactor.py               # Watchlist matching & action dispatch
+        │   ├── reactor_cog.py
+        │   └── subfeatures/
+        │       ├── dispute_resolver.py      # LLM-powered dispute resolution
+        │       ├── message_linker.py        # Unfurl Discord message links
+        │       ├── openmuse_uploader.py     # Upload media to OpenMuse
+        │       ├── permission_handler.py    # Curation consent flow
+        │       ├── tweet_sharer_bridge.py   # Bridge to sharing feature
+        │       └── workflow_uploader.py     # ComfyUI workflow uploads
+        ├── relaying/
+        │   ├── relayer.py
+        │   └── relaying_cog.py
+        ├── sharing/
+        │   ├── sharer.py
+        │   ├── sharing_cog.py
+        │   └── subfeatures/
+        │       ├── content_analyzer.py      # Extract hashtags, metadata
+        │       ├── notify_user.py           # DM users about shares
+        │       └── social_poster.py         # Platform-specific posting
+        └── summarising/
+            ├── summariser.py
+            ├── summariser_cog.py
+            └── subfeatures/
+                ├── news_summary.py
+                ├── top_art_sharing.py
+                └── top_generations.py
+```
+
+### Scripts Reference
+
+| Script | Purpose |
+|--------|---------|
+| `archive_discord.py` | Bulk archive messages & attachments to Supabase |
+| `analyze_channels.py` | Analyse channels with LLM, export stats |
+| `backfill_reactions.py` | Populate missing reaction records |
+| `logs_tail.py` | Real-time log streaming (like `tail -f`) |
+| `logs_view.py` | View recent logs with filters (`-l ERROR`, `--since 1h`) |
+| `logs_search.py` | Search logs by message content |
+
+---
+
+## Supabase Schema
+
+### Core Tables
+
+| Table | Purpose | Key Columns |
+|-------|---------|-------------|
+| `discord_messages` | Archived messages | `message_id` (PK), `channel_id`, `author_id`, `content`, `created_at`, `attachments` (JSONB), `reaction_count`, `is_deleted` |
+| `discord_members` | Member profiles & consent | `member_id` (PK), `username`, `global_name`, `twitter_handle`, `sharing_consent`, `permission_to_curate` |
+| `discord_channels` | Channel metadata | `channel_id` (PK), `channel_name`, `description`, `suitable_posts`, `unsuitable_posts`, `enriched` |
+| `daily_summaries` | Generated summaries | `daily_summary_id` (PK), `date`, `channel_id`, `full_summary`, `short_summary` |
+| `channel_summary` | Summary thread mapping | `channel_id` (PK), `summary_thread_id` |
+| `system_logs` | Application logs | `id` (PK), `timestamp`, `level`, `logger_name`, `message`, `exception` |
+| `sync_status` | Sync state tracking | `table_name`, `last_sync_timestamp`, `sync_status` |
+
+### Views
+
+| View | Purpose |
+|------|---------|
+| `recent_messages` | Last 7 days of messages with author/channel names |
+| `message_stats` | Per-channel message counts and date ranges |
+| `recent_errors` | ERROR/CRITICAL logs from last 24 hours |
+| `log_stats` | Hourly log counts by level |
+
+### Notes
+- All tables have RLS enabled (service-role access only)
+- `system_logs` auto-cleaned hourly via `pg_cron` (48h retention)
+- Full-text search on `discord_messages.content` and `system_logs.message`

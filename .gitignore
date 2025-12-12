@@ -48,11 +48,6 @@ env/
 *.log
 *.log.*
 
-# db
-*.db
-*.sqlite3
-*.sqlite
-
 # cache
 cache/
 
@@ -83,10 +78,6 @@ channel_descriptions.json
 docker-compose*.yml
 .docker
 
-# Data directory
-data/
-data/*
-
 # OS
 .DS_Store
 .Spotlight-V100
@@ -100,10 +91,6 @@ compare_dbs.py
 dump_good_data.py
 fix_fts.py
 test_art_query.py
-
-# Database files
-*.db-shm
-*.db-wal
 
 # Project specific
 /files/

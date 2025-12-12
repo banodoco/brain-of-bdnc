@@ -10,7 +10,6 @@ import re
 import traceback
 from datetime import datetime, timedelta
 from typing import List, Tuple, Set, Dict, Optional, Any, Union
-import sqlite3
 
 import time
 
@@ -725,7 +724,7 @@ class ChannelSummarizer:
             iterable and will happily handle an empty one).
         """
 
-        # NOTE: `operation` is expected to be **blocking** (SQLite access) therefore we shuttle
+        # NOTE: `operation` is expected to be **blocking** therefore we shuttle
         # it off to a threadpool so the asyncio event-loop does not stall.
         try:
             loop = asyncio.get_running_loop()
@@ -836,7 +835,6 @@ class ChannelSummarizer:
                 def db_operation():
                     try:
                         self.logger.info(f"[DEV MODE] 🔍 Executing query via db_handler.execute_query...")
-                        self.logger.info(f"[DEV MODE] Storage backend: {db_handler.storage_backend}")
                         results = db_handler.execute_query(query)
                         self.logger.info(f"[DEV MODE] Query returned {len(results) if results else 0} results")
                         if results:
@@ -908,11 +906,8 @@ class ChannelSummarizer:
                     results = db_handler.execute_query(channel_query)
                     self.logger.info(f"Database query returned {len(results) if results else 0} results: {results}")
                     return results if results else []
-                except sqlite3.OperationalError as e:
-                    if "database is locked" in str(e):
-                        self.logger.error("Database lock timeout exceeded during production channel query")
-                    else:
-                        self.logger.error(f"Database operational error during production channel query: {e}", exc_info=True)
+                except Exception as e:
+                    self.logger.error(f"Database error during production channel query: {e}", exc_info=True)
                     return []
                 except Exception as e:
                     self.logger.error(f"Error getting active production channels in db_operation: {e}", exc_info=True)
@@ -1115,8 +1110,10 @@ class ChannelSummarizer:
                             channel_summaries.append(channel_summary)
                         else:
                             success = await self._post_summary_with_transaction(channel_id, channel_summary, messages, current_date, db_handler)
-                            if success: channel_summaries.append(channel_summary)
-                            else: self.logger.error(f"Failed to save summary to DB for channel {channel_id}")
+                            if not success:
+                                # Don't block main summary generation on DB write failures
+                                self.logger.error(f"Failed to save summary to DB for channel {channel_id}")
+                            channel_summaries.append(channel_summary)
 
                     except Exception as e:
                         self.logger.error(f"Error processing channel {channel_id}: {e}", exc_info=True)

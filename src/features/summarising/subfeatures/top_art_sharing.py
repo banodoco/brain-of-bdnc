@@ -1,7 +1,6 @@
 import os
 import re
 import json
-import sqlite3
 import asyncio
 import traceback
 import discord

@@ -1,6 +1,6 @@
 """
 Supabase Query Handler - Handles read queries from Supabase PostgreSQL.
-Translates SQLite-style queries to PostgreSQL and executes via Supabase client.
+Executes queries via Supabase client.
 """
 
 import asyncio
@@ -17,7 +17,6 @@ sys.path.insert(0, str(project_root))
 
 from supabase import create_client, Client
 from supabase.lib.client_options import ClientOptions
-from .sql_translator import SQLTranslator
 
 logger = logging.getLogger('DiscordBot')
 
@@ -544,7 +543,7 @@ class SupabaseQueryHandler:
         Supports common query patterns used in daily updates.
         
         Args:
-            sql: SQL query (SQLite format will be auto-translated)
+            sql: SQL query
             params: Query parameters
             
         Returns:

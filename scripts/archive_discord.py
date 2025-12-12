@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 from typing import Optional, List, Dict, Union
 import json
 from src.common.db_handler import DatabaseHandler
-from src.common.constants import get_database_path
 from src.common.base_bot import BaseDiscordBot
 from src.common.rate_limiter import RateLimiter
 import threading
@@ -42,14 +41,10 @@ def to_aware_utc(dt_str: str) -> datetime:
         return dt.replace(tzinfo=timezone.utc)
     return dt
 
-def get_db(db_path):
+def get_db():
     """Get thread-local database connection."""
     if not hasattr(thread_local, "db"):
-        thread_local.db = DatabaseHandler(db_path)
-        # Only initialize SQLite if we're using it (not in Supabase-only mode)
-        storage_backend = os.getenv('STORAGE_BACKEND', 'both')
-        if storage_backend in ['sqlite', 'both']:
-            thread_local.db._init_db()
+        thread_local.db = DatabaseHandler()
     return thread_local.db
 
 class MessageArchiver(BaseDiscordBot):
@@ -71,9 +66,6 @@ class MessageArchiver(BaseDiscordBot):
         
         # Load environment variables
         load_dotenv()
-        
-        # Set database path based on mode
-        self.db_path = get_database_path(dev_mode)
         
         # Create a queue for database operations
         self.db_queue = queue.Queue()
@@ -178,7 +170,7 @@ class MessageArchiver(BaseDiscordBot):
 
     def _db_worker(self):
         """Worker thread for database operations."""
-        db = get_db(self.db_path)
+        db = get_db()
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
@@ -538,10 +530,10 @@ class MessageArchiver(BaseDiscordBot):
                 # Call archive_channel for the item's ID
                 await self.archive_channel(item.id) 
                 # Log running total after the item is done
-                logger.info(f"📊 Running Total New Messages Archived: {self.total_messages_archived} (Storage: {os.getenv('STORAGE_BACKEND', 'sqlite')})") 
+                logger.info(f"📊 Running Total New Messages Archived: {self.total_messages_archived}") 
             
             logger.info("Archiving complete, shutting down bot")
-            logger.info(f"🎉 FINAL TOTAL: {self.total_messages_archived} new messages archived to {os.getenv('STORAGE_BACKEND', 'sqlite')}") 
+            logger.info(f"🎉 FINAL TOTAL: {self.total_messages_archived} new messages archived to Supabase") 
             await self.close()
 
         except Exception as e:
@@ -752,7 +744,7 @@ class MessageArchiver(BaseDiscordBot):
                     except Exception as e:
                         logger.error(f"Failed to store final date range batch: {e}")
 
-                logger.info(f"✅ Date range archive complete for #{channel.name} - Processed {message_counter} messages, saved {new_message_count} new to {os.getenv('STORAGE_BACKEND', 'sqlite')}")
+                logger.info(f"✅ Date range archive complete for #{channel.name} - Processed {message_counter} messages, saved {new_message_count} new to Supabase")
                 # Log final 100% progress
                 if self.total_days_in_range > 0:
                      logger.info(f"Progress for #{channel.name}: Day {self.total_days_in_range}/{self.total_days_in_range} (100.0%) - Completed.")
@@ -1148,7 +1140,7 @@ class MessageArchiver(BaseDiscordBot):
                             logger.info(f"Finished gap search in #{channel.name}, found {gap_message_count} messages")
                 
                 logger.info(f"Found {new_message_count} new messages to archive in #{channel.name}")
-                logger.info(f"✅ Archive complete for #{channel.name} - {new_message_count} new messages saved to {os.getenv('STORAGE_BACKEND', 'sqlite')}")
+                logger.info(f"✅ Archive complete for #{channel.name} - {new_message_count} new messages saved to Supabase")
                 self.total_messages_archived += new_message_count
                 
                 channel_duration = (datetime.now(timezone.utc) - channel_start_time).total_seconds()
@@ -1172,25 +1164,16 @@ class MessageArchiver(BaseDiscordBot):
         """Ensure database connection is alive and reconnect if needed."""
         try:
             # Test the connection
-            if not self.db or not self.db.conn:
+            if not self.db:
                 logger.info("Database connection lost, reconnecting...")
-                self.db = DatabaseHandler(self.db_path)
-                storage_backend = os.getenv('STORAGE_BACKEND', 'both')
-                if storage_backend in ['sqlite', 'both']:
-                    self.db._init_db()
+                self.db = DatabaseHandler()
                 logger.info("Successfully reconnected to database")
-            else:
-                # Test if connection is actually working
-                self.db.cursor.execute("SELECT 1")
         except Exception as e:
             logger.warning(f"Database connection test failed, reconnecting: {e}")
             try:
                 if self.db:
                     self.db.close()
-                self.db = DatabaseHandler(self.db_path)
-                storage_backend = os.getenv('STORAGE_BACKEND', 'both')
-                if storage_backend in ['sqlite', 'both']:
-                    self.db._init_db()
+                self.db = DatabaseHandler()
                 logger.info("Successfully reconnected to database")
             except Exception as e:
                 logger.error(f"Failed to reconnect to database: {e}")
@@ -1214,9 +1197,6 @@ def main():
                       help='ID of a specific channel to archive')
     parser.add_argument('--fetch-reactions', action='store_true',
                       help='Fetch reactions for all messages in range, not just new ones')
-    parser.add_argument('--storage-backend', type=str, choices=['sqlite', 'supabase', 'both'],
-                      default='both',
-                      help='Storage backend: sqlite (local only), supabase (cloud only), or both (default: both)')
     args = parser.parse_args()
     
     # Validate arguments
@@ -1238,10 +1218,6 @@ def main():
 
     if args.dev:
         logger.info("Running in development mode")
-    
-    # Set storage backend (defaults to supabase)
-        os.environ['STORAGE_BACKEND'] = args.storage_backend
-        logger.info(f"Storage backend set to: {args.storage_backend}")
     
     bot = None
     try:

@@ -15,12 +15,13 @@ import sys
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from scripts.sync_to_supabase import SupabaseSync
-from src.common.constants import get_storage_backend, STORAGE_SUPABASE, STORAGE_BOTH
-
-
 class SupabaseSyncHandler:
-    """Handles background syncing to Supabase for the Discord bot."""
+    """
+    Handles background syncing to Supabase for the Discord bot.
+    
+    Note: With direct Supabase writes now always enabled, this handler
+    is largely a no-op. Kept for backwards compatibility.
+    """
     
     def __init__(self, db_handler, logger: logging.Logger, sync_interval: int = 300):
         """
@@ -34,46 +35,20 @@ class SupabaseSyncHandler:
         self.db_handler = db_handler
         self.logger = logger
         self.sync_interval = sync_interval
-        self.sync_client: Optional[SupabaseSync] = None
+        self.sync_client = None
         self.sync_task: Optional[asyncio.Task] = None
         self.is_running = False
         self.last_sync_time: Optional[datetime] = None
         
-        # Check if direct writes are enabled - if so, skip background sync
-        storage_backend = get_storage_backend()
-        if storage_backend in [STORAGE_SUPABASE, STORAGE_BOTH]:
-            self.logger.info(f"Direct Supabase writes enabled (STORAGE_BACKEND={storage_backend}). Background sync is disabled.")
-            self.direct_writes_enabled = True
-            return
-        
-        self.direct_writes_enabled = False
-        
-        # Initialize Supabase sync client
-        self._init_sync_client()
+        # Direct Supabase writes are always enabled now
+        self.logger.info("Direct Supabase writes enabled. Background sync is disabled.")
+        self.direct_writes_enabled = True
     
-    def _init_sync_client(self) -> None:
-        """Initialize the Supabase sync client."""
-        try:
-            supabase_url = os.getenv('SUPABASE_URL')
-            supabase_key = os.getenv('SUPABASE_SERVICE_KEY')
-            
-            if not supabase_url or not supabase_key:
-                self.logger.warning("Supabase credentials not found. Auto-sync to Supabase will be disabled.")
-                return
-            
-            # Use the database path from the db_handler
-            db_path = self.db_handler.db_path
-            
-            self.sync_client = SupabaseSync(db_path, supabase_url, supabase_key, self.logger)
-            self.logger.info("Supabase sync client initialized successfully.")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to initialize Supabase sync client: {e}", exc_info=True)
     
     async def start_background_sync(self) -> bool:
         """Start the background sync task."""
         if self.direct_writes_enabled:
-            self.logger.info("Skipping background sync - direct Supabase writes are enabled via STORAGE_BACKEND")
+            self.logger.info("Skipping background sync - direct Supabase writes are enabled")
             return False
         
         if not self.sync_client:

@@ -10,7 +10,7 @@ import json
 import logging
 import sys
 import aiohttp
-from common.db_handler import DatabaseHandler
+from src.common.db_handler import DatabaseHandler
 from src.common.base_bot import BaseDiscordBot
 from src.common.llm import get_llm_response
 
@@ -257,13 +257,9 @@ Return ONLY the JSON list."""
         
         results = []
         db = None
-        
-        # Get database path from environment or use default
-        db_path = os.getenv('DISCORD_ARCHIVE_DB_PATH', 
-                            os.path.join(os.path.dirname(os.path.dirname(__file__)), 'discord_archive.db'))
-        
+
         try:
-            db = DatabaseHandler(db_path)
+            db = DatabaseHandler()
             for channel_id in channels:
                 archived_messages = db.search_messages(query, channel_id)
                 

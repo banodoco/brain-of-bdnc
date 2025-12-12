@@ -1,7 +1,6 @@
 import os
 import re
 import json
-import sqlite3
 import asyncio
 import traceback
 import discord
@@ -134,7 +133,7 @@ class TopGenerations:
                 return None
             
             first_gen = top_generations[0]
-            # Handle both parsed list (from Supabase) and JSON string (from SQLite)
+            # Handle both parsed list and JSON string
             attachments = first_gen['attachments']
             if isinstance(attachments, str):
                 attachments = json.loads(attachments)
@@ -189,7 +188,7 @@ class TopGenerations:
                 # Post the rest (2..N)
                 for i, row in enumerate(top_generations[1:], start=2):
                     gen = dict(row)
-                    # Handle both parsed list (from Supabase) and JSON string (from SQLite)
+                    # Handle both parsed list and JSON string
                     attachments = gen['attachments']
                     if isinstance(attachments, str):
                         attachments = json.loads(attachments)
@@ -239,7 +238,7 @@ class TopGenerations:
                         # Post ALL generations as individual messages (no thread)
                         for i, row in enumerate(randomized_generations, start=1):
                             gen = dict(row)
-                            # Handle both parsed list (from Supabase) and JSON string (from SQLite)
+                            # Handle both parsed list and JSON string
                             attachments = gen['attachments']
                             if isinstance(attachments, str):
                                 attachments = json.loads(attachments)
@@ -357,7 +356,7 @@ class TopGenerations:
             
             for i, row in enumerate(results, start=1):
                 try:
-                    # Handle both parsed list (from Supabase) and JSON string (from SQLite)
+                    # Handle both parsed list and JSON string
                     attachments = row['attachments']
                     if isinstance(attachments, str):
                         attachments = json.loads(attachments)

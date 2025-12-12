@@ -1,6 +1,6 @@
 """
-Unified Storage Handler - Manages writes to SQLite, Supabase, or both.
-This provides a single interface for storing messages regardless of backend.
+Unified Storage Handler - Manages writes to Supabase.
+This provides a single interface for storing messages.
 """
 
 import asyncio
@@ -19,14 +19,11 @@ sys.path.insert(0, str(project_root))
 from supabase import create_client, Client
 from supabase.lib.client_options import ClientOptions
 
-from src.common.constants import STORAGE_SQLITE, STORAGE_SUPABASE, STORAGE_BOTH, get_storage_backend
-
 logger = logging.getLogger('DiscordBot')
 
 class StorageHandler:
     """
-    Unified handler for storing data to SQLite, Supabase, or both.
-    Works in conjunction with DatabaseHandler for SQLite operations.
+    Handler for storing data to Supabase.
     """
     
     def __init__(self, storage_backend: Optional[str] = None):
@@ -34,18 +31,15 @@ class StorageHandler:
         Initialize the storage handler.
         
         Args:
-            storage_backend: One of 'sqlite', 'supabase', or 'both'. 
-                           If None, reads from STORAGE_BACKEND env var.
+            storage_backend: Ignored - always uses Supabase. Kept for backwards compatibility.
         """
-        self.storage_backend = storage_backend or get_storage_backend()
         self.supabase_client: Optional[Client] = None
         self.batch_size = 100  # Batch size for Supabase writes
         
-        logger.debug(f"Storage backend configured: {self.storage_backend}")
+        logger.debug(f"Storage backend: supabase")
         
-        # Initialize Supabase if needed
-        if self.storage_backend in [STORAGE_SUPABASE, STORAGE_BOTH]:
-            self._init_supabase()
+        # Initialize Supabase
+        self._init_supabase()
     
     def _init_supabase(self) -> None:
         """Initialize the Supabase client."""
@@ -54,7 +48,7 @@ class StorageHandler:
         
         if not supabase_url or not supabase_key:
             logger.error("SUPABASE_URL or SUPABASE_SERVICE_KEY not set. Cannot use Supabase backend.")
-            raise ValueError("Supabase credentials required when using supabase or both storage backends")
+            raise ValueError("Supabase credentials required")
         
         try:
             # Try with ClientOptions (newer API)
@@ -68,14 +62,6 @@ class StorageHandler:
         except Exception as e:
             logger.error(f"Failed to initialize Supabase client: {e}", exc_info=True)
             raise
-    
-    def should_write_to_sqlite(self) -> bool:
-        """Check if we should write to SQLite."""
-        return self.storage_backend in [STORAGE_SQLITE, STORAGE_BOTH]
-    
-    def should_write_to_supabase(self) -> bool:
-        """Check if we should write to Supabase."""
-        return self.storage_backend in [STORAGE_SUPABASE, STORAGE_BOTH]
     
     async def store_messages_to_supabase(self, messages: List[Dict]) -> int:
         """
@@ -455,4 +441,3 @@ class StorageHandler:
         except Exception as e:
             logger.error(f"Error updating summary thread in Supabase: {e}", exc_info=True)
             return False
-

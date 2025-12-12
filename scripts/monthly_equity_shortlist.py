@@ -20,7 +20,6 @@ sys.path.insert(0, project_root)
 load_dotenv(os.path.join(project_root, '.env'))
 
 from src.common.db_handler import DatabaseHandler
-from src.common.constants import get_database_path
 from src.common.llm import get_llm_response
 
 # --- Configuration ---
@@ -510,9 +509,8 @@ async def main():
 
     try:
         # Initialize database handler
-        db_path = get_database_path(dev_mode)
-        db_handler = DatabaseHandler(db_path=db_path, dev_mode=dev_mode)
-        logger.info(f"Connected to database: {db_path}")
+        db_handler = DatabaseHandler(dev_mode=dev_mode)
+        logger.info("Connected to Supabase database")
 
         # Fetch messages for the specified month
         logger.info("Fetching messages from the database...")
