@@ -1016,6 +1016,11 @@ class ChannelSummarizer:
                     
                     self.logger.debug(f"[{i+1}/{len(active_channels)}] Processing channel {channel_id} ({channel_name})")
                     
+                    # Check if summary already exists for this channel today
+                    if db_handler.summary_exists_for_date(channel_id, current_date):
+                        self.logger.info(f"⏭️ Skipping channel {channel_id}: Summary already exists for {current_date.strftime('%Y-%m-%d')}")
+                        continue
+                    
                     try:
                         self.logger.info(f"Getting message history for channel {channel_id} from last 24 hours...")
                         messages = await self.get_channel_history(channel_id)
@@ -1110,48 +1115,61 @@ class ChannelSummarizer:
                         continue
 
                 if channel_summaries:
-                    self.logger.info(f"Combining summaries from {len(channel_summaries)} channels...")
-                    overall_summary = await self.news_summarizer.combine_channel_summaries(channel_summaries)
-                    
-                    # List of non-content responses to skip posting
-                    skip_responses = [
-                        "[NOTHING OF NOTE]", 
-                        "[NO SIGNIFICANT NEWS]", 
-                        "[NO MESSAGES TO ANALYZE]",
-                        "[ERROR COMBINING SUMMARIES]",
-                        "[ERROR PARSING COMBINED SUMMARY]"
-                    ]
-                    
-                    if overall_summary and overall_summary not in skip_responses:
-                        formatted_summary = self.news_summarizer.format_news_for_discord(overall_summary)
-                        # UPDATED CALL
-                        header = await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\n\n# Daily Summary - {current_date.strftime('%A, %B %d, %Y')}\n\n")
-                        if header is not None: self.first_message = header
-                        else: self.logger.error("Failed to post header message; first_message remains unset.")
-                        
-                        self.logger.info("Posting main summary to summary channel")
-                        for item in formatted_summary:
-                             if item.get('type') == 'media_reference':
-                                 try:
-                                     source_channel_id_media_main = int(item['channel_id'])
-                                     message_id_to_fetch_main = int(item['message_id'])
-                                     source_channel_media_main = await self._get_channel_with_retry(source_channel_id_media_main)
-                                     if not source_channel_media_main: continue
-                                     original_message_main = await source_channel_media_main.fetch_message(message_id_to_fetch_main)
-                                     if original_message_main.attachments:
-                                         for attachment in original_message_main.attachments:
-                                             # UPDATED CALL
-                                             await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=attachment.url)
-                                             await asyncio.sleep(0.5)
-                                 except Exception as e_media_main:
-                                     self.logger.error(f"Error processing media reference in main summary {item}: {e_media_main}")
-                             else:
-                                 # UPDATED CALL
-                                 await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=item.get('content', ''))
-                                 await asyncio.sleep(1)
+                    # Check if main summary already exists for today
+                    if db_handler.summary_exists_for_date(self.summary_channel_id, current_date):
+                        self.logger.info(f"⏭️ Skipping main summary: Already exists for {current_date.strftime('%Y-%m-%d')}")
                     else:
-                        # UPDATED CALL
-                        await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content="_No significant activity to summarize in the last 24 hours._")
+                        self.logger.info(f"Combining summaries from {len(channel_summaries)} channels...")
+                        overall_summary = await self.news_summarizer.combine_channel_summaries(channel_summaries)
+                        
+                        # List of non-content responses to skip posting
+                        skip_responses = [
+                            "[NOTHING OF NOTE]", 
+                            "[NO SIGNIFICANT NEWS]", 
+                            "[NO MESSAGES TO ANALYZE]",
+                            "[ERROR COMBINING SUMMARIES]",
+                            "[ERROR PARSING COMBINED SUMMARY]"
+                        ]
+                        
+                        if overall_summary and overall_summary not in skip_responses:
+                            formatted_summary = self.news_summarizer.format_news_for_discord(overall_summary)
+                            # UPDATED CALL
+                            header = await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\n\n# Daily Summary - {current_date.strftime('%A, %B %d, %Y')}\n\n")
+                            if header is not None: self.first_message = header
+                            else: self.logger.error("Failed to post header message; first_message remains unset.")
+                            
+                            self.logger.info("Posting main summary to summary channel")
+                            for item in formatted_summary:
+                                if item.get('type') == 'media_reference':
+                                    try:
+                                        source_channel_id_media_main = int(item['channel_id'])
+                                        message_id_to_fetch_main = int(item['message_id'])
+                                        source_channel_media_main = await self._get_channel_with_retry(source_channel_id_media_main)
+                                        if not source_channel_media_main: continue
+                                        original_message_main = await source_channel_media_main.fetch_message(message_id_to_fetch_main)
+                                        if original_message_main.attachments:
+                                            for attachment in original_message_main.attachments:
+                                                # UPDATED CALL
+                                                await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=attachment.url)
+                                                await asyncio.sleep(0.5)
+                                    except Exception as e_media_main:
+                                        self.logger.error(f"Error processing media reference in main summary {item}: {e_media_main}")
+                                else:
+                                    # UPDATED CALL
+                                    await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=item.get('content', ''))
+                                    await asyncio.sleep(1)
+                            
+                            # Save main summary to database
+                            main_summary_saved = await self._post_summary_with_transaction(
+                                self.summary_channel_id, overall_summary, [], current_date, db_handler
+                            )
+                            if main_summary_saved:
+                                self.logger.info(f"✅ Main summary saved to database for {current_date.strftime('%Y-%m-%d')}")
+                            else:
+                                self.logger.error(f"Failed to save main summary to database")
+                        else:
+                            # UPDATED CALL
+                            await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content="_No significant activity to summarize in the last 24 hours._")
                 else:
                     try:
                         # UPDATED CALL with network error handling

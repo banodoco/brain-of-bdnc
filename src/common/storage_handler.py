@@ -305,6 +305,40 @@ class StorageHandler:
             logger.error(f"Error storing channels to Supabase: {e}", exc_info=True)
             return 0
     
+    async def summary_exists_for_date(self, channel_id: int, date: Optional[datetime] = None) -> bool:
+        """
+        Check if a summary already exists for a channel on a given date.
+        
+        Args:
+            channel_id: The channel ID
+            date: Date to check (defaults to today)
+            
+        Returns:
+            True if summary exists, False otherwise
+        """
+        if not self.supabase_client:
+            logger.error("Supabase client not initialized")
+            return False
+        
+        try:
+            summary_date = (date or datetime.now()).strftime('%Y-%m-%d')
+            
+            result = await asyncio.to_thread(
+                lambda: self.supabase_client.table('daily_summaries')
+                    .select('channel_id')
+                    .eq('date', summary_date)
+                    .eq('channel_id', channel_id)
+                    .execute()
+            )
+            
+            exists = bool(result.data and len(result.data) > 0)
+            logger.debug(f"Summary exists check for channel {channel_id}, date {summary_date}: {exists}")
+            return exists
+            
+        except Exception as e:
+            logger.error(f"Error checking if summary exists: {e}", exc_info=True)
+            return False
+
     async def store_daily_summary_to_supabase(self, channel_id: int, full_summary: Optional[str], short_summary: Optional[str], date: Optional[datetime] = None) -> bool:
         """
         Store a daily summary to Supabase.

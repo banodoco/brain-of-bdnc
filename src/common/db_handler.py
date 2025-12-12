@@ -434,6 +434,31 @@ class DatabaseHandler:
         
         return []
 
+    def summary_exists_for_date(self, channel_id: int, date: Optional[datetime] = None) -> bool:
+        """Check if a summary already exists for a channel on a given date."""
+        # Check Supabase if configured (preferred source)
+        if self.storage_backend in [STORAGE_SUPABASE, STORAGE_BOTH]:
+            if self.storage_handler:
+                return self._run_async_in_thread(
+                    self.storage_handler.summary_exists_for_date(channel_id, date)
+                )
+        
+        # Fall back to SQLite check
+        if self.storage_backend in [STORAGE_SQLITE, STORAGE_BOTH]:
+            def check_operation(conn):
+                cursor = conn.cursor()
+                summary_date = date.strftime('%Y-%m-%d') if date else datetime.now().strftime('%Y-%m-%d')
+                cursor.execute(
+                    "SELECT 1 FROM daily_summaries WHERE date = ? AND channel_id = ? LIMIT 1",
+                    (summary_date, channel_id)
+                )
+                result = cursor.fetchone()
+                cursor.close()
+                return result is not None
+            return self._execute_with_retry(check_operation) or False
+        
+        return False
+
     def store_daily_summary(self, channel_id: int, full_summary: Optional[str], short_summary: Optional[str], date: Optional[datetime] = None) -> bool:
         success = True
         
