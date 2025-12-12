@@ -267,7 +267,29 @@ def main():
     parser.add_argument('--summary-with-archive', action='store_true', help='Archive past 24 hours FIRST, then run summary immediately')
     parser.add_argument('--storage-backend', type=str, choices=['sqlite', 'supabase', 'both'],
                       help='Storage backend: sqlite (local only), supabase (cloud only), or both (default: from STORAGE_BACKEND env var or sqlite)')
+    parser.add_argument('--clear-today-summaries', action='store_true', 
+                      help='Delete today\'s summaries from Supabase before running (useful for re-running)')
     args = parser.parse_args()
+    
+    # Handle --clear-today-summaries flag
+    if args.clear_today_summaries:
+        print("🗑️  Clearing today's summaries from Supabase...")
+        try:
+            from supabase import create_client
+            from dotenv import load_dotenv
+            load_dotenv()
+            url = os.getenv('SUPABASE_URL')
+            key = os.getenv('SUPABASE_SERVICE_KEY')
+            if url and key:
+                supabase = create_client(url, key)
+                today = datetime.now().strftime('%Y-%m-%d')
+                result = supabase.table('daily_summaries').delete().eq('date', today).execute()
+                deleted = len(result.data) if result.data else 0
+                print(f"✅ Deleted {deleted} summary records for {today}")
+            else:
+                print("⚠️  SUPABASE_URL or SUPABASE_SERVICE_KEY not set, skipping clear")
+        except Exception as e:
+            print(f"⚠️  Error clearing summaries: {e}")
     
     # Set storage backend if specified via command line
     if args.storage_backend:
