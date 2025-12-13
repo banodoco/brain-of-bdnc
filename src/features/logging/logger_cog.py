@@ -17,6 +17,8 @@ class LoggerCog(commands.Cog):
             self.logger.info(f"Initializing LoggerCog in development mode")
             self.logger.debug(f"Bot intents enabled: {bot.intents}")
         self.db = DatabaseHandler(dev_mode=dev_mode)
+        if dev_mode:
+            self.logger.debug(f"Database initialized with path: {self.db.db_path}")
         try:
             self.bot_user_id = int(os.getenv('BOT_USER_ID'))
             self.logger.debug(f"Retrieved BOT_USER_ID: {self.bot_user_id}")
@@ -201,8 +203,7 @@ class LoggerCog(commands.Cog):
                 new_count = len(current_reactors)
                 self.db.execute_query(
                     "UPDATE messages SET reaction_count = ?, reactors = ? WHERE message_id = ?",
-                    # Store reactors as an array (JSONB) in Supabase, not a JSON-encoded string
-                    (new_count, current_reactors, reaction.message.id)
+                    (new_count, json.dumps(current_reactors), reaction.message.id)
                 )
                 
                 # Only log in dev mode

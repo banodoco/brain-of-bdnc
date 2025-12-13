@@ -51,17 +51,25 @@ python main.py --clear-today-summaries --summary-now
 
 **Viewing logs** (logs are stored in Supabase with 48h retention):
 ```bash
-# Real-time tail (like tail -f)
-python scripts/logs_tail.py
+# Quick health check (errors, summary status, bot activity)
+python scripts/logs.py health
 
-# View recent logs
-python scripts/logs_view.py -n 100              # Last 100 logs
-python scripts/logs_view.py -l ERROR            # Only errors
-python scripts/logs_view.py --since 30m         # Last 30 minutes
+# Check daily summary status
+python scripts/logs.py summary                   # Today
+python scripts/logs.py summary --date 2024-12-12 # Specific date
 
-# Search logs
-python scripts/logs_search.py "error message"   # Search by content
-python scripts/logs_search.py "api" --since 1h  # Search last hour
+# View errors
+python scripts/logs.py errors                    # All errors
+python scripts/logs.py errors --hours 6          # Last 6 hours
+
+# Real-time tail
+python scripts/logs.py tail
+python scripts/logs.py tail --level WARNING      # Warnings and above
+
+# Search and view
+python scripts/logs.py search "rate limit"       # Search by content
+python scripts/logs.py recent -n 50              # Last 50 logs
+python scripts/logs.py stats                     # Detailed statistics
 ```
 
 # Git Workflow

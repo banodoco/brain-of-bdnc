@@ -51,15 +51,13 @@ class ReactionBackfiller(BaseDiscordBot):
         """Backfill reaction data for all messages in the database."""
         try:
             # Get all messages without reaction data
-            # Note: PostgreSQL doesn't have json_valid(), but JSONB columns are always valid
-            # We check for non-empty attachments using array comparison
             results = self.db.execute_query("""
                 SELECT m.message_id, m.channel_id
                 FROM messages m
                 WHERE (m.reactors IS NULL
                    OR m.reactors = '[]'
-                   OR m.reactors::text = 'null')
-                  AND m.attachments IS NOT NULL
+                   OR m.reactors = 'null')
+                  AND json_valid(m.attachments)
                   AND m.attachments != '[]'
                 ORDER BY m.created_at DESC
             """)
@@ -102,7 +100,7 @@ class ReactionBackfiller(BaseDiscordBot):
                         SET reaction_count = ?,
                             reactors = ?
                         WHERE message_id = ?
-                    """, (reaction_count, reactors, message_id))
+                    """, (reaction_count, json.dumps(reactors), message_id))
                     
                     logger.info(f"Updated reactions for message {message_id}: {len(reactors)} reactors")
                     await asyncio.sleep(0.5)  # Rate limit

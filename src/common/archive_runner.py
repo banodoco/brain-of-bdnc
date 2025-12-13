@@ -91,11 +91,27 @@ class ArchiveRunner:
                     universal_newlines=True
                 )
                 
-                # Stream output line by line
+                # Stream output line by line, filtering out verbose logs
                 if process.stdout:
                     for line in iter(process.stdout.readline, ''):
                         if line:
-                            logger.info(f"[Archive] {line.rstrip()}")
+                            line_clean = line.rstrip()
+                            # Skip verbose logs to avoid flooding Supabase
+                            # These patterns are too granular for remote debugging
+                            skip_patterns = [
+                                'HTTP Request:',           # API call spam
+                                'Processing Thread',       # Per-thread progress (500+ per channel)
+                                'Latest message in DB',    # Per-thread diagnostic
+                                'Earliest message in DB',  # Per-thread diagnostic
+                                'Searching for newer',     # Per-thread diagnostic
+                                'No more messages found',  # Per-thread diagnostic
+                                'Finished initial fetch',  # Per-thread diagnostic
+                                'incremental/full archive',# Per-thread diagnostic
+                            ]
+                            if any(pattern in line_clean for pattern in skip_patterns):
+                                continue
+                            # Log important archive events (start, complete, errors, totals)
+                            logger.info(f"[Archive] {line_clean}")
                 
                 process.wait(timeout=3600)
                 

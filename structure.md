@@ -89,9 +89,7 @@
 │
 ├── scripts/                     # One-off maintenance utilities
 │   ├── archive_discord.py          # Bulk archive messages to Supabase
-│   ├── logs_tail.py                 # Real-time log streaming
-│   ├── logs_view.py                 # View recent logs with filters
-│   ├── logs_search.py               # Search logs by content
+│   ├── logs.py                      # Unified log monitoring tool (health, summary, errors, tail)
 │   └── ...                          # Other utilities (see tree below)
 │
 ├── supabase/
@@ -162,9 +160,7 @@
 | `archive_discord.py` | Bulk archive messages & attachments to Supabase |
 | `analyze_channels.py` | Analyse channels with LLM, export stats |
 | `backfill_reactions.py` | Populate missing reaction records |
-| `logs_tail.py` | Real-time log streaming (like `tail -f`) |
-| `logs_view.py` | View recent logs with filters (`-l ERROR`, `--since 1h`) |
-| `logs_search.py` | Search logs by message content |
+| `logs.py` | Unified log monitoring: `health`, `summary`, `errors`, `recent`, `search`, `tail`, `stats` |
 
 ---
 
