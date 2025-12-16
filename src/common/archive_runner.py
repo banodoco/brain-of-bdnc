@@ -1,6 +1,6 @@
 # src/common/archive_runner.py
 
-import subprocess
+import asyncio
 import sys
 import os
 import logging
@@ -31,6 +31,9 @@ class ArchiveRunner:
         """
         Run the archive script with the specified parameters.
         
+        Uses asyncio subprocess to avoid blocking the event loop, allowing other
+        async tasks (like the daily summary) to run concurrently.
+        
         Args:
             days: Number of days to archive
             dev_mode: Whether to run in development mode
@@ -52,9 +55,6 @@ class ArchiveRunner:
         channels_str = os.getenv(channels_env_key, '')
         channel_ids: list[str] = [c.strip() for c in channels_str.split(',') if c.strip()]
 
-        # Storage backend is always supabase now
-        storage_backend = 'supabase'
-
         # If we have a channel list, run the archiver once per channel; otherwise fall back to full-guild scrape
         commands_to_run: list[list[str]] = []
         if channel_ids:
@@ -75,45 +75,53 @@ class ArchiveRunner:
             commands_to_run.append(cmd)
             logger.info(f"{channels_env_key} not set; running archive over all accessible channels")
 
+        # Patterns to skip in logs to avoid flooding Supabase
+        skip_patterns = [
+            'HTTP Request:',           # API call spam
+            'Processing Thread',       # Per-thread progress (500+ per channel)
+            'Latest message in DB',    # Per-thread diagnostic
+            'Earliest message in DB',  # Per-thread diagnostic
+            'Searching for newer',     # Per-thread diagnostic
+            'No more messages found',  # Per-thread diagnostic
+            'Finished initial fetch',  # Per-thread diagnostic
+            'incremental/full archive',# Per-thread diagnostic
+        ]
+
         try:
             all_ok = True
             for cmd in commands_to_run:
                 logger.info(f"Running archive command: {' '.join(cmd)}")
                 
-                # Stream output in real-time instead of capturing it
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    cwd=self.project_root,
-                    bufsize=1,
-                    universal_newlines=True
+                # Use asyncio subprocess to avoid blocking the event loop
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=self.project_root
                 )
                 
-                # Stream output line by line, filtering out verbose logs
+                # Stream output line by line asynchronously
                 if process.stdout:
-                    for line in iter(process.stdout.readline, ''):
-                        if line:
-                            line_clean = line.rstrip()
-                            # Skip verbose logs to avoid flooding Supabase
-                            # These patterns are too granular for remote debugging
-                            skip_patterns = [
-                                'HTTP Request:',           # API call spam
-                                'Processing Thread',       # Per-thread progress (500+ per channel)
-                                'Latest message in DB',    # Per-thread diagnostic
-                                'Earliest message in DB',  # Per-thread diagnostic
-                                'Searching for newer',     # Per-thread diagnostic
-                                'No more messages found',  # Per-thread diagnostic
-                                'Finished initial fetch',  # Per-thread diagnostic
-                                'incremental/full archive',# Per-thread diagnostic
-                            ]
+                    while True:
+                        line = await process.stdout.readline()
+                        if not line:
+                            break
+                        line_clean = line.decode('utf-8', errors='replace').rstrip()
+                        if line_clean:
+                            # Skip verbose logs
                             if any(pattern in line_clean for pattern in skip_patterns):
                                 continue
-                            # Log important archive events (start, complete, errors, totals)
+                            # Log important archive events
                             logger.info(f"[Archive] {line_clean}")
                 
-                process.wait(timeout=3600)
+                # Wait for process to complete with timeout
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=3600)
+                except asyncio.TimeoutError:
+                    logger.error("Archive process timed out after 1 hour")
+                    process.kill()
+                    await process.wait()
+                    return False
                 
                 if process.returncode == 0:
                     logger.info("Archive process completed successfully")
@@ -121,9 +129,6 @@ class ArchiveRunner:
                     all_ok = False
                     logger.error(f"Archive process failed with return code {process.returncode}")
             return all_ok
-        except subprocess.TimeoutExpired:
-            logger.error("Archive process timed out after 1 hour")
-            return False
         except Exception as e:
             logger.error(f"Error running archive script: {e}", exc_info=True)
             return False
