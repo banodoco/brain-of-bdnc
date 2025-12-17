@@ -209,6 +209,18 @@ Media & Links:
 - Include interesting follow-up discussions or examples as subtopics
 - End text with a colon if it directly precedes referenced media
 
+Grouping Media for Display:
+- Images in the SAME subTopicMediaMessageIds array get SENT TOGETHER as one Discord message
+- GROUP TOGETHER when:
+  * Many variants of the same thing without much distinctness between them
+  * User posted them all at once (same message or rapid succession)
+  * They're essentially "more of the same" - iterations, variations, batch outputs
+- KEEP SEPARATE (different arrays/subtopics) when:
+  * Each image has individual merit and deserves its own attention
+  * User posted them one-by-one with different explanations for each
+  * Small number of images that each show something distinct
+- Basically: if they'd feel redundant shown separately, batch them. If each one tells its own story, keep them separate.
+
 Formatting:
 - Must be valid JSON in exactly the format shown above
 - Don't repeat items or leave empty fields (except optional media fields)
@@ -422,17 +434,21 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
 
                     messages_to_send.append({"content": "\n".join(sub_msg)})
 
-                    # subTopicMediaMessageIds (plural, list)
+                    # subTopicMediaMessageIds (plural, list) - keep grouped for batch posting
                     media_ids = sub.get("subTopicMediaMessageIds")
                     if media_ids and isinstance(media_ids, list):
-                        for msg_id in media_ids:
-                            if msg_id and str(msg_id).strip() not in [None, "null", "unknown", ""]:
-                                # Return dict with type, message_id, and channel_id for EACH ID
-                                messages_to_send.append({
-                                    "type": "media_reference",
-                                    "message_id": str(msg_id).strip(), # Ensure it's a string and stripped
-                                    "channel_id": str(sub["channel_id"]) # Associated channel_id from the subtopic
-                                })
+                        # Filter out invalid IDs
+                        valid_ids = [
+                            str(msg_id).strip() for msg_id in media_ids 
+                            if msg_id and str(msg_id).strip() not in [None, "null", "unknown", ""]
+                        ]
+                        if valid_ids:
+                            # Keep grouped media together for batch posting
+                            messages_to_send.append({
+                                "type": "media_reference_group",
+                                "message_ids": valid_ids,
+                                "channel_id": str(sub["channel_id"])
+                            })
 
         return messages_to_send
 
