@@ -440,7 +440,7 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
                         # Filter out invalid IDs
                         valid_ids = [
                             str(msg_id).strip() for msg_id in media_ids 
-                            if msg_id and str(msg_id).strip() not in [None, "null", "unknown", ""]
+                            if msg_id and str(msg_id).strip().lower() not in ["none", "null", "unknown", ""]
                         ]
                         if valid_ids:
                             # Keep grouped media together for batch posting
