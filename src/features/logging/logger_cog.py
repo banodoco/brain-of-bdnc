@@ -18,7 +18,7 @@ class LoggerCog(commands.Cog):
             self.logger.debug(f"Bot intents enabled: {bot.intents}")
         self.db = DatabaseHandler(dev_mode=dev_mode)
         if dev_mode:
-            self.logger.debug(f"Database initialized with path: {self.db.db_path}")
+            self.logger.debug("Database handler initialized")
         try:
             self.bot_user_id = int(os.getenv('BOT_USER_ID'))
             self.logger.debug(f"Retrieved BOT_USER_ID: {self.bot_user_id}")
