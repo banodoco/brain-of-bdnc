@@ -474,7 +474,7 @@ class ChannelSummarizer:
         """
         Send a group of media files from source messages to target channel.
         Downloads attachments and sends as actual files (max 10 per message).
-        Falls back to URLs if file sending fails.
+        Falls back to URLs if anything fails.
         """
         DISCORD_MAX_FILES = 10
         
@@ -494,26 +494,27 @@ class ChannelSummarizer:
         # Send in chunks of 10 (Discord's limit)
         for i in range(0, len(all_attachments), DISCORD_MAX_FILES):
             chunk = all_attachments[i:i + DISCORD_MAX_FILES]
+            sent_as_files = False
             
             try:
                 # Try to download and send as files
                 files = []
                 for attachment in chunk:
-                    try:
-                        file_bytes = await attachment.read()
-                        files.append(discord.File(io.BytesIO(file_bytes), filename=attachment.filename))
-                    except Exception as e:
-                        self.logger.warning(f"Could not download attachment {attachment.filename}: {e}")
+                    file_bytes = await attachment.read()
+                    files.append(discord.File(io.BytesIO(file_bytes), filename=attachment.filename))
                 
                 if files:
                     await discord_utils.safe_send_message(
                         self.bot, target_channel, self.rate_limiter, self.logger, files=files
                     )
+                    sent_as_files = True
                     await asyncio.sleep(0.5)
                     
             except Exception as e:
-                # Fallback: send URLs individually
                 self.logger.warning(f"Failed to send files as group, falling back to URLs: {e}")
+            
+            # Fallback: send URLs individually
+            if not sent_as_files:
                 for attachment in chunk:
                     try:
                         await discord_utils.safe_send_message(
