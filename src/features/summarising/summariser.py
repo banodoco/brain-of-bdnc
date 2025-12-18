@@ -470,6 +470,61 @@ class ChannelSummarizer:
         self.logger.error(f"Failed to get channel {channel_id} after {self.MAX_RETRIES} retries.")
         return None
 
+    async def _send_media_group(self, target_channel, source_channel, message_ids: list) -> bool:
+        """
+        Send a group of media files from source messages to target channel.
+        Downloads attachments and sends as actual files (max 10 per message).
+        Falls back to URLs if file sending fails.
+        """
+        DISCORD_MAX_FILES = 10
+        
+        # Collect all attachments from the source messages
+        all_attachments = []
+        for msg_id in message_ids:
+            try:
+                original_message = await source_channel.fetch_message(int(msg_id))
+                if original_message.attachments:
+                    all_attachments.extend(original_message.attachments)
+            except Exception as e:
+                self.logger.warning(f"Could not fetch message {msg_id} for grouped media: {e}")
+        
+        if not all_attachments:
+            return True  # Nothing to send
+        
+        # Send in chunks of 10 (Discord's limit)
+        for i in range(0, len(all_attachments), DISCORD_MAX_FILES):
+            chunk = all_attachments[i:i + DISCORD_MAX_FILES]
+            
+            try:
+                # Try to download and send as files
+                files = []
+                for attachment in chunk:
+                    try:
+                        file_bytes = await attachment.read()
+                        files.append(discord.File(io.BytesIO(file_bytes), filename=attachment.filename))
+                    except Exception as e:
+                        self.logger.warning(f"Could not download attachment {attachment.filename}: {e}")
+                
+                if files:
+                    await discord_utils.safe_send_message(
+                        self.bot, target_channel, self.rate_limiter, self.logger, files=files
+                    )
+                    await asyncio.sleep(0.5)
+                    
+            except Exception as e:
+                # Fallback: send URLs individually
+                self.logger.warning(f"Failed to send files as group, falling back to URLs: {e}")
+                for attachment in chunk:
+                    try:
+                        await discord_utils.safe_send_message(
+                            self.bot, target_channel, self.rate_limiter, self.logger, content=attachment.url
+                        )
+                        await asyncio.sleep(0.3)
+                    except Exception as e_url:
+                        self.logger.error(f"Failed to send URL fallback: {e_url}")
+        
+        return True
+
     async def get_channel_history(self, channel_id: int) -> List[dict]:
         """
         Fetches the message history for a given channel from the database,
@@ -1095,28 +1150,12 @@ class ChannelSummarizer:
                                             except Exception as e_media:
                                                 self.logger.error(f"Error processing media reference {item}: {e_media}")
                                         elif item.get('type') == 'media_reference_group':
-                                            # Handle grouped media - download and send as actual files
+                                            # Handle grouped media
                                             try:
                                                 source_channel_id_media = int(item['channel_id'])
                                                 source_channel_media = await self._get_channel_with_retry(source_channel_id_media)
-                                                if not source_channel_media: continue
-                                                
-                                                all_files = []
-                                                for msg_id in item.get('message_ids', []):
-                                                    try:
-                                                        original_message = await source_channel_media.fetch_message(int(msg_id))
-                                                        if original_message.attachments:
-                                                            for attachment in original_message.attachments:
-                                                                # Download and create discord.File
-                                                                file_bytes = await attachment.read()
-                                                                all_files.append(discord.File(io.BytesIO(file_bytes), filename=attachment.filename))
-                                                    except Exception as e_fetch:
-                                                        self.logger.warning(f"Could not fetch message {msg_id} for grouped media: {e_fetch}")
-                                                
-                                                # Send all files together (Discord will display them as a gallery)
-                                                if all_files:
-                                                    await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, files=all_files)
-                                                    await asyncio.sleep(0.5)
+                                                if source_channel_media:
+                                                    await self._send_media_group(thread, source_channel_media, item.get('message_ids', []))
                                             except Exception as e_media_group:
                                                 self.logger.error(f"Error processing media reference group {item}: {e_media_group}")
                                         else:
@@ -1188,28 +1227,12 @@ class ChannelSummarizer:
                                     except Exception as e_media_main:
                                         self.logger.error(f"Error processing media reference in main summary {item}: {e_media_main}")
                                 elif item.get('type') == 'media_reference_group':
-                                    # Handle grouped media - download and send as actual files
+                                    # Handle grouped media
                                     try:
                                         source_channel_id_media_main = int(item['channel_id'])
                                         source_channel_media_main = await self._get_channel_with_retry(source_channel_id_media_main)
-                                        if not source_channel_media_main: continue
-                                        
-                                        all_files = []
-                                        for msg_id in item.get('message_ids', []):
-                                            try:
-                                                original_message_main = await source_channel_media_main.fetch_message(int(msg_id))
-                                                if original_message_main.attachments:
-                                                    for attachment in original_message_main.attachments:
-                                                        # Download and create discord.File
-                                                        file_bytes = await attachment.read()
-                                                        all_files.append(discord.File(io.BytesIO(file_bytes), filename=attachment.filename))
-                                            except Exception as e_fetch:
-                                                self.logger.warning(f"Could not fetch message {msg_id} for grouped media: {e_fetch}")
-                                        
-                                        # Send all files together (Discord will display them as a gallery)
-                                        if all_files:
-                                            await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, files=all_files)
-                                            await asyncio.sleep(0.5)
+                                        if source_channel_media_main:
+                                            await self._send_media_group(summary_channel, source_channel_media_main, item.get('message_ids', []))
                                     except Exception as e_media_group:
                                         self.logger.error(f"Error processing media reference group in main summary {item}: {e_media_group}")
                                 else:
