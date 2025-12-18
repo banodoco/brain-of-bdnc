@@ -890,7 +890,6 @@ class ChannelSummarizer:
                 def db_operation():
                     try:
                         self.logger.info(f"[DEV MODE] 🔍 Executing query via db_handler.execute_query...")
-                        self.logger.info(f"[DEV MODE] Storage backend: {db_handler.storage_backend}")
                         results = db_handler.execute_query(query)
                         self.logger.info(f"[DEV MODE] Query returned {len(results) if results else 0} results")
                         if results:

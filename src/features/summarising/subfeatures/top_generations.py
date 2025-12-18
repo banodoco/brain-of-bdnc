@@ -154,11 +154,12 @@ class TopGenerations:
                 f"1. By **{first_gen['author_name']}**" + (f" in #{first_gen['channel_name']}" if not channel_id else "")
             ]
             
-            # If there's text content, trim and un-mention
-            if first_gen['content'] and first_gen['content'].strip():
-                desc.append(self._replace_user_mentions(first_gen['content'][:150]))
-            
             desc.append(f"🔥 {first_gen['unique_reactor_count']} unique reactions")
+            
+            # If there's text content, format as blockquote with quotes
+            if first_gen['content'] and first_gen['content'].strip():
+                desc.append(f"> \"{self._replace_user_mentions(first_gen['content'][:150])}\"")
+            
             desc.append(video_attachment['url'])
             # Generate jump URL dynamically
             jump_url = f"https://discord.com/channels/{self.summarizer.guild_id}/{first_gen['channel_id']}/{first_gen['message_id']}"
@@ -201,13 +202,14 @@ class TopGenerations:
                         continue
                     
                     desc = [
-                        f"**{i}.** By **{gen['author_name']}**" + (f" in #{gen['channel_name']}" if not channel_id else "")
+                        f"**{i}.** By **{gen['author_name']}**" + (f" in #{gen['channel_name']}" if not channel_id else ""),
+                        f"🔥 {gen['unique_reactor_count']} unique reactions"
                     ]
                     
+                    # If there's text content, format as blockquote with quotes
                     if gen['content'] and gen['content'].strip():
-                        desc.append(self._replace_user_mentions(gen['content'][:150]))
+                        desc.append(f"> \"{self._replace_user_mentions(gen['content'][:150])}\"")
                     
-                    desc.append(f"🔥 {gen['unique_reactor_count']} unique reactions")
                     desc.append(video_attachment['url'])
                     # Generate jump URL dynamically
                     jump_url = f"https://discord.com/channels/{self.summarizer.guild_id}/{gen['channel_id']}/{gen['message_id']}"
@@ -252,13 +254,14 @@ class TopGenerations:
                             
                             # Format message for individual posting
                             desc = [
-                                f"By **{gen['author_name']}**" + (f" in #{gen['channel_name']}" if not channel_id else "")
+                                f"By **{gen['author_name']}**" + (f" in #{gen['channel_name']}" if not channel_id else ""),
+                                f"🔥 {gen['unique_reactor_count']} unique reactions"
                             ]
                             
+                            # If there's text content, format as blockquote with quotes
                             if gen['content'] and gen['content'].strip():
-                                desc.append(self._replace_user_mentions(gen['content'][:150]))
+                                desc.append(f"> \"{self._replace_user_mentions(gen['content'][:150])}\"")
                             
-                            desc.append(f"🔥 {gen['unique_reactor_count']} unique reactions")
                             desc.append(video_attachment['url'])
                             # Generate jump URL dynamically
                             jump_url = f"https://discord.com/channels/{self.summarizer.guild_id}/{gen['channel_id']}/{gen['message_id']}"
@@ -373,8 +376,9 @@ class TopGenerations:
                         f"🔥 {row['unique_reactor_count']} unique reactions"
                     ]
                     
+                    # If there's text content, format as blockquote with quotes
                     if row['content'] and row['content'].strip():
-                        desc.append(self._replace_user_mentions(row['content'][:150]))
+                        desc.append(f"> \"{self._replace_user_mentions(row['content'][:150])}\"")
                     
                     desc.append(video_attachment['url'])
                     # Generate jump URL dynamically
