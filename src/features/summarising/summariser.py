@@ -1234,14 +1234,9 @@ class ChannelSummarizer:
                         self.logger.error(f"Network error sending fallback message to summary channel: {network_error}")
                         # Don't re-raise - this is just a fallback message
 
-                # Get the top gens channel (may be different from summary channel in dev mode)
-                top_gens_channel = await self._get_channel_with_retry(self.top_gens_channel_id)
-                if not top_gens_channel:
-                    self.logger.error(f"Could not find top gens channel {self.top_gens_channel_id}, falling back to summary channel")
-                    top_gens_channel = summary_channel
-                
-                self.logger.info(f"Posting Top Generations to channel {top_gens_channel.name} (ID: {self.top_gens_channel_id})")
-                await self.top_generations.post_top_x_generations(top_gens_channel, limit=20, also_post_to_channel_id=1385774922118336513)
+                # Post top generations: thread to summary channel, one-by-one to top_gens channel
+                self.logger.info(f"Posting Top Generations thread to summary channel, individual posts to top_gens channel (ID: {self.top_gens_channel_id})")
+                await self.top_generations.post_top_x_generations(summary_channel, limit=20, also_post_to_channel_id=self.top_gens_channel_id)
                 await self.top_art_sharer.post_top_art_share(summary_channel)
 
                 self.logger.info("Attempting to send link back to start...")
