@@ -478,9 +478,17 @@ class ChannelSummarizer:
         """
         DISCORD_MAX_FILES = 10
         
+        # Deduplicate and filter IDs
+        unique_ids = []
+        seen = set()
+        for mid in message_ids:
+            if mid and str(mid) not in seen:
+                unique_ids.append(mid)
+                seen.add(str(mid))
+
         # Collect all attachments from the source messages
         all_attachments = []
-        for msg_id in message_ids:
+        for msg_id in unique_ids:
             try:
                 original_message = await source_channel.fetch_message(int(msg_id))
                 if original_message.attachments:
@@ -489,16 +497,15 @@ class ChannelSummarizer:
                 self.logger.warning(f"Could not fetch message {msg_id} for grouped media: {e}")
         
         if not all_attachments:
-            return True  # Nothing to send
+            return True
         
-        # Send in chunks of 10 (Discord's limit)
         for i in range(0, len(all_attachments), DISCORD_MAX_FILES):
             chunk = all_attachments[i:i + DISCORD_MAX_FILES]
             sent_as_files = False
+            files = []
             
             try:
                 # Try to download and send as files
-                files = []
                 for attachment in chunk:
                     file_bytes = await attachment.read()
                     files.append(discord.File(io.BytesIO(file_bytes), filename=attachment.filename))
@@ -509,9 +516,15 @@ class ChannelSummarizer:
                     )
                     sent_as_files = True
                     await asyncio.sleep(0.5)
-                    
             except Exception as e:
                 self.logger.warning(f"Failed to send files as group, falling back to URLs: {e}")
+            finally:
+                # If we didn't send them, or even if we did, clean up local streams
+                # Note: discord.py usually handles closing, but let's be safe
+                if not sent_as_files:
+                    for f in files:
+                        try: f.close()
+                        except: pass
             
             # Fallback: send URLs individually
             if not sent_as_files:
@@ -1136,29 +1149,16 @@ class ChannelSummarizer:
                                     header_msg = await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=date_headline)
                                     await asyncio.sleep(1)
                                     for item in formatted_summary:
-                                        if item.get('type') == 'media_reference':
-                                            try:
-                                                source_channel_id_media = int(item['channel_id'])
-                                                message_id_to_fetch = int(item['message_id'])
-                                                source_channel_media = await self._get_channel_with_retry(source_channel_id_media)
-                                                if not source_channel_media: continue
-                                                original_message = await source_channel_media.fetch_message(message_id_to_fetch)
-                                                if original_message.attachments:
-                                                    for attachment in original_message.attachments:
-                                                        # UPDATED CALL
-                                                        await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=attachment.url)
-                                                        await asyncio.sleep(0.5)
-                                            except Exception as e_media:
-                                                self.logger.error(f"Error processing media reference {item}: {e_media}")
-                                        elif item.get('type') == 'media_reference_group':
-                                            # Handle grouped media
+                                        if item.get('type') in ['media_reference', 'media_reference_group']:
                                             try:
                                                 source_channel_id_media = int(item['channel_id'])
                                                 source_channel_media = await self._get_channel_with_retry(source_channel_id_media)
                                                 if source_channel_media:
-                                                    await self._send_media_group(thread, source_channel_media, item.get('message_ids', []))
-                                            except Exception as e_media_group:
-                                                self.logger.error(f"Error processing media reference group {item}: {e_media_group}")
+                                                    # Unified handler for both single and group references
+                                                    msg_ids = [item['message_id']] if item.get('type') == 'media_reference' else item.get('message_ids', [])
+                                                    await self._send_media_group(thread, source_channel_media, msg_ids)
+                                            except Exception as e_media:
+                                                self.logger.error(f"Error processing media reference {item}: {e_media}")
                                         else:
                                              # UPDATED CALL
                                              await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=item.get('content', ''))
@@ -1213,29 +1213,16 @@ class ChannelSummarizer:
                             
                             self.logger.info("Posting main summary to summary channel")
                             for item in formatted_summary:
-                                if item.get('type') == 'media_reference':
-                                    try:
-                                        source_channel_id_media_main = int(item['channel_id'])
-                                        message_id_to_fetch_main = int(item['message_id'])
-                                        source_channel_media_main = await self._get_channel_with_retry(source_channel_id_media_main)
-                                        if not source_channel_media_main: continue
-                                        original_message_main = await source_channel_media_main.fetch_message(message_id_to_fetch_main)
-                                        if original_message_main.attachments:
-                                            for attachment in original_message_main.attachments:
-                                                # UPDATED CALL
-                                                await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=attachment.url)
-                                                await asyncio.sleep(0.5)
-                                    except Exception as e_media_main:
-                                        self.logger.error(f"Error processing media reference in main summary {item}: {e_media_main}")
-                                elif item.get('type') == 'media_reference_group':
-                                    # Handle grouped media
+                                if item.get('type') in ['media_reference', 'media_reference_group']:
                                     try:
                                         source_channel_id_media_main = int(item['channel_id'])
                                         source_channel_media_main = await self._get_channel_with_retry(source_channel_id_media_main)
                                         if source_channel_media_main:
-                                            await self._send_media_group(summary_channel, source_channel_media_main, item.get('message_ids', []))
-                                    except Exception as e_media_group:
-                                        self.logger.error(f"Error processing media reference group in main summary {item}: {e_media_group}")
+                                            # Unified handler for both single and group references
+                                            msg_ids = [item['message_id']] if item.get('type') == 'media_reference' else item.get('message_ids', [])
+                                            await self._send_media_group(summary_channel, source_channel_media_main, msg_ids)
+                                    except Exception as e_media_main:
+                                        self.logger.error(f"Error processing media reference in main summary {item}: {e_media_main}")
                                 else:
                                     # UPDATED CALL
                                     await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=item.get('content', ''))
