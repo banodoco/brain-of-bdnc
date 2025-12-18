@@ -472,40 +472,32 @@ class ChannelSummarizer:
 
     async def _send_media_group(self, target_channel, source_channel, message_ids: list) -> bool:
         """
-        Send a group of media files from source messages to target channel.
+        Send media files from source messages to target channel.
         Downloads attachments and sends as actual files (max 10 per message).
         Falls back to URLs if anything fails.
         """
         DISCORD_MAX_FILES = 10
         
-        # Deduplicate and filter IDs
-        unique_ids = []
-        seen = set()
-        for mid in message_ids:
-            if mid and str(mid) not in seen:
-                unique_ids.append(mid)
-                seen.add(str(mid))
-
         # Collect all attachments from the source messages
         all_attachments = []
-        for msg_id in unique_ids:
+        for msg_id in message_ids:
             try:
                 original_message = await source_channel.fetch_message(int(msg_id))
                 if original_message.attachments:
                     all_attachments.extend(original_message.attachments)
             except Exception as e:
-                self.logger.warning(f"Could not fetch message {msg_id} for grouped media: {e}")
+                self.logger.warning(f"Could not fetch message {msg_id} for media: {e}")
         
         if not all_attachments:
             return True
         
+        # Send in chunks of 10 (Discord's limit)
         for i in range(0, len(all_attachments), DISCORD_MAX_FILES):
             chunk = all_attachments[i:i + DISCORD_MAX_FILES]
             sent_as_files = False
-            files = []
             
             try:
-                # Try to download and send as files
+                files = []
                 for attachment in chunk:
                     file_bytes = await attachment.read()
                     files.append(discord.File(io.BytesIO(file_bytes), filename=attachment.filename))
@@ -517,14 +509,7 @@ class ChannelSummarizer:
                     sent_as_files = True
                     await asyncio.sleep(0.5)
             except Exception as e:
-                self.logger.warning(f"Failed to send files as group, falling back to URLs: {e}")
-            finally:
-                # If we didn't send them, or even if we did, clean up local streams
-                # Note: discord.py usually handles closing, but let's be safe
-                if not sent_as_files:
-                    for f in files:
-                        try: f.close()
-                        except: pass
+                self.logger.warning(f"Failed to send files, falling back to URLs: {e}")
             
             # Fallback: send URLs individually
             if not sent_as_files:
