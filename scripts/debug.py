@@ -748,9 +748,9 @@ def cmd_query(args, client):
     """Query a table."""
     table_map = {
         "messages": "discord_messages",
-        "channels": "discord_channels", 
+        "channels": "discord_channels",
         "members": "discord_members",
-        "logs": "discord_logs",
+        "logs": "system_logs",  # Fixed: was "discord_logs"
         "summaries": "daily_summaries",
     }
     
@@ -764,17 +764,19 @@ def cmd_query(args, client):
         
     # Determine order column
     order_col = None
-    if table in ["discord_messages", "discord_logs"]:
+    if table in ["discord_messages"]:
         order_col = "created_at"
+    elif table == "system_logs":  # Fixed: was "discord_logs"
+        order_col = "timestamp"
     elif table == "daily_summaries":
-        order_col = "summary_date"
+        order_col = "created_at"
         
     results = query_table(client, table, filters, args.limit, order_col)
     
     # Apply hours filter for logs
-    if args.hours and table == "discord_logs":
+    if args.hours and table == "system_logs":  # Fixed: was "discord_logs"
         cutoff = datetime.utcnow() - timedelta(hours=args.hours)
-        results = [r for r in results if r.get("created_at", "") >= cutoff.isoformat()]
+        results = [r for r in results if r.get("timestamp", "") >= cutoff.isoformat()]
     
     return results
 
