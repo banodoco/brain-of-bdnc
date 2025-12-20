@@ -86,12 +86,15 @@ python scripts/logs.py stats                     # Detailed statistics
 - Log values directly: `logger.debug(f"[Tag] message_id: {msg.id}")` not nested dicts.
 - **Debug utility**: Use `python scripts/debug.py` for common debugging tasks:
   ```bash
-  python scripts/debug.py env              # Check env config for channel ID issues
-  python scripts/debug.py channel-info ID  # Details about a specific channel
-  python scripts/debug.py logs --hours 1   # Recent logs from Supabase
+  python scripts/debug.py env               # Check env config for channel ID issues
+  python scripts/debug.py channel-info ID   # Details about a specific channel
+  python scripts/debug.py deployments       # Analyze Railway deployment issues
+  python scripts/debug.py railway-logs -n 100  # Railway platform logs
+  python scripts/debug.py logs --hours 1    # Recent logs from Supabase
   python scripts/debug.py messages --channel ID  # Messages from a channel
   ```
 - **Add useful debug commands**: When you create a one-off debugging script or command that helps diagnose an issue, consider adding it to `scripts/debug.py` if it would be useful again.
+- **Deployment issues**: If the bot stops responding or crashes repeatedly, see `docs/deployment-troubleshooting.md` for diagnostic workflow and common issues.
 
 # Scripts
 One-off utilities live in `scripts/`. Run with `python scripts/script_name.py`.

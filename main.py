@@ -24,6 +24,7 @@ from src.common.base_bot import BaseDiscordBot
 from src.common.db_handler import DatabaseHandler
 from src.common.openmuse_interactor import OpenMuseInteractor
 from src.common.llm.claude_client import ClaudeClient
+from src.common.health_server import HealthServer
 from src.features.curating.curator_cog import CuratorCog
 from src.features.summarising.summariser_cog import SummarizerCog
 from src.features.summarising.summariser import ChannelSummarizer
@@ -74,6 +75,17 @@ async def run_archive_script(days, dev_mode=False, logger=None):
 
 async def main_async(args):
     logger = setup_logging(dev_mode=args.dev)
+    
+    # Start health check server immediately
+    health_server = HealthServer(port=8080)
+    health_server.start()
+    
+    # Log deployment info for diagnostics
+    deployment_id = os.getenv('RAILWAY_DEPLOYMENT_ID', 'local')
+    service_id = os.getenv('RAILWAY_SERVICE_ID', 'local')
+    replica_id = os.getenv('RAILWAY_REPLICA_ID', 'local')
+    logger.info(f"🚀 Starting deployment {deployment_id[:8]}... (service: {service_id[:8]}..., replica: {replica_id})")
+    
     logger.info("Starting unified bot initialization")
 
     try:
@@ -226,6 +238,14 @@ async def main_async(args):
         hourly_message_fetch.start()
         logger.info("Hourly message fetch task started")
 
+        # Mark the health server callback so it can be called when ready
+        @bot.event
+        async def on_ready():
+            """Called when the bot is fully ready"""
+            health_server.mark_ready()
+            health_server.update_heartbeat()
+            logger.info(f"✅ Bot is ready! Logged in as {bot.user} (Deployment: {deployment_id[:8]}...)")
+        
         # ---- RUN ----
         # Log the final intents object being used (changed to INFO level)
         logger.info(f"Final bot intents before starting: {bot.intents}") # Ensure this is INFO level and appears only ONCE

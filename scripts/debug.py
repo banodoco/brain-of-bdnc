@@ -142,6 +142,199 @@ def cmd_env(args):
 
 
 def cmd_railway_logs(args):
+    """Fetch Railway platform logs using the Railway CLI."""
+    print("\n🚂 Railway Platform Logs:\n")
+    
+    lines = args.limit if hasattr(args, 'limit') else 100
+    
+    try:
+        # Check if railway CLI is available
+        check_result = subprocess.run(
+            ['railway', '--version'],
+            capture_output=True,
+            text=True
+        )
+        
+        if check_result.returncode != 0:
+            print("❌ Railway CLI not found. Install it with:")
+            print("   npm i -g @railway/cli")
+            return
+        
+        # Run railway logs command
+        result = subprocess.run(
+            ['railway', 'logs', '--lines', str(lines)],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
+            error_output = result.stderr.strip()
+            
+            # Handle common errors
+            if "No linked project" in error_output:
+                print("❌ No linked Railway project found.")
+                print("\nTo link this directory to a Railway project:")
+                print("   cd /path/to/bndc")
+                print("   railway link")
+            elif "not a TTY" in error_output:
+                print("⚠️  Railway CLI requires an interactive terminal for some operations.")
+                print("\nTry running this command directly in your terminal:")
+                print(f"   railway logs --lines {lines}")
+            else:
+                print(f"❌ Error fetching logs:\n{error_output}")
+            return
+        
+        # Success - print logs
+        output = result.stdout.strip()
+        if output:
+            print(output)
+        else:
+            print("No logs found.")
+            
+    except subprocess.TimeoutExpired:
+        print("❌ Command timed out after 30 seconds")
+    except FileNotFoundError:
+        print("❌ Railway CLI not found. Install it with:")
+        print("   npm i -g @railway/cli")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+
+
+def cmd_deployments(args):
+    """Analyze Railway deployment history for duplicate deploys, crashes, etc."""
+    print("\n🚀 Railway Deployment Analysis:\n")
+    
+    try:
+        # Check if railway CLI is available
+        check_result = subprocess.run(
+            ['railway', '--version'],
+            capture_output=True,
+            text=True
+        )
+        
+        if check_result.returncode != 0:
+            print("❌ Railway CLI not found. Install it with:")
+            print("   npm i -g @railway/cli")
+            return
+        
+        # Fetch deployment list as JSON
+        result = subprocess.run(
+            ['railway', 'deployment', 'list', '--limit', str(args.limit), '--json'],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
+            error_output = result.stderr.strip()
+            if "No linked project" in error_output:
+                print("❌ No linked Railway project found.")
+                print("\nTo link this directory to a Railway project:")
+                print("   cd /path/to/bndc")
+                print("   railway link")
+            else:
+                print(f"❌ Error fetching deployments:\n{error_output}")
+            return
+        
+        # Parse JSON output
+        try:
+            deployments = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            print(f"❌ Failed to parse deployment JSON: {e}")
+            return
+        
+        if not deployments:
+            print("No deployments found.")
+            return
+        
+        # Analysis
+        print(f"📊 Analyzing {len(deployments)} recent deployments...\n")
+        
+        # Track issues
+        issues = []
+        commit_times = {}  # commit_hash -> [timestamps]
+        
+        for d in deployments:
+            commit = d.get('meta', {}).get('commitHash', 'unknown')[:7]
+            created_at = d.get('createdAt', '')
+            status = d.get('status', 'UNKNOWN')
+            
+            # Track duplicate commits
+            if commit not in commit_times:
+                commit_times[commit] = []
+            commit_times[commit].append(created_at)
+        
+        # Find duplicate deployments (same commit within short time window)
+        print("🔍 Checking for duplicate deployments...\n")
+        duplicates_found = False
+        for commit, timestamps in commit_times.items():
+            if len(timestamps) > 1:
+                # Sort timestamps
+                timestamps.sort()
+                for i in range(len(timestamps) - 1):
+                    t1 = datetime.fromisoformat(timestamps[i].replace('Z', '+00:00'))
+                    t2 = datetime.fromisoformat(timestamps[i+1].replace('Z', '+00:00'))
+                    diff_seconds = (t2 - t1).total_seconds()
+                    
+                    # Flag if deployments are within 5 minutes
+                    if diff_seconds < 300:
+                        duplicates_found = True
+                        print(f"⚠️  DUPLICATE: Commit {commit} deployed twice {diff_seconds:.0f}s apart")
+                        print(f"   First:  {timestamps[i]}")
+                        print(f"   Second: {timestamps[i+1]}")
+                        print()
+                        issues.append(f"Duplicate deploy of {commit} ({diff_seconds:.0f}s apart)")
+        
+        if not duplicates_found:
+            print("✅ No duplicate deployments detected\n")
+        
+        # Show recent deployment timeline
+        print("📅 Recent Deployment Timeline:\n")
+        for d in deployments[:20]:
+            ts = d.get('createdAt', '')[:19].replace('T', ' ')
+            status = d.get('status', 'UNKNOWN')
+            commit = d.get('meta', {}).get('commitHash', 'unknown')[:7]
+            msg = d.get('meta', {}).get('commitMessage', '').split('\n')[0][:60]
+            
+            status_emoji = {
+                'SUCCESS': '✅',
+                'REMOVED': '🗑️',
+                'FAILED': '❌',
+                'BUILDING': '🔨',
+                'DEPLOYING': '🚀',
+                'CRASHED': '💥'
+            }.get(status, '❓')
+            
+            print(f"{status_emoji} {ts} [{status:10}] {commit} {msg}")
+        
+        # Summary
+        print(f"\n📈 Summary:")
+        statuses = {}
+        for d in deployments:
+            status = d.get('status', 'UNKNOWN')
+            statuses[status] = statuses.get(status, 0) + 1
+        
+        for status, count in sorted(statuses.items()):
+            print(f"   {status}: {count}")
+        
+        if issues:
+            print(f"\n⚠️  Issues detected: {len(issues)}")
+            for issue in issues:
+                print(f"   - {issue}")
+        else:
+            print(f"\n✅ No deployment issues detected")
+            
+    except subprocess.TimeoutExpired:
+        print("❌ Command timed out after 30 seconds")
+    except FileNotFoundError:
+        print("❌ Railway CLI not found. Install it with:")
+        print("   npm i -g @railway/cli")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+
+
+def cmd_railway_logs(args):
     """Fetch Railway platform logs using CLI."""
     try:
         # Check if railway CLI is available
@@ -258,6 +451,7 @@ def main():
 Commands:
   env                 Show environment configuration
   channel-info ID     Details about a specific channel
+  deployments         Analyze Railway deployment history (duplicates, crashes)
   railway-logs        Fetch Railway platform logs (deployments, restarts)
   channels            List channels from database
   messages            List messages (use --channel to filter)
@@ -279,6 +473,10 @@ Commands:
     # Commands that don't need Supabase
     if args.command == "env":
         cmd_env(args)
+        return
+    
+    if args.command == "deployments":
+        cmd_deployments(args)
         return
     
     if args.command == "railway-logs":
