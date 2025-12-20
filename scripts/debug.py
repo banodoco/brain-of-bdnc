@@ -544,12 +544,19 @@ def cmd_db_stats(args, client):
     from datetime import datetime, timedelta
     cutoff = (datetime.utcnow() - timedelta(hours=24)).isoformat()
     
-    # Messages
+    # Messages by creation time
     try:
         msgs = client.table('discord_messages').select('message_id', count='exact').gte('created_at', cutoff).execute()
         print(f"  New messages:        {msgs.count:>10,}")
     except:
         print(f"  New messages:        {'Error':>10}")
+    
+    # Messages by index time (when archived)
+    try:
+        indexed = client.table('discord_messages').select('message_id', count='exact').gte('indexed_at', cutoff).execute()
+        print(f"  Messages archived:   {indexed.count:>10,}")
+    except:
+        print(f"  Messages archived:   {'Error':>10}")
     
     # Summaries
     try:
@@ -564,6 +571,67 @@ def cmd_db_stats(args, client):
         print(f"  Errors logged:       {errs.count:>10,}")
     except:
         print(f"  Errors logged:       {'Error':>10}")
+
+
+def cmd_archive_status(args, client):
+    """Check archive status - messages indexed vs created."""
+    print("\n📦 Archive Status:\n")
+    
+    from datetime import datetime, timedelta
+    
+    # Check different time windows
+    windows = [
+        (1, "Last 1 hour"),
+        (6, "Last 6 hours"),
+        (24, "Last 24 hours")
+    ]
+    
+    print("Messages Created vs Archived:\n")
+    for hours, label in windows:
+        cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        
+        try:
+            # Messages created in this window
+            created = client.table('discord_messages').select('message_id', count='exact').gte('created_at', cutoff).execute()
+            
+            # Messages indexed in this window
+            indexed = client.table('discord_messages').select('message_id', count='exact').gte('indexed_at', cutoff).execute()
+            
+            status = "✅" if indexed.count >= created.count else "⚠️"
+            print(f"  {status} {label:15} Created: {created.count:>4}  Archived: {indexed.count:>4}")
+        except Exception as e:
+            print(f"  ❌ {label:15} Error: {e}")
+    
+    # Most recent archive activity
+    print("\n🕐 Recent Archive Activity:\n")
+    try:
+        recent = client.table('discord_messages').select('indexed_at, channel_id').order('indexed_at', desc=True).limit(5).execute()
+        
+        if recent.data:
+            for msg in recent.data:
+                indexed = msg['indexed_at'][:19].replace('T', ' ')
+                channel = msg['channel_id']
+                print(f"  {indexed} - Channel {channel}")
+        else:
+            print("  No recent archive activity found")
+    except Exception as e:
+        print(f"  Error: {e}")
+    
+    # Messages by channel (top 5)
+    print("\n📊 Messages by Channel (last 24h):\n")
+    try:
+        cutoff_24h = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+        msgs = client.table('discord_messages').select('channel_id, message_id').gte('created_at', cutoff_24h).execute()
+        
+        channels = {}
+        for msg in msgs.data:
+            ch = msg['channel_id']
+            channels[ch] = channels.get(ch, 0) + 1
+        
+        for ch, count in sorted(channels.items(), key=lambda x: x[1], reverse=True)[:5]:
+            print(f"  Channel {ch}: {count:>4} messages")
+    except Exception as e:
+        print(f"  Error: {e}")
 
 
 def cmd_bot_status(args):
@@ -719,6 +787,7 @@ def main():
 Commands:
   env                 Show environment configuration
   bot-status          Check bot status and uptime via health endpoint
+  archive-status      Check archive status (messages created vs archived)
   db-stats            Database statistics and recent activity
   channel-info ID     Details about a specific channel
   railway-status      Check Railway service status and health endpoints
@@ -766,6 +835,10 @@ Tip: For detailed log analysis, use scripts/logs.py
     
     # Commands that need Supabase
     client = get_client()
+    
+    if args.command == "archive-status":
+        cmd_archive_status(args, client)
+        return
     
     if args.command == "db-stats":
         cmd_db_stats(args, client)
