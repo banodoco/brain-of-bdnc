@@ -10,7 +10,8 @@ Usage:
     python scripts/debug.py channels --limit 10   # List channels from DB
     python scripts/debug.py messages --channel ID  # Messages from a channel
     python scripts/debug.py members --limit 20    # List members
-    python scripts/debug.py logs --hours 1        # Recent logs
+    python scripts/debug.py logs --hours 1        # Recent logs from Supabase
+    python scripts/debug.py railway-logs -n 100   # Railway platform logs
     python scripts/debug.py summaries             # Recent summaries
     python scripts/debug.py channel-info ID       # Details about a specific channel
 """
@@ -18,6 +19,7 @@ Usage:
 import argparse
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timedelta
 
@@ -139,6 +141,45 @@ def cmd_env(args):
     print()
 
 
+def cmd_railway_logs(args):
+    """Fetch Railway platform logs using CLI."""
+    try:
+        # Check if railway CLI is available
+        result = subprocess.run(['which', 'railway'], capture_output=True, text=True)
+        if result.returncode != 0:
+            print("❌ Railway CLI not installed. Install with: npm i -g @railway/cli")
+            return
+        
+        # Fetch logs
+        lines = args.limit or 100
+        cmd = ['railway', 'logs', '--lines', str(lines)]
+        
+        if args.json:
+            cmd.append('--json')
+        
+        print(f"\n🚂 Railway Platform Logs (last {lines}):\n")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"❌ Error: {result.stderr.strip()}")
+            if 'No linked project' in result.stderr:
+                print("\n💡 To fix this:")
+                print("   1. Run: railway link (in an interactive terminal)")
+                print("   2. Or check Railway dashboard: https://railway.app")
+                print("   3. Or use Railway API directly (see Railway docs)")
+            elif 'not a TTY' in result.stderr:
+                print("\n💡 Railway CLI requires an interactive terminal")
+                print("   Run this command directly in your terminal:")
+                print(f"   railway logs --lines {lines}")
+            return
+        
+        # Display logs
+        print(result.stdout)
+                
+    except Exception as e:
+        print(f"Error fetching Railway logs: {e}")
+
+
 def cmd_channel_info(args, client):
     """Get details about a specific channel by ID."""
     if not args.channel_id:
@@ -217,10 +258,11 @@ def main():
 Commands:
   env                 Show environment configuration
   channel-info ID     Details about a specific channel
+  railway-logs        Fetch Railway platform logs (deployments, restarts)
   channels            List channels from database
   messages            List messages (use --channel to filter)
   members             List members
-  logs                List logs (use --hours to filter)
+  logs                List logs from Supabase (use --hours to filter)
   summaries           List daily summaries
         """
     )
@@ -237,6 +279,10 @@ Commands:
     # Commands that don't need Supabase
     if args.command == "env":
         cmd_env(args)
+        return
+    
+    if args.command == "railway-logs":
+        cmd_railway_logs(args)
         return
     
     # Commands that need Supabase
