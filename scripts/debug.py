@@ -201,6 +201,151 @@ def cmd_railway_logs(args):
         print(f"❌ Unexpected error: {e}")
 
 
+def cmd_railway_status(args):
+    """Check Railway service status and health endpoint."""
+    print("\n🚂 Railway Service Status:\n")
+    
+    try:
+        # Check if railway CLI is available
+        check_result = subprocess.run(
+            ['railway', '--version'],
+            capture_output=True,
+            text=True
+        )
+        
+        if check_result.returncode != 0:
+            print("❌ Railway CLI not found. Install it with:")
+            print("   npm i -g @railway/cli")
+            return
+        
+        # Get Railway project info
+        result = subprocess.run(
+            ['railway', 'status', '--json'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode != 0:
+            error_output = result.stderr.strip()
+            if "No linked project" in error_output:
+                print("❌ No linked Railway project found.")
+                print("\nTo link this directory to a Railway project:")
+                print("   cd /path/to/bndc")
+                print("   railway link")
+            else:
+                print(f"❌ Error fetching status:\n{error_output}")
+            return
+        
+        # Parse JSON output
+        try:
+            status_data = json.loads(result.stdout) if result.stdout.strip() else {}
+        except json.JSONDecodeError:
+            print("⚠️  Could not parse Railway status JSON")
+            status_data = {}
+        
+        if status_data:
+            print(f"📦 Project: {status_data.get('project', {}).get('name', 'Unknown')}")
+            print(f"🔧 Service: {status_data.get('service', {}).get('name', 'Unknown')}")
+            print(f"🌍 Environment: {status_data.get('environment', {}).get('name', 'Unknown')}")
+            print()
+        
+        # Try to get the service URL
+        url_result = subprocess.run(
+            ['railway', 'domain'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        service_url = None
+        if url_result.returncode == 0 and url_result.stdout.strip():
+            # Parse the URL from Railway's output (might include extra text)
+            output = url_result.stdout.strip()
+            # Look for https:// URL
+            if 'https://' in output:
+                # Extract just the URL
+                import re
+                match = re.search(r'https://[^\s]+', output)
+                if match:
+                    service_url = match.group(0)
+            else:
+                service_url = output
+            
+            if service_url:
+                print(f"🌐 Service URL: {service_url}")
+        
+        # Check health endpoints if we have a URL
+        if service_url:
+            print("\n📊 Health Check Endpoints:\n")
+            
+            # Import requests here (optional dependency for this command)
+            try:
+                import requests
+                
+                endpoints = [
+                    ('/health', 'Basic liveness'),
+                    ('/ready', 'Readiness check'),
+                    ('/status', 'Detailed metrics')
+                ]
+                
+                for path, description in endpoints:
+                    url = f"{service_url}{path}"
+                    try:
+                        response = requests.get(url, timeout=5)
+                        
+                        if response.status_code == 200:
+                            status_emoji = "✅"
+                            status_text = "OK"
+                        elif response.status_code == 503:
+                            status_emoji = "⏳"
+                            status_text = "Not Ready"
+                        else:
+                            status_emoji = "❌"
+                            status_text = f"HTTP {response.status_code}"
+                        
+                        print(f"  {status_emoji} {path:10} - {status_text:12} - {description}")
+                        
+                        # Show detailed status if available
+                        if path == '/status' and response.status_code == 200:
+                            try:
+                                data = response.json()
+                                print(f"\n     Deployment: {data.get('deployment_id', 'unknown')[:12]}...")
+                                print(f"     Status: {data.get('status', 'unknown')}")
+                                if data.get('uptime_seconds'):
+                                    uptime_min = int(data['uptime_seconds'] / 60)
+                                    print(f"     Uptime: {uptime_min} minutes")
+                                if data.get('metrics'):
+                                    metrics = data['metrics']
+                                    print(f"     Messages logged: {metrics.get('messages_logged', 0)}")
+                                    print(f"     Messages archived: {metrics.get('messages_archived', 0)}")
+                                    print(f"     Errors: {metrics.get('errors_logged', 0)}")
+                            except:
+                                pass
+                        
+                    except requests.Timeout:
+                        print(f"  ⏱️  {path:10} - Timeout      - {description}")
+                    except requests.RequestException as e:
+                        print(f"  ❌ {path:10} - Error        - {description}")
+                        
+            except ImportError:
+                print("  ℹ️  Install 'requests' to check health endpoints")
+                print(f"     pip install requests")
+                print(f"\n  You can manually check:")
+                for path, desc in endpoints:
+                    print(f"     curl {service_url}{path}")
+        else:
+            print("\n⚠️  No service URL found. Health endpoints not checked.")
+            
+    except subprocess.TimeoutExpired:
+        print("❌ Command timed out")
+    except FileNotFoundError:
+        print("❌ Railway CLI not found. Install it with:")
+        print("   npm i -g @railway/cli")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+
+
 def cmd_deployments(args):
     """Analyze Railway deployment history for duplicate deploys, crashes, etc."""
     print("\n🚀 Railway Deployment Analysis:\n")
@@ -451,6 +596,7 @@ def main():
 Commands:
   env                 Show environment configuration
   channel-info ID     Details about a specific channel
+  railway-status      Check Railway service status and health endpoints
   deployments         Analyze Railway deployment history (duplicates, crashes)
   railway-logs        Fetch Railway platform logs (deployments, restarts)
   channels            List channels from database
@@ -473,6 +619,10 @@ Commands:
     # Commands that don't need Supabase
     if args.command == "env":
         cmd_env(args)
+        return
+    
+    if args.command == "railway-status":
+        cmd_railway_status(args)
         return
     
     if args.command == "deployments":

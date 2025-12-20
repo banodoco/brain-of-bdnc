@@ -106,6 +106,9 @@ async def main_async(args):
             dev_mode=args.dev,
             intents=intents
         )
+        # Store the health server on the bot so cogs can access it
+        bot.health_server = health_server
+        
         # Store the command-line flags on the bot instance so cogs can access them
         bot.summary_now = args.summary_now
         bot.archive_days = args.archive_days

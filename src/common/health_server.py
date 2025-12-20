@@ -19,6 +19,11 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     deployment_id = os.getenv('RAILWAY_DEPLOYMENT_ID', 'unknown')
     service_id = os.getenv('RAILWAY_SERVICE_ID', 'unknown')
     
+    # Message counters
+    messages_logged = 0
+    messages_archived = 0
+    errors_logged = 0
+    
     def do_GET(self):
         """Handle GET requests"""
         if self.path == '/health':
@@ -82,6 +87,11 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             'startup_time': self.startup_time.isoformat() if self.startup_time else None,
             'uptime_seconds': uptime,
             'last_heartbeat': self.last_heartbeat.isoformat() if self.last_heartbeat else None,
+            'metrics': {
+                'messages_logged': self.messages_logged,
+                'messages_archived': self.messages_archived,
+                'errors_logged': self.errors_logged
+            },
             'timestamp': datetime.utcnow().isoformat()
         }
         self.wfile.write(json.dumps(response).encode())
@@ -127,6 +137,18 @@ class HealthServer:
     def update_heartbeat(self):
         """Update the last heartbeat timestamp"""
         HealthCheckHandler.last_heartbeat = datetime.utcnow()
+    
+    def increment_messages_logged(self, count=1):
+        """Increment the messages logged counter"""
+        HealthCheckHandler.messages_logged += count
+    
+    def increment_messages_archived(self, count=1):
+        """Increment the messages archived counter"""
+        HealthCheckHandler.messages_archived += count
+    
+    def increment_errors_logged(self, count=1):
+        """Increment the errors logged counter"""
+        HealthCheckHandler.errors_logged += count
     
     def stop(self):
         """Stop the health check server"""
