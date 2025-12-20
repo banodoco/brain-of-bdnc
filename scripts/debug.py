@@ -518,6 +518,129 @@ def cmd_railway_logs(args):
         print(f"Error fetching Railway logs: {e}")
 
 
+def cmd_db_stats(args, client):
+    """Show database statistics - table sizes and recent activity."""
+    print("\n📊 Database Statistics:\n")
+    
+    tables = {
+        'discord_messages': 'Messages',
+        'discord_channels': 'Channels',
+        'discord_members': 'Members',
+        'daily_summaries': 'Daily Summaries',
+        'system_logs': 'System Logs',
+        'shared_content': 'Shared Content'
+    }
+    
+    print("Table Sizes:")
+    for table, name in tables.items():
+        try:
+            result = client.table(table).select('*', count='exact').limit(1).execute()
+            count = result.count if result.count is not None else 0
+            print(f"  {name:20} {count:>10,} rows")
+        except Exception as e:
+            print(f"  {name:20} {'Error':>10}")
+    
+    print("\nRecent Activity (last 24 hours):")
+    from datetime import datetime, timedelta
+    cutoff = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+    
+    # Messages
+    try:
+        msgs = client.table('discord_messages').select('message_id', count='exact').gte('created_at', cutoff).execute()
+        print(f"  New messages:        {msgs.count:>10,}")
+    except:
+        print(f"  New messages:        {'Error':>10}")
+    
+    # Summaries
+    try:
+        sums = client.table('daily_summaries').select('id', count='exact').gte('created_at', cutoff).execute()
+        print(f"  New summaries:       {sums.count:>10,}")
+    except:
+        print(f"  New summaries:       {'Error':>10}")
+    
+    # Errors
+    try:
+        errs = client.table('system_logs').select('id', count='exact').gte('timestamp', cutoff).eq('level', 'ERROR').execute()
+        print(f"  Errors logged:       {errs.count:>10,}")
+    except:
+        print(f"  Errors logged:       {'Error':>10}")
+
+
+def cmd_bot_status(args):
+    """Check bot status via health endpoint."""
+    print("\n🤖 Bot Status:\n")
+    
+    try:
+        import requests
+        import subprocess
+        from datetime import datetime
+        
+        # Get service URL
+        result = subprocess.run(
+            ['railway', 'domain'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode != 0:
+            print("❌ Could not get Railway domain")
+            return
+        
+        # Parse URL
+        output = result.stdout.strip()
+        if 'https://' in output:
+            import re
+            match = re.search(r'https://[^\s]+', output)
+            service_url = match.group(0) if match else None
+        else:
+            service_url = output
+        
+        if not service_url:
+            print("❌ No service URL found")
+            return
+        
+        # Get status
+        try:
+            response = requests.get(f"{service_url}/status", timeout=5)
+            data = response.json()
+            
+            status_emoji = "✅" if data.get('status') == 'ready' else "⏳"
+            print(f"{status_emoji} Status: {data.get('status', 'unknown')}")
+            print(f"📦 Deployment: {data.get('deployment_id', 'unknown')[:12]}...")
+            
+            if data.get('startup_time'):
+                startup = datetime.fromisoformat(data['startup_time'].replace('Z', '+00:00'))
+                uptime = datetime.utcnow().replace(tzinfo=startup.tzinfo) - startup
+                hours = int(uptime.total_seconds() / 3600)
+                minutes = int((uptime.total_seconds() % 3600) / 60)
+                print(f"⏱️  Uptime: {hours}h {minutes}m")
+            
+            if data.get('metrics'):
+                metrics = data['metrics']
+                print(f"\n📈 Activity:")
+                print(f"   Messages logged:   {metrics.get('messages_logged', 0):>6,}")
+                print(f"   Messages archived: {metrics.get('messages_archived', 0):>6,}")
+                print(f"   Errors:            {metrics.get('errors_logged', 0):>6,}")
+            
+            if data.get('last_heartbeat'):
+                heartbeat = datetime.fromisoformat(data['last_heartbeat'].replace('Z', '+00:00'))
+                now = datetime.utcnow().replace(tzinfo=heartbeat.tzinfo)
+                seconds_ago = (now - heartbeat).total_seconds()
+                print(f"\n💓 Last heartbeat: {int(seconds_ago)}s ago")
+                
+        except requests.Timeout:
+            print("⏱️  Request timed out - bot may be starting")
+        except requests.RequestException as e:
+            print(f"❌ Error connecting to bot: {e}")
+    
+    except ImportError:
+        print("⚠️  Install 'requests' to check bot status:")
+        print("   pip install requests")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+
 def cmd_channel_info(args, client):
     """Get details about a specific channel by ID."""
     if not args.channel_id:
@@ -595,6 +718,8 @@ def main():
         epilog="""
 Commands:
   env                 Show environment configuration
+  bot-status          Check bot status and uptime via health endpoint
+  db-stats            Database statistics and recent activity
   channel-info ID     Details about a specific channel
   railway-status      Check Railway service status and health endpoints
   deployments         Analyze Railway deployment history (duplicates, crashes)
@@ -604,6 +729,8 @@ Commands:
   members             List members
   logs                List logs from Supabase (use --hours to filter)
   summaries           List daily summaries
+
+Tip: For detailed log analysis, use scripts/logs.py
         """
     )
     parser.add_argument("command", help="Command to run")
@@ -621,6 +748,10 @@ Commands:
         cmd_env(args)
         return
     
+    if args.command == "bot-status":
+        cmd_bot_status(args)
+        return
+    
     if args.command == "railway-status":
         cmd_railway_status(args)
         return
@@ -635,6 +766,10 @@ Commands:
     
     # Commands that need Supabase
     client = get_client()
+    
+    if args.command == "db-stats":
+        cmd_db_stats(args, client)
+        return
     
     if args.command == "channel-info":
         cmd_channel_info(args, client)

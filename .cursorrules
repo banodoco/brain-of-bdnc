@@ -86,13 +86,22 @@ python scripts/logs.py stats                     # Detailed statistics
 - Log values directly: `logger.debug(f"[Tag] message_id: {msg.id}")` not nested dicts.
 - **Debug utility**: Use `python scripts/debug.py` for common debugging tasks:
   ```bash
+  # Configuration & Status
   python scripts/debug.py env               # Check env config for channel ID issues
-  python scripts/debug.py channel-info ID   # Details about a specific channel
-  python scripts/debug.py deployments       # Analyze Railway deployment issues
+  python scripts/debug.py bot-status        # Bot status, uptime, activity metrics
+  python scripts/debug.py db-stats          # Database statistics and recent activity
+  
+  # Railway & Deployments
+  python scripts/debug.py railway-status    # Service health & endpoints
+  python scripts/debug.py deployments       # Analyze deployment issues (duplicates, crashes)
   python scripts/debug.py railway-logs -n 100  # Railway platform logs
+  
+  # Database Queries
+  python scripts/debug.py channel-info ID   # Details about a specific channel
   python scripts/debug.py logs --hours 1    # Recent logs from Supabase
   python scripts/debug.py messages --channel ID  # Messages from a channel
   ```
+- **Log analysis**: Use `python scripts/logs.py` for detailed log analysis (health checks, errors, traces, tail)
 - **Add useful debug commands**: When you create a one-off debugging script or command that helps diagnose an issue, consider adding it to `scripts/debug.py` if it would be useful again.
 - **Deployment issues**: If the bot stops responding or crashes repeatedly, see `docs/deployment-troubleshooting.md` for diagnostic workflow and common issues.
 
