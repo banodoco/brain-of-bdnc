@@ -7,10 +7,14 @@ import asyncio
 import json
 import logging
 import os
+import re
+import mimetypes
 from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
 import sys
+
+import aiohttp
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
@@ -291,7 +295,12 @@ class StorageHandler:
             logger.error(f"Error storing channels to Supabase: {e}", exc_info=True)
             return 0
     
-    async def get_summary_for_date(self, channel_id: int, date: Optional[datetime] = None) -> Optional[str]:
+    async def get_summary_for_date(
+        self,
+        channel_id: int,
+        date: Optional[datetime] = None,
+        dev_mode: bool = False,
+    ) -> Optional[str]:
         """
         Get the full summary for a channel on a given date.
         
@@ -314,6 +323,7 @@ class StorageHandler:
                     .select('full_summary')
                     .eq('date', summary_date)
                     .eq('channel_id', channel_id)
+                    .eq('dev_mode', dev_mode)
                     .execute()
             )
             
@@ -325,7 +335,12 @@ class StorageHandler:
             logger.error(f"Error getting summary for date: {e}", exc_info=True)
             return None
 
-    async def summary_exists_for_date(self, channel_id: int, date: Optional[datetime] = None) -> bool:
+    async def summary_exists_for_date(
+        self,
+        channel_id: int,
+        date: Optional[datetime] = None,
+        dev_mode: bool = False,
+    ) -> bool:
         """
         Check if a summary already exists for a channel on a given date.
         
@@ -348,6 +363,7 @@ class StorageHandler:
                     .select('channel_id')
                     .eq('date', summary_date)
                     .eq('channel_id', channel_id)
+                    .eq('dev_mode', dev_mode)
                     .execute()
             )
             
@@ -359,7 +375,16 @@ class StorageHandler:
             logger.error(f"Error checking if summary exists: {e}", exc_info=True)
             return False
 
-    async def store_daily_summary_to_supabase(self, channel_id: int, full_summary: Optional[str], short_summary: Optional[str], date: Optional[datetime] = None) -> bool:
+    async def store_daily_summary_to_supabase(
+        self, 
+        channel_id: int, 
+        full_summary: Optional[str], 
+        short_summary: Optional[str], 
+        date: Optional[datetime] = None,
+        included_in_main_summary: bool = False,
+        source_message_ids: Optional[List[str]] = None,
+        dev_mode: bool = False
+    ) -> bool:
         """
         Store a daily summary to Supabase.
         
@@ -368,6 +393,9 @@ class StorageHandler:
             full_summary: Full summary text
             short_summary: Short summary text
             date: Date of the summary (defaults to today)
+            included_in_main_summary: Whether items from this summary were included in the main summary
+            source_message_ids: List of message_ids that were included in the main summary
+            dev_mode: Whether this summary was created in development mode
             
         Returns:
             True if successful, False otherwise
@@ -384,7 +412,10 @@ class StorageHandler:
                 'channel_id': channel_id,
                 'full_summary': full_summary,
                 'short_summary': short_summary,
-                'created_at': datetime.utcnow().isoformat()
+                'created_at': datetime.utcnow().isoformat(),
+                'included_in_main_summary': included_in_main_summary,
+                'source_message_ids': source_message_ids or [],
+                'dev_mode': dev_mode
             }
             
             await asyncio.to_thread(
@@ -394,11 +425,94 @@ class StorageHandler:
                 ).execute
             )
             
-            logger.debug(f"Stored daily summary to Supabase for channel {channel_id}, date {summary_date}")
+            logger.debug(f"Stored daily summary to Supabase for channel {channel_id}, date {summary_date} (dev_mode={dev_mode})")
             return True
             
         except Exception as e:
             logger.error(f"Error storing daily summary to Supabase: {e}", exc_info=True)
+            return False
+
+    async def mark_summaries_included_in_main(
+        self,
+        date: datetime,
+        channel_message_ids: Dict[int, List[str]],
+        dev_mode: bool = False,
+    ) -> bool:
+        """
+        Mark channel summaries as having items included in the main summary.
+        
+        Args:
+            date: The date of the summaries
+            channel_message_ids: Dict mapping channel_id -> list of message_ids that were included
+            
+        Returns:
+            True if all updates successful, False otherwise
+        """
+        if not self.supabase_client:
+            logger.error("Supabase client not initialized")
+            return False
+        
+        summary_date = date.strftime('%Y-%m-%d')
+        all_success = True
+        
+        for channel_id, message_ids in channel_message_ids.items():
+            try:
+                await asyncio.to_thread(
+                    self.supabase_client.table('daily_summaries')
+                    .update({
+                        'included_in_main_summary': True,
+                        'source_message_ids': message_ids
+                    })
+                    .eq('date', summary_date)
+                    .eq('channel_id', channel_id)
+                    .eq('dev_mode', dev_mode)
+                    .execute
+                )
+                logger.debug(f"Marked summary for channel {channel_id} as included in main summary with {len(message_ids)} items")
+            except Exception as e:
+                logger.error(f"Error marking summary for channel {channel_id} as included: {e}", exc_info=True)
+                all_success = False
+        
+        return all_success
+
+    async def update_channel_summary_full_summary(
+        self,
+        channel_id: int,
+        date: datetime,
+        full_summary: str,
+        dev_mode: bool = False,
+    ) -> bool:
+        """
+        Update the full_summary field for a channel's daily summary.
+        Used to enrich channel summaries with inclusion flags and media URLs.
+        
+        Args:
+            channel_id: The channel ID
+            date: The date of the summary
+            full_summary: The enriched full_summary JSON string
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.supabase_client:
+            logger.error("Supabase client not initialized")
+            return False
+        
+        summary_date = date.strftime('%Y-%m-%d')
+        
+        try:
+            await asyncio.to_thread(
+                self.supabase_client.table('daily_summaries')
+                .update({'full_summary': full_summary})
+                .eq('date', summary_date)
+                .eq('channel_id', channel_id)
+                .eq('dev_mode', dev_mode)
+                .execute
+            )
+            logger.debug(f"Updated full_summary for channel {channel_id} on {summary_date}")
+            return True
+        except Exception as e:
+            logger.error(f"Error updating full_summary for channel {channel_id}: {e}", exc_info=True)
             return False
     
     async def update_summary_thread_to_supabase(self, channel_id: int, thread_id: Optional[int]) -> bool:
@@ -441,3 +555,134 @@ class StorageHandler:
         except Exception as e:
             logger.error(f"Error updating summary thread in Supabase: {e}", exc_info=True)
             return False
+
+    # ========== Media Storage Methods ==========
+    
+    SUMMARY_MEDIA_BUCKET = "summary-media"
+    MAX_UPLOAD_ATTEMPTS = 3
+    BASE_RETRY_DELAY = 1.0
+
+    async def upload_bytes_to_storage(
+        self,
+        file_bytes: bytes,
+        storage_path: str,
+        content_type: str,
+        bucket_name: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Upload raw bytes to Supabase Storage with retry logic.
+        
+        Args:
+            file_bytes: The raw bytes to upload
+            storage_path: Path within the bucket (e.g., "2025-12-27/1234567890_0.mp4")
+            content_type: MIME type of the file
+            bucket_name: Target bucket (defaults to SUMMARY_MEDIA_BUCKET)
+            
+        Returns:
+            Public URL of the uploaded file, or None on failure
+        """
+        if not self.supabase_client:
+            logger.error("Supabase client not initialized for storage upload")
+            return None
+        
+        bucket = bucket_name or self.SUMMARY_MEDIA_BUCKET
+        
+        for attempt in range(self.MAX_UPLOAD_ATTEMPTS):
+            try:
+                await asyncio.to_thread(
+                    self.supabase_client.storage.from_(bucket).upload,
+                    path=storage_path,
+                    file=file_bytes,
+                    file_options={"content-type": content_type, "upsert": "true"}
+                )
+                logger.debug(f"Uploaded {len(file_bytes)} bytes to {bucket}/{storage_path}")
+                
+                # Get public URL
+                public_url = await asyncio.to_thread(
+                    self.supabase_client.storage.from_(bucket).get_public_url,
+                    storage_path
+                )
+                
+                if public_url and isinstance(public_url, str):
+                    return public_url.strip()
+                    
+                logger.warning(f"Got invalid URL after upload: {public_url}")
+                return None
+                
+            except Exception as e:
+                logger.warning(f"Upload attempt {attempt + 1}/{self.MAX_UPLOAD_ATTEMPTS} failed: {e}")
+                if attempt + 1 < self.MAX_UPLOAD_ATTEMPTS:
+                    await asyncio.sleep(self.BASE_RETRY_DELAY * (2 ** attempt))
+                else:
+                    logger.error(f"Upload to {bucket}/{storage_path} failed after {self.MAX_UPLOAD_ATTEMPTS} attempts")
+        
+        return None
+
+    async def download_file(self, source_url: str) -> Optional[Dict[str, any]]:
+        """
+        Download a file from a URL.
+        
+        Args:
+            source_url: URL to download from (e.g., Discord CDN URL)
+            
+        Returns:
+            Dict with 'bytes', 'content_type', 'filename' or None on failure
+        """
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(source_url, timeout=aiohttp.ClientTimeout(total=120)) as response:
+                    if response.status != 200:
+                        logger.warning(f"Failed to download {source_url}: HTTP {response.status}")
+                        return None
+                    
+                    file_bytes = await response.read()
+                    
+                    # Determine content type from response or URL
+                    content_type = response.content_type
+                    if not content_type or content_type == 'application/octet-stream':
+                        guessed_type, _ = mimetypes.guess_type(source_url.split('?')[0])
+                        content_type = guessed_type or 'application/octet-stream'
+                    
+                    # Extract filename from URL
+                    url_path = source_url.split('?')[0]
+                    filename = url_path.split('/')[-1] if '/' in url_path else 'file'
+                    
+                    logger.debug(f"Downloaded {len(file_bytes)} bytes ({content_type}) from {source_url[:80]}...")
+                    
+                    return {
+                        'bytes': file_bytes,
+                        'content_type': content_type,
+                        'filename': filename
+                    }
+                    
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout downloading {source_url}")
+            return None
+        except Exception as e:
+            logger.error(f"Error downloading {source_url}: {e}", exc_info=True)
+            return None
+
+    async def download_and_upload_url(
+        self,
+        source_url: str,
+        storage_path: str,
+        bucket_name: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Download a file from a URL and upload to Supabase Storage.
+        
+        Args:
+            source_url: URL to download from (e.g., Discord CDN URL)
+            storage_path: Path within the bucket
+            bucket_name: Target bucket (defaults to SUMMARY_MEDIA_BUCKET)
+            
+        Returns:
+            Public URL of the uploaded file, or None on failure
+        """
+        file_data = await self.download_file(source_url)
+        if not file_data:
+            return None
+        
+        return await self.upload_bytes_to_storage(
+            file_data['bytes'], storage_path, file_data['content_type'], bucket_name
+        )

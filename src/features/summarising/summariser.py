@@ -791,7 +791,7 @@ class ChannelSummarizer:
             self.logger.error(f"Database operation failed inside _execute_db_operation: {exc}", exc_info=True)
             return []
 
-    async def _post_summary_with_transaction(self, channel_id: int, summary: str, messages: list, current_date: datetime, db_handler: DatabaseHandler) -> bool:
+    async def _post_summary_with_transaction(self, channel_id: int, summary: str, messages: list, current_date: datetime, db_handler: DatabaseHandler, dev_mode: bool = False) -> bool:
         """Atomic operation for posting summary and updating database"""
         try:
             # Generate a short summary using the NewsSummarizer
@@ -803,11 +803,14 @@ class ChannelSummarizer:
                 channel_id,
                 summary,
                 short_summary,
-                current_date
+                current_date,
+                False,  # included_in_main_summary - will be updated later if needed
+                None,   # source_message_ids - will be updated later if needed
+                dev_mode
             )
             
             if success:
-                self.logger.info(f"Successfully saved summary for channel {channel_id} to DB.")
+                self.logger.info(f"Successfully saved summary for channel {channel_id} to DB (dev_mode={dev_mode}).")
             else:
                 self.logger.warning(f"Failed to save summary for channel {channel_id}, store_daily_summary returned False.")
 
@@ -817,6 +820,480 @@ class ChannelSummarizer:
             # Catch errors from generate_short_summary or the transaction execution
             self.logger.error(f"Error in _post_summary_with_transaction for channel {channel_id}: {e}", exc_info=True)
             return False
+
+    def _extract_message_ids_by_channel(self, summary_json: str) -> Dict[int, List[str]]:
+        """
+        Extract message IDs grouped by channel from a combined summary JSON.
+        
+        Args:
+            summary_json: JSON string containing the combined summary items
+            
+        Returns:
+            Dict mapping channel_id -> list of message_ids from that channel
+        """
+        channel_message_ids: Dict[int, List[str]] = {}
+        
+        try:
+            items = json.loads(summary_json)
+            if not isinstance(items, list):
+                return channel_message_ids
+                
+            for item in items:
+                # Get channel_id and message_id from main item
+                channel_id = item.get('channel_id')
+                message_id = item.get('message_id')
+                
+                if channel_id and message_id:
+                    channel_id_int = int(channel_id)
+                    if channel_id_int not in channel_message_ids:
+                        channel_message_ids[channel_id_int] = []
+                    channel_message_ids[channel_id_int].append(str(message_id))
+                
+                # Also check subTopics for additional message_ids
+                sub_topics = item.get('subTopics', [])
+                for sub in sub_topics:
+                    sub_channel_id = sub.get('channel_id')
+                    sub_message_id = sub.get('message_id')
+                    
+                    if sub_channel_id and sub_message_id:
+                        sub_channel_id_int = int(sub_channel_id)
+                        if sub_channel_id_int not in channel_message_ids:
+                            channel_message_ids[sub_channel_id_int] = []
+                        if str(sub_message_id) not in channel_message_ids[sub_channel_id_int]:
+                            channel_message_ids[sub_channel_id_int].append(str(sub_message_id))
+                            
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            self.logger.warning(f"Failed to parse summary JSON for message_id extraction: {e}")
+            
+        return channel_message_ids
+
+    def _extract_media_message_ids(self, summary_json: str) -> Dict[int, Set[str]]:
+        """
+        Extract all media message IDs grouped by channel from a summary JSON.
+        These are the messages that have media (images/videos) to persist.
+        
+        Args:
+            summary_json: JSON string containing the summary items
+            
+        Returns:
+            Dict mapping channel_id -> set of media message_ids
+        """
+        channel_media_ids: Dict[int, Set[str]] = {}
+        
+        try:
+            items = json.loads(summary_json)
+            if not isinstance(items, list):
+                return channel_media_ids
+                
+            for item in items:
+                channel_id = item.get('channel_id')
+                if not channel_id:
+                    continue
+                channel_id_int = int(channel_id)
+                
+                if channel_id_int not in channel_media_ids:
+                    channel_media_ids[channel_id_int] = set()
+                
+                # Get mainMediaMessageId
+                main_media_id = item.get('mainMediaMessageId')
+                if main_media_id:
+                    channel_media_ids[channel_id_int].add(str(main_media_id))
+                
+                # Get subTopicMediaMessageIds
+                for sub in item.get('subTopics', []):
+                    sub_channel_id = sub.get('channel_id')
+                    if sub_channel_id:
+                        sub_channel_int = int(sub_channel_id)
+                        if sub_channel_int not in channel_media_ids:
+                            channel_media_ids[sub_channel_int] = set()
+                        
+                        for media_id in sub.get('subTopicMediaMessageIds', []):
+                            if media_id:
+                                channel_media_ids[sub_channel_int].add(str(media_id))
+                            
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            self.logger.warning(f"Failed to parse summary JSON for media message_id extraction: {e}")
+            
+        return channel_media_ids
+
+    def _extract_video_poster(self, video_bytes: bytes, frame_time: float = 1.0) -> Optional[bytes]:
+        """
+        Extract a poster frame from video bytes using moviepy.
+        
+        Args:
+            video_bytes: Raw video file bytes
+            frame_time: Time in seconds to extract frame from (default 1.0)
+            
+        Returns:
+            JPEG bytes of the poster frame, or None on failure
+        """
+        if not MEDIA_PROCESSING_AVAILABLE:
+            self.logger.warning("Media processing not available (moviepy/PIL not installed)")
+            return None
+        
+        import tempfile
+        temp_video = None
+        try:
+            # Write video to temp file (moviepy needs a file path)
+            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
+                f.write(video_bytes)
+                temp_video = f.name
+            
+            # Extract frame
+            clip = mp.VideoFileClip(temp_video)
+            # Use frame at frame_time, or first frame if video is shorter
+            actual_time = min(frame_time, clip.duration - 0.1) if clip.duration > frame_time else 0
+            frame = clip.get_frame(actual_time)
+            clip.close()
+            
+            # Convert to JPEG bytes
+            img = Image.fromarray(frame)
+            img_buffer = io.BytesIO()
+            img.save(img_buffer, format='JPEG', quality=85)
+            img_buffer.seek(0)
+            
+            self.logger.debug(f"Extracted poster frame at {actual_time:.1f}s")
+            return img_buffer.getvalue()
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to extract video poster: {e}")
+            return None
+        finally:
+            # Clean up temp file
+            if temp_video:
+                try:
+                    os.unlink(temp_video)
+                except:
+                    pass
+
+    def _is_video_content_type(self, content_type: str) -> bool:
+        """Check if content type indicates a video file."""
+        return content_type and content_type.startswith('video/')
+
+    def _enrich_summary_with_media_urls(
+        self, 
+        summary_json: str, 
+        media_urls: Dict[str, List[Dict[str, str]]]
+    ) -> str:
+        """
+        Enrich the summary JSON by embedding persisted media URLs directly into each news item.
+        
+        Adds:
+        - mainMediaUrls: array of media objects for the mainMediaMessageId
+        - subTopicMediaUrls: array of arrays, one per subTopicMediaMessageIds entry
+        
+        Args:
+            summary_json: The combined summary JSON string
+            media_urls: Dict mapping message_id -> list of media objects
+            
+        Returns:
+            Enriched summary JSON string with embedded media URLs
+        """
+        try:
+            items = json.loads(summary_json)
+            if not isinstance(items, list):
+                return summary_json
+            
+            for item in items:
+                # Add mainMediaUrls
+                main_media_id = item.get('mainMediaMessageId')
+                if main_media_id and str(main_media_id) in media_urls:
+                    item['mainMediaUrls'] = media_urls[str(main_media_id)]
+                else:
+                    item['mainMediaUrls'] = None
+                
+                # Process subTopics
+                for sub in item.get('subTopics', []):
+                    sub_media_ids = sub.get('subTopicMediaMessageIds', [])
+                    sub_media_urls = []
+                    
+                    for media_id in sub_media_ids:
+                        if media_id and str(media_id) in media_urls:
+                            sub_media_urls.append(media_urls[str(media_id)])
+                        else:
+                            sub_media_urls.append(None)
+                    
+                    sub['subTopicMediaUrls'] = sub_media_urls
+            
+            return json.dumps(items, indent=2)
+            
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            self.logger.warning(f"Failed to enrich summary with media URLs: {e}")
+            return summary_json
+
+    def _get_included_message_ids(self, main_summary_json: str) -> Set[str]:
+        """
+        Extract all message_ids (main items + subtopics) from the main summary.
+        These are the items that were selected for inclusion.
+        
+        Returns:
+            Set of message_ids that are in the main summary
+        """
+        included_ids: Set[str] = set()
+        
+        try:
+            items = json.loads(main_summary_json)
+            if not isinstance(items, list):
+                return included_ids
+            
+            for item in items:
+                # Add main item's message_id
+                if item.get('message_id'):
+                    included_ids.add(str(item['message_id']))
+                
+                # Add subtopic message_ids
+                for sub in item.get('subTopics', []):
+                    if sub.get('message_id'):
+                        included_ids.add(str(sub['message_id']))
+                        
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            self.logger.warning(f"Failed to extract included message_ids: {e}")
+            
+        return included_ids
+
+    def _enrich_channel_summary_with_inclusion(
+        self,
+        channel_summary_json: str,
+        included_message_ids: Set[str],
+        media_urls: Dict[str, List[Dict[str, str]]]
+    ) -> str:
+        """
+        Enrich a channel summary by marking which items/subtopics were included in the main summary
+        and embedding their persisted media URLs.
+        
+        Adds to each news item:
+        - included_in_main: boolean
+        - mainMediaUrls: array of media objects (if included and has media)
+        
+        Adds to each subtopic:
+        - included_in_main: boolean
+        - subTopicMediaUrls: array of arrays (if included and has media)
+        
+        Args:
+            channel_summary_json: The channel's full_summary JSON string
+            included_message_ids: Set of message_ids that were included in main summary
+            media_urls: Dict mapping message_id -> list of media objects
+            
+        Returns:
+            Enriched channel summary JSON with inclusion flags and media URLs
+        """
+        try:
+            items = json.loads(channel_summary_json)
+            if not isinstance(items, list):
+                return channel_summary_json
+            
+            for item in items:
+                item_msg_id = str(item.get('message_id', ''))
+                item_included = item_msg_id in included_message_ids
+                item['included_in_main'] = item_included
+                
+                # Add media URLs if included
+                if item_included:
+                    main_media_id = item.get('mainMediaMessageId')
+                    if main_media_id and str(main_media_id) in media_urls:
+                        item['mainMediaUrls'] = media_urls[str(main_media_id)]
+                    else:
+                        item['mainMediaUrls'] = None
+                
+                # Process subtopics
+                for sub in item.get('subTopics', []):
+                    sub_msg_id = str(sub.get('message_id', ''))
+                    sub_included = sub_msg_id in included_message_ids
+                    sub['included_in_main'] = sub_included
+                    
+                    # Add media URLs if included
+                    if sub_included:
+                        sub_media_ids = sub.get('subTopicMediaMessageIds', [])
+                        sub_media_urls = []
+                        
+                        for media_id in sub_media_ids:
+                            if media_id and str(media_id) in media_urls:
+                                sub_media_urls.append(media_urls[str(media_id)])
+                            else:
+                                sub_media_urls.append(None)
+                        
+                        sub['subTopicMediaUrls'] = sub_media_urls
+            
+            return json.dumps(items, indent=2)
+            
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            self.logger.warning(f"Failed to enrich channel summary with inclusion flags: {e}")
+            return channel_summary_json
+
+    async def _update_channel_summaries_with_inclusion(
+        self,
+        main_summary_json: str,
+        media_urls: Dict[str, List[Dict[str, str]]],
+        current_date: datetime,
+        db_handler: DatabaseHandler
+    ) -> bool:
+        """
+        Update all channel summaries to mark which items/subtopics were included
+        in the main summary and embed their persisted media URLs.
+        
+        Args:
+            main_summary_json: The combined main summary JSON
+            media_urls: Dict mapping message_id -> list of media objects
+            current_date: Date of the summaries
+            db_handler: Database handler
+            
+        Returns:
+            True if all updates successful
+        """
+        # Get the set of included message_ids from the main summary
+        included_message_ids = self._get_included_message_ids(main_summary_json)
+        self.logger.info(f"Updating channel summaries with {len(included_message_ids)} included items")
+        
+        # Get channel_ids that contributed to the main summary
+        channel_message_ids = self._extract_message_ids_by_channel(main_summary_json)
+        
+        all_success = True
+        for channel_id in channel_message_ids.keys():
+            try:
+                # Fetch the channel summary from DB
+                channel_summary = db_handler.get_summary_for_date(channel_id, current_date)
+                if not channel_summary:
+                    self.logger.warning(f"No summary found for channel {channel_id} on {current_date}")
+                    continue
+                
+                # Enrich with inclusion flags and media URLs
+                enriched_summary = self._enrich_channel_summary_with_inclusion(
+                    channel_summary,
+                    included_message_ids,
+                    media_urls
+                )
+                
+                # Update the channel summary in DB
+                success = await asyncio.to_thread(
+                    db_handler.update_channel_summary_full_summary,
+                    channel_id,
+                    current_date,
+                    enriched_summary
+                )
+                
+                if success:
+                    self.logger.debug(f"Updated channel {channel_id} summary with inclusion flags")
+                else:
+                    self.logger.warning(f"Failed to update channel {channel_id} summary")
+                    all_success = False
+                    
+            except Exception as e:
+                self.logger.error(f"Error updating channel {channel_id} summary: {e}")
+                all_success = False
+        
+        return all_success
+
+    async def _persist_summary_media(
+        self, 
+        summary_json: str, 
+        current_date: datetime, 
+        db_handler: DatabaseHandler
+    ) -> Dict[str, List[Dict[str, str]]]:
+        """
+        Download and upload all media from summary items to Supabase Storage.
+        For videos, also extracts and uploads a poster image.
+        
+        Args:
+            summary_json: The combined summary JSON
+            current_date: Date for organizing storage paths
+            db_handler: Database handler for uploads
+            
+        Returns:
+            Dict mapping message_id -> list of media objects with url, type, and optional poster_url
+            Example: {"123": [{"url": "...", "type": "video", "poster_url": "..."}, {"url": "...", "type": "image"}]}
+        """
+        media_urls: Dict[str, List[Dict[str, str]]] = {}
+        
+        # Extract all media message IDs grouped by channel
+        channel_media_ids = self._extract_media_message_ids(summary_json)
+        
+        total_messages = sum(len(ids) for ids in channel_media_ids.values())
+        self.logger.info(f"Persisting media from {total_messages} messages across {len(channel_media_ids)} channels")
+        
+        date_str = current_date.strftime('%Y-%m-%d')
+        
+        for channel_id, message_ids in channel_media_ids.items():
+            try:
+                channel = await self._get_channel_with_retry(channel_id)
+                if not channel:
+                    self.logger.warning(f"Could not fetch channel {channel_id} for media persistence")
+                    continue
+                
+                for message_id in message_ids:
+                    try:
+                        message = await channel.fetch_message(int(message_id))
+                        if not message.attachments:
+                            continue
+                        
+                        message_media = []
+                        for idx, attachment in enumerate(message.attachments):
+                            # Download the file first to get bytes and content type
+                            file_data = await db_handler.download_file(attachment.url)
+                            if not file_data:
+                                self.logger.warning(f"Failed to download {attachment.filename} from message {message_id}")
+                                continue
+                            
+                            file_bytes = file_data['bytes']
+                            content_type = file_data['content_type']
+                            ext = attachment.filename.split('.')[-1] if '.' in attachment.filename else 'bin'
+                            
+                            # Upload the main file
+                            storage_path = f"{date_str}/{message_id}_{idx}.{ext}"
+                            storage_url = await db_handler.upload_bytes(
+                                file_bytes, storage_path, content_type
+                            )
+                            
+                            if not storage_url:
+                                self.logger.warning(f"Failed to upload {attachment.filename} from message {message_id}")
+                                continue
+                            
+                            # Build media entry
+                            is_video = self._is_video_content_type(content_type)
+                            media_entry: Dict[str, str] = {
+                                'url': storage_url,
+                                'type': 'video' if is_video else 'image'
+                            }
+                            
+                            # For videos, extract and upload poster
+                            if is_video:
+                                self.logger.debug(f"Extracting poster for video {attachment.filename}")
+                                poster_bytes = self._extract_video_poster(file_bytes)
+                                
+                                if poster_bytes:
+                                    poster_path = f"{date_str}/{message_id}_{idx}_poster.jpg"
+                                    poster_url = await db_handler.upload_bytes(
+                                        poster_bytes, poster_path, 'image/jpeg'
+                                    )
+                                    
+                                    if poster_url:
+                                        media_entry['poster_url'] = poster_url
+                                        self.logger.debug(f"Persisted video + poster: {storage_path}")
+                                    else:
+                                        self.logger.warning(f"Failed to upload poster for {attachment.filename}")
+                                else:
+                                    self.logger.warning(f"Could not extract poster for {attachment.filename}")
+                            else:
+                                self.logger.debug(f"Persisted image: {storage_path}")
+                            
+                            message_media.append(media_entry)
+                        
+                        if message_media:
+                            media_urls[str(message_id)] = message_media
+                            
+                    except discord.NotFound:
+                        self.logger.warning(f"Message {message_id} not found in channel {channel_id}")
+                    except discord.Forbidden:
+                        self.logger.warning(f"No permission to fetch message {message_id}")
+                    except Exception as e:
+                        self.logger.error(f"Error fetching message {message_id}: {e}")
+                        
+            except Exception as e:
+                self.logger.error(f"Error processing channel {channel_id} for media persistence: {e}")
+        
+        total_files = sum(len(m) for m in media_urls.values())
+        video_count = sum(1 for msgs in media_urls.values() for m in msgs if m.get('type') == 'video')
+        self.logger.info(f"Persisted media from {len(media_urls)} messages ({total_files} files, {video_count} videos with posters)")
+        return media_urls
 
     def is_forum_channel(self, channel_id: int) -> bool:
         """Check if a channel is a ForumChannel by ID"""
@@ -1158,14 +1635,15 @@ class ChannelSummarizer:
                                          # UPDATED CALL
                                          await discord_utils.safe_send_message(self.bot, channel_obj, self.rate_limiter, self.logger, content=f"{channel_header}\n{short_summary_text}\n[Click here to jump to the summary thread]({link})")
                         
-                        # In dev mode, don't save to DB - just add to list for main summary
-                        if self.dev_mode:
-                            self.logger.info(f"🧪 Dev mode: Skipping DB save for channel {channel_id}")
+                        # Save channel summary to DB (with dev_mode flag if in dev mode)
+                        success = await self._post_summary_with_transaction(
+                            channel_id, channel_summary, messages, current_date, db_handler, 
+                            dev_mode=self.dev_mode
+                        )
+                        if success: 
                             channel_summaries.append(channel_summary)
-                        else:
-                            success = await self._post_summary_with_transaction(channel_id, channel_summary, messages, current_date, db_handler)
-                            if success: channel_summaries.append(channel_summary)
-                            else: self.logger.error(f"Failed to save summary to DB for channel {channel_id}")
+                        else: 
+                            self.logger.error(f"Failed to save summary to DB for channel {channel_id}")
 
                     except Exception as e:
                         self.logger.error(f"Error processing channel {channel_id}: {e}", exc_info=True)
@@ -1212,17 +1690,67 @@ class ChannelSummarizer:
                                     await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=item.get('content', ''))
                                     await asyncio.sleep(1)
                             
-                            # Save main summary to database (skip in dev mode)
-                            if self.dev_mode:
-                                self.logger.info(f"🧪 Dev mode: Skipping DB save for main summary")
+                            # Extract message_ids grouped by channel from the combined summary
+                            channel_message_ids = self._extract_message_ids_by_channel(overall_summary)
+                            all_source_message_ids = [
+                                msg_id for msg_ids in channel_message_ids.values() for msg_id in msg_ids
+                            ]
+                            
+                            # Persist media to Supabase Storage (runs in both dev and prod mode)
+                            self.logger.info("Persisting media attachments to Supabase Storage...")
+                            media_urls = await self._persist_summary_media(
+                                overall_summary, current_date, db_handler
+                            )
+                            
+                            # Enrich the summary JSON with embedded media URLs for each item
+                            if media_urls:
+                                enriched_summary = self._enrich_summary_with_media_urls(overall_summary, media_urls)
+                                self.logger.info(f"Enriched summary with {len(media_urls)} media URL mappings")
                             else:
-                                main_summary_saved = await self._post_summary_with_transaction(
-                                    self.summary_channel_id, overall_summary, [], current_date, db_handler
+                                enriched_summary = overall_summary
+                            
+                            # Save main summary to database (with dev_mode flag if in dev mode)
+                            short_summary = await self.news_summarizer.generate_short_summary(overall_summary, 0)
+                            main_summary_saved = await asyncio.to_thread(
+                                db_handler.store_daily_summary,
+                                self.summary_channel_id,
+                                enriched_summary,  # Save the enriched version with embedded media URLs
+                                short_summary,
+                                current_date,
+                                False,  # included_in_main_summary (N/A for main summary itself)
+                                all_source_message_ids,  # source_message_ids
+                                self.dev_mode  # dev_mode flag
+                            )
+                            
+                            if main_summary_saved:
+                                self.logger.info(f"✅ Main summary saved to database for {current_date.strftime('%Y-%m-%d')} (dev_mode={self.dev_mode})")
+                                
+                                # Mark channel summaries as included in main summary
+                                if channel_message_ids:
+                                    mark_success = await asyncio.to_thread(
+                                        db_handler.mark_summaries_included_in_main,
+                                        current_date,
+                                        channel_message_ids
+                                    )
+                                    if mark_success:
+                                        self.logger.info(f"✅ Marked {len(channel_message_ids)} channel summaries as included in main summary")
+                                    else:
+                                        self.logger.warning(f"Failed to mark some channel summaries as included")
+                                
+                                # Update channel summaries with inclusion flags and media URLs
+                                self.logger.info("Updating channel summaries with inclusion flags and media URLs...")
+                                enrich_success = await self._update_channel_summaries_with_inclusion(
+                                    overall_summary,
+                                    media_urls if media_urls else {},
+                                    current_date,
+                                    db_handler
                                 )
-                                if main_summary_saved:
-                                    self.logger.info(f"✅ Main summary saved to database for {current_date.strftime('%Y-%m-%d')}")
+                                if enrich_success:
+                                    self.logger.info(f"✅ Channel summaries enriched with inclusion flags and media URLs")
                                 else:
-                                    self.logger.error(f"Failed to save main summary to database")
+                                    self.logger.warning(f"Failed to enrich some channel summaries")
+                            else:
+                                self.logger.error(f"Failed to save main summary to database")
                         else:
                             # UPDATED CALL
                             await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content="_No significant activity to summarize in the last 24 hours._")

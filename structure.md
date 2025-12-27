@@ -173,7 +173,7 @@
 | `discord_messages` | Archived messages | `message_id` (PK), `channel_id`, `author_id`, `content`, `created_at`, `attachments` (JSONB), `reaction_count`, `is_deleted` |
 | `discord_members` | Member profiles & consent | `member_id` (PK), `username`, `global_name`, `twitter_handle`, `sharing_consent`, `permission_to_curate` |
 | `discord_channels` | Channel metadata | `channel_id` (PK), `channel_name`, `description`, `suitable_posts`, `unsuitable_posts`, `enriched` |
-| `daily_summaries` | Generated summaries | `daily_summary_id` (PK), `date`, `channel_id`, `full_summary`, `short_summary` |
+| `daily_summaries` | Generated summaries | `daily_summary_id` (PK), `date`, `channel_id`, `full_summary`, `short_summary`, `included_in_main_summary`, `source_message_ids`, `dev_mode` |
 | `channel_summary` | Summary thread mapping | `channel_id` (PK), `summary_thread_id` |
 | `system_logs` | Application logs | `id` (PK), `timestamp`, `level`, `logger_name`, `message`, `exception` |
 | `sync_status` | Sync state tracking | `table_name`, `last_sync_timestamp`, `sync_status` |
