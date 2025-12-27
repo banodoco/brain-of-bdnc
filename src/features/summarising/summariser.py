@@ -38,15 +38,32 @@ from src.features.summarising.subfeatures.top_art_sharing import TopArtSharing
 from src.features.sharing.sharer import Sharer
 
 # Optional imports for media processing
+MEDIA_PROCESSING_AVAILABLE = False
+POSTER_EXTRACTION_AVAILABLE = False
+
 try:
     from PIL import Image
-    import moviepy.editor as mp
-    MEDIA_PROCESSING_AVAILABLE = True
+    MEDIA_PROCESSING_AVAILABLE = True  # PIL is enough for basic image ops
 except Exception as e:
-    MEDIA_PROCESSING_AVAILABLE = False
-    # Log the actual error at module load for debugging
     import logging
-    logging.getLogger('DiscordBot').warning(f"Media processing unavailable - import failed: {type(e).__name__}: {e}")
+    logging.getLogger('DiscordBot').warning(f"PIL import failed: {type(e).__name__}: {e}")
+
+# imageio for poster extraction (bundles own ffmpeg - more reliable in containers)
+try:
+    import imageio.v3 as iio
+    import imageio_ffmpeg
+    POSTER_EXTRACTION_AVAILABLE = True
+except Exception as e:
+    import logging
+    logging.getLogger('DiscordBot').warning(f"imageio import failed (poster extraction disabled): {type(e).__name__}: {e}")
+
+# moviepy for video concatenation (optional, used by create_media_content)
+try:
+    import moviepy.editor as mp
+except Exception as e:
+    mp = None
+    import logging
+    logging.getLogger('DiscordBot').info(f"moviepy import failed (video concatenation disabled): {type(e).__name__}: {e}")
 
 ################################################################################
 # You may already have a scheduling function somewhere, but here is a simple stub:
@@ -583,10 +600,14 @@ class ChannelSummarizer:
         """Create a collage of images or a combined video, depending on attachments."""
         try:
             if not MEDIA_PROCESSING_AVAILABLE:
-                self.logger.error("Media processing libraries are not available")
+                self.logger.error("Media processing libraries are not available (PIL not installed)")
                 return None
             
             self.logger.info(f"Starting media content creation with {len(files)} files")
+            
+            # Check if moviepy is available for video processing
+            if mp is None:
+                self.logger.info("moviepy not available - will only process images, skipping videos")
             
             images = []
             videos = []
@@ -600,7 +621,7 @@ class ChannelSummarizer:
                     self.logger.debug(f"Processing image: {file_tuple.filename}")
                     img = Image.open(io.BytesIO(data))
                     images.append(img)
-                elif file_tuple.filename.lower().endswith(('.mp4', '.mov', '.webm')):
+                elif file_tuple.filename.lower().endswith(('.mp4', '.mov', '.webm')) and mp is not None:
                     self.logger.debug(f"Processing video: {file_tuple.filename}")
                     temp_path = f'temp_{len(videos)}.mp4'
                     with open(temp_path, 'wb') as f:
@@ -920,7 +941,7 @@ class ChannelSummarizer:
 
     def _extract_video_poster(self, video_bytes: bytes, frame_time: float = 1.0) -> Optional[bytes]:
         """
-        Extract a poster frame from video bytes using moviepy.
+        Extract a poster frame from video bytes using imageio.
         
         Args:
             video_bytes: Raw video file bytes
@@ -929,24 +950,29 @@ class ChannelSummarizer:
         Returns:
             JPEG bytes of the poster frame, or None on failure
         """
-        if not MEDIA_PROCESSING_AVAILABLE:
-            self.logger.warning("Media processing not available (moviepy/PIL not installed)")
+        if not POSTER_EXTRACTION_AVAILABLE:
+            self.logger.warning("Poster extraction not available (imageio/imageio-ffmpeg not installed)")
             return None
         
         import tempfile
         temp_video = None
         try:
-            # Write video to temp file (moviepy needs a file path)
+            # Write video to temp file (imageio needs a file path for videos)
             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
                 f.write(video_bytes)
                 temp_video = f.name
             
-            # Extract frame
-            clip = mp.VideoFileClip(temp_video)
-            # Use frame at frame_time, or first frame if video is shorter
-            actual_time = min(frame_time, clip.duration - 0.1) if clip.duration > frame_time else 0
-            frame = clip.get_frame(actual_time)
-            clip.close()
+            # Get video metadata to find duration
+            meta = iio.immeta(temp_video, plugin="pyav")
+            duration = meta.get('duration', 0)
+            fps = meta.get('fps', 30)
+            
+            # Calculate which frame to extract
+            actual_time = min(frame_time, duration - 0.1) if duration > frame_time else 0
+            frame_index = int(actual_time * fps)
+            
+            # Read the specific frame
+            frame = iio.imread(temp_video, index=frame_index, plugin="pyav")
             
             # Convert to JPEG bytes
             img = Image.fromarray(frame)
@@ -954,7 +980,7 @@ class ChannelSummarizer:
             img.save(img_buffer, format='JPEG', quality=85)
             img_buffer.seek(0)
             
-            self.logger.debug(f"Extracted poster frame at {actual_time:.1f}s")
+            self.logger.debug(f"Extracted poster frame at {actual_time:.1f}s (frame {frame_index})")
             return img_buffer.getvalue()
             
         except Exception as e:
