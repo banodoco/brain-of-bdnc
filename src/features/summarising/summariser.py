@@ -42,8 +42,11 @@ try:
     from PIL import Image
     import moviepy.editor as mp
     MEDIA_PROCESSING_AVAILABLE = True
-except ImportError:
+except Exception as e:
     MEDIA_PROCESSING_AVAILABLE = False
+    # Log the actual error at module load for debugging
+    import logging
+    logging.getLogger('DiscordBot').warning(f"Media processing unavailable - import failed: {type(e).__name__}: {e}")
 
 ################################################################################
 # You may already have a scheduling function somewhere, but here is a simple stub:
