@@ -382,7 +382,6 @@ class StorageHandler:
         short_summary: Optional[str], 
         date: Optional[datetime] = None,
         included_in_main_summary: bool = False,
-        source_message_ids: Optional[List[str]] = None,
         dev_mode: bool = False
     ) -> bool:
         """
@@ -394,7 +393,6 @@ class StorageHandler:
             short_summary: Short summary text
             date: Date of the summary (defaults to today)
             included_in_main_summary: Whether items from this summary were included in the main summary
-            source_message_ids: List of message_ids that were included in the main summary
             dev_mode: Whether this summary was created in development mode
             
         Returns:
@@ -414,7 +412,6 @@ class StorageHandler:
                 'short_summary': short_summary,
                 'created_at': datetime.utcnow().isoformat(),
                 'included_in_main_summary': included_in_main_summary,
-                'source_message_ids': source_message_ids or [],
                 'dev_mode': dev_mode
             }
             
@@ -455,20 +452,19 @@ class StorageHandler:
         summary_date = date.strftime('%Y-%m-%d')
         all_success = True
         
-        for channel_id, message_ids in channel_message_ids.items():
+        for channel_id, _message_ids in channel_message_ids.items():
             try:
                 await asyncio.to_thread(
                     self.supabase_client.table('daily_summaries')
                     .update({
-                        'included_in_main_summary': True,
-                        'source_message_ids': message_ids
+                        'included_in_main_summary': True
                     })
                     .eq('date', summary_date)
                     .eq('channel_id', channel_id)
                     .eq('dev_mode', dev_mode)
                     .execute
                 )
-                logger.debug(f"Marked summary for channel {channel_id} as included in main summary with {len(message_ids)} items")
+                logger.debug(f"Marked summary for channel {channel_id} as included in main summary")
             except Exception as e:
                 logger.error(f"Error marking summary for channel {channel_id} as included: {e}", exc_info=True)
                 all_success = False

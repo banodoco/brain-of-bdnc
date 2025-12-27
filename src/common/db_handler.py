@@ -142,7 +142,6 @@ class DatabaseHandler:
         short_summary: Optional[str], 
         date: Optional[datetime] = None,
         included_in_main_summary: bool = False,
-        source_message_ids: Optional[List[str]] = None,
         dev_mode: bool = False
     ) -> bool:
         """Store a daily summary to Supabase."""
@@ -151,7 +150,7 @@ class DatabaseHandler:
             supabase_result = self._run_async_in_thread(
                 self.storage_handler.store_daily_summary_to_supabase(
                     channel_id, full_summary, short_summary, date,
-                    included_in_main_summary, source_message_ids, dev_mode
+                    included_in_main_summary, dev_mode
                 )
             )
             if not supabase_result:

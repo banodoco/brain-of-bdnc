@@ -805,7 +805,6 @@ class ChannelSummarizer:
                 short_summary,
                 current_date,
                 False,  # included_in_main_summary - will be updated later if needed
-                None,   # source_message_ids - will be updated later if needed
                 dev_mode
             )
             
@@ -1692,10 +1691,6 @@ class ChannelSummarizer:
                             
                             # Extract message_ids grouped by channel from the combined summary
                             channel_message_ids = self._extract_message_ids_by_channel(overall_summary)
-                            all_source_message_ids = [
-                                msg_id for msg_ids in channel_message_ids.values() for msg_id in msg_ids
-                            ]
-                            
                             # Persist media to Supabase Storage (runs in both dev and prod mode)
                             self.logger.info("Persisting media attachments to Supabase Storage...")
                             media_urls = await self._persist_summary_media(
@@ -1718,7 +1713,6 @@ class ChannelSummarizer:
                                 short_summary,
                                 current_date,
                                 False,  # included_in_main_summary (N/A for main summary itself)
-                                all_source_message_ids,  # source_message_ids
                                 self.dev_mode  # dev_mode flag
                             )
                             
