@@ -974,10 +974,15 @@ class ChannelSummarizer:
             # Read the specific frame
             frame = iio.imread(temp_video, index=frame_index, plugin="pyav")
             
-            # Convert to JPEG bytes
+            # Convert to JPEG bytes (compressed for community - 300x300 max, quality 70)
             img = Image.fromarray(frame)
+            
+            # Resize to max 300x300 for community feed
+            if img.width > 300 or img.height > 300:
+                img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+            
             img_buffer = io.BytesIO()
-            img.save(img_buffer, format='JPEG', quality=85)
+            img.save(img_buffer, format='JPEG', quality=70, optimize=True)
             img_buffer.seek(0)
             
             self.logger.debug(f"Extracted poster frame at {actual_time:.1f}s (frame {frame_index})")
@@ -997,6 +1002,143 @@ class ChannelSummarizer:
     def _is_video_content_type(self, content_type: str) -> bool:
         """Check if content type indicates a video file."""
         return content_type and content_type.startswith('video/')
+
+    def _compress_image(
+        self, 
+        image_bytes: bytes, 
+        max_size: int = 300, 
+        quality: int = 70,
+        content_type: str = 'image/jpeg'
+    ) -> Optional[tuple[bytes, str]]:
+        """
+        Compress and resize an image for community feed display.
+        
+        Args:
+            image_bytes: Raw image bytes
+            max_size: Maximum dimension (width or height), default 300px for community
+            quality: JPEG quality (1-100), default 70 for ~15-30KB target
+            content_type: Original content type to determine format
+            
+        Returns:
+            Tuple of (compressed_bytes, content_type) or None on failure
+        """
+        if not MEDIA_PROCESSING_AVAILABLE:
+            self.logger.warning("Image compression not available (PIL not installed)")
+            return None
+        
+        try:
+            img = Image.open(io.BytesIO(image_bytes))
+            original_size = len(image_bytes)
+            
+            # Convert RGBA/P to RGB for JPEG output
+            if img.mode in ('RGBA', 'P'):
+                img = img.convert('RGB')
+            
+            # Resize if larger than max_size (maintains aspect ratio)
+            if img.width > max_size or img.height > max_size:
+                img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                self.logger.debug(f"Resized image to {img.width}x{img.height}")
+            
+            # Compress to JPEG
+            img_buffer = io.BytesIO()
+            img.save(img_buffer, format='JPEG', quality=quality, optimize=True)
+            img_buffer.seek(0)
+            compressed_bytes = img_buffer.getvalue()
+            
+            compressed_size = len(compressed_bytes)
+            savings = ((original_size - compressed_size) / original_size) * 100
+            self.logger.debug(
+                f"Compressed image: {original_size/1024:.1f}KB -> {compressed_size/1024:.1f}KB "
+                f"({savings:.1f}% reduction)"
+            )
+            
+            return (compressed_bytes, 'image/jpeg')
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to compress image: {e}")
+            return None
+
+    def _compress_video(self, video_bytes: bytes, target_height: int = 360, crf: int = 28) -> Optional[bytes]:
+        """
+        Compress video to 360p for community feed display.
+        
+        Args:
+            video_bytes: Raw video bytes
+            target_height: Target height in pixels (width scales proportionally), default 360p
+            crf: Constant Rate Factor (18-28 typical, higher = smaller file), default 28
+            
+        Returns:
+            Compressed video bytes or None on failure
+        """
+        if not POSTER_EXTRACTION_AVAILABLE:
+            self.logger.warning("Video compression not available (imageio-ffmpeg not installed)")
+            return None
+        
+        import tempfile
+        import subprocess
+        temp_input = None
+        temp_output = None
+        
+        try:
+            # Get ffmpeg path from imageio-ffmpeg
+            ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+            
+            # Write input video to temp file
+            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
+                f.write(video_bytes)
+                temp_input = f.name
+            
+            # Create temp output path
+            temp_output = temp_input.replace('.mp4', '_compressed.mp4')
+            
+            original_size = len(video_bytes)
+            
+            # FFmpeg command: scale to 360p, CRF 28, no audio (for community thumbnails)
+            cmd = [
+                ffmpeg_path,
+                '-i', temp_input,
+                '-vf', f'scale=-2:{target_height}',
+                '-c:v', 'libx264',
+                '-crf', str(crf),
+                '-preset', 'medium',
+                '-an',  # No audio for community feed
+                '-y',  # Overwrite output
+                temp_output
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, timeout=120)
+            
+            if result.returncode != 0:
+                self.logger.warning(f"FFmpeg compression failed: {result.stderr.decode()[:500]}")
+                return None
+            
+            # Read compressed video
+            with open(temp_output, 'rb') as f:
+                compressed_bytes = f.read()
+            
+            compressed_size = len(compressed_bytes)
+            savings = ((original_size - compressed_size) / original_size) * 100
+            self.logger.debug(
+                f"Compressed video: {original_size/1024/1024:.1f}MB -> {compressed_size/1024/1024:.1f}MB "
+                f"({savings:.1f}% reduction)"
+            )
+            
+            return compressed_bytes
+            
+        except subprocess.TimeoutExpired:
+            self.logger.warning("Video compression timed out (>120s)")
+            return None
+        except Exception as e:
+            self.logger.warning(f"Failed to compress video: {e}")
+            return None
+        finally:
+            # Clean up temp files
+            for path in [temp_input, temp_output]:
+                if path:
+                    try:
+                        os.unlink(path)
+                    except:
+                        pass
 
     def _enrich_summary_with_media_urls(
         self, 
@@ -1265,6 +1407,30 @@ class ChannelSummarizer:
                             content_type = file_data['content_type']
                             ext = attachment.filename.split('.')[-1] if '.' in attachment.filename else 'bin'
                             
+                            is_video = self._is_video_content_type(content_type)
+                            is_image = content_type and content_type.startswith('image/')
+                            
+                            # Compress images before upload (300x300 max, quality 70 for community)
+                            if is_image and not is_video:
+                                compressed = self._compress_image(
+                                    file_bytes, 
+                                    max_size=300, 
+                                    quality=70,
+                                    content_type=content_type
+                                )
+                                if compressed:
+                                    file_bytes, content_type = compressed
+                                    ext = 'jpg'  # Compressed images are always JPEG
+                            
+                            # Compress videos to 360p for community feed
+                            if is_video:
+                                self.logger.debug(f"Compressing video {attachment.filename} to 360p")
+                                compressed_video = self._compress_video(file_bytes, target_height=360, crf=28)
+                                if compressed_video:
+                                    file_bytes = compressed_video
+                                    ext = 'mp4'  # Compressed videos are always MP4
+                                    content_type = 'video/mp4'
+                            
                             # Upload the main file
                             storage_path = f"{date_str}/{message_id}_{idx}.{ext}"
                             storage_url = await db_handler.upload_bytes(
@@ -1276,13 +1442,12 @@ class ChannelSummarizer:
                                 continue
                             
                             # Build media entry
-                            is_video = self._is_video_content_type(content_type)
                             media_entry: Dict[str, str] = {
                                 'url': storage_url,
                                 'type': 'video' if is_video else 'image'
                             }
                             
-                            # For videos, extract and upload poster
+                            # For videos, extract and upload poster (300x300 max, quality 70)
                             if is_video:
                                 self.logger.debug(f"Extracting poster for video {attachment.filename}")
                                 poster_bytes = self._extract_video_poster(file_bytes)

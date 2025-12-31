@@ -169,6 +169,10 @@ JSON Structure:
 ]
 
 === WHAT TO COVER ===
+Focus on things that appear to be NEW - recent releases, fresh discoveries, novel techniques, or breaking developments. Skip older tools/projects unless there's genuinely new news about them.
+
+Prioritize community contributions and open source projects. Things made or discovered by Banodocians or shared openly are more newsworthy than commercial products or closed-source announcements.
+
 Prioritize these types of content (in rough order of importance):
 1. Original creations by community members (custom nodes, workflows, tools, LoRAs, scripts) - Banodocian contributions are especially newsworthy
 2. Notable achievements, demonstrations, or impressive work shared by members
