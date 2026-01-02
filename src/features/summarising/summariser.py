@@ -490,13 +490,17 @@ class ChannelSummarizer:
         self.logger.error(f"Failed to get channel {channel_id} after {self.MAX_RETRIES} retries.")
         return None
 
-    async def _send_media_group(self, target_channel, source_channel, message_ids: list) -> bool:
+    async def _send_media_group(self, target_channel, source_channel, message_ids: list) -> List[Optional[discord.Message]]:
         """
         Send media files from source messages to target channel.
         Downloads attachments and sends as actual files (max 10 per message).
         Falls back to URLs if anything fails.
+        
+        Returns:
+            List of sent discord.Message objects (for tracking posted message IDs)
         """
         DISCORD_MAX_FILES = 10
+        sent_messages: List[Optional[discord.Message]] = []
         
         # Collect all attachments from the source messages
         all_attachments = []
@@ -509,7 +513,7 @@ class ChannelSummarizer:
                 self.logger.warning(f"Could not fetch message {msg_id} for media: {e}")
         
         if not all_attachments:
-            return True
+            return sent_messages
         
         # Send in chunks of 10 (Discord's limit)
         for i in range(0, len(all_attachments), DISCORD_MAX_FILES):
@@ -523,9 +527,11 @@ class ChannelSummarizer:
                     files.append(discord.File(io.BytesIO(file_bytes), filename=attachment.filename))
                 
                 if files:
-                    await discord_utils.safe_send_message(
+                    sent_msg = await discord_utils.safe_send_message(
                         self.bot, target_channel, self.rate_limiter, self.logger, files=files
                     )
+                    if sent_msg:
+                        sent_messages.append(sent_msg)
                     sent_as_files = True
                     await asyncio.sleep(0.5)
             except Exception as e:
@@ -535,14 +541,16 @@ class ChannelSummarizer:
             if not sent_as_files:
                 for attachment in chunk:
                     try:
-                        await discord_utils.safe_send_message(
+                        sent_msg = await discord_utils.safe_send_message(
                             self.bot, target_channel, self.rate_limiter, self.logger, content=attachment.url
                         )
+                        if sent_msg:
+                            sent_messages.append(sent_msg)
                         await asyncio.sleep(0.3)
                     except Exception as e_url:
                         self.logger.error(f"Failed to send URL fallback: {e_url}")
         
-        return True
+        return sent_messages
 
     async def get_channel_history(self, channel_id: int) -> List[dict]:
         """
@@ -1191,6 +1199,41 @@ class ChannelSummarizer:
             self.logger.warning(f"Failed to enrich summary with media URLs: {e}")
             return summary_json
 
+    def _enrich_summary_with_posted_ids(
+        self, 
+        summary_json: str, 
+        posted_by_topic: Dict[int, List[int]]
+    ) -> str:
+        """
+        Enrich the summary JSON by embedding posted Discord message IDs into each topic.
+        
+        Adds 'posted_message_ids' array to each topic containing the IDs of Discord
+        messages that were posted for that topic.
+        
+        Args:
+            summary_json: The summary JSON string
+            posted_by_topic: Dict mapping topic_index -> list of posted message IDs
+            
+        Returns:
+            Enriched summary JSON string with embedded posted message IDs
+        """
+        try:
+            items = json.loads(summary_json)
+            if not isinstance(items, list):
+                return summary_json
+            
+            for idx, item in enumerate(items):
+                if idx in posted_by_topic:
+                    item['posted_message_ids'] = posted_by_topic[idx]
+                else:
+                    item['posted_message_ids'] = []
+            
+            return json.dumps(items, indent=2)
+            
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            self.logger.warning(f"Failed to enrich summary with posted message IDs: {e}")
+            return summary_json
+
     def _get_included_message_ids(self, main_summary_json: str) -> Set[str]:
         """
         Extract all message_ids (main items + subtopics) from the main summary.
@@ -1802,7 +1845,17 @@ class ChannelSummarizer:
                                     # UPDATED CALL
                                     header_msg = await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=date_headline)
                                     await asyncio.sleep(1)
+                                    
+                                    # Track posted message IDs by topic index for channel summary
+                                    channel_posted_by_topic: Dict[int, List[int]] = {}
+                                    
                                     for item in formatted_summary:
+                                        topic_index = item.get('topic_index')
+                                        
+                                        # Initialize topic tracking if needed
+                                        if topic_index is not None and topic_index not in channel_posted_by_topic:
+                                            channel_posted_by_topic[topic_index] = []
+                                        
                                         if item.get('type') in ['media_reference', 'media_reference_group']:
                                             try:
                                                 source_channel_id_media = int(item['channel_id'])
@@ -1810,13 +1863,25 @@ class ChannelSummarizer:
                                                 if source_channel_media:
                                                     # Unified handler for both single and group references
                                                     msg_ids = [item['message_id']] if item.get('type') == 'media_reference' else item.get('message_ids', [])
-                                                    await self._send_media_group(thread, source_channel_media, msg_ids)
+                                                    sent_messages = await self._send_media_group(thread, source_channel_media, msg_ids)
+                                                    # Track sent media message IDs
+                                                    if sent_messages and topic_index is not None:
+                                                        for sent_msg in sent_messages:
+                                                            if sent_msg:
+                                                                channel_posted_by_topic[topic_index].append(sent_msg.id)
                                             except Exception as e_media:
                                                 self.logger.error(f"Error processing media reference {item}: {e_media}")
                                         else:
-                                             # UPDATED CALL
-                                             await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=item.get('content', ''))
+                                             # UPDATED CALL - capture returned message
+                                             sent_msg = await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=item.get('content', ''))
+                                             if sent_msg and topic_index is not None:
+                                                 channel_posted_by_topic[topic_index].append(sent_msg.id)
                                              await asyncio.sleep(1)
+                                    
+                                    # Enrich channel summary with posted message IDs
+                                    if channel_posted_by_topic:
+                                        channel_summary = self._enrich_summary_with_posted_ids(channel_summary, channel_posted_by_topic)
+                                        self.logger.info(f"Enriched channel {channel_id} summary with posted message IDs for {len(channel_posted_by_topic)} topics")
                                     
                                     await self.top_generations.post_top_gens_for_channel(thread, channel_id)
                                     if header_msg:
@@ -1829,6 +1894,7 @@ class ChannelSummarizer:
                                          await discord_utils.safe_send_message(self.bot, channel_obj, self.rate_limiter, self.logger, content=f"{channel_header}\n{short_summary_text}\n[Click here to jump to the summary thread]({link})")
                         
                         # Save channel summary to DB (with dev_mode flag if in dev mode)
+                        # Note: channel_summary now includes posted_message_ids if posting occurred
                         success = await self._post_summary_with_transaction(
                             channel_id, channel_summary, messages, current_date, db_handler, 
                             dev_mode=self.dev_mode
@@ -1867,7 +1933,16 @@ class ChannelSummarizer:
                             else: self.logger.error("Failed to post header message; first_message remains unset.")
                             
                             self.logger.info("Posting main summary to summary channel")
+                            # Track posted message IDs by topic index
+                            posted_by_topic: Dict[int, List[int]] = {}  # topic_index -> [message_ids]
+                            
                             for item in formatted_summary:
+                                topic_index = item.get('topic_index')
+                                
+                                # Initialize topic tracking if needed
+                                if topic_index is not None and topic_index not in posted_by_topic:
+                                    posted_by_topic[topic_index] = []
+                                
                                 if item.get('type') in ['media_reference', 'media_reference_group']:
                                     try:
                                         source_channel_id_media_main = int(item['channel_id'])
@@ -1875,13 +1950,22 @@ class ChannelSummarizer:
                                         if source_channel_media_main:
                                             # Unified handler for both single and group references
                                             msg_ids = [item['message_id']] if item.get('type') == 'media_reference' else item.get('message_ids', [])
-                                            await self._send_media_group(summary_channel, source_channel_media_main, msg_ids)
+                                            sent_messages = await self._send_media_group(summary_channel, source_channel_media_main, msg_ids)
+                                            # Track sent media message IDs
+                                            if sent_messages and topic_index is not None:
+                                                for sent_msg in sent_messages:
+                                                    if sent_msg:
+                                                        posted_by_topic[topic_index].append(sent_msg.id)
                                     except Exception as e_media_main:
                                         self.logger.error(f"Error processing media reference in main summary {item}: {e_media_main}")
                                 else:
-                                    # UPDATED CALL
-                                    await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=item.get('content', ''))
+                                    # UPDATED CALL - capture returned message
+                                    sent_msg = await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=item.get('content', ''))
+                                    if sent_msg and topic_index is not None:
+                                        posted_by_topic[topic_index].append(sent_msg.id)
                                     await asyncio.sleep(1)
+                            
+                            self.logger.info(f"Tracked posted message IDs for {len(posted_by_topic)} topics")
                             
                             # Extract message_ids grouped by channel from the combined summary
                             channel_message_ids = self._extract_message_ids_by_channel(overall_summary)
@@ -1898,12 +1982,17 @@ class ChannelSummarizer:
                             else:
                                 enriched_summary = overall_summary
                             
+                            # Enrich the summary JSON with posted Discord message IDs per topic
+                            if posted_by_topic:
+                                enriched_summary = self._enrich_summary_with_posted_ids(enriched_summary, posted_by_topic)
+                                self.logger.info(f"Enriched summary with posted message IDs for {len(posted_by_topic)} topics")
+                            
                             # Save main summary to database (with dev_mode flag if in dev mode)
                             short_summary = await self.news_summarizer.generate_short_summary(overall_summary, 0)
                             main_summary_saved = await asyncio.to_thread(
                                 db_handler.store_daily_summary,
                                 self.summary_channel_id,
-                                enriched_summary,  # Save the enriched version with embedded media URLs
+                                enriched_summary,  # Save the enriched version with embedded media URLs and posted IDs
                                 short_summary,
                                 current_date,
                                 False,  # included_in_main_summary (N/A for main summary itself)

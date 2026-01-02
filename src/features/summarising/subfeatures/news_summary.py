@@ -173,6 +173,8 @@ Focus on things that appear to be NEW - recent releases, fresh discoveries, nove
 
 Prioritize community contributions and open source projects. Things made or discovered by Banodocians or shared openly are more newsworthy than commercial products or closed-source announcements.
 
+Try to identify and include relevant media (images, videos) that illustrate each topic. Visual examples make the summary more engaging and informative.
+
 Prioritize these types of content (in rough order of importance):
 1. Original creations by community members (custom nodes, workflows, tools, LoRAs, scripts) - Banodocian contributions are especially newsworthy
 2. Notable achievements, demonstrations, or impressive work shared by members
@@ -381,10 +383,13 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
         self.logger.info(f"Combining {len(chunk_summaries)} chunk summaries.")
         return await self.combine_channel_summaries(chunk_summaries)
 
-    def format_news_for_discord(self, news_items_json: str) -> List[Dict[str, str]]:
+    def format_news_for_discord(self, news_items_json: str) -> List[Dict[str, Any]]:
         """
         Convert the JSON string from Claude into a list of dictionaries
         each containing a 'content' field that can be posted to Discord.
+        
+        Each message dict includes 'topic_index' and 'topic_title' for tracking
+        which posted Discord messages belong to which topic.
         """
         if news_items_json in ["[NO SIGNIFICANT NEWS]", "[NO MESSAGES TO ANALYZE]"]:
             return [{"content": news_items_json}]
@@ -401,16 +406,22 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
             return [{"content": news_items_json}]
 
         messages_to_send = []
-        for item in items:
+        for topic_index, item in enumerate(items):
+            topic_title = item.get('title', 'No Title')
+            
             main_part = []
-            main_part.append(f"## {item.get('title','No Title')}\n")
+            main_part.append(f"## {topic_title}\n")
             # mainText + messageLink
             message_id = int(item['message_id'])
             channel_id = int(item['channel_id'])
             jump_url = f"https://discord.com/channels/{self.guild_id}/{channel_id}/{message_id}"
             main_part.append(f"{item.get('mainText', '')} {jump_url}")
 
-            messages_to_send.append({"content": "\n".join(main_part)})
+            messages_to_send.append({
+                "content": "\n".join(main_part),
+                "topic_index": topic_index,
+                "topic_title": topic_title
+            })
 
             # mainMediaMessageId
             if item.get("mainMediaMessageId") and item["mainMediaMessageId"] not in [None, "null", "unknown", ""]:
@@ -418,7 +429,9 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
                 messages_to_send.append({
                     "type": "media_reference",
                     "message_id": str(item["mainMediaMessageId"]), # Ensure it's a string
-                    "channel_id": str(item["channel_id"]) # Associated channel_id
+                    "channel_id": str(item["channel_id"]), # Associated channel_id
+                    "topic_index": topic_index,
+                    "topic_title": topic_title
                 })
 
             # subTopics
@@ -436,7 +449,11 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
                     else:
                         sub_msg.append(f"• {text}")
 
-                    messages_to_send.append({"content": "\n".join(sub_msg)})
+                    messages_to_send.append({
+                        "content": "\n".join(sub_msg),
+                        "topic_index": topic_index,
+                        "topic_title": topic_title
+                    })
 
                     # subTopicMediaMessageIds (plural, list) - keep grouped for batch posting
                     media_ids = sub.get("subTopicMediaMessageIds")
@@ -451,7 +468,9 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
                             messages_to_send.append({
                                 "type": "media_reference_group",
                                 "message_ids": valid_ids,
-                                "channel_id": str(sub["channel_id"])
+                                "channel_id": str(sub["channel_id"]),
+                                "topic_index": topic_index,
+                                "topic_title": topic_title
                             })
 
         return messages_to_send
