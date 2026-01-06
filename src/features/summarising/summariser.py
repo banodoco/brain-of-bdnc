@@ -34,6 +34,9 @@ from src.features.summarising.subfeatures.news_summary import NewsSummarizer
 from src.features.summarising.subfeatures.top_generations import TopGenerations
 from src.features.summarising.subfeatures.top_art_sharing import TopArtSharing
 
+# Content moderation
+from src.common.content_moderator import filter_summary_media
+
 # --- Import Sharer ---
 from src.features.sharing.sharer import Sharer
 
@@ -944,8 +947,28 @@ class ChannelSummarizer:
                             
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             self.logger.warning(f"Failed to parse summary JSON for media message_id extraction: {e}")
-            
+        
         return channel_media_ids
+    
+    async def _fetch_message_for_moderation(self, channel_id: int, message_id: str):
+        """
+        Fetch a Discord message for content moderation.
+        This is a callback passed to filter_summary_media.
+        """
+        try:
+            channel = await self._get_channel_with_retry(channel_id)
+            if not channel:
+                return None
+            return await channel.fetch_message(int(message_id))
+        except discord.NotFound:
+            self.logger.warning(f"Message {message_id} not found in channel {channel_id}")
+            return None
+        except discord.Forbidden:
+            self.logger.warning(f"No permission to fetch message {message_id}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error fetching message {message_id}: {e}")
+            return None
 
     def _extract_video_poster(self, video_bytes: bytes, frame_time: float = 1.0) -> Optional[bytes]:
         """
@@ -1440,7 +1463,10 @@ class ChannelSummarizer:
                         
                         message_media = []
                         for idx, attachment in enumerate(message.attachments):
-                            # Download the file first to get bytes and content type
+                            # Note: Content moderation already done via filter_summary_media()
+                            # before this method is called, so we don't need to check here
+                            
+                            # Download the file to get bytes and content type
                             file_data = await db_handler.download_file(attachment.url)
                             if not file_data:
                                 self.logger.warning(f"Failed to download {attachment.filename} from message {message_id}")
@@ -1812,6 +1838,8 @@ class ChannelSummarizer:
                         else:
                             channel_obj = await self._get_channel_with_retry(post_channel_id)
                             if channel_obj:
+                                # Filter out blocked content before formatting
+                                channel_summary = await filter_summary_media(channel_summary, self._fetch_message_for_moderation)
                                 formatted_summary = self.news_summarizer.format_news_for_discord(channel_summary)
                                 existing_thread_id = None 
                                 thread = None
@@ -1926,6 +1954,8 @@ class ChannelSummarizer:
                         ]
                         
                         if overall_summary and overall_summary not in skip_responses:
+                            # Filter out blocked content before formatting
+                            overall_summary = await filter_summary_media(overall_summary, self._fetch_message_for_moderation)
                             formatted_summary = self.news_summarizer.format_news_for_discord(overall_summary)
                             # UPDATED CALL
                             header = await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\n\n# Daily Summary - {current_date.strftime('%A, %B %d, %Y')}\n\n")

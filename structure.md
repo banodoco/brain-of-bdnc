@@ -98,6 +98,7 @@
 │
 └── src/
     ├── common/                      # Shared infrastructure
+    │   ├── content_moderator.py         # Image content moderation (WaveSpeed AI API)
     │   ├── db_handler.py                # Database abstraction layer
     │   ├── discord_utils.py             # Discord API helpers (safe_send_message, etc.)
     │   ├── error_handler.py             # @handle_errors decorator
