@@ -128,6 +128,18 @@ class TopGenerations:
                 tuple(query_params)
             )
             
+            # Deduplicate by message_id (defensive - query should return unique, but CTE handling may cause dupes)
+            seen_message_ids = set()
+            unique_generations = []
+            for gen in top_generations:
+                msg_id = gen.get('message_id')
+                if msg_id and msg_id not in seen_message_ids:
+                    seen_message_ids.add(msg_id)
+                    unique_generations.append(gen)
+                elif msg_id in seen_message_ids:
+                    self.summarizer.logger.warning(f"Deduped duplicate message_id {msg_id} in top_generations query results")
+            top_generations = unique_generations
+            
             if not top_generations:
                 self.summarizer.logger.info(f"No qualifying videos found - skipping top {limit} gens post.")
                 return None
@@ -344,6 +356,16 @@ class TopGenerations:
                 query,
                 (channel_id, yesterday.isoformat())
             )
+            
+            # Deduplicate by message_id (defensive)
+            seen_message_ids = set()
+            unique_results = []
+            for r in results:
+                msg_id = r.get('message_id')
+                if msg_id and msg_id not in seen_message_ids:
+                    seen_message_ids.add(msg_id)
+                    unique_results.append(r)
+            results = unique_results
             
             if not results:
                 self.summarizer.logger.info(f"No top generations found for channel {channel_id}")

@@ -709,6 +709,154 @@ def cmd_bot_status(args):
         print(f"❌ Error: {e}")
 
 
+def cmd_refresh_media(args, client):
+    """
+    Refresh expired Discord media URLs by fetching fresh URLs from the API.
+    
+    This is useful because Discord CDN URLs expire. This command fetches a message
+    from the Discord API to get current, non-expired attachment URLs, then updates
+    the database.
+    """
+    import asyncio
+    import discord
+    from discord.ext import commands
+    
+    # Determine which message to refresh
+    if args.message:
+        message_id = args.message
+        # Look up the channel from the database
+        result = client.table('discord_messages').select('channel_id, attachments, created_at').eq('message_id', message_id).execute()
+        if not result.data:
+            print(f"❌ Message {message_id} not found in database")
+            return
+        channel_id = result.data[0]['channel_id']
+        old_attachments = result.data[0]['attachments']
+        created_at = result.data[0]['created_at']
+        print(f"\n🔄 Refreshing specific message: {message_id}")
+        print(f"   Channel: {channel_id}")
+        print(f"   Created: {created_at}")
+    else:
+        # Find a message with attachments from about a week ago
+        print("\n🔍 Finding a message with attachments from ~1 week ago...")
+        week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+        two_weeks_ago = (datetime.utcnow() - timedelta(days=14)).isoformat()
+        
+        result = client.table('discord_messages').select('message_id, channel_id, attachments, created_at').neq('attachments', []).gte('created_at', two_weeks_ago).lte('created_at', week_ago).limit(1).execute()
+        
+        if not result.data:
+            print("❌ No messages with attachments found from ~1 week ago")
+            return
+        
+        message_id = result.data[0]['message_id']
+        channel_id = result.data[0]['channel_id']
+        old_attachments = result.data[0]['attachments']
+        created_at = result.data[0]['created_at']
+        print(f"   Found message: {message_id}")
+        print(f"   Channel: {channel_id}")
+        print(f"   Created: {created_at}")
+    
+    # Parse old attachments
+    if isinstance(old_attachments, str):
+        old_attachments = json.loads(old_attachments)
+    
+    print(f"\n📎 Current attachments ({len(old_attachments)}):")
+    for att in old_attachments[:2]:
+        url = att.get('url', '<no url>')
+        print(f"   - {att.get('filename')}")
+        print(f"     URL: {url[:80]}...")
+    
+    # Get bot token
+    bot_token = os.getenv('DISCORD_BOT_TOKEN')
+    if not bot_token:
+        print("\n❌ DISCORD_BOT_TOKEN not set. Cannot fetch from Discord API.")
+        return
+    
+    print("\n🤖 Connecting to Discord API...")
+    
+    # Add project root to path for imports
+    from pathlib import Path
+    project_root = Path(__file__).parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    
+    async def do_refresh():
+        # Create minimal bot just for API access
+        intents = discord.Intents.default()
+        intents.message_content = True
+        
+        bot = commands.Bot(command_prefix='!', intents=intents)
+        refresh_result = {'success': False, 'attachments': []}
+        
+        @bot.event
+        async def on_ready():
+            nonlocal refresh_result
+            try:
+                print(f"   Connected as {bot.user.name}")
+                
+                # Import refresh function
+                from src.common.discord_utils import refresh_media_url
+                
+                # Get fresh URLs
+                result = await refresh_media_url(bot, channel_id, message_id)
+                
+                if not result or not result.get('success'):
+                    print("\n❌ Failed to fetch message from Discord API")
+                    return
+                
+                refresh_result = result
+                fresh_attachments = result['attachments']
+                
+                print(f"\n✅ Got fresh attachments ({len(fresh_attachments)}):")
+                for att in fresh_attachments[:2]:
+                    print(f"   - {att.get('filename')}")
+                    print(f"     URL: {att.get('url', '<none>')[:80]}...")
+                
+                # Compare URLs
+                if old_attachments and fresh_attachments:
+                    old_url = old_attachments[0].get('url', '')
+                    new_url = fresh_attachments[0].get('url', '')
+                    
+                    if old_url != new_url:
+                        print("\n📝 URLs have changed!")
+                        # Extract expiry params
+                        old_ex = 'ex=' + old_url.split('ex=')[1].split('&')[0] if 'ex=' in old_url else 'no expiry'
+                        new_ex = 'ex=' + new_url.split('ex=')[1].split('&')[0] if 'ex=' in new_url else 'no expiry'
+                        print(f"   Old expiry: {old_ex}")
+                        print(f"   New expiry: {new_ex}")
+                    else:
+                        print("\n📝 URLs are the same (may not have expired yet)")
+                
+                # Update database if requested
+                if not args.dry_run:
+                    print("\n💾 Updating database...")
+                    try:
+                        update_data = {'attachments': fresh_attachments}
+                        client.table('discord_messages').update(update_data).eq('message_id', message_id).execute()
+                        print("   ✅ Database updated successfully!")
+                    except Exception as e:
+                        print(f"   ❌ Database update failed: {e}")
+                else:
+                    print("\n🔍 Dry run - database not updated")
+                    print("   Run without --dry-run to update the database")
+                
+            except Exception as e:
+                print(f"\n❌ Error: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                await bot.close()
+        
+        try:
+            await bot.start(bot_token)
+        except discord.LoginFailure:
+            print("❌ Invalid Discord bot token")
+        except Exception as e:
+            if "Event loop is closed" not in str(e):
+                print(f"❌ Error connecting to Discord: {e}")
+    
+    asyncio.run(do_refresh())
+
+
 def cmd_channel_info(args, client):
     """Get details about a specific channel by ID."""
     if not args.channel_id:
@@ -792,6 +940,7 @@ Commands:
   archive-status      Check archive status (messages created vs archived)
   db-stats            Database statistics and recent activity
   channel-info ID     Details about a specific channel
+  refresh-media       Refresh expired Discord media URLs from API
   railway-status      Check Railway service status and health endpoints
   deployments         Analyze Railway deployment history (duplicates, crashes)
   railway-logs        Fetch Railway platform logs (deployments, restarts)
@@ -807,10 +956,11 @@ Tip: For detailed log analysis, use scripts/logs.py
     parser.add_argument("command", help="Command to run")
     parser.add_argument("channel_id", nargs="?", help="Channel ID for channel-info command")
     parser.add_argument("--channel", type=int, help="Filter by channel_id")
-    parser.add_argument("--message", type=int, help="Filter by message_id")
+    parser.add_argument("--message", type=int, help="Filter by message_id (for refresh-media)")
     parser.add_argument("--limit", "-n", type=int, default=10, help="Limit results")
     parser.add_argument("--hours", type=int, help="Filter to last N hours")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument("--dry-run", action="store_true", help="Don't update database (for refresh-media)")
     
     args = parser.parse_args()
     
@@ -848,6 +998,10 @@ Tip: For detailed log analysis, use scripts/logs.py
     
     if args.command == "channel-info":
         cmd_channel_info(args, client)
+        return
+    
+    if args.command == "refresh-media":
+        cmd_refresh_media(args, client)
         return
     
     # Table queries

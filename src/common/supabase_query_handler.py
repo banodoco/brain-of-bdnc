@@ -856,6 +856,7 @@ class SupabaseQueryHandler:
             # Fetch ALL matching messages with pagination (we'll filter in Python)
             logger.debug(f"🚀 Executing Supabase query with pagination...")
             messages = []
+            seen_message_ids = set()  # Track seen IDs to prevent duplicates from pagination overlap
             offset = 0
             batch_size = 1000
             
@@ -868,8 +869,16 @@ class SupabaseQueryHandler:
                 if not batch:
                     break
                 
-                messages.extend(batch)
-                logger.debug(f"📦 Fetched batch: {len(batch)} messages (total so far: {len(messages)})")
+                # Deduplicate: Supabase pagination can return overlapping results with complex IN queries
+                new_messages = 0
+                for msg in batch:
+                    msg_id = msg.get('message_id')
+                    if msg_id and msg_id not in seen_message_ids:
+                        seen_message_ids.add(msg_id)
+                        messages.append(msg)
+                        new_messages += 1
+                
+                logger.debug(f"📦 Fetched batch: {len(batch)} messages, {new_messages} new (total unique: {len(messages)})")
                 
                 # If we got less than batch_size, we've reached the end
                 if len(batch) < batch_size:
