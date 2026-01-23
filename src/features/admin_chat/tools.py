@@ -248,11 +248,21 @@ def execute_reply(params: Dict[str, Any]) -> Dict[str, Any]:
     messages = params.get('messages', [])
     single_message = params.get('message', '')
     
+    # Handle case where messages is passed as a string instead of array
+    if isinstance(messages, str):
+        messages = [messages]
+    
     if single_message and not messages:
         messages = [single_message]
     
     if not messages:
         return {"success": False, "error": "No message provided"}
+    
+    # Filter out empty messages
+    messages = [m for m in messages if m and m.strip()]
+    
+    if not messages:
+        return {"success": False, "error": "All messages were empty"}
     
     return {
         "success": True,

@@ -89,6 +89,10 @@ class AdminChatCog(commands.Cog):
             # Send each response message
             total_chars = 0
             for response in responses:
+                # Skip empty responses
+                if not response or not response.strip():
+                    continue
+                    
                 total_chars += len(response)
                 # Handle long messages by splitting
                 if len(response) <= 2000:
@@ -97,7 +101,8 @@ class AdminChatCog(commands.Cog):
                     # Split into chunks
                     chunks = [response[i:i+1990] for i in range(0, len(response), 1990)]
                     for chunk in chunks:
-                        await message.channel.send(chunk)
+                        if chunk.strip():  # Don't send empty chunks
+                            await message.channel.send(chunk)
             
             logger.info(f"[AdminChat] Sent {len(responses)} message(s) ({total_chars} chars total)")
             
