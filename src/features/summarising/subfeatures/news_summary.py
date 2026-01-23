@@ -476,7 +476,7 @@ Check each claim in the summary against the source messages. Identify any attrib
                 self.logger.info(f"Calling GPT-5 with high reasoning effort (attempt {attempt + 1}/{max_retries})...")
                 
                 response = await self.openai_client.responses.create(
-                    model="gpt-5",
+                    model="gpt-5.2",
                     reasoning={"effort": "high"},
                     input=[
                         {"role": "system", "content": self._VERIFICATION_SYSTEM_PROMPT},
