@@ -335,9 +335,10 @@ async def execute_share_to_social(
         return {"success": False, "error": str(e)}
 
 
-async def execute_get_top_messages(params: Dict[str, Any]) -> Dict[str, Any]:
+async def execute_get_top_messages(params: Dict[str, Any], bot: discord.Client = None) -> Dict[str, Any]:
     """Get top messages by reaction count."""
     from scripts.weekly_digest import get_top_messages_server_wide, get_top_messages, get_messages_with_media
+    from src.common.discord_utils import refresh_media_url
     
     channel_id = params.get('channel_id')
     days = params.get('days', 7)
@@ -368,6 +369,19 @@ async def execute_get_top_messages(params: Dict[str, Any]) -> Dict[str, Any]:
         # Format for LLM
         formatted = [format_message_for_llm(msg) for msg in messages[:limit]]
         
+        # Automatically fetch fresh media URLs for top 5 results if has_media requested
+        media_urls_map = {}
+        if has_media and bot:
+            for msg in messages[:5]:  # Top 5 only to limit API calls
+                try:
+                    result = await refresh_media_url(bot, msg['channel_id'], msg['message_id'], logger)
+                    if result and result.get('success'):
+                        urls = [att.get('url') for att in result.get('attachments', []) if att.get('url')]
+                        if urls:
+                            media_urls_map[str(msg['message_id'])] = urls[0]  # First attachment URL
+                except Exception as e:
+                    logger.debug(f"[AdminChat] Could not refresh media for {msg['message_id']}: {e}")
+        
         # Create pre-formatted summary for easy inclusion in reply
         summary_lines = [f"Found {len(formatted)} messages:\n"]
         for i, msg in enumerate(formatted, 1):
@@ -375,11 +389,20 @@ async def execute_get_top_messages(params: Dict[str, Any]) -> Dict[str, Any]:
             content_preview = msg.get('content', '')[:80]
             if len(msg.get('content', '')) > 80:
                 content_preview += "..."
-            summary_lines.append(
+            
+            # Build entry
+            entry = (
                 f"**{i}. {msg['author']}** ({msg['reactions']} reactions{media_tag})\n"
                 f"   {content_preview}\n"
                 f"   ID: `{msg['message_id']}`"
             )
+            
+            # Add media URL if we have it (allows Discord to embed)
+            media_url = media_urls_map.get(msg['message_id'])
+            if media_url:
+                entry += f"\n   {media_url}"
+            
+            summary_lines.append(entry)
         
         return {
             "success": True,
@@ -665,7 +688,7 @@ async def execute_tool(
     elif tool_name == "share_to_social":
         return await execute_share_to_social(bot, sharer, tool_input)
     elif tool_name == "get_top_messages":
-        return await execute_get_top_messages(tool_input)
+        return await execute_get_top_messages(tool_input, bot)
     elif tool_name == "search_content":
         return await execute_search_content(tool_input)
     elif tool_name == "get_message_context":
