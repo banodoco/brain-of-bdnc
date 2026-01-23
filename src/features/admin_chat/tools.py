@@ -392,9 +392,11 @@ async def execute_get_top_messages(params: Dict[str, Any], bot: discord.Client =
                 except Exception as e:
                     logger.debug(f"[AdminChat] Could not refresh media for {msg['message_id']}: {e}")
         
-        # Create a simple formatted summary
-        # Put each result on its own with URL on separate line
-        lines = [f"**Found {len(formatted)} messages:**\n"]
+        # Create formatted summary with ---SPLIT--- delimiters
+        # The cog will split on this and send each as separate message for proper media embedding
+        SPLIT_MARKER = "\n---SPLIT---\n"
+        
+        parts = [f"**Found {len(formatted)} messages:**"]
         
         for i, msg in enumerate(formatted, 1):
             content_preview = msg.get('content', '')[:100]
@@ -412,10 +414,10 @@ async def execute_get_top_messages(params: Dict[str, Any], bot: discord.Client =
             if media_url:
                 entry += f"\n{media_url}"
             
-            lines.append(entry)
+            parts.append(entry)
         
-        # Join with double newlines for readability
-        summary = "\n\n".join(lines)
+        # Join with split markers - cog will send each part as separate message
+        summary = SPLIT_MARKER.join(parts)
         
         return {
             "success": True,

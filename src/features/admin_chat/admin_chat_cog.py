@@ -88,23 +88,37 @@ class AdminChatCog(commands.Cog):
             
             # Send each response message
             total_chars = 0
+            messages_sent = 0
+            
             for response in responses:
                 # Skip empty responses
                 if not response or not response.strip():
                     continue
+                
+                # Split on ---SPLIT--- marker for proper media embedding
+                # Each part becomes a separate Discord message
+                parts = response.split('\n---SPLIT---\n')
+                
+                for part in parts:
+                    part = part.strip()
+                    if not part:
+                        continue
                     
-                total_chars += len(response)
-                # Handle long messages by splitting
-                if len(response) <= 2000:
-                    await message.channel.send(response)
-                else:
-                    # Split into chunks
-                    chunks = [response[i:i+1990] for i in range(0, len(response), 1990)]
-                    for chunk in chunks:
-                        if chunk.strip():  # Don't send empty chunks
-                            await message.channel.send(chunk)
+                    total_chars += len(part)
+                    
+                    # Handle long messages by splitting
+                    if len(part) <= 2000:
+                        await message.channel.send(part)
+                        messages_sent += 1
+                    else:
+                        # Split into chunks
+                        chunks = [part[i:i+1990] for i in range(0, len(part), 1990)]
+                        for chunk in chunks:
+                            if chunk.strip():
+                                await message.channel.send(chunk)
+                                messages_sent += 1
             
-            logger.info(f"[AdminChat] Sent {len(responses)} message(s) ({total_chars} chars total)")
+            logger.info(f"[AdminChat] Sent {messages_sent} message(s) ({total_chars} chars total)")
             
         except Exception as e:
             logger.error(f"[AdminChat] Error processing message: {e}", exc_info=True)
