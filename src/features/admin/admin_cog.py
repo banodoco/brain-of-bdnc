@@ -32,107 +32,81 @@ class AdminUpdateSocialsModal(discord.ui.Modal):
         placeholder='Leave blank to remove',
         max_length=100
     )
-    instagram_input = discord.ui.TextInput(
-        label='Instagram Handle (e.g., @username)',
+    reddit_input = discord.ui.TextInput(
+        label='Reddit Username (e.g., u/username)',
         required=False,
         placeholder='Leave blank to remove',
         max_length=100
     )
-    youtube_input = discord.ui.TextInput(
-        label='YouTube Channel URL (full URL)',
-        required=False,
-        placeholder='Leave blank to remove',
-        max_length=100
-    )
-    # REMOVE TIKTOK AND WEBSITE
-    # tiktok_input = discord.ui.InputText(
-    #     label='TikTok Handle (e.g., @username or full URL)',
-    #     required=False,
-    #     placeholder='Leave blank to remove',
-    #     max_length=100
-    # )
-    # website_input = discord.ui.InputText(
-    #     label='Website URL',
-    #     required=False,
-    #     placeholder='Leave blank to remove',
-    #     style=discord.TextStyle.short,
-    #     max_length=200
-    # )
-
-    permission_to_share_input = discord.ui.TextInput(
-        label='Okay to share on social? (yes/no)',
+    include_in_updates_input = discord.ui.TextInput(
+        label='Include in updates/transcripts? (yes/no)',
         placeholder='Type "yes" or "no"',
-        required=True, # Making it required to ensure user makes a choice or confirms current
+        required=True,
         max_length=3,
         min_length=2 
     )
-
-    permission_to_curate_input = discord.ui.TextInput(
-        label='Okay to share on OpenMuse? (yes/no)',
+    allow_content_sharing_input = discord.ui.TextInput(
+        label='Okay to share my content? (yes/no)',
         placeholder='Type "yes" or "no"',
-        required=True, # Making it required
+        required=True,
         max_length=3,
         min_length=2
     )
 
-    def __init__(self, user_details: dict, db_handler: DatabaseHandler):
+    def __init__(self, user_details: dict, db_handler: DatabaseHandler, bot=None):
         super().__init__(title='Update Your Preferences')
         self.user_details = user_details
         self.db_handler = db_handler
+        self.bot = bot  # Store bot for role updates
 
         # Pre-fill modal
         self.twitter_input.default = user_details.get('twitter_handle')
-        self.instagram_input.default = user_details.get('instagram_handle')
-        self.youtube_input.default = user_details.get('youtube_handle')
-        # self.tiktok_input.default = user_details.get('tiktok_handle') # REMOVED
-        # self.website_input.default = user_details.get('website') # REMOVED
+        self.reddit_input.default = user_details.get('reddit_handle')
 
-        # Pre-fill new permission inputs based on DB fields (sharing_consent, permission_to_curate)
-        # Assuming these fields store 1 (for yes) or 0 (for no)
-        # Display with first letter capitalized for the user
-        self.permission_to_share_input.default = "Yes" if user_details.get('sharing_consent') == 1 else "No"
-        self.permission_to_curate_input.default = "Yes" if user_details.get('permission_to_curate') == 1 else "No"
+        # Pre-fill permission inputs based on DB fields
+        # Note: these default to TRUE in DB, so None or True = "Yes", only False = "No"
+        include_updates = user_details.get('include_in_updates')
+        allow_sharing = user_details.get('allow_content_sharing')
+        self.include_in_updates_input.default = "No" if include_updates is False else "Yes"
+        self.allow_content_sharing_input.default = "No" if allow_sharing is False else "Yes"
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            share_social_input_raw = self.permission_to_share_input.value.strip().lower()
-            curate_openmuse_input_raw = self.permission_to_curate_input.value.strip().lower()
+            include_updates_raw = self.include_in_updates_input.value.strip().lower()
+            allow_sharing_raw = self.allow_content_sharing_input.value.strip().lower()
 
-            final_sharing_consent = None
-            final_permission_to_curate = None
+            final_include_in_updates = None
+            final_allow_content_sharing = None
 
-            # Validate and convert for sharing_consent
-            if share_social_input_raw == 'yes':
-                final_sharing_consent = 1
-            elif share_social_input_raw == 'no':
-                final_sharing_consent = 0
-            else: # Invalid input (should be caught by min/max_length, but good to have)
+            # Validate and convert for include_in_updates
+            if include_updates_raw == 'yes':
+                final_include_in_updates = True
+            elif include_updates_raw == 'no':
+                final_include_in_updates = False
+            else:
                 await interaction.response.send_message(
-                    "Invalid input for 'Okay to share on social?'. Please enter 'yes' or 'no'.", 
+                    "Invalid input for 'Include in updates/transcripts?'. Please enter 'yes' or 'no'.", 
                     ephemeral=True
                 )
                 return
 
-            # Validate and convert for permission_to_curate
-            if curate_openmuse_input_raw == 'yes':
-                final_permission_to_curate = 1
-            elif curate_openmuse_input_raw == 'no':
-                final_permission_to_curate = 0
-            else: # Invalid input
+            # Validate and convert for allow_content_sharing
+            if allow_sharing_raw == 'yes':
+                final_allow_content_sharing = True
+            elif allow_sharing_raw == 'no':
+                final_allow_content_sharing = False
+            else:
                 await interaction.response.send_message(
-                    "Invalid input for 'Okay to share on OpenMuse?'. Please enter 'yes' or 'no'.", 
+                    "Invalid input for 'Okay to share my content?'. Please enter 'yes' or 'no'.", 
                     ephemeral=True
                 )
                 return
             
             updated_data = {
                 'twitter_handle': self.twitter_input.value.strip() or None,
-                'instagram_handle': self.instagram_input.value.strip() or None,
-                'youtube_handle': self.youtube_input.value.strip() or None,
-                # 'tiktok_handle': self.tiktok_input.value.strip() or None, # REMOVED
-                # 'website': self.website_input.value.strip() or None, # REMOVED
-                'sharing_consent': final_sharing_consent,       # Use correct DB field name
-                'permission_to_curate': final_permission_to_curate, # Use correct DB field name
+                'reddit_handle': self.reddit_input.value.strip() or None,
+                'include_in_updates': final_include_in_updates,
+                'allow_content_sharing': final_allow_content_sharing,
             }
             
             success = self.db_handler.create_or_update_member(
@@ -143,6 +117,12 @@ class AdminUpdateSocialsModal(discord.ui.Modal):
             )
 
             if success:
+                # Update the "no sharing" role based on the new allow_content_sharing value
+                if self.bot:
+                    await discord_utils.update_no_sharing_role(
+                        self.bot, interaction.user.id, final_allow_content_sharing, logger
+                    )
+                
                 await interaction.response.send_message("Your preferences have been updated successfully!", ephemeral=True)
                 logger.info(f"User {interaction.user.id} updated preferences via /update_details. Data: {updated_data}")
             else:
@@ -151,7 +131,6 @@ class AdminUpdateSocialsModal(discord.ui.Modal):
 
         except Exception as e:
             logger.error(f"Error in AdminUpdateSocialsModal on_submit for user {interaction.user.id}: {e}", exc_info=True)
-            # Check if interaction is already responded to before sending another response
             if not interaction.response.is_done():
                 await interaction.response.send_message("An error occurred while updating your preferences.", ephemeral=True)
             else:
@@ -491,14 +470,13 @@ class AdminCog(commands.Cog):
                      'username': interaction.user.name,
                      'global_name': interaction.user.global_name,
                      'twitter_handle': None,
-                     'instagram_handle': None,
-                     'youtube_handle': None,
-                     'tiktok_handle': None,
-                     'website': None
+                     'reddit_handle': None,
+                     'include_in_updates': None,  # Will default to TRUE behavior
+                     'allow_content_sharing': None,  # Will default to TRUE behavior
                 }
             
-            # Create and send the modal
-            modal = AdminUpdateSocialsModal(user_details=user_details, db_handler=self.db_handler)
+            # Create and send the modal, pass bot for role updates
+            modal = AdminUpdateSocialsModal(user_details=user_details, db_handler=self.db_handler, bot=self.bot)
             await interaction.response.send_modal(modal)
             logger.info(f"User {user_id} triggered /update_details command.")
 

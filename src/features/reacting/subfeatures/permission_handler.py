@@ -50,16 +50,18 @@ class PermissionRequestView(discord.ui.View):
 
         success = False
         try:
-            self.logger.info(f"[Reactor][PermissionView] Updating permission to TRUE for author {self.author.id}.")
+            self.logger.info(f"[Reactor][PermissionView] Updating allow_content_sharing to TRUE for author {self.author.id}.")
             success = await asyncio.to_thread(
-                self.db_handler.update_member_permission_status,
+                self.db_handler.update_member_sharing_permission,
                 self.author.id,
                 True
             )
             if not success:
-                self.logger.error(f"[Reactor][PermissionView] Failed to update permission to TRUE (returned False).")
+                self.logger.error(f"[Reactor][PermissionView] Failed to update allow_content_sharing to TRUE (returned False).")
             else:
-                 self.logger.info(f"[Reactor][PermissionView] Successfully updated permission to TRUE.")
+                 self.logger.info(f"[Reactor][PermissionView] Successfully updated allow_content_sharing to TRUE.")
+                 # Remove the "no sharing" role since they're allowing sharing
+                 await discord_utils.update_no_sharing_role(self.bot, self.author.id, True, self.logger)
         except Exception as db_err:
             self.logger.error(f"[Reactor][PermissionView] Exception updating permission to TRUE: {db_err}", exc_info=True)
             await interaction.followup.send(content="Sorry, there was a database error updating your permission. Please try again later or contact support.", ephemeral=True)
@@ -174,16 +176,18 @@ class PermissionRequestView(discord.ui.View):
 
         success = False
         try:
-            self.logger.info(f"[Reactor][PermissionView] Updating permission to FALSE for author {self.author.id}.")
+            self.logger.info(f"[Reactor][PermissionView] Updating allow_content_sharing to FALSE for author {self.author.id}.")
             success = await asyncio.to_thread(
-                self.db_handler.update_member_permission_status,
+                self.db_handler.update_member_sharing_permission,
                 self.author.id,
                 False
             )
             if not success:
-                 self.logger.error(f"[Reactor][PermissionView] Failed to update permission to FALSE (returned False).")
+                 self.logger.error(f"[Reactor][PermissionView] Failed to update allow_content_sharing to FALSE (returned False).")
             else:
-                 self.logger.info(f"[Reactor][PermissionView] Successfully updated permission to FALSE.")
+                 self.logger.info(f"[Reactor][PermissionView] Successfully updated allow_content_sharing to FALSE.")
+                 # Add the "no sharing" role to make opt-out visible
+                 await discord_utils.update_no_sharing_role(self.bot, self.author.id, False, self.logger)
         except Exception as db_err:
             self.logger.error(f"[Reactor][PermissionView] Exception updating permission to FALSE: {db_err}", exc_info=True)
             await interaction.followup.send(content="Sorry, there was a database error updating your permission. Please contact support.", ephemeral=True)
@@ -287,68 +291,67 @@ async def handle_request_curation_permission(
              logger.info(f"[Reactor][PermissionHandler] Member entry created for author {author.id}. Proceeding with DM.")
              permission_status = None
         else:
-            permission_status = author_member_data.get('permission_to_curate')
-            logger.info(f"[Reactor][PermissionHandler] Author {author.id} found in DB. Current permission_to_curate status: {permission_status}")
-            author_dm_preference = author_member_data.get('dm_preference', True)
-            if not author_dm_preference:
-                logger.info(f"[Reactor][PermissionHandler] Author {author.id} has DMs disabled. Skipping DM.")
-                try:
-                    await discord_utils.safe_send_message(
-                        bot, curator, bot.rate_limiter, logger, 
-                        content=f"Could not send curation permission request to {author.mention} for {message_link}. They have disabled DMs for these requests."
-                    )
-                    logger.info(f"[Reactor][PermissionHandler] Notified curator {curator.id} that author {author.id} has DMs disabled.")
-                except discord.Forbidden:
-                    logger.warning(f"[Reactor][PermissionHandler] Could not send DM to curator {curator.id} about author's disabled DMs (curator DMs might be closed).")
-                except Exception as e:
-                    logger.error(f"[Reactor][PermissionHandler] Error sending DM to curator {curator.id} about author's disabled DMs: {e}")
+            # Check allow_content_sharing - defaults to TRUE in DB, only FALSE is explicit opt-out
+            permission_status = author_member_data.get('allow_content_sharing')
+            logger.info(f"[Reactor][PermissionHandler] Author {author.id} found in DB. Current allow_content_sharing status: {permission_status}")
+
+        # Check permission status:
+        # - allow_content_sharing = False (explicit opt-out): deny, don't ask
+        # - allow_content_sharing = True: proceed with upload
+        # - allow_content_sharing = None (not set yet): ask for permission
+        if permission_status is False:
+            # Explicit opt-out - respect it
+            logger.info(f"[Reactor][PermissionHandler] Author {author.id} has explicitly denied content sharing (allow_content_sharing=False). No action needed.")
+            try:
+                await discord_utils.safe_send_message(
+                    bot, curator, bot.rate_limiter, logger,
+                    content=f"Cannot curate {author.mention}'s content ({message_link}). They have opted out of content sharing."
+                )
+            except Exception:
+                pass
+            return
+        elif permission_status is True:
+            # Already granted permission - proceed with upload
+            logger.info(f"[Reactor][PermissionHandler] Author {author.id} has already granted permission (allow_content_sharing=True). Proceeding with upload for message {message.id}.")
+            if not message.attachments:
+                logger.warning(f"[Reactor][PermissionHandler] Message {message.id} has no attachments to upload, despite existing permission.")
                 return
 
-        if permission_status is not None:
-            if permission_status:
-                logger.info(f"[Reactor][PermissionHandler] Author {author.id} has already granted permission (status: {permission_status}). Proceeding with upload for message {message.id}.")
-                if not message.attachments:
-                    logger.warning(f"[Reactor][PermissionHandler] Message {message.id} has no attachments to upload, despite existing permission.")
-                    return
-
-                upload_success_count = 0
-                upload_fail_count = 0
-                for attachment in message.attachments:
-                    logger.info(f"[Reactor][PermissionHandler] Uploading attachment '{attachment.filename}' for message {message.id} due to existing permission.")
-                    try:
-                        media_record, _ = await openmuse_interactor.upload_discord_attachment(
-                            attachment=attachment,
-                            author=author,
-                            message=message,
-                            admin_status='Curated'
-                        )
-                        if media_record:
-                            logger.info(f"[Reactor][PermissionHandler] Successfully uploaded attachment '{attachment.filename}' for message {message.id}.")
-                            upload_success_count += 1
-                        else:
-                            logger.error(f"[Reactor][PermissionHandler] Failed to upload attachment '{attachment.filename}' for message {message.id} (media_record is None).")
-                            upload_fail_count += 1
-                    except Exception as upload_ex:
-                        logger.error(f"[Reactor][PermissionHandler] Exception during upload of attachment '{attachment.filename}': {upload_ex}", exc_info=True)
+            upload_success_count = 0
+            upload_fail_count = 0
+            for attachment in message.attachments:
+                logger.info(f"[Reactor][PermissionHandler] Uploading attachment '{attachment.filename}' for message {message.id} due to existing permission.")
+                try:
+                    media_record, _ = await openmuse_interactor.upload_discord_attachment(
+                        attachment=attachment,
+                        author=author,
+                        message=message,
+                        admin_status='Curated'
+                    )
+                    if media_record:
+                        logger.info(f"[Reactor][PermissionHandler] Successfully uploaded attachment '{attachment.filename}' for message {message.id}.")
+                        upload_success_count += 1
+                    else:
+                        logger.error(f"[Reactor][PermissionHandler] Failed to upload attachment '{attachment.filename}' for message {message.id} (media_record is None).")
                         upload_fail_count += 1
-                
-                feedback_msg = f"Attempted upload for {author.display_name}'s message ({message_link}) based on existing permission: {upload_success_count} succeeded, {upload_fail_count} failed."
-                try:
-                    await discord_utils.safe_send_message(
-                        bot, curator, bot.rate_limiter, logger, content=feedback_msg
-                    )
-                    logger.info(f"[Reactor][PermissionHandler] Sent upload status feedback to curator {curator.id}.")
-                except discord.Forbidden:
-                     logger.warning(f"[Reactor][PermissionHandler] Could not send upload status DM feedback to curator {curator.id}.")
-                except Exception as react_ex:
-                     logger.warning(f"[Reactor][PermissionHandler] Could not add reaction to message {message.id} after upload attempt: {react_ex}")
-                return
-            else:
-                status_str = "denied"
-                logger.info(f"[Reactor][PermissionHandler] Author {author.id} has already {status_str} permission (status: {permission_status}). No action needed.")
-                return
+                except Exception as upload_ex:
+                    logger.error(f"[Reactor][PermissionHandler] Exception during upload of attachment '{attachment.filename}': {upload_ex}", exc_info=True)
+                    upload_fail_count += 1
+            
+            feedback_msg = f"Attempted upload for {author.display_name}'s message ({message_link}) based on existing permission: {upload_success_count} succeeded, {upload_fail_count} failed."
+            try:
+                await discord_utils.safe_send_message(
+                    bot, curator, bot.rate_limiter, logger, content=feedback_msg
+                )
+                logger.info(f"[Reactor][PermissionHandler] Sent upload status feedback to curator {curator.id}.")
+            except discord.Forbidden:
+                 logger.warning(f"[Reactor][PermissionHandler] Could not send upload status DM feedback to curator {curator.id}.")
+            except Exception as react_ex:
+                 logger.warning(f"[Reactor][PermissionHandler] Could not add reaction to message {message.id} after upload attempt: {react_ex}")
+            return
 
-        logger.info(f"[Reactor][PermissionHandler] Permission status for author {author.id} is NULL and DMs are enabled. Sending permission request DM.")
+        # permission_status is None - need to ask for permission
+        logger.info(f"[Reactor][PermissionHandler] Permission status for author {author.id} is NULL. Sending permission request DM.")
         dm_content = (
             f"Hi {author.mention}! {curator.mention} would like to curate your work to [OpenMuse](https://openmuse.ai/. ): {message_link}\\n\\n"
             f"It will be hosted under your profile name there - for you to edit and update if/when you claim an account by signing up with your Discord account.\\n\\n"

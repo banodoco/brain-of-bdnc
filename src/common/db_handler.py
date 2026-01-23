@@ -302,12 +302,15 @@ class DatabaseHandler:
                               system: bool = False, accent_color: Optional[int] = None,
                               banner_url: Optional[str] = None, discord_created_at: Optional[str] = None,
                               guild_join_date: Optional[str] = None, role_ids: Optional[str] = None,
-                              twitter_handle: Optional[str] = None, instagram_handle: Optional[str] = None,
-                              youtube_handle: Optional[str] = None, tiktok_handle: Optional[str] = None,
-                              website: Optional[str] = None, sharing_consent: Optional[bool] = None,
-                              dm_preference: Optional[bool] = None, permission_to_curate: Optional[bool] = None) -> bool:
-        """Create or update a member in Supabase."""
-        member_data = {
+                              twitter_handle: Optional[str] = None, reddit_handle: Optional[str] = None,
+                              include_in_updates: Optional[bool] = None,
+                              allow_content_sharing: Optional[bool] = None) -> bool:
+        """Create or update a member in Supabase.
+        
+        Permission fields (include_in_updates, allow_content_sharing) default to TRUE in the database.
+        Only pass explicit values when the user has made a choice.
+        """
+        member_data: Dict[str, Any] = {
             'member_id': member_id,
             'username': username,
             'global_name': global_name,
@@ -322,15 +325,18 @@ class DatabaseHandler:
             'guild_join_date': guild_join_date,
             'role_ids': role_ids,
             'twitter_handle': twitter_handle,
-            'instagram_handle': instagram_handle,
-            'youtube_handle': youtube_handle,
-            'tiktok_handle': tiktok_handle,
-            'website': website,
-            'sharing_consent': sharing_consent,
-            'dm_preference': dm_preference,
-            'permission_to_curate': permission_to_curate,
+            'reddit_handle': reddit_handle,
             'updated_at': datetime.now().isoformat()
         }
+
+        # IMPORTANT: Do not send NULL for these fields during routine member syncs.
+        # If we upsert NULL, we override the DB defaults (TRUE) and can also wipe
+        # previously-set preferences. Only include these keys when the user has
+        # explicitly made a choice (True/False).
+        if include_in_updates is not None:
+            member_data['include_in_updates'] = include_in_updates
+        if allow_content_sharing is not None:
+            member_data['allow_content_sharing'] = allow_content_sharing
         
         if self.storage_handler:
             try:
@@ -343,13 +349,21 @@ class DatabaseHandler:
                 return False
         return False
 
-    def update_member_permission_status(self, member_id: int, permission_status: Optional[bool]) -> bool:
-        """Update member permission status in Supabase."""
+    def update_member_sharing_permission(self, member_id: int, allow_content_sharing: bool) -> bool:
+        """Update member's content sharing permission in Supabase.
+        
+        Args:
+            member_id: Discord member ID
+            allow_content_sharing: Whether the user allows their content to be shared
+            
+        Returns:
+            True if update succeeded, False otherwise
+        """
         if self.storage_handler:
             try:
                 member_data = {
                     'member_id': member_id,
-                    'permission_to_curate': permission_status,
+                    'allow_content_sharing': allow_content_sharing,
                     'updated_at': datetime.now().isoformat()
                 }
                 stored = self._run_async_in_thread(
@@ -357,7 +371,33 @@ class DatabaseHandler:
                 )
                 return stored > 0
             except Exception as e:
-                logger.error(f"Error updating member permission in Supabase: {e}", exc_info=True)
+                logger.error(f"Error updating member sharing permission in Supabase: {e}", exc_info=True)
+                return False
+        return False
+    
+    def update_member_updates_permission(self, member_id: int, include_in_updates: bool) -> bool:
+        """Update member's include in updates permission in Supabase.
+        
+        Args:
+            member_id: Discord member ID
+            include_in_updates: Whether the user allows being mentioned in summaries/digests
+            
+        Returns:
+            True if update succeeded, False otherwise
+        """
+        if self.storage_handler:
+            try:
+                member_data = {
+                    'member_id': member_id,
+                    'include_in_updates': include_in_updates,
+                    'updated_at': datetime.now().isoformat()
+                }
+                stored = self._run_async_in_thread(
+                    self.storage_handler.store_members_to_supabase([member_data])
+                )
+                return stored > 0
+            except Exception as e:
+                logger.error(f"Error updating member updates permission in Supabase: {e}", exc_info=True)
                 return False
         return False
 

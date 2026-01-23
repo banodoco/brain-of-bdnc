@@ -48,11 +48,96 @@ def get_client():
     return create_client(url, key)
 
 
+def _get_member_name(member_data: Dict) -> str:
+    """
+    Get display name for a member, respecting include_in_updates preference.
+    If include_in_updates is explicitly False, returns 'A community member'.
+    """
+    # include_in_updates defaults to TRUE in DB, so only explicit False means opt-out
+    if member_data.get('include_in_updates') is False:
+        return 'A community member'
+    return member_data.get('server_nick') or member_data.get('global_name') or member_data.get('username') or 'Unknown'
+
+
 def get_channels_in_category(category_id: int) -> List[Dict]:
     """Get all channels in a category."""
     client = get_client()
     result = client.table('discord_channels').select('channel_id, channel_name').eq('category_id', category_id).execute()
     return result.data
+
+
+def get_active_channels(days: int = 7, exclude_nsfw: bool = True) -> List[Dict]:
+    """Get all channels that have had messages in the last N days, with message counts."""
+    client = get_client()
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+
+    # Get all channels
+    channels = client.table('discord_channels').select('channel_id, channel_name, nsfw').execute()
+    if exclude_nsfw:
+        channel_map = {ch['channel_id']: ch['channel_name'] for ch in channels.data if not ch.get('nsfw')}
+    else:
+        channel_map = {ch['channel_id']: ch['channel_name'] for ch in channels.data}
+
+    # Get messages from last N days
+    messages = client.table('discord_messages').select('channel_id').gte('created_at', cutoff).execute()
+
+    # Count messages per channel
+    channel_counts = {}
+    for msg in messages.data:
+        ch_id = msg['channel_id']
+        if ch_id in channel_map:
+            channel_counts[ch_id] = channel_counts.get(ch_id, 0) + 1
+
+    # Build result list
+    result = []
+    for ch_id, count in sorted(channel_counts.items(), key=lambda x: x[1], reverse=True):
+        result.append({
+            'channel_id': ch_id,
+            'channel_name': channel_map[ch_id],
+            'message_count': count
+        })
+
+    return result
+
+
+def get_top_messages_server_wide(days: int = 7, min_reactions: int = 3, limit: int = 50, exclude_nsfw: bool = True) -> List[Dict]:
+    """Get top messages across the entire server."""
+    client = get_client()
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+
+    # Get channel names and filter NSFW
+    channels = client.table('discord_channels').select('channel_id, channel_name, nsfw').execute()
+    if exclude_nsfw:
+        channel_map = {ch['channel_id']: ch['channel_name'] for ch in channels.data if not ch.get('nsfw')}
+    else:
+        channel_map = {ch['channel_id']: ch['channel_name'] for ch in channels.data}
+
+    channel_ids = list(channel_map.keys())
+
+    result = client.table('discord_messages').select(
+        'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
+    ).in_('channel_id', channel_ids).gte('created_at', cutoff).gte('reaction_count', min_reactions).order('reaction_count', desc=True).limit(limit).execute()
+
+    # Enrich with author names and channel names
+    messages = result.data
+    if messages:
+        author_ids = list(set(m['author_id'] for m in messages))
+        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
+        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
+
+        for msg in messages:
+            msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
+            msg['channel_name'] = channel_map.get(msg['channel_id'], 'Unknown')
+            # Parse reactors count
+            reactors = msg.get('reactors', [])
+            if isinstance(reactors, str):
+                try:
+                    reactors = json.loads(reactors)
+                except:
+                    reactors = []
+            msg['unique_reactor_count'] = len(reactors) if isinstance(reactors, list) else 0
+
+    return messages
 
 
 def get_messages_in_range(channel_id: int, days: int = 7) -> List[Dict]:
@@ -68,8 +153,8 @@ def get_messages_in_range(channel_id: int, days: int = 7) -> List[Dict]:
     messages = result.data
     if messages:
         author_ids = list(set(m['author_id'] for m in messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: m.get('server_nick') or m.get('global_name') or m.get('username') for m in members_result.data}
+        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
+        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
         
         for msg in messages:
             msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
@@ -90,8 +175,8 @@ def get_top_messages(channel_id: int, days: int = 7, min_reactions: int = 3, lim
     messages = result.data
     if messages:
         author_ids = list(set(m['author_id'] for m in messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: m.get('server_nick') or m.get('global_name') or m.get('username') for m in members_result.data}
+        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
+        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
         
         for msg in messages:
             msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
@@ -124,8 +209,8 @@ def get_top_messages_in_category(category_id: int, days: int = 7, min_reactions:
     messages = result.data
     if messages:
         author_ids = list(set(m['author_id'] for m in messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: m.get('server_nick') or m.get('global_name') or m.get('username') for m in members_result.data}
+        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
+        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
         
         for msg in messages:
             msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
@@ -176,8 +261,8 @@ def get_message_context(message_id: int, surrounding: int = 5) -> Dict[str, Any]
     all_messages = [target_msg] + replies + before + after
     if all_messages:
         author_ids = list(set(m['author_id'] for m in all_messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: m.get('server_nick') or m.get('global_name') or m.get('username') for m in members_result.data}
+        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
+        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
         
         for msg in all_messages:
             msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
@@ -202,10 +287,9 @@ def get_message_by_id(message_id: int) -> Optional[Dict]:
     msg = result.data[0]
     
     # Get author name
-    member_result = client.table('discord_members').select('username, global_name, server_nick').eq('member_id', msg['author_id']).execute()
+    member_result = client.table('discord_members').select('username, global_name, server_nick, include_in_updates').eq('member_id', msg['author_id']).execute()
     if member_result.data:
-        m = member_result.data[0]
-        msg['author_name'] = m.get('server_nick') or m.get('global_name') or m.get('username')
+        msg['author_name'] = _get_member_name(member_result.data[0])
     else:
         msg['author_name'] = 'Unknown'
     
@@ -254,11 +338,10 @@ def get_messages_by_user(user_id: int, channel_ids: List[int] = None, days: int 
     messages = result.data
     
     # Get author name
-    member_result = client.table('discord_members').select('username, global_name, server_nick').eq('member_id', user_id).execute()
+    member_result = client.table('discord_members').select('username, global_name, server_nick, include_in_updates').eq('member_id', user_id).execute()
     author_name = 'Unknown'
     if member_result.data:
-        m = member_result.data[0]
-        author_name = m.get('server_nick') or m.get('global_name') or m.get('username')
+        author_name = _get_member_name(member_result.data[0])
     
     # Get channel names
     if messages:
@@ -309,8 +392,8 @@ def get_messages_with_media(channel_id: int = None, category_id: int = None, day
     # Enrich with author names
     if messages:
         author_ids = list(set(m['author_id'] for m in messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: m.get('server_nick') or m.get('global_name') or m.get('username') for m in members_result.data}
+        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
+        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
         
         for msg in messages:
             msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
@@ -337,8 +420,8 @@ def search_messages_by_content(query_text: str, channel_ids: List[int] = None, d
     # Enrich with author and channel names
     if messages:
         author_ids = list(set(m['author_id'] for m in messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: m.get('server_nick') or m.get('global_name') or m.get('username') for m in members_result.data}
+        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
+        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
         
         channel_ids_found = list(set(m['channel_id'] for m in messages))
         channels_result = client.table('discord_channels').select('channel_id, channel_name').in_('channel_id', channel_ids_found).execute()
@@ -400,8 +483,8 @@ def get_thread_chain(message_id: int) -> Dict[str, Any]:
     # Enrich with author names
     if thread_messages:
         author_ids = list(set(m['author_id'] for m in thread_messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: m.get('server_nick') or m.get('global_name') or m.get('username') for m in members_result.data}
+        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
+        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
         
         for msg in thread_messages:
             msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
@@ -554,6 +637,37 @@ def cmd_channels(args):
     for ch in channels:
         print(f"  - {ch['channel_name']} ({ch['channel_id']})")
     print(f"\nTotal: {len(channels)} channels")
+
+
+def cmd_active_channels(args):
+    """List all channels with recent messages."""
+    channels = get_active_channels(days=args.days, exclude_nsfw=not args.include_nsfw)
+    nsfw_note = "" if args.include_nsfw else " (excluding NSFW)"
+    print(f"\n📊 Active channels in last {args.days} days{nsfw_note}:\n")
+
+    for ch in channels:
+        print(f"  {ch['channel_name']}: {ch['message_count']} messages ({ch['channel_id']})")
+
+    total_messages = sum(ch['message_count'] for ch in channels)
+    print(f"\nTotal: {len(channels)} active channels, {total_messages} messages")
+
+
+def cmd_server_top(args):
+    """Get top messages across the entire server."""
+    messages = get_top_messages_server_wide(
+        days=args.days,
+        min_reactions=args.min_reactions,
+        limit=args.limit,
+        exclude_nsfw=not args.include_nsfw
+    )
+    nsfw_note = "" if args.include_nsfw else " (excluding NSFW)"
+    print(f"\n🔥 Top messages server-wide{nsfw_note} (last {args.days} days, min {args.min_reactions} reactions):\n")
+
+    for i, msg in enumerate(messages, 1):
+        print(f"--- #{i} ({msg.get('channel_name', 'Unknown')}) ---")
+        print(format_message_for_display(msg))
+        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'])}")
+        print()
 
 
 def cmd_messages(args):
@@ -785,6 +899,18 @@ def main():
     # channels command
     p_channels = subparsers.add_parser('channels', help='List channels in a category')
     p_channels.add_argument('id', type=int, help='Category ID')
+
+    # active-channels command
+    p_active = subparsers.add_parser('active-channels', help='List all channels with recent messages')
+    p_active.add_argument('--days', type=int, default=7, help='Number of days to look back')
+    p_active.add_argument('--include-nsfw', action='store_true', help='Include NSFW channels')
+
+    # server-top command
+    p_server_top = subparsers.add_parser('server-top', help='Get top messages across entire server')
+    p_server_top.add_argument('--days', type=int, default=7, help='Number of days to look back')
+    p_server_top.add_argument('--min-reactions', type=int, default=3, help='Minimum reaction count')
+    p_server_top.add_argument('--limit', type=int, default=50, help='Max messages to show')
+    p_server_top.add_argument('--include-nsfw', action='store_true', help='Include NSFW channels')
     
     # messages command
     p_messages = subparsers.add_parser('messages', help='Get messages from a channel')
@@ -851,6 +977,10 @@ def main():
     
     if args.command == 'channels':
         cmd_channels(args)
+    elif args.command == 'active-channels':
+        cmd_active_channels(args)
+    elif args.command == 'server-top':
+        cmd_server_top(args)
     elif args.command == 'messages':
         cmd_messages(args)
     elif args.command == 'top':

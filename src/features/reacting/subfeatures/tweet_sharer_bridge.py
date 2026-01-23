@@ -205,9 +205,9 @@ Reply with that and nothing else"""
                 username=original_poster.name, 
                 global_name=getattr(original_poster, 'global_name', None),
                 display_name=getattr(original_poster, 'nick', None), 
-                sharing_consent=True
+                allow_content_sharing=True
             )
-            logger.info(f"[TweetSharerBridge] ({path_type}) Updated sharing_consent to True for user {original_poster.id} (LLM approved).")
+            logger.info(f"[TweetSharerBridge] ({path_type}) Updated allow_content_sharing to True for user {original_poster.id} (LLM approved).")
             if interaction: # Should always be true for Consent Path
                 try:
                     await interaction.followup.send("Thanks! Your content is being shared.", ephemeral=True)
@@ -298,15 +298,15 @@ Reply with that and nothing else"""
         logger.info(f"[TweetSharerBridge] ({path_type}) Content for message {message_to_share.id} flagged by LLM as unsuitable. Decision: '{actual_moderation_decision}', Reason: '{moderation_reason}'. Not tweeting.")
         
         if path_type == "Consent Path":
-            # Update DM preference for OP (they said yes, but content flagged)
+            # Update sharing preference for OP (they said yes, but content flagged)
             db_handler.create_or_update_member(
                 member_id=original_poster.id, 
                 username=original_poster.name, 
                 global_name=getattr(original_poster, 'global_name', None),
                 display_name=getattr(original_poster, 'nick', None),
-                sharing_consent=True # Still record they consented, even if this instance is blocked
+                allow_content_sharing=True # Still record they consented, even if this instance is blocked
             )
-            logger.info(f"[TweetSharerBridge] ({path_type}) User {original_poster.id} consented, but LLM flagged. sharing_consent still set to True.")
+            logger.info(f"[TweetSharerBridge] ({path_type}) User {original_poster.id} consented, but LLM flagged. allow_content_sharing still set to True.")
             if interaction: # Should always be true for Consent Path
                 try:
                     await interaction.followup.send("Thank you for your consent. However, upon further review by our automated system, the content was determined to be unsuitable for tweeting at this time. An admin has been notified. Your general preference to share has been saved.", ephemeral=True)
@@ -452,14 +452,17 @@ class ConsentView(View):
             if isinstance(item, Button): item.disabled = True
         await interaction.response.edit_message(view=self)
         try:
+            # Set allow_content_sharing to False since user explicitly denied
             self.db_handler.create_or_update_member(
                 member_id=self.original_poster.id,
                 username=self.original_poster.name,
                 global_name=getattr(self.original_poster, 'global_name', None),
                 display_name=getattr(self.original_poster, 'nick', None),
-                dm_preference=False
+                allow_content_sharing=False
             )
-            self.logger.info(f"[TweetSharerBridge] Updated dm_preference to False for user {self.original_poster.id}")
+            self.logger.info(f"[TweetSharerBridge] Updated allow_content_sharing to False for user {self.original_poster.id}")
+            # Add the "no sharing" role to make opt-out visible
+            await discord_utils.update_no_sharing_role(self.bot, self.original_poster.id, False, self.logger)
             await discord_utils.safe_send_message(
                 self.bot, interaction.user, self.bot.rate_limiter, self.logger,
                 content="Your preference has been updated. This content will not be shared, and we won't ask for this message again. You can manage global preferences by DMing me /update_details."
@@ -648,17 +651,29 @@ async def handle_send_tweet_about_message(
         except discord.HTTPException: pass
         return
 
-    # Check for original poster's pre-approved sharing consent
+    # Check for original poster's content sharing permission
+    # allow_content_sharing defaults to TRUE, so:
+    # - TRUE or None: can proceed (ask for consent if not explicitly True, or use pre-approved path)
+    # - FALSE: explicit opt-out, respect it
     member_data_op = db_handler.get_member(original_poster.id)
-    sharing_consent_status = member_data_op.get('sharing_consent') if member_data_op else None
+    allow_content_sharing_status = member_data_op.get('allow_content_sharing') if member_data_op else None
 
-    if sharing_consent_status == 1:
-        logger.info(f"[TweetSharerBridge] User {original_poster.id} has pre-approved sharing (sharing_consent=1). Proceeding with LLM check for message {message_to_share.id} based on reactor {reactor.id}'s comment: '{reactor_comment[:50]}...'.")
+    # Check for explicit opt-out first
+    if allow_content_sharing_status is False:
+        logger.info(f"[TweetSharerBridge] User {original_poster.id} has explicitly opted out (allow_content_sharing=False). Aborting for message {message_to_share.id}.")
+        try:
+            await reactor_dm_channel.send(
+                f"The author of the message ({original_poster.mention}) has opted out of content sharing. "
+                f"Your request to share {message_to_share.jump_url} cannot be processed."
+            )
+        except discord.HTTPException:
+            logger.warning(f"[TweetSharerBridge] Failed to notify reactor {reactor.id} about OP ({original_poster.id}) opt-out for message {message_to_share.id}.")
+        return
+
+    # Check for pre-approved sharing (allow_content_sharing = True)
+    if allow_content_sharing_status is True:
+        logger.info(f"[TweetSharerBridge] User {original_poster.id} has pre-approved sharing (allow_content_sharing=True). Proceeding with LLM check for message {message_to_share.id} based on reactor {reactor.id}'s comment: '{reactor_comment[:50]}...'.")
         
-        # LLM Moderation Check (Pre-approved path)
-        # TODO: Replace with your desired Claude model from your available options
-        # moderation_model = "claude-sonnet-4-5-20250929"
-
         await _process_moderation_and_sharing(
             bot_instance=bot_instance,
             logger=logger,
@@ -675,25 +690,9 @@ async def handle_send_tweet_about_message(
         )
         return # End of pre-approved flow (either tweeted or blocked by LLM)
 
-    # NEW: Check dm_preference BEFORE trying to send consent DM
-    # Default to True if member_data_op is None or dm_preference key is missing, 
-    # as per db default for new users / non-set preference.
-    dm_preference_status = member_data_op.get('dm_preference', True) if member_data_op else True 
-
-    if dm_preference_status is False:
-        logger.info(f"[TweetSharerBridge] Original poster {original_poster.id} has dm_preference=False. Aborting consent DM for message {message_to_share.id}.")
-        try:
-            await reactor_dm_channel.send(
-                f"The author of the message ({original_poster.mention}) has chosen not to receive direct messages for sharing requests at this time. "
-                f"Your request to share {message_to_share.jump_url} cannot be processed."
-            )
-        except discord.HTTPException:
-            logger.warning(f"[TweetSharerBridge] Failed to notify reactor {reactor.id} about OP ({original_poster.id}) dm_preference for message {message_to_share.id}.")
-        return # End flow if OP does not want DMs for sharing requests
-
     # --- Regular Flow: DM Original Poster for Consent ---
-    # This section will now be reached only if sharing_consent_status is not 1 AND dm_preference is not False
-    logger.info(f"[TweetSharerBridge] Proceeding to ask original poster {original_poster.id} for consent for message {message_to_share.id} (sharing_consent not 1, dm_preference not False).")
+    # This section is reached when allow_content_sharing is None (not yet set)
+    logger.info(f"[TweetSharerBridge] Proceeding to ask original poster {original_poster.id} for consent for message {message_to_share.id} (allow_content_sharing not yet set).")
     
     original_poster_dm_channel = None
     try:

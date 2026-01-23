@@ -2,6 +2,7 @@ import discord
 import asyncio
 import json
 import logging
+import os
 from typing import Union, Optional, List, Dict, Any
 
 from src.common.rate_limiter import RateLimiter
@@ -214,4 +215,110 @@ async def refresh_and_update_message_urls(
         
     except Exception as e:
         log.error(f"Error updating message {message_id} in database: {e}", exc_info=True)
+        return False
+
+
+async def update_no_sharing_role(
+    bot: Union[discord.Client, discord.ext.commands.Bot],
+    member_id: int,
+    allow_sharing: bool,
+    logger: Optional[logging.Logger] = None
+) -> bool:
+    """
+    Add or remove the "no sharing" role based on user's content sharing preference.
+    
+    When allow_sharing is False, adds the NO_SHARING_ROLE_ID role to make opt-out visible.
+    When allow_sharing is True, removes that role.
+    
+    Args:
+        bot: The Discord bot client
+        member_id: Discord member ID to update
+        allow_sharing: Whether the user allows content sharing (True = remove role, False = add role)
+        logger: Optional logger instance
+        
+    Returns:
+        True if role was successfully updated (or no role configured), False on error
+    """
+    log = logger or logging.getLogger('DiscordBot')
+    
+    # Get the role ID from environment
+    role_id_str = os.getenv('NO_SHARING_ROLE_ID')
+    if not role_id_str:
+        log.debug("NO_SHARING_ROLE_ID not configured, skipping role update")
+        return True  # Not an error, just not configured
+    
+    try:
+        role_id = int(role_id_str)
+    except ValueError:
+        log.error(f"Invalid NO_SHARING_ROLE_ID format: '{role_id_str}'")
+        return False
+    
+    # Get guild ID
+    guild_id_str = os.getenv('GUILD_ID') or os.getenv('DEV_GUILD_ID')
+    if not guild_id_str:
+        log.error("GUILD_ID or DEV_GUILD_ID not set, cannot update role")
+        return False
+    
+    try:
+        guild_id = int(guild_id_str)
+    except ValueError:
+        log.error(f"Invalid GUILD_ID format: '{guild_id_str}'")
+        return False
+    
+    try:
+        # Get guild
+        guild = bot.get_guild(guild_id)
+        if not guild:
+            log.debug(f"Guild {guild_id} not in cache, fetching...")
+            try:
+                guild = await bot.fetch_guild(guild_id)
+            except discord.NotFound:
+                log.error(f"Guild {guild_id} not found")
+                return False
+            except discord.Forbidden:
+                log.error(f"No permission to access guild {guild_id}")
+                return False
+        
+        # Get member
+        member = guild.get_member(member_id)
+        if not member:
+            log.debug(f"Member {member_id} not in cache, fetching...")
+            try:
+                member = await guild.fetch_member(member_id)
+            except discord.NotFound:
+                log.warning(f"Member {member_id} not found in guild {guild_id}")
+                return False
+            except discord.Forbidden:
+                log.error(f"No permission to fetch member {member_id}")
+                return False
+        
+        # Get the role
+        role = guild.get_role(role_id)
+        if not role:
+            log.error(f"Role {role_id} not found in guild {guild_id}")
+            return False
+        
+        # Add or remove role based on allow_sharing
+        if allow_sharing:
+            # Remove the "no sharing" role
+            if role in member.roles:
+                await member.remove_roles(role, reason="User enabled content sharing")
+                log.info(f"Removed 'no sharing' role from member {member_id}")
+            else:
+                log.debug(f"Member {member_id} doesn't have the 'no sharing' role, nothing to remove")
+        else:
+            # Add the "no sharing" role
+            if role not in member.roles:
+                await member.add_roles(role, reason="User disabled content sharing")
+                log.info(f"Added 'no sharing' role to member {member_id}")
+            else:
+                log.debug(f"Member {member_id} already has the 'no sharing' role")
+        
+        return True
+        
+    except discord.Forbidden as e:
+        log.error(f"No permission to modify roles for member {member_id}: {e}")
+        return False
+    except Exception as e:
+        log.error(f"Error updating 'no sharing' role for member {member_id}: {e}", exc_info=True)
         return False

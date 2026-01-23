@@ -208,9 +208,13 @@ class Sharer:
         # Fetch user details to check for existing consent
         user_details = self.db_handler.get_member(author.id)
 
-        # Check if consent is already 1 (True).
-        # The modal in notify_user.py uses `user_details.get('sharing_consent') == 1` for pre-fill.
-        if user_details and user_details.get('sharing_consent') == 1:
+        # Check for explicit opt-out first (allow_content_sharing = False)
+        if user_details and user_details.get('allow_content_sharing') is False:
+            self.logger.info(f"User {author.id} (message author) has opted out of content sharing (allow_content_sharing=False). Skipping.")
+            return
+
+        # Check if consent is already True (allow_content_sharing = True)
+        if user_details and user_details.get('allow_content_sharing') is True:
             self.logger.info(f"User {author.id} (message author) has already granted sharing consent for message {message.id}. Proceeding directly to finalize_sharing.")
             if message.channel:
                 # For reaction-based sharing, summary_channel is not typically involved unless specifically designed so.
@@ -239,8 +243,13 @@ class Sharer:
         # Fetch user details to check for existing consent
         user_details = self.db_handler.get_member(author.id)
 
-        # Check if consent is already 1 (True)
-        if user_details and user_details.get('sharing_consent') == 1:
+        # Check for explicit opt-out first (allow_content_sharing = False)
+        if user_details and user_details.get('allow_content_sharing') is False:
+            self.logger.info(f"User {author.id} has opted out of content sharing (allow_content_sharing=False). Skipping summary share for message {message.id}.")
+            return
+
+        # Check if consent is already True (allow_content_sharing = True)
+        if user_details and user_details.get('allow_content_sharing') is True:
             self.logger.info(f"User {author.id} has already granted sharing consent for message {message.id} (triggered by summary). Proceeding directly to finalize_sharing.")
             if message.channel:
                 asyncio.create_task(self.finalize_sharing(author.id, message.id, message.channel.id, summary_channel=summary_channel))

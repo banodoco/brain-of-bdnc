@@ -571,7 +571,8 @@ class ChannelSummarizer:
             SELECT
                 m.*,
                 c.channel_name,
-                COALESCE(mb.server_nick, mb.global_name, mb.username, 'Unknown User') as author_name
+                COALESCE(mb.server_nick, mb.global_name, mb.username, 'Unknown User') as author_name,
+                mb.include_in_updates
             FROM
                 messages m
             LEFT JOIN
@@ -596,6 +597,17 @@ class ChannelSummarizer:
                 (channel_id, time_24_hours_ago_str),
                 db_handler=self.db_handler
             )
+            
+            # Anonymize author names for users who have opted out of include_in_updates
+            # include_in_updates defaults to TRUE in DB, so only explicit FALSE means opt-out
+            opt_out_count = 0
+            for msg in messages:
+                if msg.get('include_in_updates') is False:
+                    msg['author_name'] = 'A community member'
+                    opt_out_count += 1
+            
+            if opt_out_count > 0:
+                self.logger.info(f"📝 Anonymized {opt_out_count} message(s) from users who opted out of updates")
             
             # Since execute_query returns a list of dicts, we just return it
             self.logger.info(f"✅ Fetched {len(messages)} messages from the database for channel {channel_id}")

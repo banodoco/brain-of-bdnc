@@ -21,18 +21,19 @@ logger = logging.getLogger('DiscordBot')
 
 # Helper to format the user details into a readable string for the DM
 def _format_user_details_md(user_details: dict) -> str:
+    # Note: allow_content_sharing and include_in_updates default to TRUE in the DB
+    # So None or True means "yes", only explicit False means "no"
+    allow_sharing = user_details.get('allow_content_sharing')
+    include_updates = user_details.get('include_in_updates')
+    
     details = f"""
 **Sharing Preferences:**
-- **Okay to feature on social?** {'✅ Yes' if user_details.get('sharing_consent', False) else '❌ No'}
-- **Okay to curate to OpenMuse?** {'✅ Yes' if user_details.get('permission_to_curate', False) else '❌ No'}
-- **Receive these DMs?** {'✅ Yes' if user_details.get('dm_preference', True) else '❌ No'}
+- **Include in updates/transcripts?** {'❌ No' if include_updates is False else '✅ Yes'}
+- **Okay to share my content?** {'❌ No' if allow_sharing is False else '✅ Yes'}
 
 **Your Socials:** (Edit these below!)
 - **Twitter:** {user_details.get('twitter_handle') or 'Not set'}
-- **Instagram:** {user_details.get('instagram_handle') or 'Not set'}
-- **YouTube:** {user_details.get('youtube_handle') or 'Not set'}
-- **TikTok:** {user_details.get('tiktok_handle') or 'Not set'}
-- **Website:** {user_details.get('website') or 'Not set'}
+- **Reddit:** {user_details.get('reddit_handle') or 'Not set'}
 """
     return details.strip()
 
@@ -59,28 +60,21 @@ class UpdateSocialsModal(discord.ui.Modal):
         placeholder='Leave blank to remove',
         max_length=100
     )
-    instagram_input = discord.ui.TextInput(
-        label='Instagram Handle (e.g., @username)',
+    reddit_input = discord.ui.TextInput(
+        label='Reddit Username (e.g., u/username)',
         required=False,
         placeholder='Leave blank to remove',
         max_length=100
     )
-    youtube_input = discord.ui.TextInput(
-        label='YouTube Channel URL (full URL)',
-        required=False,
-        placeholder='Leave blank to remove',
-        max_length=100
-    )
-    permission_to_share_input = discord.ui.TextInput(
-        label='Okay to share on social? (yes/no)',
+    include_in_updates_input = discord.ui.TextInput(
+        label='Include in updates/transcripts? (yes/no)',
         placeholder='Type "yes" or "no"',
         required=True,
         max_length=3,
         min_length=2
     )
-
-    permission_to_curate_input = discord.ui.TextInput(
-        label='Okay to share on OpenMuse? (yes/no)',
+    allow_content_sharing_input = discord.ui.TextInput(
+        label='Okay to share my content? (yes/no)',
         placeholder='Type "yes" or "no"',
         required=True,
         max_length=3,
@@ -96,52 +90,52 @@ class UpdateSocialsModal(discord.ui.Modal):
 
         # Pre-fill modal
         self.twitter_input.default = user_details.get('twitter_handle')
-        self.instagram_input.default = user_details.get('instagram_handle')
-        self.youtube_input.default = user_details.get('youtube_handle')
+        self.reddit_input.default = user_details.get('reddit_handle')
 
-        # Pre-fill new permission inputs based on DB fields (sharing_consent, permission_to_curate)
-        # Display with first letter capitalized for the user
-        self.permission_to_share_input.default = "Yes" if user_details.get('sharing_consent') == 1 else "No"
-        self.permission_to_curate_input.default = "Yes" if user_details.get('permission_to_curate') == 1 else "No"
+        # Pre-fill permission inputs based on DB fields
+        # Note: these default to TRUE in DB, so None or True = "Yes", only False = "No"
+        include_updates = user_details.get('include_in_updates')
+        allow_sharing = user_details.get('allow_content_sharing')
+        self.include_in_updates_input.default = "No" if include_updates is False else "Yes"
+        self.allow_content_sharing_input.default = "No" if allow_sharing is False else "Yes"
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            share_social_input_raw = self.permission_to_share_input.value.strip().lower()
-            curate_openmuse_input_raw = self.permission_to_curate_input.value.strip().lower()
+            include_updates_raw = self.include_in_updates_input.value.strip().lower()
+            allow_sharing_raw = self.allow_content_sharing_input.value.strip().lower()
 
-            final_sharing_consent = None
-            final_permission_to_curate = None
+            final_include_in_updates = None
+            final_allow_content_sharing = None
 
-            # Validate and convert for sharing_consent
-            if share_social_input_raw == 'yes':
-                final_sharing_consent = 1
-            elif share_social_input_raw == 'no':
-                final_sharing_consent = 0
+            # Validate and convert for include_in_updates
+            if include_updates_raw == 'yes':
+                final_include_in_updates = True
+            elif include_updates_raw == 'no':
+                final_include_in_updates = False
             else:
                 await interaction.response.send_message(
-                    "Invalid input for 'Okay to share on social?'. Please enter 'yes' or 'no'.", 
+                    "Invalid input for 'Include in updates/transcripts?'. Please enter 'yes' or 'no'.", 
                     ephemeral=True
                 )
                 return
 
-            # Validate and convert for permission_to_curate
-            if curate_openmuse_input_raw == 'yes':
-                final_permission_to_curate = 1
-            elif curate_openmuse_input_raw == 'no':
-                final_permission_to_curate = 0
+            # Validate and convert for allow_content_sharing
+            if allow_sharing_raw == 'yes':
+                final_allow_content_sharing = True
+            elif allow_sharing_raw == 'no':
+                final_allow_content_sharing = False
             else:
                 await interaction.response.send_message(
-                    "Invalid input for 'Okay to share on OpenMuse?'. Please enter 'yes' or 'no'.", 
+                    "Invalid input for 'Okay to share my content?'. Please enter 'yes' or 'no'.", 
                     ephemeral=True
                 )
                 return
 
             updated_data = {
                 'twitter_handle': self.twitter_input.value.strip() or None,
-                'instagram_handle': self.instagram_input.value.strip() or None,
-                'youtube_handle': self.youtube_input.value.strip() or None,
-                'sharing_consent': final_sharing_consent,
-                'permission_to_curate': final_permission_to_curate,
+                'reddit_handle': self.reddit_input.value.strip() or None,
+                'include_in_updates': final_include_in_updates,
+                'allow_content_sharing': final_allow_content_sharing,
             }
             
             # Update DB
@@ -149,10 +143,15 @@ class UpdateSocialsModal(discord.ui.Modal):
                 member_id=interaction.user.id,
                 username=interaction.user.name, 
                 global_name=interaction.user.global_name,
-                **updated_data # Pass all updated data, including new permissions
+                **updated_data
             )
 
             if success:
+                # Update the "no sharing" role based on the new allow_content_sharing value
+                await discord_utils.update_no_sharing_role(
+                    self.parent_view.bot, interaction.user.id, final_allow_content_sharing, logger
+                )
+                
                 new_details = self.db_handler.get_member(interaction.user.id)
                 if new_details:
                     self.parent_view.user_details = new_details
@@ -162,21 +161,19 @@ class UpdateSocialsModal(discord.ui.Modal):
                     )
                     logger.info(f"User {interaction.user.id} updated preferences via modal for message {self.original_message.id}. Data: {updated_data}")
                     
-                    # If sharing consent was set to True (1) in the modal, trigger finalize_sharing
-                    if final_sharing_consent == 1:
+                    # If sharing consent was set to True in the modal, trigger finalize_sharing
+                    if final_allow_content_sharing is True:
                         logger.info(f"User {interaction.user.id} GRANTED/CONFIRMED sharing consent via modal for message {self.original_message.id}. Triggering finalize.")
-                        if self.parent_view.sharer_instance and hasattr(self.parent_view, 'summary_channel'): # Ensure parent_view has what we need
+                        if self.parent_view.sharer_instance and hasattr(self.parent_view, 'summary_channel'):
                             asyncio.create_task(self.parent_view.sharer_instance.finalize_sharing(
                                 interaction.user.id, 
                                 self.original_message.id, 
                                 self.original_message.channel.id, 
-                                summary_channel=self.parent_view.summary_channel # Pass summary_channel from parent view
+                                summary_channel=self.parent_view.summary_channel
                             ))
                         else:
                             logger.error(f"Cannot trigger finalize_sharing from modal: parent_view missing sharer_instance or summary_channel for msg {self.original_message.id}")
                 else:
-                    # This case should ideally not happen if create_or_update_member was successful
-                    # and get_member is reliable.
                     await interaction.response.send_message("Preferences updated, but failed to refresh display. Please try again or check your DMs.", ephemeral=True)
                     logger.error(f"User {interaction.user.id} updated preferences, but new_details fetch failed for msg {self.original_message.id}.")
             else:
@@ -185,39 +182,47 @@ class UpdateSocialsModal(discord.ui.Modal):
 
         except Exception as e:
             logger.error(f"Error in UpdateSocialsModal on_submit for user {interaction.user.id}: {e}", exc_info=True)
-            # Check if interaction is already responded to before sending another response
             if not interaction.response.is_done():
                 await interaction.response.send_message("An error occurred while updating your preferences.", ephemeral=True)
             else:
                 await interaction.followup.send("An error occurred after the initial response while updating your preferences.", ephemeral=True)
 
 class SharingRequestView(discord.ui.View):
-    def __init__(self, user_details: dict, db_handler: DatabaseHandler, sharer_instance: 'Sharer', original_message: discord.Message, summary_channel: Optional[discord.TextChannel] = None, timeout=1800): # Added summary_channel, Timeout 30 mins
+    def __init__(self, user_details: dict, db_handler: DatabaseHandler, sharer_instance: 'Sharer', original_message: discord.Message, summary_channel: Optional[discord.TextChannel] = None, bot=None, timeout=1800):
         super().__init__(timeout=timeout)
         self.user_details = user_details
         self.db_handler = db_handler
         self.sharer_instance = sharer_instance
         self.original_message = original_message
-        self.summary_channel = summary_channel # Store summary_channel
-        self.message: Optional[discord.Message] = None # To store the DM message reference for editing on timeout
+        self.summary_channel = summary_channel
+        self.bot = bot  # Store bot for role updates
+        self.message: Optional[discord.Message] = None
         self._update_button_states()
 
     def _update_button_states(self):
         # Update button labels based on current state
-        consent_button = next((item for item in self.children if isinstance(item, discord.ui.Button) and item.custom_id == "toggle_consent"), None)
-        if consent_button:
-            consent_button.label = "Allow Feature" if not self.user_details.get('sharing_consent', False) else "Revoke Feature"
-            consent_button.style = discord.ButtonStyle.success if not self.user_details.get('sharing_consent', False) else discord.ButtonStyle.danger
+        # Note: allow_content_sharing and include_in_updates default to TRUE in DB
+        # So None or True means enabled, only explicit False means disabled
+        
+        include_updates = self.user_details.get('include_in_updates')
+        updates_button = next((item for item in self.children if isinstance(item, discord.ui.Button) and item.custom_id == "toggle_include_updates"), None)
+        if updates_button:
+            if include_updates is False:
+                updates_button.label = "Enable Updates"
+                updates_button.style = discord.ButtonStyle.success
+            else:
+                updates_button.label = "Disable Updates"
+                updates_button.style = discord.ButtonStyle.danger
 
-        curation_button = next((item for item in self.children if isinstance(item, discord.ui.Button) and item.custom_id == "toggle_curation"), None)
-        if curation_button:
-            curation_button.label = "Allow Curation" if not self.user_details.get('permission_to_curate', False) else "Revoke Curation"
-            curation_button.style = discord.ButtonStyle.success if not self.user_details.get('permission_to_curate', False) else discord.ButtonStyle.danger
-
-        dm_button = next((item for item in self.children if isinstance(item, discord.ui.Button) and item.custom_id == "toggle_dms"), None)
-        if dm_button:
-            dm_button.label = "Disable DMs" if self.user_details.get('dm_preference', True) else "Enable DMs"
-            dm_button.style = discord.ButtonStyle.danger if self.user_details.get('dm_preference', True) else discord.ButtonStyle.success
+        allow_sharing = self.user_details.get('allow_content_sharing')
+        sharing_button = next((item for item in self.children if isinstance(item, discord.ui.Button) and item.custom_id == "toggle_sharing"), None)
+        if sharing_button:
+            if allow_sharing is False:
+                sharing_button.label = "Allow Sharing"
+                sharing_button.style = discord.ButtonStyle.success
+            else:
+                sharing_button.label = "Disable Sharing"
+                sharing_button.style = discord.ButtonStyle.danger
 
     async def _update_db_and_view(self, interaction: discord.Interaction, updates: dict):
         try:
@@ -228,9 +233,15 @@ class SharingRequestView(discord.ui.View):
                 **updates
             )
             if success:
+                # If allow_content_sharing was changed, update the role
+                if 'allow_content_sharing' in updates and self.bot:
+                    await discord_utils.update_no_sharing_role(
+                        self.bot, interaction.user.id, updates['allow_content_sharing'], logger
+                    )
+                
                 # Refresh user details from DB
                 self.user_details = self.db_handler.get_member(interaction.user.id)
-                self._update_button_states() # Update button appearance
+                self._update_button_states()
                 await interaction.response.edit_message(
                     content=_format_dm_message(self.original_message, self.user_details),
                     view=self
@@ -244,35 +255,38 @@ class SharingRequestView(discord.ui.View):
             logger.error(f"Error in _update_db_and_view for user {interaction.user.id}: {e}", exc_info=True)
             await interaction.response.send_message("An error occurred while updating your preferences.", ephemeral=True)
 
-    @discord.ui.button(label="Toggle Consent", style=discord.ButtonStyle.success, custom_id="toggle_consent", row=0)
-    async def toggle_consent_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        new_consent = not self.user_details.get('sharing_consent', False)
-        await self._update_db_and_view(interaction, {'sharing_consent': new_consent})
+    @discord.ui.button(label="Toggle Include Updates", style=discord.ButtonStyle.secondary, custom_id="toggle_include_updates", row=0)
+    async def toggle_include_updates_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Toggle between True and False (None defaults to True behavior)
+        current = self.user_details.get('include_in_updates')
+        new_value = False if current is not False else True
+        await self._update_db_and_view(interaction, {'include_in_updates': new_value})
         
-        if new_consent:
-             logger.info(f"User {interaction.user.id} GRANTED sharing consent for message {self.original_message.id}. Triggering finalize.")
-             asyncio.create_task(self.sharer_instance.finalize_sharing(
+        if new_value:
+            logger.info(f"User {interaction.user.id} ENABLED include_in_updates for message {self.original_message.id}.")
+        else:
+            logger.info(f"User {interaction.user.id} DISABLED include_in_updates for message {self.original_message.id}.")
+
+    @discord.ui.button(label="Toggle Sharing", style=discord.ButtonStyle.success, custom_id="toggle_sharing", row=0)
+    async def toggle_sharing_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Toggle between True and False (None defaults to True behavior)
+        current = self.user_details.get('allow_content_sharing')
+        new_value = False if current is not False else True
+        await self._update_db_and_view(interaction, {'allow_content_sharing': new_value})
+        
+        if new_value:
+            logger.info(f"User {interaction.user.id} ENABLED allow_content_sharing for message {self.original_message.id}. Triggering finalize.")
+            asyncio.create_task(self.sharer_instance.finalize_sharing(
                 interaction.user.id, 
                 self.original_message.id, 
                 self.original_message.channel.id, 
-                summary_channel=self.summary_channel # Pass stored summary_channel
+                summary_channel=self.summary_channel
             ))
         else:
-             logger.info(f"User {interaction.user.id} REVOKED sharing consent for message {self.original_message.id}.")
-
-    @discord.ui.button(label="Toggle Curation", style=discord.ButtonStyle.success, custom_id="toggle_curation", row=0)
-    async def toggle_curation_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        new_curation = not self.user_details.get('permission_to_curate', False)
-        await self._update_db_and_view(interaction, {'permission_to_curate': new_curation})
-        
-        if new_curation:
-            logger.info(f"User {interaction.user.id} GRANTED curation permission for message {self.original_message.id}.")
-        else:
-            logger.info(f"User {interaction.user.id} REVOKED curation permission for message {self.original_message.id}.")
+            logger.info(f"User {interaction.user.id} DISABLED allow_content_sharing for message {self.original_message.id}.")
 
     @discord.ui.button(label="Edit Socials", style=discord.ButtonStyle.primary, custom_id="edit_socials", emoji="📝", row=0)
     async def edit_socials_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Pass the current user details, db_handler, original message, and this view instance
         modal = UpdateSocialsModal(
              user_details=self.user_details,
              db_handler=self.db_handler,
@@ -281,23 +295,18 @@ class SharingRequestView(discord.ui.View):
         )
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="Toggle DMs", style=discord.ButtonStyle.secondary, custom_id="toggle_dms", row=1)
-    async def toggle_dm_preference_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        new_dm_pref = not self.user_details.get('dm_preference', True)
-        await self._update_db_and_view(interaction, {'dm_preference': new_dm_pref})
-
     async def on_timeout(self):
-        # When the DM times out, check if the user has consent and auto-proceed if they do
         user_id = self.user_details.get('member_id') if self.user_details else self.original_message.author.id
         message_id = self.original_message.id
         
         logger.info(f"Sharing request DM for user {user_id}, message {message_id} timed out.")
         
-        # Check current consent status - if True, proceed with sharing automatically
+        # Check current consent status - if True (or None, which defaults to True), proceed with sharing
         current_user_details = self.db_handler.get_member(user_id)
-        if current_user_details and current_user_details.get('sharing_consent', False):
-            logger.info(f"User {user_id} has sharing consent but didn't respond to DM for message {message_id}. Auto-proceeding with sharing.")
-            # Trigger finalize_sharing with current details (may not have updated socials, but that's ok)
+        allow_sharing = current_user_details.get('allow_content_sharing') if current_user_details else None
+        
+        if allow_sharing is not False:  # True or None = allowed
+            logger.info(f"User {user_id} has sharing enabled (allow_content_sharing={allow_sharing}) but didn't respond to DM for message {message_id}. Auto-proceeding with sharing.")
             asyncio.create_task(self.sharer_instance.finalize_sharing(
                 user_id,
                 self.original_message.id,
@@ -305,22 +314,21 @@ class SharingRequestView(discord.ui.View):
                 summary_channel=self.summary_channel
             ))
         else:
-            logger.info(f"User {user_id} does not have sharing consent for message {message_id}. Not auto-proceeding after timeout.")
+            logger.info(f"User {user_id} has sharing disabled for message {message_id}. Not auto-proceeding after timeout.")
 
-        # Edit the DM to show it timed out (regardless of whether we auto-proceeded)
-        if self.message: # If the DM message reference was stored
+        if self.message:
             try:
-                self.clear_items() # Remove all components (buttons)
+                self.clear_items()
                 timeout_message_content = _format_dm_message(self.original_message, self.user_details)
-                if current_user_details and current_user_details.get('sharing_consent', False):
-                    timeout_message_content += "\n\n_(This request has timed out. Since you had previously given consent, we've proceeded with sharing using your current settings.)_\n\n**You can update your Twitter handle and consent settings at any time using `/update_details`**"
+                if allow_sharing is not False:
+                    timeout_message_content += "\n\n_(This request has timed out. Since you have sharing enabled, we've proceeded with sharing using your current settings.)_\n\n**You can update your preferences at any time using `/update_details`**"
                 else:
-                    timeout_message_content += "\n\n_(This request has timed out. Please trigger the process again if needed.)_\n\n**You can update your Twitter handle and consent settings at any time using `/update_details`**"
-                await self.message.edit(content=timeout_message_content, view=self) # view=self (now empty)
+                    timeout_message_content += "\n\n_(This request has timed out. Please trigger the process again if needed.)_\n\n**You can update your preferences at any time using `/update_details`**"
+                await self.message.edit(content=timeout_message_content, view=self)
                 logger.info(f"Edited DM on timeout for user {user_id}, message {message_id}.")
             except discord.HTTPException as e:
                 logger.warning(f"Failed to edit DM message on timeout for user {user_id}, message {message_id}: {e}")
-            except Exception as e: # Catch any other potential error during edit
+            except Exception as e:
                 logger.error(f"Unexpected error editing DM on timeout for user {user_id}, message {message_id}: {e}", exc_info=True)
         else:
             logger.warning(f"Cannot edit DM on timeout for user {user_id}, message {message_id}: DM message reference not found.")
@@ -368,23 +376,22 @@ async def send_sharing_request_dm(bot: commands.Bot, user: discord.User, message
         user_details_for_dm_content = db_handler.get_member(original_author.id)
 
         if not user_details_for_dm_content:
-            logger.info(f"Original author {original_author.id} not found in DB. Creating entry with default consent=True, dm_preference=True.")
+            logger.info(f"Original author {original_author.id} not found in DB. Creating entry with defaults (allow_content_sharing and include_in_updates default to TRUE in DB).")
             db_handler.create_or_update_member(
                 member_id=original_author.id,
                 username=original_author.name,
                 global_name=getattr(original_author, 'global_name', None),
-                display_name=getattr(original_author, 'nick', None) or original_author.name,
-                sharing_consent=True, # Default to True, user can change via DM
-                dm_preference=True 
+                display_name=getattr(original_author, 'nick', None) or original_author.name
+                # Note: allow_content_sharing and include_in_updates default to TRUE in the database
             )
             user_details_for_dm_content = db_handler.get_member(original_author.id) # Re-fetch
             if not user_details_for_dm_content:
                  logger.error(f"Failed to create/fetch DB entry for original author {original_author.id} during sharing request setup.")
                  return
 
-        # Check DM preference of the *original* author, even if redirecting
-        if not user_details_for_dm_content.get('dm_preference', True):
-            logger.info(f"Original author {original_author.id} has DMs disabled (dm_preference=False). Skipping sharing request DM for message {message.id}.")
+        # Check if original author has explicitly opted out of content sharing
+        if user_details_for_dm_content.get('allow_content_sharing') is False:
+            logger.info(f"Original author {original_author.id} has opted out of content sharing (allow_content_sharing=False). Skipping sharing request DM for message {message.id}.")
             return
 
         dm_channel = await target_user_for_dm.create_dm()
@@ -396,7 +403,8 @@ async def send_sharing_request_dm(bot: commands.Bot, user: discord.User, message
             db_handler=db_handler, 
             sharer_instance=sharer_instance, 
             original_message=message, # The message object that might be shared
-            summary_channel=summary_channel # Pass the specific summary_channel for this flow
+            summary_channel=summary_channel, # Pass the specific summary_channel for this flow
+            bot=bot  # Pass bot for role updates
         )
         
         dm_message_content = _format_dm_message(message, user_details_for_dm_content)

@@ -46,6 +46,7 @@
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | LLM provider keys |
 | `DEV_MODE` | Enables verbose logging, skips "already summarized" checks |
 | `OPENMUSE_FEATURING_CHANNEL_ID` | Channel ID for OpenMuse featuring posts |
+| `NO_SHARING_ROLE_ID` | Discord role ID assigned to users who opt out of content sharing |
 
 ---
 
@@ -58,7 +59,7 @@
 | **Reaction Watchlist** | JSON env var (`REACTION_WATCHLIST`) that configures which emoji reactions trigger which actions. Central routing for all reaction-based workflows. |
 | **Archiving** | Messages are archived from Discord → Supabase via `archive_runner.py`. Can run on-demand or scheduled. |
 | **Summaries** | LLM-generated daily digests per channel, stored in `daily_summaries` table, posted to dedicated threads. |
-| **Member Consent** | `sharing_consent` and `permission_to_curate` flags on members control what content can be shared externally. |
+| **Member Permissions** | Two boolean flags with TRUE defaults: `include_in_updates` (can be mentioned in summaries/digests) and `allow_content_sharing` (content can be shared externally). When `allow_content_sharing=FALSE`, a Discord role is assigned to make opt-out visible. |
 
 ---
 
@@ -172,7 +173,7 @@
 | Table | Purpose | Key Columns |
 |-------|---------|-------------|
 | `discord_messages` | Archived messages | `message_id` (PK), `channel_id`, `author_id`, `content`, `created_at`, `attachments` (JSONB), `reaction_count`, `is_deleted` |
-| `discord_members` | Member profiles & consent | `member_id` (PK), `username`, `global_name`, `twitter_handle`, `sharing_consent`, `permission_to_curate` |
+| `discord_members` | Member profiles & permissions | `member_id` (PK), `username`, `global_name`, `twitter_handle`, `reddit_handle`, `include_in_updates` (default TRUE), `allow_content_sharing` (default TRUE) |
 | `discord_channels` | Channel metadata | `channel_id` (PK), `channel_name`, `description`, `suitable_posts`, `unsuitable_posts`, `enriched` |
 | `daily_summaries` | Generated summaries | `daily_summary_id` (PK), `date`, `channel_id`, `full_summary`, `short_summary`, `included_in_main_summary`, `dev_mode` |
 | `channel_summary` | Summary thread mapping | `channel_id` (PK), `summary_thread_id` |

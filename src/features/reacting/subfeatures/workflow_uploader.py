@@ -80,19 +80,22 @@ class WorkflowUploadView(discord.ui.View):
     async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.logger.info(f"[WorkflowUpload] Author {self.author.id} DECLINED upload via DM.")
         
-        # Section 3: Decline handling
+        # Section 3: Decline handling - set allow_content_sharing to False
         try:
-            success = self.db_handler.update_member_permission_status(member_id=self.author.id, permission_status=False)
+            success = self.db_handler.update_member_sharing_permission(member_id=self.author.id, allow_content_sharing=False)
             if success:
-                self.logger.info(f"[WorkflowUpload] Set permission_to_curate=0 for author {self.author.id}.")
+                self.logger.info(f"[WorkflowUpload] Set allow_content_sharing=False for author {self.author.id}.")
+                # Add the "no sharing" role to make opt-out visible
+                from src.common.discord_utils import update_no_sharing_role
+                await update_no_sharing_role(self.bot, self.author.id, False, self.logger)
                 try: # ACK DM to user
                     await safe_send_message(bot=self.bot, channel=interaction.user, content="Okay, I understand. I won't ask you about uploading this workflow again. You can always change this preference later if you wish.", logger=self.logger, rate_limiter=self.rate_limiter) # Added rate_limiter
                 except Exception as e:
                     self.logger.error(f"[WorkflowUpload] Failed to send decline ACK DM to author {self.author.id}: {e}")
             else:
-                self.logger.warning(f"[WorkflowUpload] Failed to update permission_to_curate for author {self.author.id} in DB.")
+                self.logger.warning(f"[WorkflowUpload] Failed to update allow_content_sharing for author {self.author.id} in DB.")
         except Exception as e:
-            self.logger.error(f"[WorkflowUpload] Error updating permission_to_curate for author {self.author.id}: {e}")
+            self.logger.error(f"[WorkflowUpload] Error updating allow_content_sharing for author {self.author.id}: {e}")
 
         # DM the curator (reacting user)
         try:
@@ -132,21 +135,21 @@ async def process_workflow_upload_request(
         logger.info(f"[WorkflowUpload] Acquired lock for author {author.id}.")
 
         # Section 2: Trigger & Eligibility - Author Opt-Out Check
+        # Check allow_content_sharing: defaults to TRUE, only FALSE is explicit opt-out
         try:
             member_data = db_handler.get_member(author.id)
             if member_data:
-                permission_to_curate = member_data.get('permission_to_curate')
-                # Spec: "permission_to_curate ≠ 0". So NULL or 1 (True) is allowed. 0 (False) is opt-out.
-                if permission_to_curate == 0: # Explicitly False/0
-                    logger.info(f"[WorkflowUpload] Author {author.id} has opted out (permission_to_curate=0). Aborting.")
-                    # Notify curator (spec does not explicitly state this, but good practice)
-                    await safe_send_message(bot=bot, channel=curator_user, content=f"Skipping workflow upload for {author.mention} ({author.id}) as they have opted out of this feature.", logger=logger, rate_limiter=rate_limiter)
+                allow_content_sharing = member_data.get('allow_content_sharing')
+                # Only allow_content_sharing = False (explicit opt-out) blocks the workflow
+                if allow_content_sharing is False:
+                    logger.info(f"[WorkflowUpload] Author {author.id} has opted out (allow_content_sharing=False). Aborting.")
+                    # Notify curator
+                    await safe_send_message(bot=bot, channel=curator_user, content=f"Skipping workflow upload for {author.mention} ({author.id}) as they have opted out of content sharing.", logger=logger, rate_limiter=rate_limiter)
                     return
-                logger.info(f"[WorkflowUpload] Author {author.id} permission_to_curate: {permission_to_curate}. Proceeding.")
+                logger.info(f"[WorkflowUpload] Author {author.id} allow_content_sharing: {allow_content_sharing}. Proceeding.")
             else:
-                # New member, or member not in DB. Assume permission is granted (or NULL).
-                # This nullable flag lives in the members table. If not present, it's effectively NULL.
-                logger.info(f"[WorkflowUpload] Author {author.id} not found in DB or permission_to_curate is NULL. Assuming eligible.")
+                # New member, or member not in DB. Assume permission is granted (defaults to TRUE).
+                logger.info(f"[WorkflowUpload] Author {author.id} not found in DB. Assuming eligible (default allow_content_sharing=True).")
         except Exception as e:
             logger.error(f"[WorkflowUpload] Error checking member permission for author {author.id}: {e}")
             # Notify curator about the error

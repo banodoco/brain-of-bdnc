@@ -199,17 +199,19 @@ class StorageHandler:
                     'guild_join_date': member.get('guild_join_date'),
                     'role_ids': role_ids,
                     'twitter_handle': member.get('twitter_handle'),
-                    'instagram_handle': member.get('instagram_handle'),
-                    'youtube_handle': member.get('youtube_handle'),
-                    'tiktok_handle': member.get('tiktok_handle'),
-                    'website': member.get('website'),
-                    'sharing_consent': bool(member.get('sharing_consent', False)),
-                    'dm_preference': bool(member.get('dm_preference', True)),
-                    'permission_to_curate': member.get('permission_to_curate'),
+                    'reddit_handle': member.get('reddit_handle'),
                     'created_at': member.get('created_at') or datetime.utcnow().isoformat(),
                     'updated_at': member.get('updated_at') or datetime.utcnow().isoformat(),
                     'synced_at': datetime.utcnow().isoformat()
                 }
+
+                # IMPORTANT: Only include these fields when explicitly provided as True/False.
+                # If we upsert NULL for these columns, we override the DB defaults (TRUE)
+                # and can unintentionally wipe preferences.
+                if 'include_in_updates' in member and member.get('include_in_updates') is not None:
+                    supabase_member['include_in_updates'] = member.get('include_in_updates')
+                if 'allow_content_sharing' in member and member.get('allow_content_sharing') is not None:
+                    supabase_member['allow_content_sharing'] = member.get('allow_content_sharing')
                 supabase_members.append(supabase_member)
             
             # Write in batches
