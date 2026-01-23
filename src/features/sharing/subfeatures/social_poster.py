@@ -377,8 +377,12 @@ async def generate_media_title(attachment: Dict, original_comment: Optional[str]
 
 # --- Main Posting Function ---
 
-async def post_tweet(generated_description: str, user_details: Dict, attachments: List[Dict], original_content: Optional[str]) -> Optional[str]:
-    """Uploads media and posts a tweet with a generated caption."""
+async def post_tweet(generated_description: str, user_details: Dict, attachments: List[Dict], original_content: Optional[str]) -> Optional[Dict[str, str]]:
+    """Uploads media and posts a tweet with a generated caption.
+    
+    Returns:
+        Dict with 'url' and 'id' keys if successful, None if failed
+    """
     
     if not all([CONSUMER_KEY, CONSUMER_SECRET, ACCESS_TOKEN, ACCESS_TOKEN_SECRET]):
          logger.error("Cannot post tweet, API credentials missing.")
@@ -446,7 +450,7 @@ async def post_tweet(generated_description: str, user_details: Dict, attachments
         # Example (might need API call): bot_user = api_v1.verify_credentials() -> tweet_url = f"https://twitter.com/{bot_user.screen_name}/status/{tweet_id}"
         
         logger.info(f"Tweet posted successfully: {tweet_url}")
-        return tweet_url
+        return {'url': tweet_url, 'id': tweet_id}
 
     except tweepy.errors.TweepyException as e:
         logger.error(f"Twitter API error during posting: {e}", exc_info=True)
@@ -458,6 +462,62 @@ async def post_tweet(generated_description: str, user_details: Dict, attachments
     except Exception as e:
         logger.error(f"Unexpected error during Twitter posting: {e}", exc_info=True)
         return None 
+
+# --- Delete Tweet Function ---
+
+async def delete_tweet(tweet_id: str) -> bool:
+    """Deletes a tweet by its ID using the Twitter v2 API.
+    
+    Args:
+        tweet_id: The ID of the tweet to delete
+        
+    Returns:
+        True if deletion was successful, False otherwise
+    """
+    if not all([CONSUMER_KEY, CONSUMER_SECRET, ACCESS_TOKEN, ACCESS_TOKEN_SECRET]):
+        logger.error("Cannot delete tweet, API credentials missing.")
+        return False
+    
+    if not tweet_id:
+        logger.error("Cannot delete tweet, no tweet_id provided.")
+        return False
+    
+    try:
+        client_v2 = tweepy.Client(
+            consumer_key=CONSUMER_KEY,
+            consumer_secret=CONSUMER_SECRET,
+            access_token=ACCESS_TOKEN,
+            access_token_secret=ACCESS_TOKEN_SECRET
+        )
+        
+        loop = asyncio.get_event_loop()
+        logger.info(f"Attempting to delete tweet {tweet_id}...")
+        
+        result = await loop.run_in_executor(None,
+            lambda: client_v2.delete_tweet(tweet_id)
+        )
+        
+        # Check if deletion was successful
+        if result and result.data and result.data.get('deleted'):
+            logger.info(f"Successfully deleted tweet {tweet_id}")
+            return True
+        else:
+            logger.warning(f"Tweet deletion response unclear for {tweet_id}: {result}")
+            return False
+            
+    except tweepy.errors.NotFound:
+        logger.warning(f"Tweet {tweet_id} not found (may have already been deleted)")
+        return True  # Consider this a success since the tweet is gone
+    except tweepy.errors.Forbidden as e:
+        logger.error(f"Forbidden to delete tweet {tweet_id}: {e}")
+        return False
+    except tweepy.errors.TweepyException as e:
+        logger.error(f"Twitter API error during tweet deletion: {e}", exc_info=True)
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error deleting tweet {tweet_id}: {e}", exc_info=True)
+        return False
+
 
 # --- Added Zapier Posting Functions ---
 

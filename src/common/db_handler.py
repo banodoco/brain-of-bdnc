@@ -401,6 +401,137 @@ class DatabaseHandler:
                 return False
         return False
 
+    # ========== Shared Posts Tracking ==========
+    
+    def record_shared_post(
+        self, 
+        discord_message_id: int, 
+        discord_user_id: int, 
+        platform: str, 
+        platform_post_id: str,
+        platform_post_url: Optional[str] = None,
+        delete_eligible_hours: int = 6
+    ) -> bool:
+        """Record a shared post to enable deletion later.
+        
+        Args:
+            discord_message_id: Original Discord message ID
+            discord_user_id: Discord user ID of content author
+            platform: Platform name (e.g., 'twitter')
+            platform_post_id: ID of the post on the platform (e.g., tweet ID)
+            platform_post_url: Full URL to the post
+            delete_eligible_hours: Hours during which delete is allowed (default 6)
+            
+        Returns:
+            True if recorded successfully
+        """
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for record_shared_post")
+            return False
+        
+        try:
+            from datetime import timedelta
+            delete_eligible_until = (datetime.now() + timedelta(hours=delete_eligible_hours)).isoformat()
+            
+            data = {
+                'discord_message_id': discord_message_id,
+                'discord_user_id': discord_user_id,
+                'platform': platform,
+                'platform_post_id': platform_post_id,
+                'platform_post_url': platform_post_url,
+                'shared_at': datetime.now().isoformat(),
+                'delete_eligible_until': delete_eligible_until
+            }
+            
+            self._run_async_in_thread(
+                self.storage_handler.supabase_client.table('shared_posts').upsert(data).execute
+            )
+            logger.info(f"Recorded shared post: {platform} post {platform_post_id} for message {discord_message_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error recording shared post: {e}", exc_info=True)
+            return False
+    
+    def get_shared_post(self, discord_message_id: int, platform: str) -> Optional[Dict]:
+        """Get a shared post record by Discord message ID and platform.
+        
+        Returns:
+            Dict with post details or None if not found
+        """
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return None
+        
+        try:
+            result = self._run_async_in_thread(
+                self.storage_handler.supabase_client.table('shared_posts')
+                .select('*')
+                .eq('discord_message_id', discord_message_id)
+                .eq('platform', platform)
+                .execute
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error getting shared post: {e}", exc_info=True)
+            return None
+    
+    def mark_shared_post_deleted(self, discord_message_id: int, platform: str) -> bool:
+        """Mark a shared post as deleted.
+        
+        Returns:
+            True if updated successfully
+        """
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        
+        try:
+            self._run_async_in_thread(
+                self.storage_handler.supabase_client.table('shared_posts')
+                .update({'deleted_at': datetime.now().isoformat()})
+                .eq('discord_message_id', discord_message_id)
+                .eq('platform', platform)
+                .execute
+            )
+            logger.info(f"Marked {platform} post for message {discord_message_id} as deleted")
+            return True
+        except Exception as e:
+            logger.error(f"Error marking shared post as deleted: {e}", exc_info=True)
+            return False
+    
+    def mark_member_first_shared(self, member_id: int) -> bool:
+        """Set first_shared_at timestamp for a member (only if not already set).
+        
+        Returns:
+            True if this was their first share (timestamp was set), False otherwise
+        """
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        
+        try:
+            # Check if already shared
+            result = self._run_async_in_thread(
+                self.storage_handler.supabase_client.table('discord_members')
+                .select('first_shared_at')
+                .eq('member_id', member_id)
+                .execute
+            )
+            
+            if result.data and result.data[0].get('first_shared_at'):
+                # Already has first_shared_at set
+                return False
+            
+            # Set first_shared_at
+            self._run_async_in_thread(
+                self.storage_handler.supabase_client.table('discord_members')
+                .update({'first_shared_at': datetime.now().isoformat()})
+                .eq('member_id', member_id)
+                .execute
+            )
+            logger.info(f"Marked first share for member {member_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error marking member first shared: {e}", exc_info=True)
+            return False
+
     def get_channel(self, channel_id: int) -> Optional[Dict]:
         """Get channel info by ID."""
         try:

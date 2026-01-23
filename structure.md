@@ -44,6 +44,7 @@
 | `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | Database connection |
 | `REACTION_WATCHLIST` | JSON config for reaction-triggered workflows |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | LLM provider keys |
+| `ADMIN_USER_ID` | Discord user ID for admin chat feature (DM-only access) |
 | `DEV_MODE` | Enables verbose logging, skips "already summarized" checks |
 | `OPENMUSE_FEATURING_CHANNEL_ID` | Channel ID for OpenMuse featuring posts |
 | `NO_SHARING_ROLE_ID` | Discord role ID assigned to users who opt out of content sharing |
@@ -68,6 +69,7 @@
 | Feature | Location | Purpose |
 |---------|----------|---------|
 | **Admin** | `src/features/admin/` | Owner commands: reload cogs, diagnostics, sync management |
+| **Admin Chat** | `src/features/admin_chat/` | Claude-powered DM chat for ADMIN_USER_ID with tool use (search messages, share to social, etc.) |
 | **Answering** | `src/features/answering/` | RAG-based Q&A over archived messages |
 | **Archive** | `src/features/archive/` | Commands to trigger message archiving |
 | **Curating** | `src/features/curating/` | Identify & manage high-quality posts for external sharing |
@@ -116,6 +118,10 @@
     └── features/                    # Bot capabilities (one per subdirectory)
         ├── admin/
         │   └── admin_cog.py
+        ├── admin_chat/
+        │   ├── admin_chat_cog.py    # Discord DM listener for ADMIN_USER_ID
+        │   ├── agent.py              # Claude agent with tool use loop (Arnold pattern)
+        │   └── tools.py              # Tool definitions & executors (search, share, refresh_media, etc.)
         ├── answering/
         │   └── answerer.py
         ├── archive/

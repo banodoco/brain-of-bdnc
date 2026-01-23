@@ -14,7 +14,7 @@ from src.common.db_handler import DatabaseHandler
 # from src.common.claude_client import ClaudeClient 
 # Import the dispatcher
 from src.common.llm import get_llm_response
-from .subfeatures.notify_user import send_sharing_request_dm
+from .subfeatures.notify_user import send_post_share_notification
 # Removed content_analyzer import, assuming title generation covers description needs
 # from .subfeatures.content_analyzer import generate_description_with_claude
 # Import specific functions from social_poster
@@ -176,7 +176,7 @@ class Sharer:
             return False, None
 
         self.logger.info(f"Sharer.send_tweet: Calling social_poster.post_tweet for message_id {message_id} with {len(downloaded_media_for_tweet)} media items.")
-        tweet_url = await post_tweet(
+        tweet_result = await post_tweet(
             generated_description=content,  # This is the reactor's comment
             user_details=user_details,
             attachments=downloaded_media_for_tweet, # List of dicts with 'local_path'
@@ -185,7 +185,9 @@ class Sharer:
 
         self._cleanup_files(temp_files_to_clean)
 
-        if tweet_url:
+        if tweet_result:
+            tweet_url = tweet_result.get('url')
+            tweet_id = tweet_result.get('id')
             self.logger.info(f"Sharer.send_tweet: Successfully posted tweet for message_id {message_id}. URL: {tweet_url}")
             await self._announce_tweet_url(
                 tweet_url=tweet_url, 
@@ -193,6 +195,21 @@ class Sharer:
                 original_message_jump_url=original_message_jump_url, 
                 context_message_id=message_id
             )
+            
+            # Record the shared post
+            self.db_handler.record_shared_post(
+                discord_message_id=int(message_id),
+                discord_user_id=user_id,
+                platform='twitter',
+                platform_post_id=tweet_id,
+                platform_post_url=tweet_url,
+                delete_eligible_hours=6
+            )
+            
+            # Mark first share (for tracking) but don't send notification here
+            # tweet_sharer_bridge has its own consent flow
+            self.db_handler.mark_member_first_shared(user_id)
+            
             return True, tweet_url
         else:
             self.logger.error(f"Sharer.send_tweet: Failed to post tweet for message_id {message_id} (post_tweet returned None).")
@@ -200,39 +217,29 @@ class Sharer:
 
     # Renamed original function for clarity
     async def initiate_sharing_process_from_reaction(self, reaction: discord.Reaction, user: discord.User):
-        """Starts the sharing process via reaction by sending a DM to the message author, or finalizing if consent already given."""
+        """Starts the sharing process via reaction. Checks opt-out and proceeds directly (no pre-share DM)."""
         self.logger.debug(f"[Sharer] initiate_sharing_process_from_reaction called. Triggering User ID: {user.id}, Emoji: {reaction.emoji}, Message ID: {reaction.message.id}, Message Author ID: {reaction.message.author.id}")
         message = reaction.message
         author = message.author
 
-        # Fetch user details to check for existing consent
+        # Fetch user details to check for opt-out
         user_details = self.db_handler.get_member(author.id)
 
-        # Check for explicit opt-out first (allow_content_sharing = False)
+        # Check for explicit opt-out (allow_content_sharing = False)
         if user_details and user_details.get('allow_content_sharing') is False:
             self.logger.info(f"User {author.id} (message author) has opted out of content sharing (allow_content_sharing=False). Skipping.")
             return
 
-        # Check if consent is already True (allow_content_sharing = True)
-        if user_details and user_details.get('allow_content_sharing') is True:
-            self.logger.info(f"User {author.id} (message author) has already granted sharing consent for message {message.id}. Proceeding directly to finalize_sharing.")
-            if message.channel:
-                # For reaction-based sharing, summary_channel is not typically involved unless specifically designed so.
-                # If it were, it would need to be sourced from somewhere else (e.g. reaction context or config)
-                asyncio.create_task(self.finalize_sharing(author.id, message.id, message.channel.id, summary_channel=None))
-            else:
-                # This case should be rare in normal Discord operation with reactions
-                self.logger.warning(f"Cannot finalize sharing automatically for message {message.id} as message.channel is not available.")
-            return # Skip sending DM
-
-        # If no existing consent or user_details not found (new user flow handled by send_sharing_request_dm), proceed to send DM
-        self.logger.info(f"Initiating sharing process (sending DM) for message {message.id} triggered by {user.id} reacting with {reaction.emoji}.")
-        # For reaction-based sharing, summary_channel is not passed to the DM
-        await send_sharing_request_dm(self.bot, author, message, self.db_handler, self, summary_channel=None)
+        # Proceed directly to sharing (no pre-share DM - notification comes after)
+        self.logger.info(f"Initiating sharing for message {message.id} triggered by {user.id} reacting with {reaction.emoji}.")
+        if message.channel:
+            asyncio.create_task(self.finalize_sharing(author.id, message.id, message.channel.id, summary_channel=None))
+        else:
+            self.logger.warning(f"Cannot finalize sharing for message {message.id} as message.channel is not available.")
 
     # Added new function to initiate from summary/message object
     async def initiate_sharing_process_from_summary(self, message: discord.Message, summary_channel: Optional[discord.TextChannel] = None):
-        """Starts the sharing process directly from a message object, or finalizing if consent already given."""
+        """Starts the sharing process directly from a message object. Checks opt-out and proceeds directly (no pre-share DM)."""
         self.logger.debug(f"[Sharer] initiate_sharing_process_from_summary called. Message ID: {message.id}, Author ID: {message.author.id}, Summary Channel: {summary_channel.id if summary_channel else 'None'}")
         author = message.author
         # Check if author is a bot before proceeding
@@ -240,26 +247,20 @@ class Sharer:
             self.logger.warning(f"Attempted to initiate sharing for a bot message ({message.id}). Skipping.")
             return
             
-        # Fetch user details to check for existing consent
+        # Fetch user details to check for opt-out
         user_details = self.db_handler.get_member(author.id)
 
-        # Check for explicit opt-out first (allow_content_sharing = False)
+        # Check for explicit opt-out (allow_content_sharing = False)
         if user_details and user_details.get('allow_content_sharing') is False:
             self.logger.info(f"User {author.id} has opted out of content sharing (allow_content_sharing=False). Skipping summary share for message {message.id}.")
             return
 
-        # Check if consent is already True (allow_content_sharing = True)
-        if user_details and user_details.get('allow_content_sharing') is True:
-            self.logger.info(f"User {author.id} has already granted sharing consent for message {message.id} (triggered by summary). Proceeding directly to finalize_sharing.")
-            if message.channel:
-                asyncio.create_task(self.finalize_sharing(author.id, message.id, message.channel.id, summary_channel=summary_channel))
-            else:
-                # This case might be more relevant if message object comes from an unusual source
-                self.logger.warning(f"Cannot finalize sharing automatically for message {message.id} (triggered by summary) as message.channel is not available.")
-            return # Skip sending DM
-
-        self.logger.info(f"Initiating sharing process (sending DM) for message {message.id} requested via summary.")
-        await send_sharing_request_dm(self.bot, author, message, self.db_handler, self, summary_channel=summary_channel)
+        # Proceed directly to sharing (no pre-share DM - notification comes after)
+        self.logger.info(f"Initiating sharing for message {message.id} requested via summary.")
+        if message.channel:
+            asyncio.create_task(self.finalize_sharing(author.id, message.id, message.channel.id, summary_channel=summary_channel))
+        else:
+            self.logger.warning(f"Cannot finalize sharing for message {message.id} (triggered by summary) as message.channel is not available.")
 
     async def finalize_sharing(self, user_id: int, message_id: int, channel_id: int, summary_channel: Optional[discord.TextChannel] = None):
         """
@@ -356,15 +357,41 @@ class Sharer:
 
                 if downloaded_attachments:
                     self.logger.info(f"Attempting to post message {message_id} to Twitter.")
-                    tweet_url = await post_tweet(
+                    tweet_result = await post_tweet(
                         generated_description=twitter_content,
                         user_details=user_details,
                         attachments=downloaded_attachments,
                         original_content=message.content
                     )
-                    if tweet_url:
+                    if tweet_result:
+                        tweet_url = tweet_result.get('url')
+                        tweet_id = tweet_result.get('id')
                         self.logger.info(f"Successfully posted message {message_id} to Twitter: {tweet_url}")
                         await self._announce_tweet_url(tweet_url, message.author.display_name, message.jump_url, str(message_id))
+                        
+                        # Record the shared post in the database
+                        self.db_handler.record_shared_post(
+                            discord_message_id=message_id,
+                            discord_user_id=user_id,
+                            platform='twitter',
+                            platform_post_id=tweet_id,
+                            platform_post_url=tweet_url,
+                            delete_eligible_hours=6
+                        )
+                        
+                        # Check if this is the user's first share and send notification
+                        is_first_share = self.db_handler.mark_member_first_shared(user_id)
+                        if is_first_share:
+                            self.logger.info(f"First share for user {user_id}. Sending post-share notification.")
+                            await send_post_share_notification(
+                                bot=self.bot,
+                                user=message.author,
+                                discord_message=message,
+                                tweet_id=tweet_id,
+                                tweet_url=tweet_url,
+                                db_handler=self.db_handler
+                            )
+                        
                         # Mark as successfully shared to prevent duplicate Twitter posts
                         self._successfully_shared.add(message_id)
                         self.logger.info(f"Marked message {message_id} as successfully shared to prevent duplicates.")
