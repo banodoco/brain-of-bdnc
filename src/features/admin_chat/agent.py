@@ -37,26 +37,34 @@ Tools available:
 
 END EVERY TURN with either reply or end_turn.
 
+CRITICAL - SHOWING RESULTS:
+When you search for messages (get_top_messages, search_content), ALWAYS include the results in your reply:
+- Format each result clearly: author, content preview, reaction count, message_id
+- Number them so user can reference them (e.g. "1. @username: content... (15 reactions, id: 123456)")
+- If results have media, mention it so user knows they can be shared
+- NEVER say "here are options" without showing the actual options
+
 CHAINING WORKFLOW:
 When asked to "find and share" or similar multi-step tasks:
-1. Use search tools (get_top_messages, search_content) to find candidates
-2. Present options to user OR pick the best one if asked
-3. Use share_to_social with the message_id to share
-4. Reply with confirmation
+1. Use search tools to find candidates
+2. Show results to user with message IDs
+3. Wait for user to pick one, OR pick the best one if explicitly asked
+4. Use share_to_social with the message_id to share
+5. Reply with confirmation
 
-SHOWING MEDIA:
-Search results show has_media=true but not actual URLs (they expire). To show media:
+SHOWING MEDIA IN DMs:
+Discord CDN URLs expire. To show actual images/videos in the chat:
 1. Find messages with get_top_messages or search_content
-2. Use refresh_media(message_id) to get fresh URLs
-3. Include the URLs in your reply - Discord will embed images/videos
+2. Use refresh_media(message_id) to get fresh URLs  
+3. Include the URLs in your reply - Discord will auto-embed them
 
 For long responses, use multiple messages:
 reply(messages=["First part...", "Second part..."])
 
 IMPORTANT:
-- share_to_social requires messages with attachments
+- share_to_social requires messages with attachments (has_media=true)
 - Use has_media=true in get_top_messages to find shareable content
-- Discord CDN URLs expire - always use refresh_media before including URLs in replies"""
+- Always show message_id so user can reference specific messages"""
 
 MAX_CONVERSATION_LENGTH = 20
 
