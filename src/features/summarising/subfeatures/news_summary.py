@@ -1,11 +1,12 @@
 import os
 import json
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import asyncio
 
 from dotenv import load_dotenv
 import anthropic
+from openai import AsyncOpenAI
 
 # We removed direct Discord/bot usage here since SUMMARIZER handles posting logic now.
 # This class now focuses on:
@@ -24,6 +25,15 @@ class NewsSummarizer:
         self.anthropic_client = anthropic.Anthropic(
             api_key=os.getenv("ANTHROPIC_API_KEY")
         )
+        
+        # Initialize OpenAI client for GPT-5 verification
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if openai_api_key:
+            self.openai_client = AsyncOpenAI(api_key=openai_api_key)
+            self.logger.info("OpenAI client initialized for summary verification.")
+        else:
+            self.openai_client = None
+            self.logger.warning("OPENAI_API_KEY not set - summary verification with GPT-5 will be skipped.")
 
         if self.dev_mode:
             self.guild_id = int(os.getenv('DEV_GUILD_ID'))
@@ -382,6 +392,166 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
         # If multiple chunk summaries, combine them
         self.logger.info(f"Combining {len(chunk_summaries)} chunk summaries.")
         return await self.combine_channel_summaries(chunk_summaries)
+
+    # System prompt for GPT-5 verification
+    _VERIFICATION_SYSTEM_PROMPT = """You are sense-checking an AI-generated news summary for a Discord community.
+
+The summary is generally correct. Your job is to catch genuine errors, not to rewrite or nitpick. Only flag issues that would actually mislead readers.
+
+Check for:
+1. **Attribution errors**: Credit given to wrong person, or to someone who shared/mentioned something rather than the actual creator
+2. **Unsupported claims**: Claims not in the source messages, or claims that got pushback/skepticism/low engagement
+3. **Logical leaps**: Conclusions that don't follow from evidence, or unrelated discussions incorrectly connected
+4. **Misinterpretations**: Misunderstood technical terms, questions confused for statements, missed sarcasm/jokes
+5. **Invented details**: Specific details (numbers, features, versions) not actually in the sources
+6. **Opinion as fact**: One person's opinion on a subjective topic presented as general consensus
+
+Return JSON in this EXACT format:
+{
+    "issues_found": true/false,
+    "corrections": [
+        {
+            "topic_title": "Affected topic title",
+            "issue_type": "attribution_error|unsupported_claim|logical_leap|misinterpretation|invented_detail|opinion_as_fact",
+            "original_text": "Problematic text",
+            "problem": "What's wrong",
+            "corrected_text": "Fixed version or null to remove",
+            "should_remove": false
+        }
+    ],
+    "verified_summary": <COMPLETE corrected summary array in EXACT same JSON structure as input>
+}
+
+CRITICAL: verified_summary must preserve the EXACT structure and ALL message_id/channel_id values from the original."""
+
+    async def verify_summary_accuracy(
+        self, 
+        summary_json: str, 
+        source_messages: List[Dict[str, Any]],
+        max_retries: int = 2
+    ) -> str:
+        """
+        Verify the accuracy of a generated summary against source messages using GPT-5 high.
+        
+        Uses GPT-5 with high reasoning effort to:
+        - Check attributions are correct
+        - Verify claims are supported by source text
+        - Identify logical leaps or unsupported inferences
+        - Flag any invented details
+        
+        Args:
+            summary_json: The JSON string of the generated summary
+            source_messages: The original messages the summary was generated from
+            max_retries: Number of retries for API failures
+            
+        Returns:
+            The verified (and potentially corrected) summary JSON string
+        """
+        if not self.openai_client:
+            self.logger.warning("OpenAI client not available - skipping summary verification")
+            return summary_json
+            
+        if summary_json in ["[NO SIGNIFICANT NEWS]", "[NO MESSAGES TO ANALYZE]", "[NOTHING OF NOTE]"]:
+            return summary_json
+        
+        self.logger.info(f"Verifying summary accuracy with GPT-5 high reasoning...")
+        
+        # Format source messages for the prompt
+        source_text = self.format_messages_for_user_prompt(source_messages)
+        
+        user_prompt = f"""Please verify this news summary against the source messages below.
+
+=== GENERATED SUMMARY (JSON) ===
+{summary_json}
+
+=== SOURCE MESSAGES ===
+{source_text}
+
+Check each claim in the summary against the source messages. Identify any attribution errors, unsupported claims, logical leaps, or invented details. Return the verified/corrected summary as specified."""
+
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                # Use the OpenAI Responses API with GPT-5 and high reasoning effort
+                self.logger.info(f"Calling GPT-5 with high reasoning effort (attempt {attempt + 1}/{max_retries})...")
+                
+                response = await self.openai_client.responses.create(
+                    model="gpt-5",
+                    reasoning={"effort": "high"},
+                    input=[
+                        {"role": "system", "content": self._VERIFICATION_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    max_output_tokens=32000  # Allow plenty of room for reasoning + output
+                )
+                
+                # Extract the output text from the response
+                output_text = response.output_text
+                
+                if not output_text:
+                    self.logger.warning(f"Empty response from GPT-5 verification (attempt {attempt + 1})")
+                    continue
+                
+                self.logger.debug(f"GPT-5 verification response: {output_text[:500]}...")
+                
+                # Parse the JSON response
+                try:
+                    # Strip markdown code blocks if present
+                    clean_text = output_text.strip()
+                    if clean_text.startswith('```json'):
+                        clean_text = clean_text[7:]
+                    if clean_text.startswith('```'):
+                        clean_text = clean_text[3:]
+                    if clean_text.endswith('```'):
+                        clean_text = clean_text[:-3]
+                    clean_text = clean_text.strip()
+                    
+                    verification_result = json.loads(clean_text)
+                    
+                    issues_found = verification_result.get('issues_found', False)
+                    corrections = verification_result.get('corrections', [])
+                    verified_summary = verification_result.get('verified_summary')
+                    
+                    if issues_found and corrections:
+                        self.logger.info(f"GPT-5 found {len(corrections)} issue(s) in the summary:")
+                        for correction in corrections:
+                            self.logger.info(f"  - [{correction.get('issue_type')}] {correction.get('problem', 'No details')[:100]}")
+                    else:
+                        self.logger.info("GPT-5 verification passed - no issues found")
+                    
+                    # Return the verified summary
+                    if verified_summary:
+                        if isinstance(verified_summary, list):
+                            return json.dumps(verified_summary, ensure_ascii=False)
+                        elif isinstance(verified_summary, str):
+                            return verified_summary
+                    
+                    # Fallback to original if verified_summary is missing
+                    self.logger.warning("verified_summary missing from GPT-5 response, using original")
+                    return summary_json
+                    
+                except json.JSONDecodeError as e:
+                    self.logger.warning(f"Failed to parse GPT-5 verification response as JSON: {e}")
+                    self.logger.debug(f"Raw response: {output_text[:500]}...")
+                    # Try to extract just the verified_summary if possible
+                    if '"verified_summary"' in output_text:
+                        # Continue to next attempt
+                        continue
+                    # Return original if we can't parse
+                    return summary_json
+                    
+            except Exception as e:
+                last_error = e
+                self.logger.error(f"Error during GPT-5 verification (attempt {attempt + 1}): {e}", exc_info=True)
+                if attempt < max_retries - 1:
+                    wait_time = 30 * (attempt + 1)
+                    self.logger.info(f"Waiting {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time)
+                continue
+        
+        # All retries exhausted
+        self.logger.error(f"GPT-5 verification failed after {max_retries} attempts. Using unverified summary.")
+        return summary_json
 
     def format_news_for_discord(self, news_items_json: str) -> List[Dict[str, Any]]:
         """

@@ -1832,6 +1832,11 @@ class ChannelSummarizer:
                             self.logger.info(f"No significant news for channel {channel_id}.")
                             continue
                         
+                        # Verify summary accuracy using GPT-5 high reasoning
+                        self.logger.info(f"Verifying summary accuracy for channel {channel_id}...")
+                        channel_summary = await self.news_summarizer.verify_summary_accuracy(channel_summary, messages)
+                        self.logger.info(f"Summary verification complete for channel {channel_id}. Length: {len(channel_summary) if channel_summary else 0} chars")
+                        
                         if self.is_forum_channel(post_channel_id):
                             # Skip forum channels - don't post updates to them
                             self.logger.info(f"Skipping ForumChannel {post_channel_id} for channel {channel_id} - forum channels are not supported for summary posting")

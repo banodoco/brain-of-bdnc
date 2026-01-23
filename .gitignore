@@ -103,6 +103,7 @@ data/
 
 # Project specific results/output
 results/
+updates/
 equity_holders.txt
 
 # Workflow and Supabase temp files
@@ -124,6 +125,7 @@ STORAGE_BACKEND_CHANGELOG.md
 SUPABASE_FINAL_VALIDATION.md
 SUPABASE_QUERY_SYSTEM_COMPLETE.md
 SUPABASE_VALIDATION_RESULTS.md
+docs/weekly-digest-agent-guide.md
 
 # Utility scripts (not core functionality)
 scripts/channel_message_retriever.py
