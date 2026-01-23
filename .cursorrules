@@ -49,29 +49,6 @@ If you need to re-run prod summaries for the same date, use:
 python main.py --clear-today-summaries --summary-now
 ```
 
-**Viewing logs** (logs are stored in Supabase with 48h retention):
-```bash
-# Quick health check (errors, summary status, bot activity)
-python scripts/logs.py health
-
-# Check daily summary status
-python scripts/logs.py summary                   # Today
-python scripts/logs.py summary --date 2024-12-12 # Specific date
-
-# View errors
-python scripts/logs.py errors                    # All errors
-python scripts/logs.py errors --hours 6          # Last 6 hours
-
-# Real-time tail
-python scripts/logs.py tail
-python scripts/logs.py tail --level WARNING      # Warnings and above
-
-# Search and view
-python scripts/logs.py search "rate limit"       # Search by content
-python scripts/logs.py recent -n 50              # Last 50 logs
-python scripts/logs.py stats                     # Detailed statistics
-```
-
 # Git Workflow
 - When the user asks to push to github, run `git diff | cat` to figure out what was changed. If there are structural changes (files added/deleted or file purposes changed), update the appropriate place in `structure.md`.
 - Then use a single command: `git add . && git commit -m "feat/fix: specific message" && git push`
@@ -84,26 +61,32 @@ python scripts/logs.py stats                     # Detailed statistics
 # Debugging
 - Use unique tags like `[ReactorDebug]` - tell user the tag so they can filter console.
 - Log values directly: `logger.debug(f"[Tag] message_id: {msg.id}")` not nested dicts.
-- **Debug utility**: Use `python scripts/debug.py` for common debugging tasks:
+- **Debug utility**: Use `python scripts/debug.py` for all debugging tasks:
   ```bash
-  # Configuration & Status
-  python scripts/debug.py env               # Check env config for channel ID issues
-  python scripts/debug.py bot-status        # Bot status, uptime, activity metrics
-  python scripts/debug.py db-stats          # Database statistics and recent activity
+  # Health & Monitoring
+  python scripts/debug.py health              # Quick health check (errors, warnings, activity)
+  python scripts/debug.py errors --hours 6    # View errors from last 6 hours
+  python scripts/debug.py search "AdminChat"  # Search logs by message content
+  python scripts/debug.py tail                # Live tail of logs
+  python scripts/debug.py trace admin         # Trace a feature (admin, summary, share, react, llm)
+  
+  # Database
+  python scripts/debug.py db-stats            # Database statistics
+  python scripts/debug.py channels            # List channels
+  python scripts/debug.py messages --channel ID  # Messages from a channel
+  python scripts/debug.py channel-info ID     # Details about a specific channel
+  
+  # Environment & Config
+  python scripts/debug.py env                 # Check env config
   
   # Railway & Deployments
-  python scripts/debug.py railway-status    # Service health & endpoints
-  python scripts/debug.py deployments       # Analyze deployment issues (duplicates, crashes)
-  python scripts/debug.py railway-logs -n 100  # Railway platform logs
-  
-  # Database Queries
-  python scripts/debug.py channel-info ID   # Details about a specific channel
-  python scripts/debug.py logs --hours 1    # Recent logs from Supabase
-  python scripts/debug.py messages --channel ID  # Messages from a channel
+  python scripts/debug.py bot-status          # Bot health via endpoint
+  python scripts/debug.py railway-status      # Service status
+  python scripts/debug.py deployments         # Deployment history
+  python scripts/debug.py railway-logs -n 100 # Platform logs
   ```
-- **Log analysis**: Use `python scripts/logs.py` for detailed log analysis (health checks, errors, traces, tail)
-- **Add useful debug commands**: When you create a one-off debugging script or command that helps diagnose an issue, consider adding it to `scripts/debug.py` if it would be useful again.
-- **Deployment issues**: If the bot stops responding or crashes repeatedly, see `docs/deployment-troubleshooting.md` for diagnostic workflow and common issues.
+- **Add useful debug commands**: When you create a one-off debugging script, consider adding it to `scripts/debug.py` if it would be useful again.
+- **Deployment issues**: If the bot stops responding or crashes repeatedly, see `docs/deployment-troubleshooting.md` for diagnostic workflow.
 
 # Scripts
 One-off utilities live in `scripts/`. Run with `python scripts/script_name.py`.

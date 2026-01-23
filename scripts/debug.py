@@ -1,19 +1,33 @@
 #!/usr/bin/env python3
 """
-Debug utility for investigating bot issues.
+Unified debug and monitoring utility for the Discord bot.
 
-This script consolidates common debugging tasks. When you create a useful
-one-off debug command, consider adding it here for future use.
+Combines log analysis, database queries, and deployment debugging.
 
 Usage:
-    python scripts/debug.py env                    # Show relevant env config
-    python scripts/debug.py channels --limit 10   # List channels from DB
-    python scripts/debug.py messages --channel ID  # Messages from a channel
-    python scripts/debug.py members --limit 20    # List members
-    python scripts/debug.py logs --hours 1        # Recent logs from Supabase
-    python scripts/debug.py railway-logs -n 100   # Railway platform logs
-    python scripts/debug.py summaries             # Recent summaries
-    python scripts/debug.py channel-info ID       # Details about a specific channel
+    # Quick checks
+    python scripts/debug.py health              # Health check (errors, warnings, bot activity)
+    python scripts/debug.py errors              # Show all errors
+    python scripts/debug.py errors --hours 6    # Errors from last 6 hours
+    
+    # Log analysis
+    python scripts/debug.py search "AdminChat"  # Search logs by message
+    python scripts/debug.py tail                # Live tail of logs
+    python scripts/debug.py trace summary       # Trace a feature (summary, share, react, llm)
+    
+    # Database queries
+    python scripts/debug.py db-stats            # Database statistics
+    python scripts/debug.py channels            # List channels
+    python scripts/debug.py messages --channel ID
+    python scripts/debug.py channel-info ID     # Details about a channel
+    
+    # Environment & config
+    python scripts/debug.py env                 # Show env config
+    
+    # Railway/deployment
+    python scripts/debug.py bot-status          # Bot health via endpoint
+    python scripts/debug.py railway-status      # Railway service status
+    python scripts/debug.py deployments         # Deployment history
 """
 
 import argparse
@@ -21,21 +35,70 @@ import json
 import os
 import subprocess
 import sys
+import time
+from collections import Counter
 from datetime import datetime, timedelta
+from pathlib import Path
+
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from dotenv import load_dotenv
-from supabase import create_client
-
 load_dotenv()
 
+from supabase import create_client
+
+# ========== Colors ==========
+COLORS = {
+    'DEBUG': '\033[90m',     # Gray
+    'INFO': '\033[32m',      # Green
+    'WARNING': '\033[33m',   # Yellow
+    'ERROR': '\033[31m',     # Red
+    'CRITICAL': '\033[35m',  # Magenta
+}
+RESET = '\033[0m'
+BOLD = '\033[1m'
+DIM = '\033[2m'
+GREEN = '\033[32m'
+YELLOW = '\033[33m'
+RED = '\033[31m'
+CYAN = '\033[36m'
+
+
+# ========== Utilities ==========
 
 def get_client():
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_KEY")
+    """Get Supabase client."""
+    url = os.getenv('SUPABASE_URL')
+    key = os.getenv('SUPABASE_SERVICE_KEY')
     if not url or not key:
-        print("Error: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set")
+        print(f"{RED}Error: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set{RESET}")
         sys.exit(1)
     return create_client(url, key)
+
+
+def format_log(log, verbose=False):
+    """Format a single log entry for display."""
+    ts = log['timestamp'][:19].replace('T', ' ')
+    level = log['level']
+    color = COLORS.get(level, '')
+    logger = log.get('logger_name', 'Unknown')
+    message = log['message']
+    
+    output = f"{DIM}{ts}{RESET} {color}{BOLD}{level:8}{RESET} {DIM}[{logger}]{RESET}\n"
+    
+    if verbose or level in ('ERROR', 'CRITICAL'):
+        output += f"  {message}\n"
+    else:
+        msg_preview = message[:150] + ('...' if len(message) > 150 else '')
+        output += f"  {msg_preview}\n"
+    
+    if log.get('exception') and (verbose or level in ('ERROR', 'CRITICAL')):
+        output += f"\n  {color}Exception:{RESET}\n"
+        for line in log['exception'].split('\n')[:15]:
+            output += f"    {DIM}{line}{RESET}\n"
+    
+    return output
 
 
 def format_row(row, max_width=100):
@@ -48,479 +111,297 @@ def format_row(row, max_width=100):
     return formatted
 
 
-def query_table(client, table, filters=None, limit=10, order_by=None, order_desc=True):
-    """Query a table with optional filters."""
-    q = client.table(table).select("*")
-    
-    if filters:
-        for col, val in filters.items():
-            q = q.eq(col, val)
-    
-    if order_by:
-        q = q.order(order_by, desc=order_desc)
-    
-    q = q.limit(limit)
-    result = q.execute()
-    return result.data
+# ========== Health & Monitoring Commands ==========
 
-
-def cmd_env(args):
-    """Show environment configuration for debugging channel/ID mismatches."""
-    print("\n🔧 Environment Configuration:\n")
+def cmd_health(args):
+    """Quick health check - shows errors, warnings, and bot activity."""
+    supabase = get_client()
     
-    # Key channel/ID env vars to check
-    env_vars = [
-        ("DISCORD_BOT_TOKEN", True),  # (name, is_secret)
-        ("SUPABASE_URL", False),
-        ("SUPABASE_SERVICE_KEY", True),
-        # Production
-        ("GUILD_ID", False),
-        ("SUMMARY_CHANNEL_ID", False),
-        ("TOP_GENS_ID", False),
-        ("ART_CHANNEL_ID", False),
-        ("CHANNELS_TO_MONITOR", False),
-        # Development
-        ("DEV_GUILD_ID", False),
-        ("DEV_SUMMARY_CHANNEL_ID", False),
-        ("DEV_TOP_GENS_ID", False),
-        ("DEV_ART_CHANNEL_ID", False),
-        ("DEV_CHANNELS_TO_MONITOR", False),
-        ("TEST_DATA_CHANNEL", False),
-        # Other
-        ("DEV_MODE", False),
-        ("REACTION_WATCHLIST", False),
-    ]
+    print(f"\n{BOLD}🏥 System Health Check{RESET}")
+    print("=" * 60)
     
-    print("  Production:")
-    for var, is_secret in env_vars:
-        if var.startswith("DEV_") or var in ["DISCORD_BOT_TOKEN", "SUPABASE_URL", "SUPABASE_SERVICE_KEY", "DEV_MODE", "REACTION_WATCHLIST"]:
-            continue
-        val = os.getenv(var)
-        if val:
-            print(f"    {var} = {val}")
+    now = datetime.utcnow()
+    last_1h = (now - timedelta(hours=1)).isoformat()
+    last_6h = (now - timedelta(hours=6)).isoformat()
+    last_24h = (now - timedelta(hours=24)).isoformat()
+    
+    # Error counts
+    print(f"\n{BOLD}🚨 Errors & Warnings:{RESET}")
+    for hours, since, label in [(1, last_1h, 'Last hour'), (6, last_6h, 'Last 6h'), (24, last_24h, 'Last 24h')]:
+        err_resp = supabase.table('system_logs').select('id', count='exact').in_('level', ['ERROR', 'CRITICAL']).gte('timestamp', since).execute()
+        err_count = err_resp.count or 0
+        
+        warn_resp = supabase.table('system_logs').select('id', count='exact').eq('level', 'WARNING').gte('timestamp', since).execute()
+        warn_count = warn_resp.count or 0
+        
+        if err_count > 0:
+            print(f"  {label}: {RED}{err_count} errors{RESET}, {YELLOW}{warn_count} warnings{RESET}")
+        elif warn_count > 0:
+            print(f"  {label}: {GREEN}0 errors{RESET}, {YELLOW}{warn_count} warnings{RESET}")
         else:
-            print(f"    {var} = (not set)")
+            print(f"  {label}: {GREEN}✓ No errors or warnings{RESET}")
     
-    print("\n  Development:")
-    for var, is_secret in env_vars:
-        if not var.startswith("DEV_") and var != "TEST_DATA_CHANNEL":
-            continue
-        val = os.getenv(var)
-        if val:
-            print(f"    {var} = {val}")
+    # Recent errors
+    err_response = supabase.table('system_logs').select('*').in_('level', ['ERROR', 'CRITICAL']).gte('timestamp', last_24h).order('timestamp', desc=True).limit(3).execute()
+    if err_response.data:
+        print(f"\n{BOLD}📋 Recent Errors (last 24h):{RESET}")
+        for log in err_response.data:
+            ts = log['timestamp'][:16].replace('T', ' ')
+            msg = log['message'][:100] + ('...' if len(log['message']) > 100 else '')
+            print(f"  {DIM}{ts}{RESET} {msg}")
+    
+    # Bot activity
+    print(f"\n{BOLD}🤖 Bot Activity:{RESET}")
+    recent_logs = supabase.table('system_logs').select('timestamp').order('timestamp', desc=True).limit(1).execute()
+    if recent_logs.data:
+        last_log = recent_logs.data[0]['timestamp'][:19].replace('T', ' ')
+        last_log_dt = datetime.fromisoformat(recent_logs.data[0]['timestamp'][:19])
+        age_mins = (now - last_log_dt).total_seconds() / 60
+        
+        if age_mins < 5:
+            print(f"  Last log: {GREEN}{last_log} ({age_mins:.0f}m ago) ✓ Active{RESET}")
+        elif age_mins < 30:
+            print(f"  Last log: {YELLOW}{last_log} ({age_mins:.0f}m ago){RESET}")
         else:
-            print(f"    {var} = (not set)")
-    
-    print("\n  Other:")
-    print(f"    DEV_MODE = {os.getenv('DEV_MODE', '(not set)')}")
-    watchlist = os.getenv("REACTION_WATCHLIST")
-    if watchlist:
-        print(f"    REACTION_WATCHLIST = {watchlist[:80]}..." if len(watchlist) > 80 else f"    REACTION_WATCHLIST = {watchlist}")
-    
-    # Check for common issues
-    print("\n⚠️  Potential Issues:")
-    issues = []
-    
-    summary_id = os.getenv("SUMMARY_CHANNEL_ID")
-    top_gens_id = os.getenv("TOP_GENS_ID")
-    if summary_id and not top_gens_id:
-        issues.append("TOP_GENS_ID not set - will default to SUMMARY_CHANNEL_ID in production")
-    if summary_id and top_gens_id and summary_id == top_gens_id:
-        issues.append("TOP_GENS_ID equals SUMMARY_CHANNEL_ID - individual top gens will post to summary channel")
-    
-    dev_summary_id = os.getenv("DEV_SUMMARY_CHANNEL_ID")
-    dev_top_gens_id = os.getenv("DEV_TOP_GENS_ID")
-    if dev_summary_id and not dev_top_gens_id:
-        issues.append("DEV_TOP_GENS_ID not set - will default to DEV_SUMMARY_CHANNEL_ID in dev mode")
-    
-    if issues:
-        for issue in issues:
-            print(f"  - {issue}")
+            print(f"  Last log: {RED}{last_log} ({age_mins:.0f}m ago) ⚠️ No recent activity{RESET}")
     else:
-        print("  None detected")
-    print()
-
-
-def cmd_railway_logs(args):
-    """Fetch Railway platform logs using the Railway CLI."""
-    print("\n🚂 Railway Platform Logs:\n")
+        print(f"  {RED}No logs found{RESET}")
     
-    lines = args.limit if hasattr(args, 'limit') else 100
+    print("=" * 60)
+
+
+def cmd_errors(args):
+    """Show errors - ALL by default, or filtered by hours."""
+    supabase = get_client()
     
-    try:
-        # Check if railway CLI is available
-        check_result = subprocess.run(
-            ['railway', '--version'],
-            capture_output=True,
-            text=True
-        )
-        
-        if check_result.returncode != 0:
-            print("❌ Railway CLI not found. Install it with:")
-            print("   npm i -g @railway/cli")
-            return
-        
-        # Run railway logs command
-        result = subprocess.run(
-            ['railway', 'logs', '--lines', str(lines)],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        if result.returncode != 0:
-            error_output = result.stderr.strip()
-            
-            # Handle common errors
-            if "No linked project" in error_output:
-                print("❌ No linked Railway project found.")
-                print("\nTo link this directory to a Railway project:")
-                print("   cd /path/to/bndc")
-                print("   railway link")
-            elif "not a TTY" in error_output:
-                print("⚠️  Railway CLI requires an interactive terminal for some operations.")
-                print("\nTry running this command directly in your terminal:")
-                print(f"   railway logs --lines {lines}")
-            else:
-                print(f"❌ Error fetching logs:\n{error_output}")
-            return
-        
-        # Success - print logs
-        output = result.stdout.strip()
-        if output:
-            print(output)
-        else:
-            print("No logs found.")
-            
-    except subprocess.TimeoutExpired:
-        print("❌ Command timed out after 30 seconds")
-    except FileNotFoundError:
-        print("❌ Railway CLI not found. Install it with:")
-        print("   npm i -g @railway/cli")
-    except Exception as e:
-        print(f"❌ Unexpected error: {e}")
-
-
-def cmd_railway_status(args):
-    """Check Railway service status and health endpoint."""
-    print("\n🚂 Railway Service Status:\n")
+    query = supabase.table('system_logs').select('*').in_('level', ['ERROR', 'CRITICAL'])
     
-    try:
-        # Check if railway CLI is available
-        check_result = subprocess.run(
-            ['railway', '--version'],
-            capture_output=True,
-            text=True
-        )
-        
-        if check_result.returncode != 0:
-            print("❌ Railway CLI not found. Install it with:")
-            print("   npm i -g @railway/cli")
-            return
-        
-        # Get Railway project info
-        result = subprocess.run(
-            ['railway', 'status', '--json'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        if result.returncode != 0:
-            error_output = result.stderr.strip()
-            if "No linked project" in error_output:
-                print("❌ No linked Railway project found.")
-                print("\nTo link this directory to a Railway project:")
-                print("   cd /path/to/bndc")
-                print("   railway link")
-            else:
-                print(f"❌ Error fetching status:\n{error_output}")
-            return
-        
-        # Parse JSON output
-        try:
-            status_data = json.loads(result.stdout) if result.stdout.strip() else {}
-        except json.JSONDecodeError:
-            print("⚠️  Could not parse Railway status JSON")
-            status_data = {}
-        
-        if status_data:
-            print(f"📦 Project: {status_data.get('project', {}).get('name', 'Unknown')}")
-            print(f"🔧 Service: {status_data.get('service', {}).get('name', 'Unknown')}")
-            print(f"🌍 Environment: {status_data.get('environment', {}).get('name', 'Unknown')}")
-            print()
-        
-        # Try to get the service URL
-        url_result = subprocess.run(
-            ['railway', 'domain'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        service_url = None
-        if url_result.returncode == 0 and url_result.stdout.strip():
-            # Parse the URL from Railway's output (might include extra text)
-            output = url_result.stdout.strip()
-            # Look for https:// URL
-            if 'https://' in output:
-                # Extract just the URL
-                import re
-                match = re.search(r'https://[^\s]+', output)
-                if match:
-                    service_url = match.group(0)
-            else:
-                service_url = output
-            
-            if service_url:
-                print(f"🌐 Service URL: {service_url}")
-        
-        # Check health endpoints if we have a URL
-        if service_url:
-            print("\n📊 Health Check Endpoints:\n")
-            
-            # Import requests here (optional dependency for this command)
-            try:
-                import requests
-                
-                endpoints = [
-                    ('/health', 'Basic liveness'),
-                    ('/ready', 'Readiness check'),
-                    ('/status', 'Detailed metrics')
-                ]
-                
-                for path, description in endpoints:
-                    url = f"{service_url}{path}"
-                    try:
-                        response = requests.get(url, timeout=5)
-                        
-                        if response.status_code == 200:
-                            status_emoji = "✅"
-                            status_text = "OK"
-                        elif response.status_code == 503:
-                            status_emoji = "⏳"
-                            status_text = "Not Ready"
-                        else:
-                            status_emoji = "❌"
-                            status_text = f"HTTP {response.status_code}"
-                        
-                        print(f"  {status_emoji} {path:10} - {status_text:12} - {description}")
-                        
-                        # Show detailed status if available
-                        if path == '/status' and response.status_code == 200:
-                            try:
-                                data = response.json()
-                                print(f"\n     Deployment: {data.get('deployment_id', 'unknown')[:12]}...")
-                                print(f"     Status: {data.get('status', 'unknown')}")
-                                if data.get('uptime_seconds'):
-                                    uptime_min = int(data['uptime_seconds'] / 60)
-                                    print(f"     Uptime: {uptime_min} minutes")
-                                if data.get('metrics'):
-                                    metrics = data['metrics']
-                                    print(f"     Messages logged: {metrics.get('messages_logged', 0)}")
-                                    print(f"     Messages archived: {metrics.get('messages_archived', 0)}")
-                                    print(f"     Errors: {metrics.get('errors_logged', 0)}")
-                            except:
-                                pass
-                        
-                    except requests.Timeout:
-                        print(f"  ⏱️  {path:10} - Timeout      - {description}")
-                    except requests.RequestException as e:
-                        print(f"  ❌ {path:10} - Error        - {description}")
-                        
-            except ImportError:
-                print("  ℹ️  Install 'requests' to check health endpoints")
-                print(f"     pip install requests")
-                print(f"\n  You can manually check:")
-                for path, desc in endpoints:
-                    print(f"     curl {service_url}{path}")
-        else:
-            print("\n⚠️  No service URL found. Health endpoints not checked.")
-            
-    except subprocess.TimeoutExpired:
-        print("❌ Command timed out")
-    except FileNotFoundError:
-        print("❌ Railway CLI not found. Install it with:")
-        print("   npm i -g @railway/cli")
-    except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+    if args.hours:
+        since = (datetime.utcnow() - timedelta(hours=args.hours)).isoformat()
+        query = query.gte('timestamp', since)
+        time_desc = f"last {args.hours} hours"
+    else:
+        time_desc = "all time"
+    
+    response = query.order('timestamp', desc=True).limit(args.limit).execute()
+    
+    if not response.data:
+        print(f"\n{GREEN}✅ No errors found ({time_desc}){RESET}")
+        return
+    
+    print(f"\n{RED}{BOLD}🚨 {len(response.data)} errors ({time_desc}):{RESET}\n")
+    print("-" * 60)
+    
+    for log in response.data:
+        print(format_log(log, verbose=args.verbose))
+        print("-" * 60)
 
 
-def cmd_deployments(args):
-    """Analyze Railway deployment history for duplicate deploys, crashes, etc."""
-    print("\n🚀 Railway Deployment Analysis:\n")
+def cmd_search(args):
+    """Search logs by message or logger."""
+    supabase = get_client()
+    
+    query = supabase.table('system_logs').select('*')
+    
+    if args.pattern:
+        query = query.ilike('message', f'%{args.pattern}%')
+    
+    if args.logger:
+        query = query.ilike('logger_name', f'%{args.logger}%')
+    
+    if args.level:
+        query = query.eq('level', args.level.upper())
+    
+    if args.hours:
+        since = (datetime.utcnow() - timedelta(hours=args.hours)).isoformat()
+        query = query.gte('timestamp', since)
+    
+    response = query.order('timestamp', desc=True).limit(args.limit).execute()
+    
+    if not response.data:
+        print("No matching logs found")
+        return
+    
+    print(f"\n{BOLD}🔍 Found {len(response.data)} matching logs:{RESET}\n")
+    print("-" * 60)
+    
+    for log in response.data:
+        print(format_log(log, verbose=args.verbose))
+        print("-" * 60)
+
+
+def cmd_tail(args):
+    """Live tail of logs (polling)."""
+    supabase = get_client()
+    
+    print(f"{BOLD}📡 Tailing logs (Ctrl+C to stop)...{RESET}\n")
+    
+    response = supabase.table('system_logs').select('timestamp').order('timestamp', desc=True).limit(1).execute()
+    last_ts = response.data[0]['timestamp'] if response.data else datetime.utcnow().isoformat()
+    
+    seen_ids = set()
+    level_order = {'DEBUG': 0, 'INFO': 1, 'WARNING': 2, 'ERROR': 3, 'CRITICAL': 4}
+    min_level = level_order.get(args.level.upper() if args.level else 'DEBUG', 0)
     
     try:
-        # Check if railway CLI is available
-        check_result = subprocess.run(
-            ['railway', '--version'],
-            capture_output=True,
-            text=True
-        )
-        
-        if check_result.returncode != 0:
-            print("❌ Railway CLI not found. Install it with:")
-            print("   npm i -g @railway/cli")
-            return
-        
-        # Fetch deployment list as JSON
-        result = subprocess.run(
-            ['railway', 'deployment', 'list', '--limit', str(args.limit), '--json'],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        if result.returncode != 0:
-            error_output = result.stderr.strip()
-            if "No linked project" in error_output:
-                print("❌ No linked Railway project found.")
-                print("\nTo link this directory to a Railway project:")
-                print("   cd /path/to/bndc")
-                print("   railway link")
-            else:
-                print(f"❌ Error fetching deployments:\n{error_output}")
-            return
-        
-        # Parse JSON output
-        try:
-            deployments = json.loads(result.stdout)
-        except json.JSONDecodeError as e:
-            print(f"❌ Failed to parse deployment JSON: {e}")
-            return
-        
-        if not deployments:
-            print("No deployments found.")
-            return
-        
-        # Analysis
-        print(f"📊 Analyzing {len(deployments)} recent deployments...\n")
-        
-        # Track issues
-        issues = []
-        commit_times = {}  # commit_hash -> [timestamps]
-        
-        for d in deployments:
-            commit = d.get('meta', {}).get('commitHash', 'unknown')[:7]
-            created_at = d.get('createdAt', '')
-            status = d.get('status', 'UNKNOWN')
+        while True:
+            query = supabase.table('system_logs').select('*').gt('timestamp', last_ts)
+            response = query.order('timestamp', desc=False).limit(50).execute()
             
-            # Track duplicate commits
-            if commit not in commit_times:
-                commit_times[commit] = []
-            commit_times[commit].append(created_at)
-        
-        # Find duplicate deployments (same commit within short time window)
-        print("🔍 Checking for duplicate deployments...\n")
-        duplicates_found = False
-        for commit, timestamps in commit_times.items():
-            if len(timestamps) > 1:
-                # Sort timestamps
-                timestamps.sort()
-                for i in range(len(timestamps) - 1):
-                    t1 = datetime.fromisoformat(timestamps[i].replace('Z', '+00:00'))
-                    t2 = datetime.fromisoformat(timestamps[i+1].replace('Z', '+00:00'))
-                    diff_seconds = (t2 - t1).total_seconds()
+            for log in response.data:
+                log_id = log.get('id')
+                if log_id and log_id not in seen_ids:
+                    log_level = level_order.get(log['level'], 1)
+                    if log_level < min_level:
+                        continue
                     
-                    # Flag if deployments are within 5 minutes
-                    if diff_seconds < 300:
-                        duplicates_found = True
-                        print(f"⚠️  DUPLICATE: Commit {commit} deployed twice {diff_seconds:.0f}s apart")
-                        print(f"   First:  {timestamps[i]}")
-                        print(f"   Second: {timestamps[i+1]}")
-                        print()
-                        issues.append(f"Duplicate deploy of {commit} ({diff_seconds:.0f}s apart)")
-        
-        if not duplicates_found:
-            print("✅ No duplicate deployments detected\n")
-        
-        # Show recent deployment timeline
-        print("📅 Recent Deployment Timeline:\n")
-        for d in deployments[:20]:
-            ts = d.get('createdAt', '')[:19].replace('T', ' ')
-            status = d.get('status', 'UNKNOWN')
-            commit = d.get('meta', {}).get('commitHash', 'unknown')[:7]
-            msg = d.get('meta', {}).get('commitMessage', '').split('\n')[0][:60]
+                    seen_ids.add(log_id)
+                    ts = log['timestamp'][:19].replace('T', ' ')
+                    level = log['level']
+                    color = COLORS.get(level, '')
+                    logger = log.get('logger_name', '?')
+                    msg = log['message'][:120] + ('...' if len(log['message']) > 120 else '')
+                    print(f"{DIM}{ts}{RESET} {color}{level:8}{RESET} {DIM}[{logger}]{RESET} {msg}")
+                    
+                    if log['timestamp'] > last_ts:
+                        last_ts = log['timestamp']
             
-            status_emoji = {
-                'SUCCESS': '✅',
-                'REMOVED': '🗑️',
-                'FAILED': '❌',
-                'BUILDING': '🔨',
-                'DEPLOYING': '🚀',
-                'CRASHED': '💥'
-            }.get(status, '❓')
+            if len(seen_ids) > 1000:
+                seen_ids = set(list(seen_ids)[-500:])
             
-            print(f"{status_emoji} {ts} [{status:10}] {commit} {msg}")
-        
-        # Summary
-        print(f"\n📈 Summary:")
-        statuses = {}
-        for d in deployments:
-            status = d.get('status', 'UNKNOWN')
-            statuses[status] = statuses.get(status, 0) + 1
-        
-        for status, count in sorted(statuses.items()):
-            print(f"   {status}: {count}")
-        
-        if issues:
-            print(f"\n⚠️  Issues detected: {len(issues)}")
-            for issue in issues:
-                print(f"   - {issue}")
-        else:
-            print(f"\n✅ No deployment issues detected")
+            time.sleep(args.interval)
             
-    except subprocess.TimeoutExpired:
-        print("❌ Command timed out after 30 seconds")
-    except FileNotFoundError:
-        print("❌ Railway CLI not found. Install it with:")
-        print("   npm i -g @railway/cli")
-    except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+    except KeyboardInterrupt:
+        print(f"\n{DIM}Stopped.{RESET}")
 
 
-def cmd_railway_logs(args):
-    """Fetch Railway platform logs using CLI."""
-    try:
-        # Check if railway CLI is available
-        result = subprocess.run(['which', 'railway'], capture_output=True, text=True)
-        if result.returncode != 0:
-            print("❌ Railway CLI not installed. Install with: npm i -g @railway/cli")
-            return
-        
-        # Fetch logs
-        lines = args.limit or 100
-        cmd = ['railway', 'logs', '--lines', str(lines)]
-        
-        if args.json:
-            cmd.append('--json')
-        
-        print(f"\n🚂 Railway Platform Logs (last {lines}):\n")
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            print(f"❌ Error: {result.stderr.strip()}")
-            if 'No linked project' in result.stderr:
-                print("\n💡 To fix this:")
-                print("   1. Run: railway link (in an interactive terminal)")
-                print("   2. Or check Railway dashboard: https://railway.app")
-                print("   3. Or use Railway API directly (see Railway docs)")
-            elif 'not a TTY' in result.stderr:
-                print("\n💡 Railway CLI requires an interactive terminal")
-                print("   Run this command directly in your terminal:")
-                print(f"   railway logs --lines {lines}")
-            return
-        
-        # Display logs
-        print(result.stdout)
-                
-    except Exception as e:
-        print(f"Error fetching Railway logs: {e}")
+def cmd_trace(args):
+    """Trace a specific feature/operation by keyword."""
+    supabase = get_client()
+    
+    FEATURES = {
+        'summary': ['summary', 'summariser', 'summarizer', 'news_summary', 'generate_summary'],
+        'archive': ['[Archive]', 'archive_discord', 'archiving'],
+        'share': ['sharer', 'sharing', 'twitter', 'social_poster', 'tweet'],
+        'react': ['reactor', 'reaction', 'watchlist'],
+        'llm': ['claude', 'anthropic', 'openai', 'gemini', 'llm', 'rate limit'],
+        'admin': ['AdminChat', 'admin_chat', 'admin'],
+    }
+    
+    feature = args.feature.lower()
+    if feature in FEATURES:
+        keywords = FEATURES[feature]
+        print(f"\n{BOLD}🔍 Tracing '{feature}' feature{RESET}")
+    else:
+        keywords = [args.feature]
+        print(f"\n{BOLD}🔍 Tracing custom keyword: '{args.feature}'{RESET}")
+    
+    if args.hours:
+        since = (datetime.utcnow() - timedelta(hours=args.hours)).isoformat()
+    else:
+        since = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+    
+    print(f"Keywords: {', '.join(keywords)}")
+    print(f"Time range: since {since[:19]}")
+    print("=" * 60)
+    
+    all_logs = []
+    seen_ids = set()
+    
+    for keyword in keywords[:3]:
+        try:
+            response = supabase.table('system_logs').select('*').ilike('message', f'%{keyword}%').gte('timestamp', since).order('timestamp', desc=False).limit(100).execute()
+            for log in response.data:
+                if log['id'] not in seen_ids:
+                    seen_ids.add(log['id'])
+                    all_logs.append(log)
+        except Exception:
+            pass
+    
+    all_logs.sort(key=lambda x: x['timestamp'])
+    
+    if not all_logs:
+        print(f"\n{DIM}No logs found for '{feature}'{RESET}")
+        return
+    
+    print(f"\n{BOLD}Found {len(all_logs)} related logs:{RESET}\n")
+    
+    for log in all_logs:
+        ts = log['timestamp'][:19].replace('T', ' ')
+        level = log['level']
+        color = COLORS.get(level, '')
+        msg = log['message'][:140] + ('...' if len(log['message']) > 140 else '')
+        print(f"{DIM}{ts}{RESET} {color}{level:8}{RESET} {msg}")
+    
+    print("=" * 60)
 
 
-def cmd_db_stats(args, client):
-    """Show database statistics - table sizes and recent activity."""
-    print("\n📊 Database Statistics:\n")
+def cmd_recent(args):
+    """Show most recent logs."""
+    supabase = get_client()
+    
+    query = supabase.table('system_logs').select('*')
+    
+    if args.level:
+        query = query.eq('level', args.level.upper())
+    
+    if args.hours:
+        since = (datetime.utcnow() - timedelta(hours=args.hours)).isoformat()
+        query = query.gte('timestamp', since)
+    
+    response = query.order('timestamp', desc=True).limit(args.limit).execute()
+    
+    if not response.data:
+        print("No logs found")
+        return
+    
+    print(f"\n{BOLD}📋 Last {len(response.data)} logs:{RESET}\n")
+    
+    for log in reversed(response.data):
+        ts = log['timestamp'][:19].replace('T', ' ')
+        level = log['level']
+        color = COLORS.get(level, '')
+        logger = log.get('logger_name', '?')
+        msg = log['message'][:120] + ('...' if len(log['message']) > 120 else '')
+        print(f"{DIM}{ts}{RESET} {color}{level:8}{RESET} {DIM}[{logger}]{RESET} {msg}")
+
+
+def cmd_stats(args):
+    """Show detailed log statistics."""
+    supabase = get_client()
+    
+    print(f"\n{BOLD}📊 Log Statistics{RESET}")
+    print("=" * 60)
+    
+    response = supabase.table('system_logs').select('id', count='exact').execute()
+    total = response.count or 0
+    print(f"Total logs: {total:,}")
+    
+    print(f"\n{BOLD}By Level:{RESET}")
+    for level in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
+        response = supabase.table('system_logs').select('id', count='exact').eq('level', level).execute()
+        count = response.count or 0
+        pct = (count / total * 100) if total > 0 else 0
+        color = COLORS.get(level, '')
+        bar = '█' * int(pct / 2) if pct > 0 else ''
+        print(f"  {color}{level:10}{RESET} {count:>8,} ({pct:5.1f}%) {bar}")
+    
+    yesterday = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    response = supabase.table('system_logs').select('id', count='exact').gte('timestamp', yesterday).execute()
+    last_24h = response.count or 0
+    print(f"\nLast 24 hours: {last_24h:,}")
+    
+    print("=" * 60)
+
+
+# ========== Database Commands ==========
+
+def cmd_db_stats(args):
+    """Show database statistics."""
+    supabase = get_client()
+    
+    print(f"\n{BOLD}📊 Database Statistics{RESET}")
+    print("=" * 60)
     
     tables = {
         'discord_messages': 'Messages',
@@ -528,508 +409,333 @@ def cmd_db_stats(args, client):
         'discord_members': 'Members',
         'daily_summaries': 'Daily Summaries',
         'system_logs': 'System Logs',
-        'shared_content': 'Shared Content'
     }
     
-    print("Table Sizes:")
+    print("\nTable Sizes:")
     for table, name in tables.items():
         try:
-            result = client.table(table).select('*', count='exact').limit(1).execute()
+            result = supabase.table(table).select('*', count='exact').limit(1).execute()
             count = result.count if result.count is not None else 0
             print(f"  {name:20} {count:>10,} rows")
-        except Exception as e:
+        except Exception:
             print(f"  {name:20} {'Error':>10}")
     
     print("\nRecent Activity (last 24 hours):")
-    from datetime import datetime, timedelta
     cutoff = (datetime.utcnow() - timedelta(hours=24)).isoformat()
     
-    # Messages by creation time
     try:
-        msgs = client.table('discord_messages').select('message_id', count='exact').gte('created_at', cutoff).execute()
+        msgs = supabase.table('discord_messages').select('message_id', count='exact').gte('created_at', cutoff).execute()
         print(f"  New messages:        {msgs.count:>10,}")
     except:
         print(f"  New messages:        {'Error':>10}")
     
-    # Messages by index time (when archived)
     try:
-        indexed = client.table('discord_messages').select('message_id', count='exact').gte('indexed_at', cutoff).execute()
-        print(f"  Messages archived:   {indexed.count:>10,}")
-    except:
-        print(f"  Messages archived:   {'Error':>10}")
-    
-    # Summaries
-    try:
-        sums = client.table('daily_summaries').select('id', count='exact').gte('created_at', cutoff).execute()
-        print(f"  New summaries:       {sums.count:>10,}")
-    except:
-        print(f"  New summaries:       {'Error':>10}")
-    
-    # Errors
-    try:
-        errs = client.table('system_logs').select('id', count='exact').gte('timestamp', cutoff).eq('level', 'ERROR').execute()
+        errs = supabase.table('system_logs').select('id', count='exact').gte('timestamp', cutoff).eq('level', 'ERROR').execute()
         print(f"  Errors logged:       {errs.count:>10,}")
     except:
         print(f"  Errors logged:       {'Error':>10}")
+    
+    print("=" * 60)
 
 
-def cmd_archive_status(args, client):
-    """Check archive status - messages indexed vs created."""
-    print("\n📦 Archive Status:\n")
+def cmd_channels(args):
+    """List channels from database."""
+    supabase = get_client()
     
-    from datetime import datetime, timedelta
+    query = supabase.table('discord_channels').select('channel_id, channel_name, category_name')
+    results = query.limit(args.limit).execute()
     
-    # Check different time windows
-    windows = [
-        (1, "Last 1 hour"),
-        (6, "Last 6 hours"),
-        (24, "Last 24 hours")
+    if not results.data:
+        print("No channels found")
+        return
+    
+    print(f"\n{BOLD}📺 Channels ({len(results.data)}):{RESET}\n")
+    for ch in results.data:
+        cat = ch.get('category_name', 'No category')
+        print(f"  {ch['channel_id']} - {ch.get('channel_name', 'Unknown')} ({cat})")
+
+
+def cmd_messages(args):
+    """List messages from database."""
+    supabase = get_client()
+    
+    query = supabase.table('discord_messages').select('message_id, channel_id, author_id, content, created_at')
+    
+    if args.channel:
+        query = query.eq('channel_id', args.channel)
+    
+    if args.hours:
+        since = (datetime.utcnow() - timedelta(hours=args.hours)).isoformat()
+        query = query.gte('created_at', since)
+    
+    results = query.order('created_at', desc=True).limit(args.limit).execute()
+    
+    if not results.data:
+        print("No messages found")
+        return
+    
+    print(f"\n{BOLD}💬 Messages ({len(results.data)}):{RESET}\n")
+    for msg in results.data:
+        ts = msg['created_at'][:19].replace('T', ' ') if msg.get('created_at') else '?'
+        content = (msg.get('content') or '')[:80]
+        print(f"  {DIM}{ts}{RESET} [{msg['channel_id']}] {content}")
+
+
+def cmd_channel_info(args):
+    """Get details about a specific channel."""
+    if not args.channel_id:
+        print("Error: channel-info requires a channel ID")
+        return
+    
+    supabase = get_client()
+    channel_id = int(args.channel_id)
+    
+    result = supabase.table('discord_channels').select('*').eq('channel_id', channel_id).limit(1).execute()
+    
+    if result.data:
+        print(f"\n{BOLD}📺 Channel {channel_id}:{RESET}\n")
+        for k, v in result.data[0].items():
+            print(f"  {k}: {v}")
+    else:
+        print(f"\n❌ Channel {channel_id} not found in database")
+
+
+# ========== Environment Commands ==========
+
+def cmd_env(args):
+    """Show environment configuration."""
+    print(f"\n{BOLD}🔧 Environment Configuration{RESET}")
+    print("=" * 60)
+    
+    env_vars = [
+        ("GUILD_ID", False),
+        ("SUMMARY_CHANNEL_ID", False),
+        ("TOP_GENS_ID", False),
+        ("ART_CHANNEL_ID", False),
+        ("ADMIN_USER_ID", False),
+        ("DEV_MODE", False),
     ]
     
-    print("Messages Created vs Archived:\n")
-    for hours, label in windows:
-        cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
-        
-        try:
-            # Messages created in this window
-            created = client.table('discord_messages').select('message_id', count='exact').gte('created_at', cutoff).execute()
-            
-            # Messages indexed in this window
-            indexed = client.table('discord_messages').select('message_id', count='exact').gte('indexed_at', cutoff).execute()
-            
-            status = "✅" if indexed.count >= created.count else "⚠️"
-            print(f"  {status} {label:15} Created: {created.count:>4}  Archived: {indexed.count:>4}")
-        except Exception as e:
-            print(f"  ❌ {label:15} Error: {e}")
-    
-    # Most recent archive activity
-    print("\n🕐 Recent Archive Activity:\n")
-    try:
-        recent = client.table('discord_messages').select('indexed_at, channel_id').order('indexed_at', desc=True).limit(5).execute()
-        
-        if recent.data:
-            for msg in recent.data:
-                indexed = msg['indexed_at'][:19].replace('T', ' ')
-                channel = msg['channel_id']
-                print(f"  {indexed} - Channel {channel}")
+    print("\n  Key IDs:")
+    for var, _ in env_vars:
+        val = os.getenv(var)
+        if val:
+            print(f"    {var} = {val}")
         else:
-            print("  No recent archive activity found")
-    except Exception as e:
-        print(f"  Error: {e}")
+            print(f"    {var} = {DIM}(not set){RESET}")
     
-    # Messages by channel (top 5)
-    print("\n📊 Messages by Channel (last 24h):\n")
-    try:
-        cutoff_24h = (datetime.utcnow() - timedelta(hours=24)).isoformat()
-        msgs = client.table('discord_messages').select('channel_id, message_id').gte('created_at', cutoff_24h).execute()
-        
-        channels = {}
-        for msg in msgs.data:
-            ch = msg['channel_id']
-            channels[ch] = channels.get(ch, 0) + 1
-        
-        for ch, count in sorted(channels.items(), key=lambda x: x[1], reverse=True)[:5]:
-            print(f"  Channel {ch}: {count:>4} messages")
-    except Exception as e:
-        print(f"  Error: {e}")
+    print("\n  Credentials:")
+    for var in ["DISCORD_BOT_TOKEN", "SUPABASE_URL", "ANTHROPIC_API_KEY"]:
+        val = os.getenv(var)
+        if val:
+            print(f"    {var} = {GREEN}✓ set{RESET}")
+        else:
+            print(f"    {var} = {RED}✗ not set{RESET}")
+    
+    print("=" * 60)
 
+
+# ========== Railway Commands ==========
 
 def cmd_bot_status(args):
     """Check bot status via health endpoint."""
-    print("\n🤖 Bot Status:\n")
+    print(f"\n{BOLD}🤖 Bot Status{RESET}")
+    print("=" * 60)
     
     try:
         import requests
-        import subprocess
-        from datetime import datetime
         
-        # Get service URL
-        result = subprocess.run(
-            ['railway', 'domain'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
+        result = subprocess.run(['railway', 'domain'], capture_output=True, text=True, timeout=10)
         
         if result.returncode != 0:
             print("❌ Could not get Railway domain")
             return
         
-        # Parse URL
+        import re
         output = result.stdout.strip()
-        if 'https://' in output:
-            import re
-            match = re.search(r'https://[^\s]+', output)
-            service_url = match.group(0) if match else None
-        else:
-            service_url = output
+        match = re.search(r'https://[^\s]+', output)
+        service_url = match.group(0) if match else output
         
         if not service_url:
             print("❌ No service URL found")
             return
         
-        # Get status
-        try:
-            response = requests.get(f"{service_url}/status", timeout=5)
-            data = response.json()
+        print(f"Service URL: {service_url}")
+        
+        response = requests.get(f"{service_url}/health", timeout=5)
+        if response.status_code == 200:
+            print(f"\n{GREEN}✅ Bot is healthy{RESET}")
+        else:
+            print(f"\n{YELLOW}⚠️ Health check returned {response.status_code}{RESET}")
             
-            status_emoji = "✅" if data.get('status') == 'ready' else "⏳"
-            print(f"{status_emoji} Status: {data.get('status', 'unknown')}")
-            print(f"📦 Deployment: {data.get('deployment_id', 'unknown')[:12]}...")
-            
-            if data.get('startup_time'):
-                startup = datetime.fromisoformat(data['startup_time'].replace('Z', '+00:00'))
-                uptime = datetime.utcnow().replace(tzinfo=startup.tzinfo) - startup
-                hours = int(uptime.total_seconds() / 3600)
-                minutes = int((uptime.total_seconds() % 3600) / 60)
-                print(f"⏱️  Uptime: {hours}h {minutes}m")
-            
-            if data.get('metrics'):
-                metrics = data['metrics']
-                print(f"\n📈 Activity:")
-                print(f"   Messages logged:   {metrics.get('messages_logged', 0):>6,}")
-                print(f"   Messages archived: {metrics.get('messages_archived', 0):>6,}")
-                print(f"   Errors:            {metrics.get('errors_logged', 0):>6,}")
-            
-            if data.get('last_heartbeat'):
-                heartbeat = datetime.fromisoformat(data['last_heartbeat'].replace('Z', '+00:00'))
-                now = datetime.utcnow().replace(tzinfo=heartbeat.tzinfo)
-                seconds_ago = (now - heartbeat).total_seconds()
-                print(f"\n💓 Last heartbeat: {int(seconds_ago)}s ago")
-                
-        except requests.Timeout:
-            print("⏱️  Request timed out - bot may be starting")
-        except requests.RequestException as e:
-            print(f"❌ Error connecting to bot: {e}")
-    
     except ImportError:
-        print("⚠️  Install 'requests' to check bot status:")
-        print("   pip install requests")
+        print("Install 'requests' to check bot status: pip install requests")
+    except subprocess.TimeoutExpired:
+        print("❌ Command timed out")
+    except FileNotFoundError:
+        print("❌ Railway CLI not found. Install with: npm i -g @railway/cli")
     except Exception as e:
         print(f"❌ Error: {e}")
 
 
-def cmd_refresh_media(args, client):
-    """
-    Refresh expired Discord media URLs by fetching fresh URLs from the API.
+def cmd_railway_status(args):
+    """Check Railway service status."""
+    print(f"\n{BOLD}🚂 Railway Service Status{RESET}")
+    print("=" * 60)
     
-    This is useful because Discord CDN URLs expire. This command fetches a message
-    from the Discord API to get current, non-expired attachment URLs, then updates
-    the database.
-    """
-    import asyncio
-    import discord
-    from discord.ext import commands
+    try:
+        result = subprocess.run(['railway', 'status'], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            print(result.stdout)
+        else:
+            print(f"❌ Error: {result.stderr}")
+    except FileNotFoundError:
+        print("❌ Railway CLI not found. Install with: npm i -g @railway/cli")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+
+def cmd_railway_logs(args):
+    """Fetch Railway platform logs."""
+    print(f"\n{BOLD}🚂 Railway Logs{RESET}")
+    print("=" * 60)
     
-    # Determine which message to refresh
-    if args.message:
-        message_id = args.message
-        # Look up the channel from the database
-        result = client.table('discord_messages').select('channel_id, attachments, created_at').eq('message_id', message_id).execute()
-        if not result.data:
-            print(f"❌ Message {message_id} not found in database")
+    try:
+        lines = args.limit
+        result = subprocess.run(['railway', 'logs', '--lines', str(lines)], capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            print(result.stdout)
+        else:
+            print(f"❌ Error: {result.stderr}")
+    except FileNotFoundError:
+        print("❌ Railway CLI not found. Install with: npm i -g @railway/cli")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+
+def cmd_deployments(args):
+    """Analyze Railway deployment history."""
+    print(f"\n{BOLD}🚀 Railway Deployments{RESET}")
+    print("=" * 60)
+    
+    try:
+        result = subprocess.run(
+            ['railway', 'deployment', 'list', '--limit', str(args.limit), '--json'],
+            capture_output=True, text=True, timeout=30
+        )
+        
+        if result.returncode != 0:
+            print(f"❌ Error: {result.stderr}")
             return
-        channel_id = result.data[0]['channel_id']
-        old_attachments = result.data[0]['attachments']
-        created_at = result.data[0]['created_at']
-        print(f"\n🔄 Refreshing specific message: {message_id}")
-        print(f"   Channel: {channel_id}")
-        print(f"   Created: {created_at}")
-    else:
-        # Find a message with attachments from about a week ago
-        print("\n🔍 Finding a message with attachments from ~1 week ago...")
-        week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
-        two_weeks_ago = (datetime.utcnow() - timedelta(days=14)).isoformat()
         
-        result = client.table('discord_messages').select('message_id, channel_id, attachments, created_at').neq('attachments', []).gte('created_at', two_weeks_ago).lte('created_at', week_ago).limit(1).execute()
+        deployments = json.loads(result.stdout)
         
-        if not result.data:
-            print("❌ No messages with attachments found from ~1 week ago")
+        if not deployments:
+            print("No deployments found.")
             return
         
-        message_id = result.data[0]['message_id']
-        channel_id = result.data[0]['channel_id']
-        old_attachments = result.data[0]['attachments']
-        created_at = result.data[0]['created_at']
-        print(f"   Found message: {message_id}")
-        print(f"   Channel: {channel_id}")
-        print(f"   Created: {created_at}")
-    
-    # Parse old attachments
-    if isinstance(old_attachments, str):
-        old_attachments = json.loads(old_attachments)
-    
-    print(f"\n📎 Current attachments ({len(old_attachments)}):")
-    for att in old_attachments[:2]:
-        url = att.get('url', '<no url>')
-        print(f"   - {att.get('filename')}")
-        print(f"     URL: {url[:80]}...")
-    
-    # Get bot token
-    bot_token = os.getenv('DISCORD_BOT_TOKEN')
-    if not bot_token:
-        print("\n❌ DISCORD_BOT_TOKEN not set. Cannot fetch from Discord API.")
-        return
-    
-    print("\n🤖 Connecting to Discord API...")
-    
-    # Add project root to path for imports
-    from pathlib import Path
-    project_root = Path(__file__).parent.parent
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
-    
-    async def do_refresh():
-        # Create minimal bot just for API access
-        intents = discord.Intents.default()
-        intents.message_content = True
+        print(f"Recent {len(deployments)} deployments:\n")
         
-        bot = commands.Bot(command_prefix='!', intents=intents)
-        refresh_result = {'success': False, 'attachments': []}
-        
-        @bot.event
-        async def on_ready():
-            nonlocal refresh_result
-            try:
-                print(f"   Connected as {bot.user.name}")
-                
-                # Import refresh function
-                from src.common.discord_utils import refresh_media_url
-                
-                # Get fresh URLs
-                result = await refresh_media_url(bot, channel_id, message_id)
-                
-                if not result or not result.get('success'):
-                    print("\n❌ Failed to fetch message from Discord API")
-                    return
-                
-                refresh_result = result
-                fresh_attachments = result['attachments']
-                
-                print(f"\n✅ Got fresh attachments ({len(fresh_attachments)}):")
-                for att in fresh_attachments[:2]:
-                    print(f"   - {att.get('filename')}")
-                    print(f"     URL: {att.get('url', '<none>')[:80]}...")
-                
-                # Compare URLs
-                if old_attachments and fresh_attachments:
-                    old_url = old_attachments[0].get('url', '')
-                    new_url = fresh_attachments[0].get('url', '')
-                    
-                    if old_url != new_url:
-                        print("\n📝 URLs have changed!")
-                        # Extract expiry params
-                        old_ex = 'ex=' + old_url.split('ex=')[1].split('&')[0] if 'ex=' in old_url else 'no expiry'
-                        new_ex = 'ex=' + new_url.split('ex=')[1].split('&')[0] if 'ex=' in new_url else 'no expiry'
-                        print(f"   Old expiry: {old_ex}")
-                        print(f"   New expiry: {new_ex}")
-                    else:
-                        print("\n📝 URLs are the same (may not have expired yet)")
-                
-                # Update database if requested
-                if not args.dry_run:
-                    print("\n💾 Updating database...")
-                    try:
-                        update_data = {'attachments': fresh_attachments}
-                        client.table('discord_messages').update(update_data).eq('message_id', message_id).execute()
-                        print("   ✅ Database updated successfully!")
-                    except Exception as e:
-                        print(f"   ❌ Database update failed: {e}")
-                else:
-                    print("\n🔍 Dry run - database not updated")
-                    print("   Run without --dry-run to update the database")
-                
-            except Exception as e:
-                print(f"\n❌ Error: {e}")
-                import traceback
-                traceback.print_exc()
-            finally:
-                await bot.close()
-        
-        try:
-            await bot.start(bot_token)
-        except discord.LoginFailure:
-            print("❌ Invalid Discord bot token")
-        except Exception as e:
-            if "Event loop is closed" not in str(e):
-                print(f"❌ Error connecting to Discord: {e}")
-    
-    asyncio.run(do_refresh())
+        for d in deployments[:15]:
+            ts = d.get('createdAt', '')[:19].replace('T', ' ')
+            status = d.get('status', 'UNKNOWN')
+            commit = d.get('meta', {}).get('commitHash', 'unknown')[:7]
+            msg = d.get('meta', {}).get('commitMessage', '').split('\n')[0][:50]
+            
+            status_emoji = {'SUCCESS': '✅', 'FAILED': '❌', 'CRASHED': '💥'}.get(status, '❓')
+            print(f"  {status_emoji} {ts} [{status:10}] {commit} {msg}")
+            
+    except FileNotFoundError:
+        print("❌ Railway CLI not found. Install with: npm i -g @railway/cli")
+    except Exception as e:
+        print(f"❌ Error: {e}")
 
 
-def cmd_channel_info(args, client):
-    """Get details about a specific channel by ID."""
-    if not args.channel_id:
-        print("Error: channel-info requires a channel ID")
-        sys.exit(1)
-    
-    channel_id = int(args.channel_id)
-    
-    # Get channel from DB
-    results = query_table(client, "discord_channels", {"channel_id": channel_id}, limit=1)
-    
-    if results:
-        print(f"\n📺 Channel {channel_id}:\n")
-        for k, v in results[0].items():
-            print(f"  {k}: {v}")
-    else:
-        print(f"\n❌ Channel {channel_id} not found in database")
-    
-    # Check if it's referenced in env vars
-    print(f"\n🔍 Env var references:")
-    env_matches = []
-    for key in ["SUMMARY_CHANNEL_ID", "TOP_GENS_ID", "ART_CHANNEL_ID", 
-                "DEV_SUMMARY_CHANNEL_ID", "DEV_TOP_GENS_ID", "DEV_ART_CHANNEL_ID"]:
-        val = os.getenv(key)
-        if val and str(channel_id) in val:
-            env_matches.append(key)
-    
-    if env_matches:
-        for match in env_matches:
-            print(f"  - {match}")
-    else:
-        print("  (not referenced in any env vars)")
-    print()
-
-
-def cmd_query(args, client):
-    """Query a table."""
-    table_map = {
-        "messages": "discord_messages",
-        "channels": "discord_channels",
-        "members": "discord_members",
-        "logs": "system_logs",  # Fixed: was "discord_logs"
-        "summaries": "daily_summaries",
-    }
-    
-    table = table_map.get(args.command, args.command)
-    
-    filters = {}
-    if args.channel:
-        filters["channel_id"] = args.channel
-    if args.message:
-        filters["message_id"] = args.message
-        
-    # Determine order column
-    order_col = None
-    if table in ["discord_messages"]:
-        order_col = "created_at"
-    elif table == "system_logs":  # Fixed: was "discord_logs"
-        order_col = "timestamp"
-    elif table == "daily_summaries":
-        order_col = "created_at"
-        
-    results = query_table(client, table, filters, args.limit, order_col)
-    
-    # Apply hours filter for logs
-    if args.hours and table == "system_logs":  # Fixed: was "discord_logs"
-        cutoff = datetime.utcnow() - timedelta(hours=args.hours)
-        results = [r for r in results if r.get("timestamp", "") >= cutoff.isoformat()]
-    
-    return results
-
+# ========== Main ==========
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Debug utility for investigating bot issues",
+        description='Unified debug and monitoring utility',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
-  env                 Show environment configuration
-  bot-status          Check bot status and uptime via health endpoint
-  archive-status      Check archive status (messages created vs archived)
-  db-stats            Database statistics and recent activity
-  channel-info ID     Details about a specific channel
-  refresh-media       Refresh expired Discord media URLs from API
-  railway-status      Check Railway service status and health endpoints
-  deployments         Analyze Railway deployment history (duplicates, crashes)
-  railway-logs        Fetch Railway platform logs (deployments, restarts)
-  channels            List channels from database
-  messages            List messages (use --channel to filter)
-  members             List members
-  logs                List logs from Supabase (use --hours to filter)
-  summaries           List daily summaries
+  health          Quick health check (errors, warnings, activity)
+  errors          Show errors (--hours N to filter)
+  search PATTERN  Search logs by message content
+  tail            Live tail of logs
+  trace FEATURE   Trace: summary, share, react, llm, admin
+  recent          Show recent logs
+  stats           Log statistics
+  
+  db-stats        Database statistics
+  channels        List channels
+  messages        List messages (--channel ID to filter)
+  channel-info ID Details about a specific channel
+  
+  env             Show environment configuration
+  bot-status      Check bot via health endpoint
+  railway-status  Railway service status
+  railway-logs    Railway platform logs
+  deployments     Deployment history
 
-Tip: For detailed log analysis, use scripts/logs.py
+Examples:
+  %(prog)s health
+  %(prog)s errors --hours 6
+  %(prog)s search "AdminChat"
+  %(prog)s trace admin --hours 1
+  %(prog)s messages --channel 123456789 --limit 20
         """
     )
-    parser.add_argument("command", help="Command to run")
-    parser.add_argument("channel_id", nargs="?", help="Channel ID for channel-info command")
-    parser.add_argument("--channel", type=int, help="Filter by channel_id")
-    parser.add_argument("--message", type=int, help="Filter by message_id (for refresh-media)")
-    parser.add_argument("--limit", "-n", type=int, default=10, help="Limit results")
-    parser.add_argument("--hours", type=int, help="Filter to last N hours")
-    parser.add_argument("--json", action="store_true", help="Output as JSON")
-    parser.add_argument("--dry-run", action="store_true", help="Don't update database (for refresh-media)")
+    
+    parser.add_argument('command', help='Command to run')
+    parser.add_argument('pattern', nargs='?', help='Search pattern or feature name')
+    parser.add_argument('--channel', type=int, help='Filter by channel ID')
+    parser.add_argument('--hours', type=int, help='Filter to last N hours')
+    parser.add_argument('--limit', '-n', type=int, default=20, help='Limit results')
+    parser.add_argument('--level', help='Filter by log level')
+    parser.add_argument('--logger', help='Filter by logger name')
+    parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
+    parser.add_argument('--interval', type=float, default=2.0, help='Tail poll interval')
+    parser.add_argument('channel_id', nargs='?', help='Channel ID for channel-info')
+    
+    # Handle 'feature' argument for trace command
+    class Args:
+        pass
     
     args = parser.parse_args()
     
-    # Commands that don't need Supabase
-    if args.command == "env":
-        cmd_env(args)
-        return
+    # Map pattern to feature for trace command
+    if args.command == 'trace' and args.pattern:
+        args.feature = args.pattern
+    elif args.command == 'trace':
+        args.feature = 'summary'  # default
     
-    if args.command == "bot-status":
-        cmd_bot_status(args)
-        return
+    commands = {
+        'health': cmd_health,
+        'errors': cmd_errors,
+        'search': cmd_search,
+        'tail': cmd_tail,
+        'trace': cmd_trace,
+        'recent': cmd_recent,
+        'stats': cmd_stats,
+        'db-stats': cmd_db_stats,
+        'channels': cmd_channels,
+        'messages': cmd_messages,
+        'channel-info': cmd_channel_info,
+        'env': cmd_env,
+        'bot-status': cmd_bot_status,
+        'railway-status': cmd_railway_status,
+        'railway-logs': cmd_railway_logs,
+        'deployments': cmd_deployments,
+    }
     
-    if args.command == "railway-status":
-        cmd_railway_status(args)
-        return
+    if args.command not in commands:
+        print(f"Unknown command: {args.command}")
+        print(f"Available: {', '.join(commands.keys())}")
+        sys.exit(1)
     
-    if args.command == "deployments":
-        cmd_deployments(args)
-        return
-    
-    if args.command == "railway-logs":
-        cmd_railway_logs(args)
-        return
-    
-    # Commands that need Supabase
-    client = get_client()
-    
-    if args.command == "archive-status":
-        cmd_archive_status(args, client)
-        return
-    
-    if args.command == "db-stats":
-        cmd_db_stats(args, client)
-        return
-    
-    if args.command == "channel-info":
-        cmd_channel_info(args, client)
-        return
-    
-    if args.command == "refresh-media":
-        cmd_refresh_media(args, client)
-        return
-    
-    # Table queries
-    table_commands = ["messages", "channels", "members", "logs", "summaries"]
-    if args.command in table_commands or args.command.startswith("discord_"):
-        results = cmd_query(args, client)
-    else:
-        try:
-            results = query_table(client, args.command, limit=args.limit)
-        except Exception as e:
-            print(f"Error: {e}")
-            print(f"Available commands: env, channel-info, {', '.join(table_commands)}")
-            sys.exit(1)
-    
-    # Output
-    if args.json:
-        print(json.dumps(results, indent=2, default=str))
-    else:
-        if not results:
-            print("No results found.")
-        else:
-            print(f"\n📊 Found {len(results)} results:\n")
-            for i, row in enumerate(results, 1):
-                print(f"--- {i} ---")
-                for k, v in format_row(row).items():
-                    print(f"  {k}: {v}")
-                print()
+    commands[args.command](args)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
