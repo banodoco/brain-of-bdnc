@@ -4,8 +4,6 @@ import logging
 from discord.ext import commands
 from discord import app_commands
 import asyncio
-import sys
-import json
 import os
 from datetime import datetime, timedelta
 import random
@@ -13,14 +11,6 @@ import random
 from src.common.db_handler import DatabaseHandler
 from src.common import discord_utils
 from src.common.supabase_sync_handler import SupabaseSyncHandler
-# Assuming constants.py has get_project_root()
-# If not, we might need os.path.dirname multiple times
-# try:
-#     from src.common.constants import get_project_root # REMOVE THIS IMPORT
-# except ImportError:
-#     # Basic fallback if constants doesn't have it
-#     get_project_root = lambda: os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-#     logging.warning("src.common.constants.get_project_root not found, using fallback path logic.")
 
 logger = logging.getLogger('DiscordBot')
 
@@ -136,27 +126,8 @@ class AdminUpdateSocialsModal(discord.ui.Modal):
             else:
                 await interaction.followup.send("An error occurred after the initial response while updating your preferences.", ephemeral=True)
 
-# --- Admin Dashboard View ---
-class AdminDashboardView(discord.ui.View):
-    # Note: bot.dev_mode and bot.owner_ids need to be set on your bot instance
-    def __init__(self, bot: commands.Bot):
-        super().__init__(timeout=None) # Persistent view needs timeout=None
-        self.bot = bot
-        # Calculate project root relative to this file's location
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
-        self.script_path = os.path.join(self.project_root, 'scripts', 'monthly_equity_shortlist.py')
-        # Ensure the script path is correct and the script exists
-        if not os.path.isfile(self.script_path):
-             logger.error(f"AdminDashboardView: Script not found at calculated path: {self.script_path}")
-             # Disable the button if script is missing? Or handle in button click.
-             # Let's handle in button click for now.
-
-
 # --- Admin Cog Class --- 
 class AdminCog(commands.Cog):
-    # Flag to ensure the persistent view is added only once
-    _persistent_view_added = False
     _commands_synced = False  # Add flag to track if commands have been synced
 
     def __init__(self, bot: commands.Bot):
@@ -273,37 +244,16 @@ class AdminCog(commands.Cog):
             except ValueError:
                 pass  # Invalid ADMIN_USER_ID, continue with normal flow
 
-        if not await self.bot.is_owner(message.author):
-            logger.info(f"Received DM from non-owner user {message.author.id}. Replying with robot sounds.")
-            robot_sounds = ["beep", "boop", "blarp", "zorp", "clank", "whirr", "buzz", "vroom"]
-            try:
-                reply_content = " ".join(random.sample(robot_sounds, 3)).capitalize() + "."
-                await message.channel.send(reply_content) # Keep this direct send for simplicity
-            except discord.Forbidden:
-                logger.warning(f"Cannot send robot sounds DM reply to {message.author.id}.")
-            except Exception as e:
-                logger.error(f"Failed to send robot sounds DM reply to {message.author.id}: {e}", exc_info=True)
-            return
-
-        logger.info(f"Received DM from owner {message.author.id}. Sending admin dashboard.")
+        # Reply with robot sounds to all other DMs
+        logger.info(f"Received DM from user {message.author.id}. Replying with robot sounds.")
+        robot_sounds = ["beep", "boop", "blarp", "zorp", "clank", "whirr", "buzz", "vroom"]
         try:
-            # UPDATED CALL for sending Admin Dashboard DM
-            if not hasattr(self.bot, 'rate_limiter'):
-                logger.error("Rate limiter not found on self.bot for AdminCog. Sending dashboard directly.")
-                await message.channel.send("Admin Dashboard:", view=AdminDashboardView(self.bot))
-            else:
-                await discord_utils.safe_send_message(
-                    self.bot,
-                    message.channel, # DM channel with the owner
-                    self.bot.rate_limiter,
-                    logger, # Global logger from the file
-                    content="Admin Dashboard:",
-                    view=AdminDashboardView(self.bot)
-                )
+            reply_content = " ".join(random.sample(robot_sounds, 3)).capitalize() + "."
+            await message.channel.send(reply_content)
         except discord.Forbidden:
-             logger.warning(f"Cannot send admin dashboard DM to {message.author.id}. Missing permissions or user blocked bot?")
+            logger.warning(f"Cannot send robot sounds DM reply to {message.author.id}.")
         except Exception as e:
-             logger.error(f"Failed to send admin dashboard to {message.author.id}: {e}", exc_info=True)
+            logger.error(f"Failed to send robot sounds DM reply to {message.author.id}: {e}", exc_info=True)
 
     @app_commands.command(name="update_details", description="Update your social media handles and website link.")
     async def update_details(self, interaction: discord.Interaction):
@@ -550,13 +500,4 @@ async def setup(bot: commands.Bot):
 
     # Add the AdminCog instance
     await bot.add_cog(AdminCog(bot))
-    logger.info("AdminCog added to bot")
-
-    # Add the persistent view *once*
-    if not AdminCog._persistent_view_added:
-        if not hasattr(bot, 'owner_ids') and not bot.owner_id:
-            logger.error("Cannot add AdminDashboardView: Bot owner ID(s) are required.")
-        else:
-            bot.add_view(AdminDashboardView(bot))
-            AdminCog._persistent_view_added = True
-            logger.info("AdminDashboardView added as a persistent view.") 
+    logger.info("AdminCog added to bot") 
