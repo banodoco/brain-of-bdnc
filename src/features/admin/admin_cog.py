@@ -152,161 +152,6 @@ class AdminDashboardView(discord.ui.View):
              # Disable the button if script is missing? Or handle in button click.
              # Let's handle in button click for now.
 
-    @discord.ui.button(label="Get Monthly Equity Shortlist", style=discord.ButtonStyle.primary, custom_id="admin_get_shortlist")
-    async def get_shortlist_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 1. Defer immediately (ephemeral to hide the initial ack)
-        await interaction.response.defer(ephemeral=True)
-        logger.info(f"Admin user {interaction.user.id} triggered 'Get Monthly Equity Shortlist'")
-
-        # 2. Send ephemeral confirmation message
-        confirmation_message = (
-            "Running the shortlist script... this may take up to 20 minutes. "
-            "I will post a new message in this channel with the results when complete."
-        )
-        await interaction.followup.send(confirmation_message, ephemeral=True)
-
-        # Store channel for later use
-        target_channel = interaction.channel
-
-        # Calculate last month in YYYY-MM format
-        today = datetime.utcnow()
-        first_day_current_month = today.replace(day=1)
-        last_day_previous_month = first_day_current_month - timedelta(days=1)
-        previous_month_str = last_day_previous_month.strftime('%Y-%m')
-        logger.info(f"Calculated target month as: {previous_month_str}")
-
-        cmd = [sys.executable, self.script_path]
-
-        # Add the required month argument
-        cmd.extend(["-m", previous_month_str])
-
-        # Check if bot is in dev mode (assuming bot has a 'dev_mode' attribute)
-        is_dev = getattr(self.bot, 'dev_mode', False)
-        if is_dev:
-            cmd.append("--dev")
-            logger.info(f"Running monthly_equity_shortlist.py for month {previous_month_str} in --dev mode.")
-        else:
-            logger.info(f"Running monthly_equity_shortlist.py for month {previous_month_str} in production mode.")
-
-        # Prepare final embed/message content (will be populated in try/except)
-        final_content = None
-        final_embed = None
-
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                # Ensure the script runs from the project root if it relies on relative paths
-                cwd=self.project_root, # Use the calculated project root
-                env=os.environ # Pass the current environment variables
-            )
-            stdout, stderr = await process.communicate() # Wait for completion
-
-            # Decode stdout/stderr safely
-            output_str = stdout.decode('utf-8', errors='ignore') if stdout else ""
-            error_str = stderr.decode('utf-8', errors='ignore') if stderr else ""
-
-            # Log regardless of return code
-            logger.info(f"Script process completed with return code: {process.returncode}")
-            if output_str:
-                 logger.debug(f"Script stdout (truncated):\n{output_str[:1000]}")
-            if error_str:
-                 logger.warning(f"Script stderr (truncated):\n{error_str[:1000]}")
-
-            if process.returncode == 0:
-                try:
-                    result_json = json.loads(output_str)
-                    logger.info("Successfully executed script and parsed JSON output.")
-
-                    # Format the response
-                    embed = discord.Embed(
-                        title="Monthly Equity Shortlist",
-                        color=discord.Color.green()
-                    )
-                    if result_json and "candidates" in result_json and result_json["candidates"]:
-                        # Build the bullet point list
-                        candidate_lines = []
-                        for candidate in result_json["candidates"]:
-                            handle = candidate.get('handle', 'Unknown Handle')
-                            justification = candidate.get('justification', 'No justification provided.')
-                            # Ensure justification isn't too long
-                            if len(justification) > 1000: # Adjust limit as needed for description
-                                justification = justification[:997] + "..."
-                            candidate_lines.append(f"- @{handle} - {justification}")
-                        
-                        bullet_list_str = "\n".join(candidate_lines)
-                        embed.description = f"Found {len(result_json['candidates'])} potential candidates for {previous_month_str}:\n\n{bullet_list_str}"
-                    elif result_json and "candidates" in result_json and not result_json["candidates"]:
-                         embed.description = f"The script ran successfully for {previous_month_str} but found no candidates based on the criteria for the period."
-                         embed.color = discord.Color.orange()
-                    else:
-                         embed.description = f"Script executed for {previous_month_str}, but the output format was unexpected."
-                         embed.add_field(name="Raw Output (truncated)", value=f"```json\n{output_str[:1000]}\n```")
-                         embed.color = discord.Color.orange()
-
-                    # Set the final embed for sending later
-                    final_embed = embed
-
-                except json.JSONDecodeError as json_err:
-                    logger.error(f"Failed to decode JSON from script output for {interaction.user.id}. Error: {json_err}. Stdout: {output_str[:500]} Stderr: {error_str[:500]}", exc_info=False)
-                    error_embed = discord.Embed(
-                        title=f"Error: Invalid Script Output ({'Dev' if getattr(self.bot, 'dev_mode', False) else 'Prod'}) - {previous_month_str}",
-                        description="The script ran, but its output was not valid JSON.",
-                        color=discord.Color.red()
-                    )
-                    error_embed.add_field(name="Stdout (truncated)", value=f"```\n{output_str[:1000]}\n```", inline=False)
-                    error_embed.add_field(name="Stderr (truncated)", value=f"```\n{error_str[:1000]}\n```", inline=False)
-                    # Set the final error embed for sending later
-                    final_embed = error_embed
-            else:
-                # Script failed
-                logger.error(f"Script execution failed for {interaction.user.id} with return code {process.returncode}. Stderr: {error_str[:1000]} Stdout: {output_str[:500]}")
-                error_embed = discord.Embed(
-                    title=f"Error: Script Execution Failed ({'Dev' if getattr(self.bot, 'dev_mode', False) else 'Prod'}) - {previous_month_str}",
-                    description=f"The script exited with code {process.returncode}. Check bot logs for stderr.",
-                    color=discord.Color.red()
-                )
-                error_embed.add_field(name="Stderr (truncated)", value=f"```\n{error_str[:1000]}\n```", inline=False)
-                if output_str: # Also show stdout if available
-                    error_embed.add_field(name="Stdout (truncated)", value=f"```\n{output_str[:1000]}\n```", inline=False)
-                # Set the final error embed for sending later
-                final_embed = error_embed
-
-        except FileNotFoundError:
-             logger.error(f"Script not found at path: {self.script_path}")
-             # Set the final error content for sending later
-             final_content = f"Error: Could not find the script at `{self.script_path}`."
-        except Exception as e:
-            logger.error(f"An unexpected error occurred during script execution: {e}", exc_info=True)
-            # Set the final error content for sending later
-            final_content = f"An unexpected error occurred while trying to run the script: {e}"
-
-        # 4. Send the final result/error as a NEW message in the channel
-        if target_channel:
-            try:
-                if not hasattr(self.bot, 'rate_limiter'):
-                    logger.error("[AdminDashboardView] Rate limiter not found on self.bot. Sending shortlist result directly.")
-                    await target_channel.send(content=final_content, embed=final_embed)
-                else:
-                    await discord_utils.safe_send_message(
-                        self.bot, 
-                        target_channel, 
-                        self.bot.rate_limiter, 
-                        logger, # Global logger
-                        content=final_content, 
-                        embed=final_embed
-                    )
-                logger.info(f"Sent final shortlist result/error message to channel {target_channel.id}")
-            except discord.Forbidden:
-                logger.error(f"Failed to send final shortlist message to channel {target_channel.id}: Forbidden.")
-                # Optionally notify the user via DM?
-            except discord.HTTPException as http_err:
-                logger.error(f"Failed to send final shortlist message to channel {target_channel.id}: HTTPException: {http_err}")
-            except Exception as send_err:
-                 logger.error(f"Unexpected error sending final shortlist message to channel {target_channel.id}: {send_err}", exc_info=True)
-        else:
-            logger.error("Target channel was None, could not send final shortlist message.")
 
 # --- Admin Cog Class --- 
 class AdminCog(commands.Cog):
@@ -416,6 +261,17 @@ class AdminCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author == self.bot.user: return
         if message.guild is not None: return
+
+        # Check if this DM should go to admin chat instead
+        admin_user_id_str = os.getenv('ADMIN_USER_ID')
+        if admin_user_id_str:
+            try:
+                admin_user_id = int(admin_user_id_str)
+                if message.author.id == admin_user_id:
+                    # This DM is for admin chat - let AdminChatCog handle it
+                    return
+            except ValueError:
+                pass  # Invalid ADMIN_USER_ID, continue with normal flow
 
         if not await self.bot.is_owner(message.author):
             logger.info(f"Received DM from non-owner user {message.author.id}. Replying with robot sounds.")
