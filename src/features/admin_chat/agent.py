@@ -38,11 +38,12 @@ Tools available:
 END EVERY TURN with either reply or end_turn.
 
 CRITICAL - SHOWING RESULTS:
-When you search for messages (get_top_messages, search_content), ALWAYS include the results in your reply:
-- Format each result clearly: author, content preview, reaction count, message_id
-- Number them so user can reference them (e.g. "1. @username: content... (15 reactions, id: 123456)")
-- If results have media, mention it so user knows they can be shared
-- NEVER say "here are options" without showing the actual options
+Search tools (get_top_messages, search_content) return a "summary" field that's pre-formatted for display.
+ALWAYS include this summary in your reply. Example workflow:
+1. Call get_top_messages
+2. Get result with "summary" field containing formatted list
+3. Use reply() and include the summary text so user sees the results
+NEVER say "here are options" without showing them. The summary field has them ready to show.
 
 CHAINING WORKFLOW:
 When asked to "find and share" or similar multi-step tasks:
@@ -143,7 +144,7 @@ class AdminChatAgent:
                 # Call Claude
                 response = await self.client.messages.create(
                     model=self.model,
-                    max_tokens=1024,
+                    max_tokens=4096,
                     system=SYSTEM_PROMPT,
                     tools=TOOLS,
                     messages=messages

@@ -357,12 +357,34 @@ async def execute_get_top_messages(params: Dict[str, Any]) -> Dict[str, Any]:
         else:
             messages = get_top_messages_server_wide(days=days, min_reactions=min_reactions, limit=limit)
         
+        if not messages:
+            return {
+                "success": True,
+                "count": 0,
+                "summary": f"No messages found with {min_reactions}+ reactions in the last {days} days.",
+                "messages": []
+            }
+        
         # Format for LLM
         formatted = [format_message_for_llm(msg) for msg in messages[:limit]]
+        
+        # Create pre-formatted summary for easy inclusion in reply
+        summary_lines = [f"Found {len(formatted)} messages:\n"]
+        for i, msg in enumerate(formatted, 1):
+            media_tag = " 📷" if msg.get('has_media') else ""
+            content_preview = msg.get('content', '')[:80]
+            if len(msg.get('content', '')) > 80:
+                content_preview += "..."
+            summary_lines.append(
+                f"**{i}. {msg['author']}** ({msg['reactions']} reactions{media_tag})\n"
+                f"   {content_preview}\n"
+                f"   ID: `{msg['message_id']}`"
+            )
         
         return {
             "success": True,
             "count": len(formatted),
+            "summary": "\n".join(summary_lines),
             "messages": formatted
         }
         
@@ -385,13 +407,36 @@ async def execute_search_content(params: Dict[str, Any]) -> Dict[str, Any]:
     try:
         messages = search_messages_by_content(query, days=days, limit=limit)
         
+        if not messages:
+            return {
+                "success": True,
+                "query": query,
+                "count": 0,
+                "summary": f"No messages found matching '{query}' in the last {days} days.",
+                "messages": []
+            }
+        
         # Format for LLM
         formatted = [format_message_for_llm(msg) for msg in messages[:limit]]
+        
+        # Create pre-formatted summary
+        summary_lines = [f"Found {len(formatted)} messages matching '{query}':\n"]
+        for i, msg in enumerate(formatted, 1):
+            media_tag = " 📷" if msg.get('has_media') else ""
+            content_preview = msg.get('content', '')[:80]
+            if len(msg.get('content', '')) > 80:
+                content_preview += "..."
+            summary_lines.append(
+                f"**{i}. {msg['author']}** ({msg['reactions']} reactions{media_tag})\n"
+                f"   {content_preview}\n"
+                f"   ID: `{msg['message_id']}`"
+            )
         
         return {
             "success": True,
             "query": query,
             "count": len(formatted),
+            "summary": "\n".join(summary_lines),
             "messages": formatted
         }
         
