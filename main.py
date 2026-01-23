@@ -203,7 +203,7 @@ async def main_async(args):
         # Admin Chat Cog (Claude-powered DM chat for admin)
         try:
             from src.features.admin_chat.admin_chat_cog import AdminChatCog
-            await bot.add_cog(AdminChatCog(bot, db_handler, sharer_instance))
+            await bot.add_cog(AdminChatCog(bot, bot.db_handler, sharer_instance))
             logger.info("AdminChatCog loaded.")
         except Exception as e:
             logger.warning(f"Failed to load AdminChatCog (skipping): {e}")
