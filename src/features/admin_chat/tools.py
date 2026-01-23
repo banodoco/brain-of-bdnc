@@ -392,12 +392,10 @@ async def execute_get_top_messages(params: Dict[str, Any], bot: discord.Client =
                 except Exception as e:
                     logger.debug(f"[AdminChat] Could not refresh media for {msg['message_id']}: {e}")
         
-        # Create separate messages for each result (so Discord embeds media properly)
-        # First message is the intro
-        intro = f"Found {len(formatted)} messages with media:\n"
+        # Create a simple formatted summary
+        # Put each result on its own with URL on separate line
+        lines = [f"**Found {len(formatted)} messages:**\n"]
         
-        # Each result becomes its own message for proper embedding
-        result_messages = []
         for i, msg in enumerate(formatted, 1):
             content_preview = msg.get('content', '')[:100]
             if len(msg.get('content', '')) > 100:
@@ -405,29 +403,25 @@ async def execute_get_top_messages(params: Dict[str, Any], bot: discord.Client =
             
             media_url = media_urls_map.get(msg['message_id'])
             
-            # Build message - URL on its own line for embedding
+            entry = f"**{i}. {msg['author']}** ({msg['reactions']} reactions)"
+            if content_preview:
+                entry += f"\n{content_preview}"
+            entry += f"\nID: `{msg['message_id']}`"
+            
+            # Add URL on its own line if we have it
             if media_url:
-                result_msg = (
-                    f"**{i}. {msg['author']}** ({msg['reactions']} reactions)\n"
-                    f"{content_preview}\n"
-                    f"ID: `{msg['message_id']}`\n"
-                    f"{media_url}"
-                )
-            else:
-                result_msg = (
-                    f"**{i}. {msg['author']}** ({msg['reactions']} reactions 📷)\n"
-                    f"{content_preview}\n"
-                    f"ID: `{msg['message_id']}`"
-                )
-            result_messages.append(result_msg)
+                entry += f"\n{media_url}"
+            
+            lines.append(entry)
+        
+        # Join with double newlines for readability
+        summary = "\n\n".join(lines)
         
         return {
             "success": True,
             "count": len(formatted),
-            "intro": intro,
-            "result_messages": result_messages,  # Each is a separate message for embedding
-            "messages": formatted,
-            "instruction": "Send intro first, then each result_message separately using reply(messages=[intro, ...result_messages]) so Discord embeds media properly."
+            "summary": summary,
+            "messages": formatted
         }
         
     except Exception as e:
