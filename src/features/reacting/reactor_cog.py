@@ -29,7 +29,6 @@ class ReactorCog(commands.Cog):
         if dev_mode:
             self.logger.info(f"Initializing ReactorCog in development mode (Reactor instance expected on bot object)")
         self.message_linker_channel_ids = [] # Initialize attribute
-        self.forum_auto_reply_config = {}  # Maps forum channel_id -> message
 
     def _load_message_linker_config(self):
         """Loads message_linker channel configurations from the environment watchlist."""
