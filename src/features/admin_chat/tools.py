@@ -392,33 +392,42 @@ async def execute_get_top_messages(params: Dict[str, Any], bot: discord.Client =
                 except Exception as e:
                     logger.debug(f"[AdminChat] Could not refresh media for {msg['message_id']}: {e}")
         
-        # Create pre-formatted summary for easy inclusion in reply
-        summary_lines = [f"Found {len(formatted)} messages:\n"]
+        # Create separate messages for each result (so Discord embeds media properly)
+        # First message is the intro
+        intro = f"Found {len(formatted)} messages with media:\n"
+        
+        # Each result becomes its own message for proper embedding
+        result_messages = []
         for i, msg in enumerate(formatted, 1):
-            media_tag = " 📷" if msg.get('has_media') else ""
-            content_preview = msg.get('content', '')[:80]
-            if len(msg.get('content', '')) > 80:
+            content_preview = msg.get('content', '')[:100]
+            if len(msg.get('content', '')) > 100:
                 content_preview += "..."
             
-            # Build entry
-            entry = (
-                f"**{i}. {msg['author']}** ({msg['reactions']} reactions{media_tag})\n"
-                f"   {content_preview}\n"
-                f"   ID: `{msg['message_id']}`"
-            )
-            
-            # Add media URL if we have it (allows Discord to embed)
             media_url = media_urls_map.get(msg['message_id'])
-            if media_url:
-                entry += f"\n   {media_url}"
             
-            summary_lines.append(entry)
+            # Build message - URL on its own line for embedding
+            if media_url:
+                result_msg = (
+                    f"**{i}. {msg['author']}** ({msg['reactions']} reactions)\n"
+                    f"{content_preview}\n"
+                    f"ID: `{msg['message_id']}`\n"
+                    f"{media_url}"
+                )
+            else:
+                result_msg = (
+                    f"**{i}. {msg['author']}** ({msg['reactions']} reactions 📷)\n"
+                    f"{content_preview}\n"
+                    f"ID: `{msg['message_id']}`"
+                )
+            result_messages.append(result_msg)
         
         return {
             "success": True,
             "count": len(formatted),
-            "summary": "\n".join(summary_lines),
-            "messages": formatted
+            "intro": intro,
+            "result_messages": result_messages,  # Each is a separate message for embedding
+            "messages": formatted,
+            "instruction": "Send intro first, then each result_message separately using reply(messages=[intro, ...result_messages]) so Discord embeds media properly."
         }
         
     except Exception as e:

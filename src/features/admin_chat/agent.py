@@ -38,12 +38,17 @@ Tools available:
 END EVERY TURN with either reply or end_turn.
 
 CRITICAL - SHOWING RESULTS:
-Search tools (get_top_messages, search_content) return a "summary" field that's pre-formatted for display.
-ALWAYS include this summary in your reply. Example workflow:
-1. Call get_top_messages
-2. Get result with "summary" field containing formatted list
-3. Use reply() and include the summary text so user sees the results
-NEVER say "here are options" without showing them. The summary field has them ready to show.
+Search tools return pre-formatted results. For media searches (has_media=true):
+- "intro": Brief intro text
+- "result_messages": Array of separate messages, each with one media URL
+
+To show results with proper media embedding, use:
+  reply(messages=[intro, result_message_1, result_message_2, ...])
+
+Each message is sent separately so Discord can embed the media. Example:
+  reply(messages=["Found 5 posts:", "**1. user** (10 reactions)\nContent\nID: 123\nhttps://cdn.discord...", "**2. ...", ...])
+
+NEVER bundle all URLs in one message - they won't embed properly.
 
 CHAINING WORKFLOW:
 When asked to "find and share" or similar multi-step tasks:
