@@ -766,9 +766,141 @@ Return just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')
 
         return top_media_to_post
 
+    # System prompt for GPT-5 verification of short summaries
+    _SHORT_SUMMARY_VERIFICATION_PROMPT = """You are verifying a short 3-bullet-point summary against the full summary it was generated from.
+
+The short summary should accurately reflect the key points from the full summary. Check for:
+1. **Accuracy**: Each bullet point should correctly represent something from the full summary
+2. **No invented details**: Numbers, names, or claims not in the full summary
+3. **Correct attribution**: If a person is mentioned, it should match the full summary
+4. **No exaggeration**: Claims should not overstate what's in the full summary
+
+Return JSON in this EXACT format:
+{
+    "issues_found": true/false,
+    "corrections": [
+        {
+            "original_bullet": "• The problematic bullet point",
+            "problem": "What's wrong with it",
+            "corrected_bullet": "• The corrected version"
+        }
+    ],
+    "verified_summary": "The complete corrected short summary with all lines including the message count header"
+}
+
+CRITICAL: verified_summary must include the EXACT same message count line from the original (📨 __X messages sent__) and exactly 3 bullet points."""
+
+    async def verify_short_summary_accuracy(
+        self,
+        short_summary: str,
+        full_summary: str,
+        max_retries: int = 2
+    ) -> str:
+        """
+        Verify the accuracy of a short summary against the full summary using GPT-5.2.
+        
+        Args:
+            short_summary: The short 3-bullet-point summary
+            full_summary: The full JSON summary it was generated from
+            max_retries: Number of retries for API failures
+            
+        Returns:
+            The verified (and potentially corrected) short summary string
+        """
+        if not self.openai_client:
+            self.logger.warning("OpenAI client not available - skipping short summary verification")
+            return short_summary
+            
+        if not short_summary or not full_summary:
+            return short_summary
+        
+        self.logger.info("Verifying short summary accuracy with GPT-5.2...")
+        
+        user_prompt = f"""Please verify this short summary against the full summary it was generated from.
+
+=== SHORT SUMMARY (to verify) ===
+{short_summary}
+
+=== FULL SUMMARY (source of truth) ===
+{full_summary}
+
+Check each bullet point against the full summary. Identify any inaccuracies, invented details, or misrepresentations. Return the verified/corrected short summary as specified."""
+
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                self.logger.info(f"Calling GPT-5.2 for short summary verification (attempt {attempt + 1}/{max_retries})...")
+                
+                response = await self.openai_client.responses.create(
+                    model="gpt-5.2",
+                    reasoning={"effort": "high"},
+                    input=[
+                        {"role": "system", "content": self._SHORT_SUMMARY_VERIFICATION_PROMPT},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    max_output_tokens=4000
+                )
+                
+                output_text = response.output_text
+                
+                if not output_text:
+                    self.logger.warning(f"Empty response from GPT-5.2 short summary verification (attempt {attempt + 1})")
+                    continue
+                
+                self.logger.debug(f"GPT-5.2 short summary verification response: {output_text[:300]}...")
+                
+                # Parse the JSON response
+                try:
+                    clean_text = output_text.strip()
+                    if clean_text.startswith('```json'):
+                        clean_text = clean_text[7:]
+                    if clean_text.startswith('```'):
+                        clean_text = clean_text[3:]
+                    if clean_text.endswith('```'):
+                        clean_text = clean_text[:-3]
+                    clean_text = clean_text.strip()
+                    
+                    verification_result = json.loads(clean_text)
+                    
+                    issues_found = verification_result.get('issues_found', False)
+                    corrections = verification_result.get('corrections', [])
+                    verified_summary = verification_result.get('verified_summary')
+                    
+                    if issues_found and corrections:
+                        self.logger.info(f"GPT-5.2 found {len(corrections)} issue(s) in the short summary:")
+                        for correction in corrections:
+                            self.logger.info(f"  - {correction.get('problem', 'No details')[:100]}")
+                    else:
+                        self.logger.info("GPT-5.2 short summary verification passed - no issues found")
+                    
+                    # Return the verified summary
+                    if verified_summary and isinstance(verified_summary, str):
+                        return verified_summary.strip()
+                    
+                    # Fallback to original if verified_summary is missing
+                    self.logger.warning("verified_summary missing from GPT-5.2 response, using original")
+                    return short_summary
+                    
+                except json.JSONDecodeError as e:
+                    self.logger.warning(f"Failed to parse GPT-5.2 short summary verification response as JSON: {e}")
+                    continue
+                    
+            except Exception as e:
+                last_error = e
+                self.logger.error(f"Error during GPT-5.2 short summary verification (attempt {attempt + 1}): {e}", exc_info=True)
+                if attempt < max_retries - 1:
+                    wait_time = 30 * (attempt + 1)
+                    self.logger.info(f"Waiting {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time)
+                continue
+        
+        self.logger.error(f"GPT-5.2 short summary verification failed after {max_retries} attempts. Using unverified summary.")
+        return short_summary
+
     async def generate_short_summary(self, full_summary: str, message_count: int) -> str:
         """
         Get a short summary using the LLM dispatcher with proper async handling.
+        Now includes GPT-5.2 verification of the generated summary.
         """
         # Use the new system prompt defined above, formatting the message count in
         system_prompt_formatted = self._SHORT_SUMMARY_SYSTEM_PROMPT.format(message_count=message_count)
@@ -789,11 +921,15 @@ Return just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')
                 content_lines = [l for l in lines[1:] if l.strip()]  # Skip empty lines
                 if len(lines) >= 1 and lines[0].strip() == f"📨 __{message_count} messages sent__" and all(l.strip().startswith('•') for l in content_lines):
                      # Format is correct
-                     return text.strip()
+                     short_summary = text.strip()
                 else:
                     self.logger.warning(f"Short summary response did not match expected format: {text[:100]}...")
-                    # Return the response anyway - it's probably close enough
-                    return text.strip()
+                    # Use the response anyway - it's probably close enough
+                    short_summary = text.strip()
+                
+                # Verify the short summary with GPT-5.2
+                verified_summary = await self.verify_short_summary_accuracy(short_summary, full_summary)
+                return verified_summary
             else:
                  # Handle cases where text is None or not a string (though dispatcher should prevent None)
                  self.logger.error("LLM dispatcher returned invalid type or empty response for short summary.")
