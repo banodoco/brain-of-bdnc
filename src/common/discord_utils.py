@@ -117,8 +117,27 @@ async def refresh_media_url(
                 log.error(f"No permission to access channel {channel_id}")
                 return None
         
-        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
-            log.error(f"Channel {channel_id} is not a text channel or thread")
+        # Handle ForumChannel - need to find the thread containing the message
+        if isinstance(channel, discord.ForumChannel):
+            log.debug(f"Channel {channel_id} is a ForumChannel, searching for thread...")
+            # For forum posts, try fetching the thread directly using message_id as thread_id
+            # (forum post threads often have the same ID as their starter message)
+            try:
+                thread = await bot.fetch_channel(message_id)
+                if isinstance(thread, discord.Thread):
+                    channel = thread
+                    log.debug(f"Found thread {message_id} in forum channel")
+                else:
+                    log.error(f"Could not find thread for message {message_id} in forum {channel_id}")
+                    return None
+            except discord.NotFound:
+                log.warning(f"Thread/message {message_id} not found in forum {channel_id}")
+                return None
+            except discord.Forbidden:
+                log.error(f"No permission to access thread {message_id}")
+                return None
+        elif not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            log.error(f"Channel {channel_id} is not a text channel, thread, or forum")
             return None
         
         # Fetch message

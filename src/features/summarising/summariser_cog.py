@@ -30,10 +30,10 @@ class SummarizerCog(commands.Cog):
     def cog_unload(self):
         self.run_daily_summary.cancel()
 
-    @tasks.loop(time=time(hour=10, minute=0, tzinfo=timezone.utc))
+    @tasks.loop(time=time(hour=7, minute=0, tzinfo=timezone.utc))
     async def run_daily_summary(self):
-        """Daily task to run the summary generation at 10:00 UTC."""
-        logger.info("Scheduled daily summary time reached (10:00 UTC). Starting...")
+        """Daily task to run the summary generation at 7:00 UTC."""
+        logger.info("Scheduled daily summary time reached (7:00 UTC). Starting...")
         try:
             await self.channel_summarizer.generate_summary()
             logger.info("Scheduled daily summary finished.")

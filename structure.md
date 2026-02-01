@@ -97,7 +97,9 @@
 │
 ├── supabase/
 │   ├── config.toml                  # Supabase CLI config
-│   └── migrations/                  # SQL migrations (timestamped)
+│   ├── migrations/                  # SQL migrations (timestamped)
+│   └── functions/                   # Supabase Edge Functions (Deno)
+│       └── refresh-media-urls/      # Refresh expired Discord CDN URLs
 │
 └── src/
     ├── common/                      # Shared infrastructure
@@ -194,6 +196,38 @@
 | `message_stats` | Per-channel message counts and date ranges |
 | `recent_errors` | ERROR/CRITICAL logs from last 24 hours |
 | `log_stats` | Hourly log counts by level |
+
+### Edge Functions
+
+| Function | Purpose | Secrets Required |
+|----------|---------|------------------|
+| `refresh-media-urls` | Refresh expired Discord CDN attachment URLs | `DISCORD_BOT_TOKEN` |
+
+**Deployment:**
+```bash
+# Deploy function
+supabase functions deploy refresh-media-urls
+
+# Set secrets
+supabase secrets set DISCORD_BOT_TOKEN=your_token_here
+```
+
+**Usage:**
+```bash
+# Refresh URLs for a specific message
+curl -X POST 'https://<project>.supabase.co/functions/v1/refresh-media-urls' \
+  -H 'Authorization: Bearer <anon_key>' \
+  -H 'Content-Type: application/json' \
+  -d '{"message_id": "123456789"}'
+
+# Response:
+# {
+#   "success": true,
+#   "message_id": "123456789",
+#   "attachments": [{"id": "...", "filename": "image.png", "url": "https://cdn.discordapp.com/...", ...}],
+#   "urls_updated": 1
+# }
+```
 
 ### Notes
 - All tables have RLS enabled (service-role access only)

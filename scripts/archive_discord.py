@@ -48,7 +48,7 @@ def get_db():
     return thread_local.db
 
 class MessageArchiver(BaseDiscordBot):
-    def __init__(self, dev_mode=False, order="newest", days=None, batch_size=500, in_depth=False, channel_id=None, fetch_reactions=False, start_date_str=None, end_date_str=None):
+    def __init__(self, dev_mode=False, order="newest", days=None, batch_size=500, in_depth=False, channel_id=None, fetch_reactions=False, start_date_str=None, end_date_str=None, fast_fill=False):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
@@ -135,6 +135,11 @@ class MessageArchiver(BaseDiscordBot):
         self.fetch_reactions = fetch_reactions
         if fetch_reactions:
             logger.info("Will fetch reactions for all messages in range")
+        
+        # Set fast-fill mode (optimized for filling gaps)
+        self.fast_fill = fast_fill
+        if fast_fill:
+            logger.info("🚀 Running in FAST-FILL mode - batched DB checks, skipping member updates and reactions")
             
         # Set specific channel to archive
         self.target_channel_id = channel_id
@@ -251,7 +256,11 @@ class MessageArchiver(BaseDiscordBot):
             reaction_count = sum(reaction.count for reaction in message.reactions) if message.reactions else 0
             reactors = []
             
-            if reaction_count > 0 and message.reactions:
+            # In fast-fill mode, skip reaction fetching entirely (we already have reactions from first pass)
+            if self.fast_fill:
+                # Skip reaction and member processing - just get the message data
+                pass
+            elif reaction_count > 0 and message.reactions:
                 reaction_start_time = datetime.now()
                 reactor_ids = set()
                 try:
@@ -310,8 +319,8 @@ class MessageArchiver(BaseDiscordBot):
                 except Exception as e:
                     logger.warning(f"Could not fetch reactors for message {message.id}: {e}")
             
-            # Process the message author with caching
-            if hasattr(message.author, 'id'):
+            # Process the message author with caching (skip in fast-fill mode)
+            if not self.fast_fill and hasattr(message.author, 'id'):
                 cache_key = f"{message.author.id}_{message.author.name}"
                 cache_time = self.member_update_cache.get(cache_key, 0)
                 current_time = time.time()
@@ -353,19 +362,20 @@ class MessageArchiver(BaseDiscordBot):
                 elif hasattr(message.channel, 'thread_type'):
                     actual_channel = message.channel
 
-            # Create or update the channel
-            category_id = None
-            if hasattr(actual_channel, 'category') and actual_channel.category:
-                category_id = actual_channel.category.id
+            # Create or update the channel (skip in fast-fill mode - channels already exist)
+            if not self.fast_fill:
+                category_id = None
+                if hasattr(actual_channel, 'category') and actual_channel.category:
+                    category_id = actual_channel.category.id
 
-            await self._db_operation(
-                lambda db: db.create_or_update_channel(
-                    channel_id=actual_channel.id,
-                    channel_name=actual_channel.name,
-                    nsfw=getattr(actual_channel, 'nsfw', False),
-                    category_id=category_id
+                await self._db_operation(
+                    lambda db: db.create_or_update_channel(
+                        channel_id=actual_channel.id,
+                        channel_name=actual_channel.name,
+                        nsfw=getattr(actual_channel, 'nsfw', False),
+                        category_id=category_id
+                    )
                 )
-            )
             
             processed_message = {
                 'message_id': message.id,
@@ -673,39 +683,67 @@ class MessageArchiver(BaseDiscordBot):
                             last_progress_log_time = current_time_epoch
                     # --- End Progress Logging ---
 
-                    process_this_message = False
-                    if self.in_depth or self.fetch_reactions:
-                        process_this_message = True
-                    else:
-                        message_exists = await self._db_operation(
-                            lambda db: db.message_exists(message.id)
-                        )
-                        if not message_exists:
-                            process_this_message = True
-
-                    if process_this_message:
+                    # In fast-fill mode: collect all messages, batch-check existence later
+                    # In normal mode: check each message individually
+                    if self.fast_fill:
+                        # Just collect the message, we'll batch-check existence when processing
                         current_batch.append(message)
+                    else:
+                        process_this_message = False
+                        if self.in_depth or self.fetch_reactions:
+                            process_this_message = True
+                        else:
+                            message_exists = await self._db_operation(
+                                lambda db: db.message_exists(message.id)
+                            )
+                            if not message_exists:
+                                process_this_message = True
+
+                        if process_this_message:
+                            current_batch.append(message)
 
                     # Store batch when it reaches the threshold
                     if len(current_batch) >= 100:
                         try:
-                            processed_messages = []
-                            for msg in current_batch:
-                                processed_msg = await self._process_message(msg, channel_id)
-                                if processed_msg:
-                                    processed_messages.append(processed_msg)
-                            if processed_messages:
-                                pre_existing_ids = set()
-                                if not self.in_depth:
-                                    existing_in_db = await self._db_operation(
-                                        lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
-                                    )
-                                    pre_existing_ids = {msg['message_id'] for msg in existing_in_db}
-                                new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing_ids]
-                                new_message_count += len(new_messages)
-                                await self._db_operation(
-                                    lambda db: db.store_messages(processed_messages)
+                            if self.fast_fill:
+                                # FAST-FILL: Batch check which messages exist, only process new ones
+                                batch_ids = [msg.id for msg in current_batch]
+                                existing_in_db = await self._db_operation(
+                                    lambda db: db.get_messages_by_ids(batch_ids)
                                 )
+                                existing_ids = {msg['message_id'] for msg in existing_in_db}
+                                messages_to_process = [msg for msg in current_batch if msg.id not in existing_ids]
+                                
+                                if messages_to_process:
+                                    processed_messages = []
+                                    for msg in messages_to_process:
+                                        processed_msg = await self._process_message(msg, channel_id)
+                                        if processed_msg:
+                                            processed_messages.append(processed_msg)
+                                    if processed_messages:
+                                        new_message_count += len(processed_messages)
+                                        await self._db_operation(
+                                            lambda db: db.store_messages(processed_messages)
+                                        )
+                            else:
+                                # Normal mode: process all messages in batch
+                                processed_messages = []
+                                for msg in current_batch:
+                                    processed_msg = await self._process_message(msg, channel_id)
+                                    if processed_msg:
+                                        processed_messages.append(processed_msg)
+                                if processed_messages:
+                                    pre_existing_ids = set()
+                                    if not self.in_depth:
+                                        existing_in_db = await self._db_operation(
+                                            lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
+                                        )
+                                        pre_existing_ids = {msg['message_id'] for msg in existing_in_db}
+                                    new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing_ids]
+                                    new_message_count += len(new_messages)
+                                    await self._db_operation(
+                                        lambda db: db.store_messages(processed_messages)
+                                    )
                             current_batch = []
                             await asyncio.sleep(0.1)
                         except Exception as e:
@@ -724,27 +762,49 @@ class MessageArchiver(BaseDiscordBot):
                 # Process any remaining messages in the final batch
                 if current_batch:
                     try:
-                        processed_messages = []
-                        for msg in current_batch:
-                            processed_msg = await self._process_message(msg, channel_id)
-                            if processed_msg:
-                                processed_messages.append(processed_msg)
-                        if processed_messages:
-                            pre_existing_ids = set()
-                            if not self.in_depth:
-                                existing_in_db = await self._db_operation(
-                                    lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
-                                )
-                                pre_existing_ids = {msg['message_id'] for msg in existing_in_db}
-                            new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing_ids]
-                            new_message_count += len(new_messages)
-                            await self._db_operation(
-                                lambda db: db.store_messages(processed_messages)
+                        if self.fast_fill:
+                            # FAST-FILL: Batch check which messages exist, only process new ones
+                            batch_ids = [msg.id for msg in current_batch]
+                            existing_in_db = await self._db_operation(
+                                lambda db: db.get_messages_by_ids(batch_ids)
                             )
+                            existing_ids = {msg['message_id'] for msg in existing_in_db}
+                            messages_to_process = [msg for msg in current_batch if msg.id not in existing_ids]
+                            
+                            if messages_to_process:
+                                processed_messages = []
+                                for msg in messages_to_process:
+                                    processed_msg = await self._process_message(msg, channel_id)
+                                    if processed_msg:
+                                        processed_messages.append(processed_msg)
+                                if processed_messages:
+                                    new_message_count += len(processed_messages)
+                                    await self._db_operation(
+                                        lambda db: db.store_messages(processed_messages)
+                                    )
+                        else:
+                            processed_messages = []
+                            for msg in current_batch:
+                                processed_msg = await self._process_message(msg, channel_id)
+                                if processed_msg:
+                                    processed_messages.append(processed_msg)
+                            if processed_messages:
+                                pre_existing_ids = set()
+                                if not self.in_depth:
+                                    existing_in_db = await self._db_operation(
+                                        lambda db: db.get_messages_by_ids([msg['message_id'] for msg in processed_messages])
+                                    )
+                                    pre_existing_ids = {msg['message_id'] for msg in existing_in_db}
+                                new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing_ids]
+                                new_message_count += len(new_messages)
+                                await self._db_operation(
+                                    lambda db: db.store_messages(processed_messages)
+                                )
                     except Exception as e:
                         logger.error(f"Failed to store final date range batch: {e}")
 
                 logger.info(f"✅ Date range archive complete for #{channel.name} - Processed {message_counter} messages, saved {new_message_count} new to Supabase")
+                self.total_messages_archived += new_message_count
                 # Log final 100% progress
                 if self.total_days_in_range > 0:
                      logger.info(f"Progress for #{channel.name}: Day {self.total_days_in_range}/{self.total_days_in_range} (100.0%) - Completed.")
@@ -1197,6 +1257,8 @@ def main():
                       help='ID of a specific channel to archive')
     parser.add_argument('--fetch-reactions', action='store_true',
                       help='Fetch reactions for all messages in range, not just new ones')
+    parser.add_argument('--fast-fill', action='store_true',
+                      help='Fast mode for filling gaps: batches DB checks, skips member updates and reactions')
     args = parser.parse_args()
     
     # Validate arguments
@@ -1228,7 +1290,8 @@ def main():
         bot = MessageArchiver(dev_mode=args.dev, order=args.order, days=args.days, 
                             batch_size=args.batch_size, in_depth=args.in_depth,
                             channel_id=args.channel, fetch_reactions=args.fetch_reactions,
-                            start_date_str=args.start_date, end_date_str=args.end_date) # Pass date strings
+                            start_date_str=args.start_date, end_date_str=args.end_date,
+                            fast_fill=args.fast_fill)
         
         # Start the bot and keep it running until archiving is complete
         async def runner():
