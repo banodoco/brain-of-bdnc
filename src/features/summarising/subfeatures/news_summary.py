@@ -645,76 +645,149 @@ Check each claim in the summary against the source messages. Identify any attrib
 
         return messages_to_send
 
+    def _extract_json_from_text(self, text: str) -> Optional[str]:
+        """
+        Try to extract a JSON array from text that may contain prose before/after it.
+        Returns the extracted JSON string or None if not found.
+        """
+        import re
+        
+        # First, strip markdown code blocks if present
+        clean_text = text.strip()
+        if clean_text.startswith('```json'):
+            clean_text = clean_text[7:]
+        if clean_text.startswith('```'):
+            clean_text = clean_text[3:]
+        if clean_text.endswith('```'):
+            clean_text = clean_text[:-3]
+        clean_text = clean_text.strip()
+        
+        # If it already starts with [, try to parse directly
+        if clean_text.startswith('['):
+            try:
+                json.loads(clean_text)
+                return clean_text
+            except json.JSONDecodeError:
+                pass
+        
+        # Try to find JSON array within the text using bracket matching
+        # Find the first '[' and try to find its matching ']'
+        start_idx = clean_text.find('[')
+        if start_idx == -1:
+            return None
+            
+        # Find matching closing bracket by counting
+        bracket_count = 0
+        end_idx = -1
+        for i, char in enumerate(clean_text[start_idx:], start=start_idx):
+            if char == '[':
+                bracket_count += 1
+            elif char == ']':
+                bracket_count -= 1
+                if bracket_count == 0:
+                    end_idx = i
+                    break
+        
+        if end_idx == -1:
+            return None
+            
+        candidate = clean_text[start_idx:end_idx + 1]
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            return None
+
     async def combine_channel_summaries(self, summaries: List[str]) -> str:
         """
         Combine multiple summary JSON strings into a single filtered summary
         by asking the LLM dispatcher which items are the most interesting.
         Assumes input `summaries` are strings of valid JSON arrays.
+        
+        Includes retry logic if LLM returns malformed response.
         """
         if not summaries:
             return "[NO SIGNIFICANT NEWS]"
 
         # Define System Prompt
-        system_prompt = """You are analyzing multiple JSON summaries.
-Each summary is in the same format: an array of objects with fields:
-  title, mainText, mainMediaMessageId (optional), message_id, channel_id,
-  subTopics (which is an array of objects with text, subTopicMediaMessageIds (optional), message_id, channel_id).
-We want to combine them into a single JSON array that contains the top 3-5 most interesting items overall.
-You MUST keep each chosen item in the exact same structure (all fields) as it appeared in the original input. Retain the original message_id and channel_id values.
+        system_prompt = """Select the top 3-5 items from the input JSON summaries based on newsworthiness and community interest.
 
-IMPORTANT: Do NOT jump to conclusions that aren't supported by evidence. Only include items that are clearly substantiated in the original summaries.
+Input format: Each summary is a JSON array with objects containing: title, mainText, mainMediaMessageId (optional), message_id, channel_id, subTopics.
 
-If no interesting items, respond with "[NO SIGNIFICANT NEWS]".
-Otherwise, respond with ONLY a JSON array. No extra text.
+Output requirements:
+- Preserve each item's exact structure and all field values (message_id, channel_id, etc.)
+- If nothing noteworthy, return exactly: [NO SIGNIFICANT NEWS]
 
-Return just the final JSON array with the top items (or '[NO SIGNIFICANT NEWS]')."""
-        
+DO NOT introduce your response. DO NOT say "here are the top items" or similar. Reply with ONLY the JSON array or [NO SIGNIFICANT NEWS]."""
+
+        # Stricter prompt for retry attempts
+        retry_system_prompt = """Select 3-5 items from the input summaries. Preserve all fields exactly.
+
+If nothing noteworthy: [NO SIGNIFICANT NEWS]
+Otherwise output the JSON array.
+
+DO NOT introduce your response. Reply with ONLY the JSON array or [NO SIGNIFICANT NEWS]."""
+
         # Prepare user prompt content
         user_prompt_content = "Here are the input summaries (each is a JSON array string):\n\n"
         for i, s in enumerate(summaries):
             user_prompt_content += f"--- Summary {i+1} ---\n{s}\n\n"
 
-        try:
-            # Call Anthropic API with Claude Sonnet 4.5
-            text = await self._call_anthropic(
-                system_prompt=system_prompt,
-                user_content=user_prompt_content,
-                max_tokens=16000
-            )
-            self.logger.debug(f"LLM response for combined summary: {text}") 
-            
-            # Basic validation
-            if text and isinstance(text, str) and text.strip() == "[NO SIGNIFICANT NEWS]":
-                return "[NO SIGNIFICANT NEWS]"
-            elif text and isinstance(text, str):
-                # Strip markdown code blocks if present
-                clean_text = text.strip()
-                if clean_text.startswith('```json'):
-                    clean_text = clean_text[7:]  # Remove ```json
-                if clean_text.startswith('```'):
-                    clean_text = clean_text[3:]  # Remove ```
-                if clean_text.endswith('```'):
-                    clean_text = clean_text[:-3]  # Remove trailing ```
-                clean_text = clean_text.strip()
+        max_attempts = 3
+        last_error = None
+        
+        for attempt in range(1, max_attempts + 1):
+            try:
+                # Use stricter prompt on retry
+                current_system_prompt = system_prompt if attempt == 1 else retry_system_prompt
+                current_user_prompt = user_prompt_content
                 
-                if clean_text.startswith('['):
-                    # Try parsing to be sure
-                    try:
-                        json.loads(clean_text)
-                        return clean_text # Return valid JSON string
-                    except json.JSONDecodeError:
-                         self.logger.warning(f"Combined summary response looked like JSON but failed parsing: {text[:100]}...")
-                         return "[ERROR PARSING COMBINED SUMMARY]" # Indicate error
+                # On retry, add explicit instruction
+                if attempt > 1:
+                    current_user_prompt += "\n\nIMPORTANT: Return ONLY the JSON array. No explanation or preamble."
+                
+                self.logger.info(f"Calling LLM for combine_channel_summaries (attempt {attempt}/{max_attempts})...")
+                
+                text = await self._call_anthropic(
+                    system_prompt=current_system_prompt,
+                    user_content=current_user_prompt,
+                    max_tokens=16000
+                )
+                self.logger.debug(f"LLM response for combined summary (attempt {attempt}): {text[:200] if text else 'None'}...")
+                
+                # Check for no significant news
+                if text and isinstance(text, str) and text.strip() == "[NO SIGNIFICANT NEWS]":
+                    return "[NO SIGNIFICANT NEWS]"
+                
+                if text and isinstance(text, str):
+                    # Try to extract JSON from the response
+                    extracted_json = self._extract_json_from_text(text)
+                    
+                    if extracted_json:
+                        self.logger.info(f"Successfully extracted JSON from LLM response (attempt {attempt})")
+                        return extracted_json
+                    else:
+                        last_error = f"Could not extract valid JSON from response: {text[:100]}..."
+                        self.logger.warning(f"Attempt {attempt}: {last_error}")
+                        
+                        # If this isn't the last attempt, continue to retry
+                        if attempt < max_attempts:
+                            self.logger.info(f"Retrying combine_channel_summaries...")
+                            continue
                 else:
-                    self.logger.warning(f"Unexpected response format for combined summary: {text[:100]}...")
-                    return "[ERROR COMBINING SUMMARIES]" # Indicate error
-            else:
-                self.logger.warning(f"Unexpected response format for combined summary: {text[:100] if text else 'None'}...")
-                return "[ERROR COMBINING SUMMARIES]" # Indicate error
-                
-        except Exception as e:
-            self.logger.error(f"Error combining summaries via LLM dispatcher: {e}", exc_info=True)
-            return "[ERROR COMBINING SUMMARIES]" # Indicate error
+                    last_error = f"Unexpected response type or empty response"
+                    self.logger.warning(f"Attempt {attempt}: {last_error}")
+                    
+            except Exception as e:
+                last_error = str(e)
+                self.logger.error(f"Attempt {attempt}: Error combining summaries via LLM: {e}", exc_info=True)
+                if attempt < max_attempts:
+                    self.logger.info(f"Retrying combine_channel_summaries after error...")
+                    continue
+        
+        # All attempts failed
+        self.logger.error(f"All {max_attempts} attempts to combine summaries failed. Last error: {last_error}")
+        return "[ERROR COMBINING SUMMARIES]"
 
     async def find_and_format_top_media(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

@@ -93,17 +93,26 @@ class ArchiveRunner:
                 logger.info(f"Running archive command: {' '.join(cmd)}")
                 
                 # Use asyncio subprocess to avoid blocking the event loop
+                # Increase buffer limit to 1MB (default is 64KB) to handle very long log lines
                 process = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
-                    cwd=self.project_root
+                    cwd=self.project_root,
+                    limit=1024 * 1024  # 1MB buffer limit
                 )
                 
                 # Stream output line by line asynchronously
                 if process.stdout:
                     while True:
-                        line = await process.stdout.readline()
+                        try:
+                            line = await process.stdout.readline()
+                        except ValueError as e:
+                            # Handle case where line exceeds even our increased limit
+                            logger.warning(f"Skipping very long log line (>{1024*1024} bytes): {e}")
+                            # Read and discard the rest of the oversized chunk
+                            await process.stdout.read(4096)
+                            continue
                         if not line:
                             break
                         line_clean = line.decode('utf-8', errors='replace').rstrip()
@@ -111,6 +120,9 @@ class ArchiveRunner:
                             # Skip verbose logs
                             if any(pattern in line_clean for pattern in skip_patterns):
                                 continue
+                            # Truncate very long lines to prevent log flooding
+                            if len(line_clean) > 2000:
+                                line_clean = line_clean[:2000] + "... [truncated]"
                             # Log important archive events
                             logger.info(f"[Archive] {line_clean}")
                 
