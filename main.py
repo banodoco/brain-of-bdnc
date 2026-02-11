@@ -3,8 +3,6 @@ import sys
 import argparse
 import logging
 import asyncio
-import time
-import subprocess
 from datetime import datetime
 import traceback
 
@@ -30,7 +28,6 @@ from src.features.summarising.summariser_cog import SummarizerCog
 from src.features.summarising.summariser import ChannelSummarizer
 from src.features.logging.logger_cog import LoggerCog
 from src.features.sharing.sharing_cog import SharingCog
-from src.features.sharing.sharer import Sharer
 from src.features.reacting.reactor import Reactor
 from src.features.reacting.reactor_cog import ReactorCog
 from src.features.archive.archive_cog import ArchiveCog
@@ -115,13 +112,10 @@ async def main_async(args):
         bot.archive_days = args.archive_days
         bot.run_archive_script = run_archive_script  # Make the function available to cogs
 
-        # Event to signal when --summary-now completes (replaces janky hasattr polling)
+        # Event to signal when --summary-now completes so hourly fetch can start
         bot.summary_completed = asyncio.Event()
         if not args.summary_now:
-            # If no summary requested, mark as already complete so hourly fetch starts immediately
             bot.summary_completed.set()
-
-        # ---- END BASIC EVENT TEST ----
 
         # ---- Initialize Core Components ----
         logger.info("Initializing core components (DB, Sharer, Reactor)...")
@@ -130,57 +124,45 @@ async def main_async(args):
         bot.db_handler = DatabaseHandler(dev_mode=args.dev)
         logger.info("DatabaseHandler initialized and attached to bot.")
 
-        # 2. Claude Client (NEW - for Reactor and potentially other direct uses)
+        # 2. Claude Client
         claude_client_instance = ClaudeClient()
-        bot.claude_client = claude_client_instance # Attach to bot if needed by other cogs directly, or for general access
-        logger.info("ClaudeClient initialized and attached to bot.")
+        bot.claude_client = claude_client_instance
+        logger.info("ClaudeClient initialized.")
 
         # 3. Sharing Cog & Sharer Instance
         sharing_cog_instance = SharingCog(bot, bot.db_handler)
         await bot.add_cog(sharing_cog_instance)
-        logger.info("SharingCog loaded via add_cog")
-        if not sharing_cog_instance:
-            logger.error("Failed to load SharingCog!")
-            return
-        # Retrieve the Sharer instance from the cog
         sharer_instance = sharing_cog_instance.sharer_instance
-        if sharer_instance:
-             logger.info("SharingCog loaded and Sharer instance retrieved.")
-        else:
-             logger.error("Failed to retrieve Sharer instance from SharingCog!")
-             return
+        if not sharer_instance:
+            logger.error("Failed to retrieve Sharer instance from SharingCog!")
+            return
+        logger.info("SharingCog loaded.")
 
         # 4. Reactor Instance
         supabase_url = os.getenv('SUPABASE_URL')
         supabase_key = os.getenv('SUPABASE_SERVICE_KEY')
 
-        # Create OpenMuse Interactor instance (needed by Reactor)
         openmuse_interactor_instance = OpenMuseInteractor(
             supabase_url=supabase_url,
             supabase_key=supabase_key,
             logger=logger
         )
-        bot.openmuse_interactor_instance = openmuse_interactor_instance # Optional: Attach to bot if needed elsewhere
-        logger.info("OpenMuseInteractor instance created.")
+        bot.openmuse_interactor_instance = openmuse_interactor_instance
 
-        # Pass the DB handler, OpenMuse interactor, and LLM client to the Reactor constructor
         reactor_instance = Reactor(
             logger=logger,
             sharer_instance=sharer_instance,
-            db_handler=bot.db_handler, # Pass the db_handler instance
-            openmuse_interactor=openmuse_interactor_instance, # Pass the interactor instance
+            db_handler=bot.db_handler,
+            openmuse_interactor=openmuse_interactor_instance,
             bot_instance=bot,
-            llm_client=claude_client_instance, # Pass the ClaudeClient instance
+            llm_client=claude_client_instance,
             dev_mode=args.dev,
         )
         bot.reactor_instance = reactor_instance
-        logger.info("Reactor instance created and attached to bot.")
+        logger.info("Core components initialized.")
 
+        # ---- Add Cogs ----
 
-        # ---- ADD OTHER COGS ----
-        logger.info("Adding remaining cogs...")
-
-        # Summarizer Cog - Create ChannelSummarizer instance
         channel_summarizer_instance = ChannelSummarizer(
             bot=bot,
             logger=logger,
@@ -191,38 +173,24 @@ async def main_async(args):
         await bot.add_cog(SummarizerCog(bot, channel_summarizer_instance))
         logger.info("SummarizerCog loaded.")
 
-        # Curator Cog
         await bot.add_cog(CuratorCog(bot, logger, args.dev))
-        logger.info("CuratorCog loaded.")
-
-        # Logger Cog
         await bot.add_cog(LoggerCog(bot, logger, args.dev))
-        logger.info("LoggerCog loaded.")
-        
-        # Admin Cog
+        await bot.add_cog(ReactorCog(bot, logger, args.dev))
+        await bot.add_cog(ArchiveCog(bot))
+
+        # Optional cogs — don't block startup if they fail
         try:
             from src.features.admin.admin_cog import AdminCog
             await bot.add_cog(AdminCog(bot))
-            logger.info("AdminCog loaded.")
         except Exception as e:
             logger.warning(f"Failed to load AdminCog (skipping): {e}")
-        
-        # Admin Chat Cog (Claude-powered DM chat for admin)
         try:
             from src.features.admin_chat.admin_chat_cog import AdminChatCog
             await bot.add_cog(AdminChatCog(bot, bot.db_handler, sharer_instance))
-            logger.info("AdminChatCog loaded.")
         except Exception as e:
             logger.warning(f"Failed to load AdminChatCog (skipping): {e}")
 
-        # Reactor Cog (Needs bot.reactor_instance)
-        await bot.add_cog(ReactorCog(bot, logger, args.dev))
-        logger.info("ReactorCog loaded.")
-
-
-        # Archive Cog (Handles standalone --archive-days operations)
-        await bot.add_cog(ArchiveCog(bot))
-        logger.info("ArchiveCog loaded.")
+        logger.info(f"All cogs loaded.")
 
         # ---- SETUP HOURLY MESSAGE FETCHING ----
         @tasks.loop(hours=1)
@@ -259,9 +227,7 @@ async def main_async(args):
         await bot.add_cog(ReadinessListener(bot))
         
         # ---- RUN ----
-        # Log the final intents object being used (changed to INFO level)
-        logger.info(f"Final bot intents before starting: {bot.intents}") # Ensure this is INFO level and appears only ONCE
-        bot.logger.info("All core components initialized and cogs added. Running the bot...")
+        logger.info("Starting bot...")
         await bot.start(token)
 
     except KeyboardInterrupt:
