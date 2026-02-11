@@ -225,19 +225,10 @@ async def main_async(args):
         logger.info("ArchiveCog loaded.")
 
         # ---- SETUP HOURLY MESSAGE FETCHING ----
-        # Track whether an archive already ran this session (e.g. --summary-with-archive)
-        bot._archive_ran_this_session = False
-
         @tasks.loop(hours=1)
         async def hourly_message_fetch():
             """Fetch new messages every hour. Uses --days 1 as a floor
             but the archive script only fetches messages newer than what's in DB."""
-            # Skip the first iteration if an archive already ran at startup
-            if not bot._archive_ran_this_session:
-                bot._archive_ran_this_session = True
-                if args.archive_days or args.summary_with_archive:
-                    logger.info("Skipping first hourly fetch — archive already ran at startup")
-                    return
             try:
                 logger.info("Starting hourly message fetch...")
                 await run_archive_script(days=1, dev_mode=args.dev, logger=logger)
