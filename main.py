@@ -57,19 +57,19 @@ def setup_logging(dev_mode=False):
     
     return logger
 
-async def run_archive_script(days, dev_mode=False, logger=None):
+async def run_archive_script(days, dev_mode=False, logger=None, in_depth=False):
     """Run the archive_discord.py script with the specified number of days"""
     if logger is None:
         logger = logging.getLogger(__name__)
-    
+
     from src.common.archive_runner import ArchiveRunner
-    
-    logger.info(f"Starting archive process for {days} days")
-    
+
+    logger.info(f"Starting archive process for {days} days (in_depth={in_depth})")
+
     # Use the centralized ArchiveRunner
     archive_runner = ArchiveRunner()
-    success = await archive_runner.run_archive(days, dev_mode, in_depth=True)
-    
+    success = await archive_runner.run_archive(days, dev_mode, in_depth=in_depth)
+
     if not success:
         raise RuntimeError("Archive script failed")
 

@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 # Thread-local storage for database connections
 thread_local = threading.local()
 
+DISCORD_EPOCH_MS = 1420070400000  # Discord epoch in milliseconds
+
+def snowflake_to_datetime(snowflake_id: int) -> datetime:
+    """Convert a Discord snowflake ID to a timezone-aware UTC datetime."""
+    timestamp_ms = (snowflake_id >> 22) + DISCORD_EPOCH_MS
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+
 def to_aware_utc(dt_str: str) -> datetime:
     """Convert an ISO format string to a timezone-aware datetime object."""
     dt = datetime.fromisoformat(dt_str)
@@ -48,7 +55,7 @@ def get_db():
     return thread_local.db
 
 class MessageArchiver(BaseDiscordBot):
-    def __init__(self, dev_mode=False, order="newest", days=None, batch_size=500, in_depth=False, channel_id=None, fetch_reactions=False, start_date_str=None, end_date_str=None, fast_fill=False):
+    def __init__(self, dev_mode=False, order="newest", days=None, batch_size=500, in_depth=False, channel_id=None, channel_ids=None, fetch_reactions=False, start_date_str=None, end_date_str=None, fast_fill=False):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
@@ -141,10 +148,16 @@ class MessageArchiver(BaseDiscordBot):
         if fast_fill:
             logger.info("🚀 Running in FAST-FILL mode - batched DB checks, skipping member updates and reactions")
             
-        # Set specific channel to archive
-        self.target_channel_id = channel_id
-        if channel_id:
+        # Set specific channel(s) to archive
+        self.target_channel_ids = []
+        if channel_ids:
+            self.target_channel_ids = channel_ids
+            logger.info(f"Will archive {len(channel_ids)} channels: {channel_ids}")
+        elif channel_id:
+            self.target_channel_ids = [channel_id]
             logger.info(f"Will only archive channel with ID: {channel_id}")
+        # Backward compat: keep target_channel_id for any code that checks it
+        self.target_channel_id = channel_id
         
         # Add rate limiting tracking
         self.last_api_call = datetime.now()
@@ -453,51 +466,47 @@ class MessageArchiver(BaseDiscordBot):
             # --- Collect all items to process --- 
             items_to_process = [] # List of (item_type, item_object, parent_name_if_thread)
 
-            if self.target_channel_id:
-                channel = self.get_channel(self.target_channel_id)
-                if channel:
-                    # If a category was provided, expand to its child channels
-                    if isinstance(channel, discord.CategoryChannel):
-                        logger.info(f"Target is a CategoryChannel: #{channel.name}. Expanding to child channels...")
-                        try:
-                            for child in channel.channels:
-                                if isinstance(child, discord.TextChannel):
-                                    items_to_process.append(("channel", child, None))
-                                    # Include threads for each text channel
-                                    archived_threads = await self._fetch_archived_threads(child)
-                                    active_threads = child.threads
-                                    for thread in archived_threads + active_threads:
-                                        items_to_process.append(("thread", thread, child.name))
-                                elif isinstance(child, discord.ForumChannel):
-                                    # Include all forum threads
-                                    archived_threads = await self._fetch_archived_threads(child)
-                                    active_threads = child.threads
-                                    for thread in archived_threads + active_threads:
-                                        items_to_process.append(("forum_thread", thread, child.name))
-                                else:
-                                    # Skip non-text/forum channel types (voice, stage, etc.)
-                                    continue
-                        except Exception as e:
-                            logger.error(f"Failed to expand CategoryChannel {channel.id}: {e}", exc_info=True)
-                    elif isinstance(channel, discord.TextChannel):
-                        items_to_process.append(("channel", channel, None))
-                        # Add threads within the target text channel
-                        archived_threads = await self._fetch_archived_threads(channel)
-                        active_threads = channel.threads
-                        for thread in archived_threads + active_threads:
-                            items_to_process.append(("thread", thread, channel.name))
-                    elif isinstance(channel, discord.ForumChannel):
-                        # For a forum channel, pull all threads
-                        archived_threads = await self._fetch_archived_threads(channel)
-                        active_threads = channel.threads
-                        for thread in archived_threads + active_threads:
-                            items_to_process.append(("forum_thread", thread, channel.name))
-                    elif isinstance(channel, discord.Thread):
-                        items_to_process.append(("thread", channel, getattr(channel.parent, 'name', None)))
+            if self.target_channel_ids:
+                for target_cid in self.target_channel_ids:
+                    channel = self.get_channel(target_cid)
+                    if channel:
+                        # If a category was provided, expand to its child channels
+                        if isinstance(channel, discord.CategoryChannel):
+                            logger.info(f"Target is a CategoryChannel: #{channel.name}. Expanding to child channels...")
+                            try:
+                                for child in channel.channels:
+                                    if isinstance(child, discord.TextChannel):
+                                        items_to_process.append(("channel", child, None))
+                                        archived_threads = await self._fetch_archived_threads(child)
+                                        active_threads = child.threads
+                                        for thread in archived_threads + active_threads:
+                                            items_to_process.append(("thread", thread, child.name))
+                                    elif isinstance(child, discord.ForumChannel):
+                                        archived_threads = await self._fetch_archived_threads(child)
+                                        active_threads = child.threads
+                                        for thread in archived_threads + active_threads:
+                                            items_to_process.append(("forum_thread", thread, child.name))
+                                    else:
+                                        continue
+                            except Exception as e:
+                                logger.error(f"Failed to expand CategoryChannel {channel.id}: {e}", exc_info=True)
+                        elif isinstance(channel, discord.TextChannel):
+                            items_to_process.append(("channel", channel, None))
+                            archived_threads = await self._fetch_archived_threads(channel)
+                            active_threads = channel.threads
+                            for thread in archived_threads + active_threads:
+                                items_to_process.append(("thread", thread, channel.name))
+                        elif isinstance(channel, discord.ForumChannel):
+                            archived_threads = await self._fetch_archived_threads(channel)
+                            active_threads = channel.threads
+                            for thread in archived_threads + active_threads:
+                                items_to_process.append(("forum_thread", thread, channel.name))
+                        elif isinstance(channel, discord.Thread):
+                            items_to_process.append(("thread", channel, getattr(channel.parent, 'name', None)))
+                        else:
+                            logger.warning(f"Channel {target_cid} is an unsupported type. Skipping.")
                     else:
-                        logger.warning(f"Provided --channel {self.target_channel_id} is an unsupported type. Skipping.")
-                else:
-                    logger.error(f"Could not find target channel with ID {self.target_channel_id}")
+                        logger.error(f"Could not find target channel with ID {target_cid}")
             else:
                 # Collect all text channels
                 all_text_channels = [c for c in guild.text_channels if c.id not in self.skip_channels]
@@ -517,10 +526,37 @@ class MessageArchiver(BaseDiscordBot):
                     for thread in archived_threads + active_threads:
                          items_to_process.append(("forum_thread", thread, forum.name))
 
-            total_items = len(items_to_process)
-            logger.info(f"Collected {total_items} total channels/threads to process.")
+            total_items_before_filter = len(items_to_process)
+            logger.info(f"Collected {total_items_before_filter} total channels/threads to process.")
 
-            # --- Process collected items --- 
+            # --- Filter inactive threads using snowflake timestamps (Phase 2) ---
+            # When using --days, skip threads whose last_message_id is older than the cutoff.
+            # This avoids fetching messages from hundreds of inactive threads.
+            # Skip this filter in --in-depth mode (which wants to re-check everything).
+            if self.days_limit and not self.in_depth:
+                cutoff_dt = datetime.now(timezone.utc) - timedelta(days=self.days_limit)
+                filtered_items = []
+                skipped_count = 0
+                for item_type, item, parent_name in items_to_process:
+                    if item_type in ("thread", "forum_thread"):
+                        last_msg_id = getattr(item, 'last_message_id', None)
+                        if last_msg_id:
+                            last_activity = snowflake_to_datetime(last_msg_id)
+                            if last_activity < cutoff_dt:
+                                skipped_count += 1
+                                continue
+                        # If no last_message_id, keep it (could be a new/empty thread)
+                    filtered_items.append((item_type, item, parent_name))
+
+                if skipped_count > 0:
+                    logger.info(f"⏭️  Skipped {skipped_count} inactive threads (no messages since {cutoff_dt.strftime('%Y-%m-%d %H:%M')} UTC)")
+                items_to_process = filtered_items
+
+            total_items = len(items_to_process)
+            if total_items != total_items_before_filter:
+                logger.info(f"Processing {total_items} items after filtering (was {total_items_before_filter})")
+
+            # --- Process collected items ---
             for index, (item_type, item, parent_name) in enumerate(items_to_process):
                 item_index = index + 1 # 1-based index for logging
                 
@@ -1109,9 +1145,12 @@ class MessageArchiver(BaseDiscordBot):
                             logger.error(f"Error details: {str(e)}")
 
                 # Get all message dates to check for gaps
-                message_dates = await self._db_operation(
-                    lambda db: db.get_message_dates(channel_id)
-                )
+                # Skip gap scanning when using --days (only relevant for full backfill)
+                message_dates = None
+                if not self.days_limit:
+                    message_dates = await self._db_operation(
+                        lambda db: db.get_message_dates(channel_id)
+                    )
                 if message_dates:
                     # Filter dates based on cutoff if set
                     if cutoff_date:
@@ -1255,6 +1294,8 @@ def main():
                       help='Perform thorough message checks, re-processing all messages in the time range')
     parser.add_argument('--channel', type=int,
                       help='ID of a specific channel to archive')
+    parser.add_argument('--channels', type=str,
+                      help='Comma-separated list of channel IDs to archive (single login)')
     parser.add_argument('--fetch-reactions', action='store_true',
                       help='Fetch reactions for all messages in range, not just new ones')
     parser.add_argument('--fast-fill', action='store_true',
@@ -1287,9 +1328,15 @@ def main():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
-        bot = MessageArchiver(dev_mode=args.dev, order=args.order, days=args.days, 
+        # Parse --channels (comma-separated) into a list of ints
+        channel_ids_list = None
+        if args.channels:
+            channel_ids_list = [int(c.strip()) for c in args.channels.split(',') if c.strip()]
+
+        bot = MessageArchiver(dev_mode=args.dev, order=args.order, days=args.days,
                             batch_size=args.batch_size, in_depth=args.in_depth,
-                            channel_id=args.channel, fetch_reactions=args.fetch_reactions,
+                            channel_id=args.channel, channel_ids=channel_ids_list,
+                            fetch_reactions=args.fetch_reactions,
                             start_date_str=args.start_date, end_date_str=args.end_date,
                             fast_fill=args.fast_fill)
         

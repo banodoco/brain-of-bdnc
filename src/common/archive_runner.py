@@ -55,16 +55,17 @@ class ArchiveRunner:
         channels_str = os.getenv(channels_env_key, '')
         channel_ids: list[str] = [c.strip() for c in channels_str.split(',') if c.strip()]
 
-        # If we have a channel list, run the archiver once per channel; otherwise fall back to full-guild scrape
+        # If we have a channel list, pass all channels in a single subprocess to avoid
+        # redundant Discord bot logins (~30s each). Uses --channels (comma-separated).
         commands_to_run: list[list[str]] = []
         if channel_ids:
-            for cid in channel_ids:
-                cmd = [sys.executable, self.archive_script_path, '--days', str(days), '--channel', cid]
-                if in_depth:
-                    cmd.append('--in-depth')
-                if dev_mode:
-                    cmd.append('--dev')
-                commands_to_run.append(cmd)
+            cmd = [sys.executable, self.archive_script_path, '--days', str(days),
+                   '--channels', ','.join(channel_ids)]
+            if in_depth:
+                cmd.append('--in-depth')
+            if dev_mode:
+                cmd.append('--dev')
+            commands_to_run.append(cmd)
             logger.info(f"Running archive for {len(channel_ids)} monitored channel(s) from {channels_env_key}")
         else:
             cmd = [sys.executable, self.archive_script_path, '--days', str(days)]
@@ -89,9 +90,16 @@ class ArchiveRunner:
 
         try:
             all_ok = True
+            hit_rate_limit = False
             for cmd in commands_to_run:
+                # If a previous archive run hit a 429, skip remaining channels
+                # to avoid hammering Discord's API with doomed login attempts
+                if hit_rate_limit:
+                    logger.warning(f"Skipping archive command (rate limit from previous run): {' '.join(cmd)}")
+                    continue
+
                 logger.info(f"Running archive command: {' '.join(cmd)}")
-                
+
                 # Use asyncio subprocess to avoid blocking the event loop
                 # Increase buffer limit to 1MB (default is 64KB) to handle very long log lines
                 process = await asyncio.create_subprocess_exec(
@@ -101,8 +109,9 @@ class ArchiveRunner:
                     cwd=self.project_root,
                     limit=1024 * 1024  # 1MB buffer limit
                 )
-                
+
                 # Stream output line by line asynchronously
+                output_lines = []
                 if process.stdout:
                     while True:
                         try:
@@ -117,6 +126,7 @@ class ArchiveRunner:
                             break
                         line_clean = line.decode('utf-8', errors='replace').rstrip()
                         if line_clean:
+                            output_lines.append(line_clean)
                             # Skip verbose logs
                             if any(pattern in line_clean for pattern in skip_patterns):
                                 continue
@@ -125,7 +135,7 @@ class ArchiveRunner:
                                 line_clean = line_clean[:2000] + "... [truncated]"
                             # Log important archive events
                             logger.info(f"[Archive] {line_clean}")
-                
+
                 # Wait for process to complete with timeout
                 try:
                     await asyncio.wait_for(process.wait(), timeout=3600)
@@ -134,12 +144,16 @@ class ArchiveRunner:
                     process.kill()
                     await process.wait()
                     return False
-                
+
                 if process.returncode == 0:
                     logger.info("Archive process completed successfully")
                 else:
                     all_ok = False
                     logger.error(f"Archive process failed with return code {process.returncode}")
+                    # Check if the failure was a 429 rate limit
+                    if any('429' in line and 'Too Many Requests' in line for line in output_lines):
+                        hit_rate_limit = True
+                        logger.warning("Archive hit Discord 429 rate limit — skipping remaining channels")
             return all_ok
         except Exception as e:
             logger.error(f"Error running archive script: {e}", exc_info=True)
