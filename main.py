@@ -115,6 +115,12 @@ async def main_async(args):
         bot.archive_days = args.archive_days
         bot.run_archive_script = run_archive_script  # Make the function available to cogs
 
+        # Event to signal when --summary-now completes (replaces janky hasattr polling)
+        bot.summary_completed = asyncio.Event()
+        if not args.summary_now:
+            # If no summary requested, mark as already complete so hourly fetch starts immediately
+            bot.summary_completed.set()
+
         # ---- END BASIC EVENT TEST ----
 
         # ---- Initialize Core Components ----
@@ -219,13 +225,21 @@ async def main_async(args):
         logger.info("ArchiveCog loaded.")
 
         # ---- SETUP HOURLY MESSAGE FETCHING ----
+        # Track whether an archive already ran this session (e.g. --summary-with-archive)
+        bot._archive_ran_this_session = False
+
         @tasks.loop(hours=1)
         async def hourly_message_fetch():
-            """Fetch new messages every hour instead of real-time processing"""
+            """Fetch new messages every hour. Uses --days 1 as a floor
+            but the archive script only fetches messages newer than what's in DB."""
+            # Skip the first iteration if an archive already ran at startup
+            if not bot._archive_ran_this_session:
+                bot._archive_ran_this_session = True
+                if args.archive_days or args.summary_with_archive:
+                    logger.info("Skipping first hourly fetch — archive already ran at startup")
+                    return
             try:
                 logger.info("Starting hourly message fetch...")
-                # Fetch messages from the last 1 day to ensure we don't miss any
-                # Using 1 day instead of hours to be safe with the archive script's day-based logic
                 await run_archive_script(days=1, dev_mode=args.dev, logger=logger)
                 logger.info("Hourly message fetch completed successfully")
             except Exception as e:
@@ -233,30 +247,25 @@ async def main_async(args):
 
         @hourly_message_fetch.before_loop
         async def before_hourly_fetch():
-            """Wait for bot to be ready and for any --summary-now to complete before starting hourly fetch"""
+            """Wait for bot to be ready and for any --summary-now to complete before starting hourly fetch."""
             await bot.wait_until_ready()
-            
-            # If --summary-now was specified, wait for it to complete first
-            if hasattr(bot, 'summary_now') and bot.summary_now:
-                logger.info("Detected --summary-now flag. Waiting for summary to complete before starting hourly fetch...")
-                # Wait for the summary to complete (check every 5 seconds)
-                while not hasattr(bot, '_summary_now_completed'):
-                    await asyncio.sleep(5)
-                logger.info("Summary completed. Now starting hourly message fetch loop")
-            else:
-                logger.info("Bot is ready, starting hourly message fetch loop")
+            logger.info("Waiting for summary_completed event before starting hourly fetch...")
+            await bot.summary_completed.wait()
+            logger.info("Ready to start hourly message fetch loop")
 
         # Start the hourly fetch task
         hourly_message_fetch.start()
-        logger.info("Hourly message fetch task started")
+        logger.info("Hourly message fetch task scheduled")
 
-        # Mark the health server callback so it can be called when ready
-        @bot.event
-        async def on_ready():
-            """Called when the bot is fully ready"""
-            health_server.mark_ready()
-            health_server.update_heartbeat()
-            logger.info(f"✅ Bot is ready! Logged in as {bot.user} (Deployment: {deployment_id[:8]}...)")
+        # Use a Cog listener instead of @bot.event to avoid overriding other on_ready handlers
+        class ReadinessListener(commands.Cog):
+            @commands.Cog.listener()
+            async def on_ready(self_cog):
+                health_server.mark_ready()
+                health_server.update_heartbeat()
+                logger.info(f"✅ Bot is ready! Logged in as {bot.user} (Deployment: {deployment_id[:8]}...)")
+
+        await bot.add_cog(ReadinessListener(bot))
         
         # ---- RUN ----
         # Log the final intents object being used (changed to INFO level)

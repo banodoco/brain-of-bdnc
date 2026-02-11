@@ -82,14 +82,13 @@ class SummarizerCog(commands.Cog):
                     if hasattr(self, 'channel_summarizer'):
                          await self.channel_summarizer.generate_summary()
                          logger.info("Initial --summary-now run finished.")
-                         # Signal that summary is complete so hourly fetch can start
-                         self.bot._summary_now_completed = True
                     else:
                          logger.error("ChannelSummarizer not found during on_ready for --summary-now run.")
                 except Exception as e:
                     logger.error(f"Error during initial --summary-now run: {e}", exc_info=True)
-                    # Even if there's an error, signal completion so hourly fetch can start
-                    self.bot._summary_now_completed = True
+                finally:
+                    # Signal completion so hourly fetch can start (even on error)
+                    self.bot.summary_completed.set()
             else:
                 logger.debug("No --summary-now flag detected on startup.")
 
