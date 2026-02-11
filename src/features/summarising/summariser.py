@@ -505,13 +505,17 @@ class ChannelSummarizer:
         DISCORD_MAX_FILES = 10
         sent_messages: List[Optional[discord.Message]] = []
         
-        # Collect all attachments from the source messages
+        # Collect all attachments from the source messages (rate-limited to avoid 429)
         all_attachments = []
         for msg_id in message_ids:
             try:
-                original_message = await source_channel.fetch_message(int(msg_id))
-                if original_message.attachments:
+                original_message = await self.rate_limiter.execute(
+                    f"media_fetch_{source_channel.id}",
+                    lambda mid=msg_id: source_channel.fetch_message(int(mid))
+                )
+                if original_message and original_message.attachments:
                     all_attachments.extend(original_message.attachments)
+                await asyncio.sleep(0.5)
             except Exception as e:
                 self.logger.warning(f"Could not fetch message {msg_id} for media: {e}")
         
@@ -1772,6 +1776,9 @@ class ChannelSummarizer:
         """
         try:
             async with self.summary_lock:
+                # Reset first_message so a stale reference from a previous run can't be used
+                self.first_message = None
+
                 # Check Discord connectivity before starting
                 if not await self._check_discord_connectivity():
                     self.logger.error("Discord connectivity check failed. Aborting summary generation.")
@@ -1805,10 +1812,24 @@ class ChannelSummarizer:
                     return
 
                 channel_summaries = []
-                
-                self.logger.info(f"Processing {len(active_channels)} channel{'s' if len(active_channels) != 1 else ''} with 25+ messages")
-                
-                for i, channel_info in enumerate(active_channels):
+
+                # --combine-only: skip channel processing, load existing summaries from DB
+                combine_only = getattr(self.bot, 'combine_only', False)
+                if combine_only:
+                    self.logger.info(f"--combine-only: Loading existing channel summaries from DB for {len(active_channels)} channels...")
+                    for channel_info in active_channels:
+                        channel_id = channel_info['channel_id']
+                        existing_summary = db_handler.get_summary_for_date(channel_id, current_date)
+                        if existing_summary:
+                            channel_summaries.append(existing_summary)
+                            self.logger.info(f"  Loaded summary for channel {channel_id} ({channel_info.get('channel_name', 'Unknown')})")
+                        else:
+                            self.logger.info(f"  No existing summary for channel {channel_id} ({channel_info.get('channel_name', 'Unknown')}), skipping")
+                    self.logger.info(f"--combine-only: Loaded {len(channel_summaries)} channel summaries from DB")
+                else:
+                    self.logger.info(f"Processing {len(active_channels)} channel{'s' if len(active_channels) != 1 else ''} with 25+ messages")
+
+                for i, channel_info in enumerate([] if combine_only else active_channels):
                     channel_id = channel_info['channel_id']
                     channel_name = channel_info.get('channel_name', 'Unknown')
                     post_channel_id = channel_info.get('post_channel_id', channel_id)
@@ -1917,11 +1938,15 @@ class ChannelSummarizer:
                                             except Exception as e_media:
                                                 self.logger.error(f"Error processing media reference {item}: {e_media}")
                                         else:
-                                             # UPDATED CALL - capture returned message
-                                             sent_msg = await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=item.get('content', ''))
-                                             if sent_msg and topic_index is not None:
-                                                 channel_posted_by_topic[topic_index].append(sent_msg.id)
-                                             await asyncio.sleep(1)
+                                            try:
+                                                # UPDATED CALL - capture returned message
+                                                sent_msg = await discord_utils.safe_send_message(self.bot, thread, self.rate_limiter, self.logger, content=item.get('content', ''))
+                                                if sent_msg and topic_index is not None:
+                                                    channel_posted_by_topic[topic_index].append(sent_msg.id)
+                                                await asyncio.sleep(1)
+                                            except Exception as e_send:
+                                                self.logger.error(f"Failed to send channel summary item to thread (topic {topic_index}): {e_send}")
+                                                continue
                                     
                                     # Enrich channel summary with posted message IDs
                                     if channel_posted_by_topic:
@@ -1954,8 +1979,8 @@ class ChannelSummarizer:
                         continue
 
                 if channel_summaries:
-                    # Check if main summary already exists for today (skip in dev mode)
-                    if not self.dev_mode and db_handler.summary_exists_for_date(self.summary_channel_id, current_date):
+                    # Check if main summary already exists for today (skip in dev mode, skip if --combine-only)
+                    if not combine_only and not self.dev_mode and db_handler.summary_exists_for_date(self.summary_channel_id, current_date):
                         self.logger.info(f"⏭️ Skipping main summary: Already exists for {current_date.strftime('%Y-%m-%d')}")
                     else:
                         self.logger.info(f"Combining summaries from {len(channel_summaries)} channels...")
@@ -1963,21 +1988,33 @@ class ChannelSummarizer:
                         
                         # List of non-content responses to skip posting
                         skip_responses = [
-                            "[NOTHING OF NOTE]", 
-                            "[NO SIGNIFICANT NEWS]", 
-                            "[NO MESSAGES TO ANALYZE]",
-                            "[ERROR COMBINING SUMMARIES]",
-                            "[ERROR PARSING COMBINED SUMMARY]"
+                            "[NOTHING OF NOTE]",
+                            "[NO SIGNIFICANT NEWS]",
+                            "[NO MESSAGES TO ANALYZE]"
                         ]
-                        
-                        if overall_summary and overall_summary not in skip_responses:
+
+                        if overall_summary and overall_summary.startswith("[ERROR"):
+                            self.logger.error(f"Combined summary returned error: {overall_summary}")
+                            # Notify admin via DM instead of posting error to summary channel
+                            try:
+                                admin_id = int(os.getenv("ADMIN_USER_ID", "0"))
+                                if admin_id:
+                                    admin_user = await self.bot.fetch_user(admin_id)
+                                    await admin_user.send(f"Summary error: `{overall_summary}` — channel summaries were generated but the combine step failed.")
+                            except Exception as e_admin:
+                                self.logger.warning(f"Failed to DM admin about combine error: {e_admin}")
+                        elif overall_summary and overall_summary not in skip_responses:
                             # Filter out blocked content before formatting
                             overall_summary = await filter_summary_media(overall_summary, self._fetch_message_for_moderation)
                             formatted_summary = self.news_summarizer.format_news_for_discord(overall_summary)
-                            # UPDATED CALL
-                            header = await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\n\n# Daily Summary - {current_date.strftime('%A, %B %d, %Y')}\n\n")
-                            if header is not None: self.first_message = header
-                            else: self.logger.error("Failed to post header message; first_message remains unset.")
+                            # UPDATED CALL — wrapped so a header failure doesn't abort the entire summary
+                            try:
+                                header = await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\n\n# Daily Summary - {current_date.strftime('%A, %B %d, %Y')}\n\n")
+                                if header is not None: self.first_message = header
+                                else: self.logger.error("Failed to post header message; first_message remains unset.")
+                            except Exception as e_header:
+                                self.logger.error(f"Failed to send summary header: {e_header}")
+                                header = None
                             
                             self.logger.info("Posting main summary to summary channel")
                             # Track posted message IDs by topic index
@@ -2006,11 +2043,15 @@ class ChannelSummarizer:
                                     except Exception as e_media_main:
                                         self.logger.error(f"Error processing media reference in main summary {item}: {e_media_main}")
                                 else:
-                                    # UPDATED CALL - capture returned message
-                                    sent_msg = await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=item.get('content', ''))
-                                    if sent_msg and topic_index is not None:
-                                        posted_by_topic[topic_index].append(sent_msg.id)
-                                    await asyncio.sleep(1)
+                                    try:
+                                        # UPDATED CALL - capture returned message
+                                        sent_msg = await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=item.get('content', ''))
+                                        if sent_msg and topic_index is not None:
+                                            posted_by_topic[topic_index].append(sent_msg.id)
+                                        await asyncio.sleep(1)
+                                    except Exception as e_send_main:
+                                        self.logger.error(f"Failed to send main summary item (topic {topic_index}): {e_send_main}")
+                                        continue
                             
                             self.logger.info(f"Tracked posted message IDs for {len(posted_by_topic)} topics")
                             

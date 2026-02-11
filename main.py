@@ -111,6 +111,7 @@ async def main_async(args):
         
         # Store the command-line flags on the bot instance so cogs can access them
         bot.summary_now = args.summary_now
+        bot.combine_only = args.combine_only
         bot.archive_days = args.archive_days
         bot.run_archive_script = run_archive_script  # Make the function available to cogs
 
@@ -277,7 +278,9 @@ def main():
     parser.add_argument('--dev', action='store_true', help='Run in development mode')
     parser.add_argument('--archive-days', type=int, help='Number of days to archive (can be used standalone or with --summary-now)')
     parser.add_argument('--summary-with-archive', action='store_true', help='Archive past 24 hours FIRST, then run summary immediately')
-    parser.add_argument('--clear-today-summaries', action='store_true', 
+    parser.add_argument('--combine-only', action='store_true',
+                      help='Skip channel summaries, load existing ones from DB, and re-run only the combine+post step')
+    parser.add_argument('--clear-today-summaries', action='store_true',
                       help='Delete today\'s summaries from Supabase before running (useful for re-running)')
     args = parser.parse_args()
     
@@ -336,10 +339,13 @@ def main():
         except ValueError:
             print(f"⚠ WARNING: JUST_SUMMARY_DATE='{env_summary_date}' is not a valid date format (expected YYYY-MM-DD). Ignoring.")
 
-    # Handle the combined flag
+    # Handle the combined flags
     if args.summary_with_archive:
         args.summary_now = True
         args.archive_days = 1
+
+    if args.combine_only:
+        args.summary_now = True
 
     # No validation needed - --archive-days can be used standalone or with --summary-now
 

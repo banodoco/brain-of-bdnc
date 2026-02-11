@@ -45,33 +45,35 @@ class NewsSummarizer:
         self.logger.info("NewsSummarizer initialized.")
 
     async def _call_anthropic(
-        self, 
-        system_prompt: str, 
-        user_content: str, 
+        self,
+        system_prompt: str,
+        user_content: str,
         max_tokens: int = 16000,
         max_retries: int = 3,
-        use_web_search: bool = False
+        use_web_search: bool = False,
+        model: str = "claude-sonnet-4-5-20250929"
     ) -> str:
         """
-        Call Anthropic API with Claude Sonnet 4.5.
-        
+        Call Anthropic API with the specified Claude model.
+
         Args:
-            use_web_search: If True, enables web search tool (beta). 
+            model: Model ID to use. Defaults to claude-sonnet-4-5-20250929.
+            use_web_search: If True, enables web search tool (beta).
                            Disabled by default - was causing JSON parsing issues.
         """
         last_error = None
-        
+
         for attempt in range(max_retries):
             try:
                 # Run the synchronous API call in a thread pool to not block the event loop
                 loop = asyncio.get_event_loop()
-                
+
                 if use_web_search:
                     # Use beta API with web search tool
                     message = await loop.run_in_executor(
                         None,
                         lambda: self.anthropic_client.beta.messages.create(
-                            model="claude-sonnet-4-5-20250929",
+                            model=model,
                             max_tokens=max_tokens,
                             temperature=1,
                             system=system_prompt,
@@ -82,7 +84,8 @@ class NewsSummarizer:
                                 }
                             ],
                             tools=[{"name": "web_search", "type": "web_search_20250305"}],
-                            betas=["web-search-2025-03-05"]
+                            betas=["web-search-2025-03-05"],
+                            timeout=600.0
                         )
                     )
                 else:
@@ -90,7 +93,7 @@ class NewsSummarizer:
                     message = await loop.run_in_executor(
                         None,
                         lambda: self.anthropic_client.messages.create(
-                            model="claude-sonnet-4-5-20250929",
+                            model=model,
                             max_tokens=max_tokens,
                             temperature=1,
                             system=system_prompt,
@@ -99,16 +102,21 @@ class NewsSummarizer:
                                     "role": "user",
                                     "content": user_content
                                 }
-                            ]
+                            ],
+                            timeout=600.0
                         )
                     )
-                
+
+                # Check if response was truncated
+                if message.stop_reason == "max_tokens":
+                    self.logger.warning(f"LLM response truncated (hit max_tokens={max_tokens})")
+
                 # Extract text from the response content blocks
                 text_parts = []
                 for block in message.content:
                     if hasattr(block, 'text'):
                         text_parts.append(block.text)
-                
+
                 return "\n".join(text_parts) if text_parts else ""
                 
             except anthropic.RateLimitError as e:
@@ -667,7 +675,8 @@ Check each claim in the summary against the source messages. Identify any attrib
             try:
                 json.loads(clean_text)
                 return clean_text
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                self.logger.warning(f"JSON parse failed (direct): {e}")
                 pass
         
         # Try to find JSON array within the text using bracket matching
@@ -695,7 +704,8 @@ Check each claim in the summary against the source messages. Identify any attrib
         try:
             json.loads(candidate)
             return candidate
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            self.logger.warning(f"JSON parse failed (bracket-matched): {e}")
             return None
 
     async def combine_channel_summaries(self, summaries: List[str]) -> str:
@@ -747,11 +757,12 @@ DO NOT introduce your response. Reply with ONLY the JSON array or [NO SIGNIFICAN
                     current_user_prompt += "\n\nIMPORTANT: Return ONLY the JSON array. No explanation or preamble."
                 
                 self.logger.info(f"Calling LLM for combine_channel_summaries (attempt {attempt}/{max_attempts})...")
-                
+
                 text = await self._call_anthropic(
                     system_prompt=current_system_prompt,
                     user_content=current_user_prompt,
-                    max_tokens=16000
+                    max_tokens=32000,
+                    model="claude-opus-4-6"
                 )
                 self.logger.debug(f"LLM response for combined summary (attempt {attempt}): {text[:200] if text else 'None'}...")
                 
