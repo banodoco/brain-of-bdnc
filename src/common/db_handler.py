@@ -1,4 +1,3 @@
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
@@ -44,7 +43,7 @@ class DatabaseHandler:
         try:
             # Check if we're already in an async context
             try:
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()
                 # We're in an async context - need to run in a separate thread
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -401,6 +400,29 @@ class DatabaseHandler:
                 return False
         return False
 
+    # ========== Reaction Updates ==========
+
+    def update_reactions(self, message_id: int, reaction_count: int, reactors: list) -> bool:
+        """Update reaction data for a message via Supabase REST API.
+
+        Bypasses execute_raw_sql() which cannot route UPDATE statements.
+        """
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for update_reactions")
+            return False
+
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('discord_messages')
+                .update({'reaction_count': reaction_count, 'reactors': reactors})
+                .eq('message_id', message_id)
+                .execute()
+            )
+            return bool(result.data)
+        except Exception as e:
+            logger.error(f"Error updating reactions for message {message_id}: {e}")
+            return False
+
     # ========== Shared Posts Tracking ==========
     
     def record_shared_post(
@@ -443,9 +465,7 @@ class DatabaseHandler:
                 'delete_eligible_until': delete_eligible_until
             }
             
-            self._run_async_in_thread(
-                self.storage_handler.supabase_client.table('shared_posts').upsert(data).execute
-            )
+            self.storage_handler.supabase_client.table('shared_posts').upsert(data).execute()
             logger.info(f"Recorded shared post: {platform} post {platform_post_id} for message {discord_message_id}")
             return True
         except Exception as e:
@@ -462,12 +482,12 @@ class DatabaseHandler:
             return None
         
         try:
-            result = self._run_async_in_thread(
+            result = (
                 self.storage_handler.supabase_client.table('shared_posts')
                 .select('*')
                 .eq('discord_message_id', discord_message_id)
                 .eq('platform', platform)
-                .execute
+                .execute()
             )
             return result.data[0] if result.data else None
         except Exception as e:
@@ -484,12 +504,12 @@ class DatabaseHandler:
             return False
         
         try:
-            self._run_async_in_thread(
+            (
                 self.storage_handler.supabase_client.table('shared_posts')
                 .update({'deleted_at': datetime.now().isoformat()})
                 .eq('discord_message_id', discord_message_id)
                 .eq('platform', platform)
-                .execute
+                .execute()
             )
             logger.info(f"Marked {platform} post for message {discord_message_id} as deleted")
             return True
@@ -508,11 +528,11 @@ class DatabaseHandler:
         
         try:
             # Check if already shared
-            result = self._run_async_in_thread(
+            result = (
                 self.storage_handler.supabase_client.table('discord_members')
                 .select('first_shared_at')
                 .eq('member_id', member_id)
-                .execute
+                .execute()
             )
             
             if result.data and result.data[0].get('first_shared_at'):
@@ -520,11 +540,11 @@ class DatabaseHandler:
                 return False
             
             # Set first_shared_at
-            self._run_async_in_thread(
+            (
                 self.storage_handler.supabase_client.table('discord_members')
                 .update({'first_shared_at': datetime.now().isoformat()})
                 .eq('member_id', member_id)
-                .execute
+                .execute()
             )
             logger.info(f"Marked first share for member {member_id}")
             return True

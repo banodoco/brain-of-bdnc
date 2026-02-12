@@ -16,7 +16,10 @@ def handle_errors(operation_name: str):
             except Exception as e:
                 logger.error(f"Error in {operation_name}: {e}")
                 logger.debug(traceback.format_exc())
-                if args and isinstance(args[0], (discord.Client, discord.ext.commands.Bot)):
+                # Skip admin DM for 429 rate limits — the DM itself would hit the
+                # same rate limit, wasting API calls and prolonging the outage.
+                is_rate_limit = isinstance(e, discord.HTTPException) and e.status == 429
+                if not is_rate_limit and args and isinstance(args[0], (discord.Client, discord.ext.commands.Bot)):
                     bot_instance = args[0]
                     try:
                         admin_id_env = os.getenv('ADMIN_USER_ID')
@@ -28,7 +31,7 @@ def handle_errors(operation_name: str):
                         error_msg = f"🚨 **Critical Error in {operation_name}**\n```\n{str(e)}\n```"
                         if len(error_msg) > 1900:  # Discord message length limit
                             error_msg = error_msg[:1900] + "..."
-                        
+
                         # Revert to direct send to break circular import
                         await admin_user.send(error_msg)
                         logger.info(f"Admin directly notified of error in {operation_name} by handle_errors decorator.")

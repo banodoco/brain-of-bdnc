@@ -7,6 +7,7 @@ import traceback
 import json
 import asyncio
 import logging
+import time
 # Import necessary libraries for your actions (e.g., tweepy for Twitter)
 # import tweepy # Example
 # Import the new subfeature
@@ -29,6 +30,7 @@ class ReactorCog(commands.Cog):
         if dev_mode:
             self.logger.info(f"Initializing ReactorCog in development mode (Reactor instance expected on bot object)")
         self.message_linker_channel_ids = [] # Initialize attribute
+        self._rate_limit_until = 0  # monotonic timestamp; skip reaction handling while active
 
     def _load_message_linker_config(self):
         """Loads message_linker channel configurations from the environment watchlist."""
@@ -170,8 +172,11 @@ class ReactorCog(commands.Cog):
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         """Handles raw reaction add events by fetching necessary objects and delegating."""
         try:
-            # --- STEP 1: Restore initial checks (NOW WRAPPED IN TRY/EXCEPT) ---
-            
+            # --- Rate limit cooldown: skip processing if we recently hit a 429 ---
+            if time.monotonic() < self._rate_limit_until:
+                self.logger.debug("[ReactorCog] Skipping reaction add — rate limit cooldown active")
+                return
+
             # Log event reception at DEBUG level to reduce noise
             self.logger.debug(f"[ReactorCog] Reaction event: User={payload.user_id}, Emoji={payload.emoji}, Msg={payload.message_id}")
             
@@ -247,6 +252,13 @@ class ReactorCog(commands.Cog):
                 message = await channel.fetch_message(payload.message_id)
                 emoji = payload.emoji
 
+            except discord.HTTPException as e:
+                if e.status == 429:
+                    self._rate_limit_until = time.monotonic() + 60
+                    self.logger.warning(f"[ReactorCog] 429 on fetch_message — entering 60s cooldown")
+                else:
+                    self.logger.error(f"[ReactorCog] HTTP {e.status} fetching message {payload.message_id}: {e}")
+                return
             except discord.NotFound:
                 self.logger.warning(f"[ReactorCog] Could not find message {payload.message_id} in channel {payload.channel_id} for raw reaction, ignoring.")
                 return
@@ -298,6 +310,11 @@ class ReactorCog(commands.Cog):
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
         """Handles raw reaction remove events for logging purposes."""
+        # --- Rate limit cooldown: skip processing if we recently hit a 429 ---
+        if time.monotonic() < self._rate_limit_until:
+            self.logger.debug("[ReactorCog] Skipping reaction remove — rate limit cooldown active")
+            return
+
         self.logger.debug(f"[ReactorCog] <<< RAW on_raw_reaction_remove event received: Payload={payload.__dict__} >>>")
 
         # Get LoggerCog instance
@@ -369,6 +386,12 @@ class ReactorCog(commands.Cog):
             asyncio.create_task(logger_cog.log_reaction_remove(simulated_reaction, user))
             self.logger.debug(f"[ReactorCog] Task created to call LoggerCog.log_reaction_remove")
 
+        except discord.HTTPException as e:
+            if e.status == 429:
+                self._rate_limit_until = time.monotonic() + 60
+                self.logger.warning(f"[ReactorCog] 429 on fetch_message (remove) — entering 60s cooldown")
+            else:
+                self.logger.error(f"[ReactorCog] HTTP {e.status} fetching message {payload.message_id} for reaction remove: {e}")
         except discord.NotFound:
             self.logger.warning(f"[ReactorCog] Could not find message {payload.message_id} for reaction remove logging.")
         except discord.Forbidden:

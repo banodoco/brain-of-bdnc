@@ -31,6 +31,7 @@ from src.features.sharing.sharing_cog import SharingCog
 from src.features.reacting.reactor import Reactor
 from src.features.reacting.reactor_cog import ReactorCog
 from src.features.archive.archive_cog import ArchiveCog
+from src.features.health.health_check_cog import HealthCheckCog
 
 def setup_logging(dev_mode=False):
     """Setup shared logging configuration for all bots"""
@@ -177,6 +178,7 @@ async def main_async(args):
         await bot.add_cog(LoggerCog(bot, logger, args.dev))
         await bot.add_cog(ReactorCog(bot, logger, args.dev))
         await bot.add_cog(ArchiveCog(bot))
+        await bot.add_cog(HealthCheckCog(bot))
 
         # Optional cogs — don't block startup if they fail
         try:
