@@ -134,7 +134,16 @@ class ReactionBackfiller(BaseDiscordBot):
 
                     channel = self.get_channel(channel_id)
                     if not channel:
-                        logger.warning(f"Could not find channel {channel_id}")
+                        # Thread IDs won't be in cache — try fetching directly
+                        try:
+                            channel = await self.fetch_channel(channel_id)
+                        except (discord.NotFound, discord.Forbidden):
+                            logger.debug(f"Could not find channel {channel_id}")
+                            skipped += 1
+                            continue
+
+                    # ForumChannels and CategoryChannels can't fetch messages directly
+                    if isinstance(channel, (discord.ForumChannel, discord.CategoryChannel)):
                         skipped += 1
                         continue
 
