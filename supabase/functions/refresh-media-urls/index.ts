@@ -72,7 +72,6 @@ async function fetchDiscordMessage(
   messageId: string
 ): Promise<DiscordMessage | null> {
   const url = `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`;
-  console.log(`[fetchDiscordMessage] Fetching: ${url}`);
 
   const response = await fetch(url, {
     headers: {
@@ -81,11 +80,9 @@ async function fetchDiscordMessage(
     },
   });
 
-  console.log(`[fetchDiscordMessage] Response status: ${response.status}`);
-
   if (!response.ok) {
     const errorText = await response.text();
-    console.log(`[fetchDiscordMessage] Error response: ${errorText}`);
+    console.error(`[fetchDiscordMessage] ${response.status} for message ${messageId}: ${errorText}`);
     if (response.status === 404) {
       return null;
     }
@@ -124,8 +121,6 @@ Deno.serve(async (req) => {
 
     // Parse request body
     const rawBody = await req.text();
-    console.log(`[refresh-media-urls] Raw request body: ${rawBody}`);
-    
     let body: Record<string, unknown> = {};
     try {
       body = JSON.parse(rawBody);
@@ -154,18 +149,14 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`[refresh-media-urls] Starting for message_id: ${messageId} (type: ${typeof body.message_id})`);
-
     // Look up the message in the database to get channel info if not provided
     // Use RPC to cast BIGINTs to TEXT to avoid JavaScript precision loss
     const { data: dbMessage, error: dbError } = await supabase
       .rpc("get_message_for_refresh", { p_message_id: messageId })
       .single();
 
-    console.log(`[refresh-media-urls] DB query result - data: ${JSON.stringify(dbMessage)}, error: ${JSON.stringify(dbError)}`);
-
     if (dbError || !dbMessage) {
-      console.log(`[refresh-media-urls] Message not found in DB. Error: ${JSON.stringify(dbError)}`);
+      console.error(`[refresh-media-urls] Message ${messageId} not found: ${dbError?.message}`);
       return new Response(
         JSON.stringify({
           success: false,
@@ -182,8 +173,6 @@ Deno.serve(async (req) => {
     // Use DB values if not provided in request (convert to string for Discord API)
     channelId = channelId || dbMessage.channel_id?.toString();
     threadId = threadId || dbMessage.thread_id?.toString();
-    
-    console.log(`[refresh-media-urls] Using channel_id: ${channelId}, thread_id: ${threadId}`);
 
     // Parse existing attachments
     let oldAttachments: Attachment[] = [];
@@ -215,7 +204,6 @@ Deno.serve(async (req) => {
     }
 
     // Try fetching from Discord - first try channel_id
-    console.log(`[refresh-media-urls] Fetching from Discord - channel_id: ${channelId}, message_id: ${messageId}`);
     let discordMessage = await fetchDiscordMessage(
       discordToken,
       channelId,
@@ -224,7 +212,6 @@ Deno.serve(async (req) => {
 
     // If that fails and we have a thread_id, try that (for forum posts)
     if (!discordMessage && threadId) {
-      console.log(`[refresh-media-urls] Retrying with thread_id: ${threadId}`);
       discordMessage = await fetchDiscordMessage(
         discordToken,
         threadId,
@@ -233,7 +220,7 @@ Deno.serve(async (req) => {
     }
 
     if (!discordMessage) {
-      console.log(`[refresh-media-urls] Discord returned null for message ${messageId}`);
+      console.error(`[refresh-media-urls] Message ${messageId} not found on Discord (channel: ${channelId})`);
       return new Response(
         JSON.stringify({
           success: false,
@@ -249,8 +236,6 @@ Deno.serve(async (req) => {
       );
     }
     
-    console.log(`[refresh-media-urls] Discord returned ${discordMessage.attachments?.length || 0} attachments`);
-
     // Build new attachments array, preserving structure
     const newAttachments: Attachment[] = discordMessage.attachments.map(
       (att) => ({

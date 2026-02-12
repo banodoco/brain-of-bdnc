@@ -148,7 +148,7 @@ class GeminiClient(BaseLLMClient):
         generation_config = types.GenerateContentConfig(**config_params) if config_params else None
 
         # Prepare safety settings (assuming similar structure, might need adjustment)
-        safety_settings = kwargs.get("safety_settings", None)
+        _safety_settings = kwargs.get("safety_settings", None)
 
         is_multimodal = any(p.file_data for c in gemini_contents for p in c.parts if hasattr(p, 'file_data')) # Simple check for file data
         logger.info(f"Making Gemini call (using client.models structure): model={effective_model}, multimodal={is_multimodal}, config={config_params}")

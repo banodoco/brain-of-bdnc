@@ -36,7 +36,7 @@ async def fetch_message(channel_id, message_id):
         channel = await bot.fetch_channel(channel_id)
         message = await channel.fetch_message(message_id)
         return message
-    except Exception as e:
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:  # Discord API errors
         print(f"Error fetching message {message_id} in channel {channel_id}: {e}")
         return None
 
@@ -55,7 +55,7 @@ async def download_file(session, url, filepath):
             else:
                 print(f"Failed to download {url}: Status {response.status}")
                 return False
-    except Exception as e:
+    except (aiohttp.ClientError, OSError) as e:  # Network/filesystem errors
         print(f"Error downloading {url}: {e}")
         return False
 
@@ -139,7 +139,7 @@ async def process_videos():
                     # Small delay to avoid rate limiting
                     await asyncio.sleep(1)
 
-            except Exception as e:
+            except (discord.HTTPException, aiohttp.ClientError, json.JSONDecodeError, OSError) as e:  # Network/API/parse errors
                 print(f"Error processing message {msg_id}: {e}")
                 continue
 

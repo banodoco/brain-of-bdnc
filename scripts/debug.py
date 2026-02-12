@@ -36,7 +36,6 @@ import os
 import subprocess
 import sys
 import time
-from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -315,8 +314,8 @@ def cmd_trace(args):
                 if log['id'] not in seen_ids:
                     seen_ids.add(log['id'])
                     all_logs.append(log)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"{DIM}Warning: search for '{keyword}' failed: {e}{RESET}", file=sys.stderr)
     
     all_logs.sort(key=lambda x: x['timestamp'])
     
@@ -426,13 +425,13 @@ def cmd_db_stats(args):
     try:
         msgs = supabase.table('discord_messages').select('message_id', count='exact').gte('created_at', cutoff).execute()
         print(f"  New messages:        {msgs.count:>10,}")
-    except:
+    except Exception:
         print(f"  New messages:        {'Error':>10}")
     
     try:
         errs = supabase.table('system_logs').select('id', count='exact').gte('timestamp', cutoff).eq('level', 'ERROR').execute()
         print(f"  Errors logged:       {errs.count:>10,}")
-    except:
+    except Exception:
         print(f"  Errors logged:       {'Error':>10}")
     
     print("=" * 60)
@@ -574,43 +573,34 @@ def cmd_bot_status(args):
         print("❌ Command timed out")
     except FileNotFoundError:
         print("❌ Railway CLI not found. Install with: npm i -g @railway/cli")
-    except Exception as e:
+    except (subprocess.SubprocessError, ConnectionError, OSError) as e:  # Subprocess/network errors
+        print(f"❌ Error: {e}")
+
+
+def _run_railway_cmd(title: str, cmd: list, timeout: int = 10):
+    """Run a Railway CLI command with standard error handling."""
+    print(f"\n{BOLD}🚂 {title}{RESET}")
+    print("=" * 60)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if result.returncode == 0:
+            print(result.stdout)
+        else:
+            print(f"❌ Error: {result.stderr}")
+    except FileNotFoundError:
+        print("❌ Railway CLI not found. Install with: npm i -g @railway/cli")
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError) as e:  # Subprocess errors
         print(f"❌ Error: {e}")
 
 
 def cmd_railway_status(args):
     """Check Railway service status."""
-    print(f"\n{BOLD}🚂 Railway Service Status{RESET}")
-    print("=" * 60)
-    
-    try:
-        result = subprocess.run(['railway', 'status'], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            print(result.stdout)
-        else:
-            print(f"❌ Error: {result.stderr}")
-    except FileNotFoundError:
-        print("❌ Railway CLI not found. Install with: npm i -g @railway/cli")
-    except Exception as e:
-        print(f"❌ Error: {e}")
+    _run_railway_cmd("Railway Service Status", ['railway', 'status'])
 
 
 def cmd_railway_logs(args):
     """Fetch Railway platform logs."""
-    print(f"\n{BOLD}🚂 Railway Logs{RESET}")
-    print("=" * 60)
-    
-    try:
-        lines = args.limit
-        result = subprocess.run(['railway', 'logs', '--lines', str(lines)], capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            print(result.stdout)
-        else:
-            print(f"❌ Error: {result.stderr}")
-    except FileNotFoundError:
-        print("❌ Railway CLI not found. Install with: npm i -g @railway/cli")
-    except Exception as e:
-        print(f"❌ Error: {e}")
+    _run_railway_cmd("Railway Logs", ['railway', 'logs', '--lines', str(args.limit)], timeout=30)
 
 
 def cmd_deployments(args):
@@ -647,7 +637,7 @@ def cmd_deployments(args):
             
     except FileNotFoundError:
         print("❌ Railway CLI not found. Install with: npm i -g @railway/cli")
-    except Exception as e:
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, json.JSONDecodeError) as e:  # Subprocess/parse errors
         print(f"❌ Error: {e}")
 
 

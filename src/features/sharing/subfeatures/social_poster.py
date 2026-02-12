@@ -4,7 +4,6 @@ import tweepy
 import os
 import asyncio
 import logging
-import json
 import requests
 import cv2
 import shutil

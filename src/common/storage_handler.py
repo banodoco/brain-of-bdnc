@@ -7,7 +7,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import mimetypes
 from datetime import datetime
 from typing import List, Dict, Optional

@@ -5,8 +5,7 @@ This module provides a background task that periodically syncs data to Supabase.
 
 import asyncio
 import logging
-import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional, Dict, Any
 from pathlib import Path
 import sys

@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 from typing import List, Tuple, Set, Dict, Optional, Any, Union
 import sqlite3
 
-import time
 
 # Third-party imports
 import aiohttp
@@ -22,8 +21,7 @@ from dotenv import load_dotenv
 
 # Local imports
 from src.common.db_handler import DatabaseHandler
-from src.common.errors import *
-from src.common.error_handler import ErrorHandler, handle_errors
+from src.common.error_handler import handle_errors
 from src.common.rate_limiter import RateLimiter
 from src.common.log_handler import LogHandler
 from src.common import discord_utils
@@ -38,7 +36,6 @@ from src.features.summarising.subfeatures.top_art_sharing import TopArtSharing
 from src.common.content_moderator import filter_summary_media
 
 # --- Import Sharer ---
-from src.features.sharing.sharer import Sharer
 
 # Optional imports for media processing
 MEDIA_PROCESSING_AVAILABLE = False
@@ -1043,7 +1040,7 @@ class ChannelSummarizer:
             if temp_video:
                 try:
                     os.unlink(temp_video)
-                except:
+                except OSError:
                     pass
 
     def _is_video_content_type(self, content_type: str) -> bool:
@@ -1184,7 +1181,7 @@ class ChannelSummarizer:
                 if path:
                     try:
                         os.unlink(path)
-                    except:
+                    except OSError:
                         pass
 
     def _enrich_summary_with_media_urls(
@@ -1592,10 +1589,6 @@ class ChannelSummarizer:
             self.logger.error(f"Error checking if channel {channel_id} is forum channel: {e}")
             return False
 
-    async def _wait_for_connection(self, timeout=30):
-        # ... (_wait_for_connection as before) ...
-        pass
-
     async def _get_dev_mode_channels(self, db_handler):
         """Get active channels for dev mode"""
         try:
@@ -1879,7 +1872,6 @@ class ChannelSummarizer:
                                 # Filter out blocked content before formatting
                                 channel_summary = await filter_summary_media(channel_summary, self._fetch_message_for_moderation)
                                 formatted_summary = self.news_summarizer.format_news_for_discord(channel_summary)
-                                existing_thread_id = None 
                                 thread = None
                                 if not thread:
                                     self.logger.info(f"Creating new summary thread for channel {channel_id}...")
@@ -2150,23 +2142,11 @@ class ChannelSummarizer:
         finally:
             if self.summary_lock.locked(): self.summary_lock.release()
 
-    # --- Utility and Helper Methods --- 
-    def register_events(self):
-        # ... (register_events as before) ...
-        pass
-
+    # --- Utility and Helper Methods ---
     def _get_today_str(self):
         """Return today's date as a formatted string"""
         from datetime import datetime
         return datetime.utcnow().strftime("%B %d, %Y")
-
-    async def cleanup(self):
-        # ... (cleanup as before) ...
-        pass
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # ... (__aexit__ as before) ...
-        pass
 
 # --- Main Execution / Test Block --- 
 if __name__ == "__main__":

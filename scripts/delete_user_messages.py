@@ -1,5 +1,4 @@
 import discord
-from discord.ext import commands
 import asyncio
 import logging
 from dotenv import load_dotenv
@@ -84,7 +83,7 @@ class MessageDeleter(BaseDiscordBot):
                             
                 except discord.Forbidden:
                     logger.warning(f"  No permission to access #{channel.name}")
-                except Exception as e:
+                except (discord.NotFound, discord.HTTPException) as e:  # Discord API errors
                     logger.error(f"  Error checking #{channel.name}: {e}")
             
             # Check all threads
@@ -113,9 +112,9 @@ class MessageDeleter(BaseDiscordBot):
                                 deleted = await self.delete_messages_from_channel(thread, messages)
                                 total_deleted += deleted
                                 
-                    except Exception as e:
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:  # Discord API errors
                         logger.error(f"  Error checking thread {thread.name}: {e}")
-            except Exception as e:
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:  # Discord API errors
                 logger.error(f"Error fetching threads: {e}")
         
         # Print summary
@@ -157,7 +156,7 @@ class MessageDeleter(BaseDiscordBot):
                             try:
                                 await message.delete()
                                 deleted_count += 1
-                            except Exception as e:
+                            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:  # Discord API errors
                                 logger.error(f"    Failed to delete old message {message.id}: {e}")
                         
                         await asyncio.sleep(1)  # Rate limit protection
@@ -171,7 +170,7 @@ class MessageDeleter(BaseDiscordBot):
                             await message.delete()
                             deleted_count += 1
                             await asyncio.sleep(1)  # Rate limit protection
-                        except Exception as e:
+                        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:  # Discord API errors
                             logger.error(f"    Failed to delete message {message.id}: {e}")
             else:
                 # Single message case
@@ -181,7 +180,7 @@ class MessageDeleter(BaseDiscordBot):
             
             return deleted_count
             
-        except Exception as e:
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:  # Discord API errors
             logger.error(f"    Error deleting messages: {e}")
             return deleted_count
 

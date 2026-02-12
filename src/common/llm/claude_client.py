@@ -2,8 +2,7 @@
 import os
 import logging
 import asyncio
-import traceback
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Union
 
 import anthropic
 from dotenv import load_dotenv

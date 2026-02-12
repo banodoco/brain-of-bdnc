@@ -133,63 +133,63 @@ def get_top_messages_server_wide(days: int = 7, min_reactions: int = 3, limit: i
             if isinstance(reactors, str):
                 try:
                     reactors = json.loads(reactors)
-                except:
+                except Exception:
                     reactors = []
             msg['unique_reactor_count'] = len(reactors) if isinstance(reactors, list) else 0
 
     return messages
+
+
+def _enrich_messages(messages: List[Dict], channel_names: Dict = None, parse_reactors: bool = False) -> List[Dict]:
+    """Enrich messages with author names, optional channel names, and reactor counts."""
+    if not messages:
+        return messages
+    client = get_client()
+    author_ids = list(set(m['author_id'] for m in messages))
+    members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
+    member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
+
+    for msg in messages:
+        msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
+        if channel_names:
+            msg['channel_name'] = channel_names.get(msg['channel_id'], 'Unknown')
+        if parse_reactors:
+            reactors = msg.get('reactors', [])
+            if isinstance(reactors, str):
+                try:
+                    reactors = json.loads(reactors)
+                except Exception:
+                    reactors = []
+            msg['unique_reactor_count'] = len(reactors) if isinstance(reactors, list) else 0
+    return messages
+
+
+MSG_SELECT = 'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
 
 
 def get_messages_in_range(channel_id: int, days: int = 7) -> List[Dict]:
     """Get messages from a channel within the last N days."""
     client = get_client()
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    
-    result = client.table('discord_messages').select(
-        'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
-    ).eq('channel_id', channel_id).gte('created_at', cutoff).order('created_at', desc=True).execute()
-    
-    # Enrich with author names
-    messages = result.data
-    if messages:
-        author_ids = list(set(m['author_id'] for m in messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
-        
-        for msg in messages:
-            msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
-    
-    return messages
+
+    result = client.table('discord_messages').select(MSG_SELECT) \
+        .eq('channel_id', channel_id).gte('created_at', cutoff) \
+        .order('created_at', desc=True).execute()
+
+    return _enrich_messages(result.data)
 
 
 def get_top_messages(channel_id: int, days: int = 7, min_reactions: int = 3, limit: int = 20) -> List[Dict]:
     """Get top messages by reaction count from a channel."""
     client = get_client()
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    
-    result = client.table('discord_messages').select(
-        'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
-    ).eq('channel_id', channel_id).gte('created_at', cutoff).gte('reaction_count', min_reactions).order('reaction_count', desc=True).limit(limit).execute()
-    
-    # Enrich with author names
-    messages = result.data
-    if messages:
-        author_ids = list(set(m['author_id'] for m in messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
-        
-        for msg in messages:
-            msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
-            # Parse reactors count
-            reactors = msg.get('reactors', [])
-            if isinstance(reactors, str):
-                try:
-                    reactors = json.loads(reactors)
-                except:
-                    reactors = []
-            msg['unique_reactor_count'] = len(reactors) if isinstance(reactors, list) else 0
-    
-    return messages
+
+    result = client.table('discord_messages').select(MSG_SELECT) \
+        .eq('channel_id', channel_id).gte('created_at', cutoff) \
+        .gte('reaction_count', min_reactions) \
+        .order('reaction_count', desc=True).limit(limit).execute()
+
+    return _enrich_messages(result.data, parse_reactors=True)
 
 
 def get_top_messages_in_category(category_id: int, days: int = 7, min_reactions: int = 3, limit: int = 30) -> List[Dict]:
@@ -197,34 +197,16 @@ def get_top_messages_in_category(category_id: int, days: int = 7, min_reactions:
     channels = get_channels_in_category(category_id)
     channel_ids = [ch['channel_id'] for ch in channels]
     channel_names = {ch['channel_id']: ch['channel_name'] for ch in channels}
-    
+
     client = get_client()
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    
-    result = client.table('discord_messages').select(
-        'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
-    ).in_('channel_id', channel_ids).gte('created_at', cutoff).gte('reaction_count', min_reactions).order('reaction_count', desc=True).limit(limit).execute()
-    
-    # Enrich with author names and channel names
-    messages = result.data
-    if messages:
-        author_ids = list(set(m['author_id'] for m in messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
-        
-        for msg in messages:
-            msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
-            msg['channel_name'] = channel_names.get(msg['channel_id'], 'Unknown')
-            # Parse reactors count
-            reactors = msg.get('reactors', [])
-            if isinstance(reactors, str):
-                try:
-                    reactors = json.loads(reactors)
-                except:
-                    reactors = []
-            msg['unique_reactor_count'] = len(reactors) if isinstance(reactors, list) else 0
-    
-    return messages
+
+    result = client.table('discord_messages').select(MSG_SELECT) \
+        .in_('channel_id', channel_ids).gte('created_at', cutoff) \
+        .gte('reaction_count', min_reactions) \
+        .order('reaction_count', desc=True).limit(limit).execute()
+
+    return _enrich_messages(result.data, channel_names=channel_names, parse_reactors=True)
 
 
 def get_message_context(message_id: int, surrounding: int = 5) -> Dict[str, Any]:
@@ -611,7 +593,7 @@ def format_message_for_display(msg: Dict, include_attachments: bool = True) -> s
         if isinstance(attachments, str):
             try:
                 attachments = json.loads(attachments)
-            except:
+            except Exception:
                 attachments = []
         if attachments:
             lines.append(f"   📎 Attachments: {len(attachments)}")
@@ -681,28 +663,27 @@ def cmd_messages(args):
         print()
 
 
-def cmd_top(args):
-    """Get top messages by reactions."""
-    messages = get_top_messages(args.id, days=args.days, min_reactions=args.min_reactions, limit=args.limit)
-    print(f"\n🔥 Top messages from channel {args.id} (last {args.days} days, min {args.min_reactions} reactions):\n")
-    
+def _print_top_messages(messages: List[Dict], header: str):
+    """Print ranked messages with jump URLs."""
+    print(f"\n🔥 {header}:\n")
     for i, msg in enumerate(messages, 1):
-        print(f"--- #{i} ---")
+        ch_label = f" ({msg.get('channel_name', 'Unknown')})" if 'channel_name' in msg else ""
+        print(f"--- #{i}{ch_label} ---")
         print(format_message_for_display(msg))
         print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'])}")
         print()
+
+
+def cmd_top(args):
+    """Get top messages by reactions."""
+    messages = get_top_messages(args.id, days=args.days, min_reactions=args.min_reactions, limit=args.limit)
+    _print_top_messages(messages, f"Top messages from channel {args.id} (last {args.days} days, min {args.min_reactions} reactions)")
 
 
 def cmd_category_top(args):
     """Get top messages across all channels in a category."""
     messages = get_top_messages_in_category(args.id, days=args.days, min_reactions=args.min_reactions, limit=args.limit)
-    print(f"\n🔥 Top messages across category {args.id} (last {args.days} days, min {args.min_reactions} reactions):\n")
-    
-    for i, msg in enumerate(messages, 1):
-        print(f"--- #{i} ({msg.get('channel_name', 'Unknown')}) ---")
-        print(format_message_for_display(msg))
-        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'])}")
-        print()
+    _print_top_messages(messages, f"Top messages across category {args.id} (last {args.days} days, min {args.min_reactions} reactions)")
 
 
 def cmd_context(args):

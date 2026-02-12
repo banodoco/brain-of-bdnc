@@ -1,6 +1,5 @@
 import discord
 import asyncio
-import json
 import logging
 import os
 from typing import Union, Optional, List, Dict, Any

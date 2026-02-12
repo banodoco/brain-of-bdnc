@@ -282,7 +282,7 @@ def main():
             for month in sorted_months[1:]:
                 # Check if consecutive
                 prev_year, prev_month = int(range_end[:4]), int(range_end[5:7])
-                curr_year, curr_month = int(month[:4]), int(month[5:7])
+                _curr_year, _curr_month = int(month[:4]), int(month[5:7])
                 
                 expected_next = f"{prev_year}-{prev_month+1:02d}" if prev_month < 12 else f"{prev_year+1}-01"
                 

@@ -3,7 +3,6 @@ import os
 import sys
 import asyncio
 import discord
-from discord.ext import commands
 from dotenv import load_dotenv
 import aiohttp
 import logging
@@ -123,7 +122,7 @@ class FileDownloader(BaseDiscordBot):
                             return False
                             
             return await self.rate_limiter.execute(download_path, download())
-        except Exception as e:
+        except (aiohttp.ClientError, OSError) as e:  # Network/filesystem errors
             logger.error(f"Error downloading {filename}: {e}")
             return False
 

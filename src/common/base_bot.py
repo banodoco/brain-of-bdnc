@@ -1,15 +1,12 @@
 # src/common/base_bot.py
 
 import asyncio
-import logging
 from datetime import datetime
 from typing import Optional, Any, Dict
-import random
 import traceback
 import os
 import aiohttp
 
-import discord
 from discord.ext import commands
 
 from src.common.rate_limiter import RateLimiter

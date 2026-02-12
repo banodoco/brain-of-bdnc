@@ -1,7 +1,5 @@
 # src/features/logging/logger_cog.py
 
-import asyncio
-import traceback
 import json
 from discord.ext import commands
 from src.common.db_handler import DatabaseHandler
@@ -162,7 +160,7 @@ class LoggerCog(commands.Cog):
                 return
 
             message_data = results[0]
-            current_count = message_data.get('reaction_count', 0) or 0
+            _current_count = message_data.get('reaction_count', 0) or 0
             
             # Robustly load reactors, handling double-encoded JSON for old data
             reactors_raw = message_data.get('reactors')
@@ -201,10 +199,7 @@ class LoggerCog(commands.Cog):
             # Only update database if there was an actual change
             if changed:
                 new_count = len(current_reactors)
-                self.db.execute_query(
-                    "UPDATE messages SET reaction_count = ?, reactors = ? WHERE message_id = ?",
-                    (new_count, json.dumps(current_reactors), reaction.message.id)
-                )
+                self.db.update_reactions(reaction.message.id, new_count, current_reactors)
                 
                 # Only log in dev mode
                 if self.dev_mode:

@@ -7,7 +7,7 @@ import json
 import os
 import logging
 import asyncio
-from typing import Optional, Dict, Any, List, Callable, Awaitable
+from typing import Optional, Dict, Any, Callable, Awaitable
 
 import aiohttp
 

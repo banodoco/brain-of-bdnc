@@ -4,7 +4,6 @@ import asyncio
 import discord
 from dotenv import load_dotenv
 import logging
-from pathlib import Path
 import aioconsole
 
 # Add the parent directory to the Python path
@@ -53,10 +52,10 @@ async def process_thread(channel, thread):
                 
             except discord.NotFound:
                 logger.warning(f"Could not find parent message for thread {thread.id}")
-            except Exception as e:
+            except (discord.Forbidden, discord.HTTPException) as e:  # Discord API errors
                 logger.error(f"Error processing thread {thread.id}: {e}")
-    
-    except Exception as e:
+
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:  # Discord API errors
         logger.error(f"Error checking thread {thread.id}: {e}")
     
     return False

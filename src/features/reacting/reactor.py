@@ -4,19 +4,13 @@ import discord
 import os
 import traceback
 import json
-import asyncio
 import re # Added for text matching
-from typing import Optional # Added for Optional type hint
-from urllib.parse import quote # <<<--- Added Import
-from discord.ui import View, Button, button # <<< Added for Views
 from discord.ext import commands # <<< ADDED for bot_instance type hint and usage
 from src.features.sharing.sharer import Sharer # Import the Sharer class
 from src.common.db_handler import DatabaseHandler # <<< Added DB Handler import
 from src.common.openmuse_interactor import OpenMuseInteractor # <<< Added OpenMuse Interactor import
 from src.common.llm.claude_client import ClaudeClient # Added LLM Client import
-from .subfeatures.permission_handler import handle_request_curation_permission, PermissionRequestView
-import logging # Added to define logger for constants section if needed
-from datetime import datetime, timedelta, timezone # For dispute resolution timing & timezone.utc
+from .subfeatures.permission_handler import handle_request_curation_permission
 
 # Assuming get_llm_response is structured to be importable like this:
 # This might need adjustment based on your project structure for src.common.llm

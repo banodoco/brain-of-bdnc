@@ -477,7 +477,7 @@ CRITICAL: verified_summary must preserve the EXACT structure and ALL message_id/
 
 Check each claim in the summary against the source messages. Identify any attribution errors, unsupported claims, logical leaps, or invented details. Return the verified/corrected summary as specified."""
 
-        last_error = None
+        _last_error = None
         for attempt in range(max_retries):
             try:
                 # Use the OpenAI Responses API with GPT-5 and high reasoning effort
@@ -549,7 +549,7 @@ Check each claim in the summary against the source messages. Identify any attrib
                     return summary_json
                     
             except Exception as e:
-                last_error = e
+                _last_error = e
                 self.logger.error(f"Error during GPT-5 verification (attempt {attempt + 1}): {e}", exc_info=True)
                 if attempt < max_retries - 1:
                     wait_time = 30 * (attempt + 1)
@@ -658,7 +658,6 @@ Check each claim in the summary against the source messages. Identify any attrib
         Try to extract a JSON array from text that may contain prose before/after it.
         Returns the extracted JSON string or None if not found.
         """
-        import re
         
         # First, strip markdown code blocks if present
         clean_text = text.strip()
@@ -910,7 +909,7 @@ CRITICAL: verified_summary must include the EXACT same message count line from t
 
 Check each bullet point against the full summary. Identify any inaccuracies, invented details, or misrepresentations. Return the verified/corrected short summary as specified."""
 
-        last_error = None
+        _last_error = None
         for attempt in range(max_retries):
             try:
                 self.logger.info(f"Calling GPT-5.2 for short summary verification (attempt {attempt + 1}/{max_retries})...")
@@ -970,7 +969,7 @@ Check each bullet point against the full summary. Identify any inaccuracies, inv
                     continue
                     
             except Exception as e:
-                last_error = e
+                _last_error = e
                 self.logger.error(f"Error during GPT-5.2 short summary verification (attempt {attempt + 1}): {e}", exc_info=True)
                 if attempt < max_retries - 1:
                     wait_time = 30 * (attempt + 1)
@@ -1025,7 +1024,3 @@ Check each bullet point against the full summary. Identify any inaccuracies, inv
             return f"📨 __{message_count} messages sent__\n• Error generating summary due to API issue."
 
 
-if __name__ == "__main__":
-    def main():
-        pass
-    main()

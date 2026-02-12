@@ -1,7 +1,5 @@
 # src/features/curating/curator_cog.py
 
-import asyncio
-import traceback
 import os
 from discord.ext import commands
 from src.features.curating.curator import ArtCurator
@@ -25,10 +23,6 @@ class CuratorCog(commands.Cog):
             self.logger.info(f"Using production art channel: {self.art_channel_id}")
             # etc.
         self.art_curator = ArtCurator(logger=logger, dev_mode=dev_mode)
-
-    async def cog_load(self):
-        """Called once the cog is loaded."""
-        pass
 
     @commands.Cog.listener()
     async def on_ready(self):

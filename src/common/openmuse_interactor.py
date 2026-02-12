@@ -2,7 +2,6 @@
 
 import logging
 import asyncio
-import traceback
 from typing import Optional, Dict, Any
 import discord
 from supabase import create_client, Client
@@ -12,11 +11,9 @@ import re  # For URL validation
 
 # --- Added imports needed for upload logic ---
 import cv2
-import numpy as np
 import tempfile
 import os
 import httpx
-from io import BytesIO # Keep for potential use, though temp file might be sufficient
 from urllib.parse import quote # For profile URL generation
 # --- End Added imports ---
 
@@ -506,7 +503,7 @@ class OpenMuseInteractor:
         content_type = attachment.content_type or 'application/octet-stream'
         placeholder_image_url = None
         calculated_aspect_ratio = None
-        thumbnail_upload_success = False # Required only if it's a video
+        _thumbnail_upload_success = False # Required only if it's a video
 
         if content_type.startswith('video/'):
             self.logger.info(f"[OpenMuseInteractor] Attachment '{attachment.filename}' is video ({content_type}). Processing thumbnail/ratio.")
@@ -557,7 +554,7 @@ class OpenMuseInteractor:
 
                             if placeholder_image_url:
                                 self.logger.info(f"[OpenMuseInteractor] Thumbnail uploaded successfully. URL: {placeholder_image_url}")
-                                thumbnail_upload_success = True # Mark as success if URL is obtained
+                                _thumbnail_upload_success = True # Mark as success if URL is obtained
                             else:
                                 self.logger.error(f"[OpenMuseInteractor] Thumbnail upload failed for '{thumbnail_storage_path}' (no URL returned or error in _upload_bytes_to_storage).")
                                 # thumbnail_upload_success remains False
@@ -674,7 +671,7 @@ class OpenMuseInteractor:
 
                         # Update discord_connected to True
                         self.logger.info(f"[OpenMuseInteractor] --> Attempting to update discord_connected to True for profile {profile_id_uuid}.")
-                        update_response = await asyncio.to_thread(
+                        _update_response = await asyncio.to_thread(
                             self.supabase.table(PROFILES_TABLE)
                             .update({'discord_connected': True})
                             .eq('id', profile_id_uuid)

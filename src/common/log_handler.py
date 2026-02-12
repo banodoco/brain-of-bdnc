@@ -53,7 +53,7 @@ class LineCountRotatingFileHandler(RotatingFileHandler):
                     f.writelines(lines)
                 
                 self.line_count = len(lines)
-            except Exception as e:
+            except Exception:
                 # If we can't rotate properly, just truncate the file
                 with open(self.baseFilename, 'w', encoding=self.encoding) as f:
                     f.write('')

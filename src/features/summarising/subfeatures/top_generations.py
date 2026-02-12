@@ -4,7 +4,7 @@ import json
 import asyncio
 import traceback
 import discord
-from typing import Optional, List, Dict
+from typing import Optional, List
 from datetime import datetime, timedelta
 
 from src.common import discord_utils

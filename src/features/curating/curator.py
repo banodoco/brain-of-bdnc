@@ -1,13 +1,10 @@
 import discord
-from discord.ext import commands
 import asyncio
 import os
 import logging
 import traceback
-from src.common.log_handler import LogHandler
 import json
 from src.common.db_handler import DatabaseHandler
-import datetime
 from src.common.base_bot import BaseDiscordBot
 from src.common.error_handler import handle_errors
 from src.common import discord_utils

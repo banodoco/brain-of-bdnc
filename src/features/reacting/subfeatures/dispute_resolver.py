@@ -1,6 +1,5 @@
 import discord
 import asyncio
-import re
 import logging
 from datetime import datetime, timedelta, timezone
 

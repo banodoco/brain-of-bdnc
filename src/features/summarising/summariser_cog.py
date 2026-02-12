@@ -1,18 +1,12 @@
 # src/features/summarising/summariser_cog.py
 
-import asyncio
-import os
-import traceback
-from datetime import datetime, timedelta, time, timezone
-import time as standard_time # Rename standard time library if needed to avoid conflict
+from datetime import time, timezone
 from discord.ext import commands
 import logging
-import discord
 from discord.ext import tasks
 
 from .summariser import ChannelSummarizer
 # Import SharerCog to check for its instance
-from src.features.sharing.sharing_cog import SharingCog 
 
 MAX_RETRIES = 3
 READY_TIMEOUT = 30

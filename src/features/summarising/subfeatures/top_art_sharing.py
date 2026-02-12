@@ -1,13 +1,9 @@
 import os
-import re
-import json
 import asyncio
-import traceback
 import discord
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 from datetime import datetime, timedelta
 
-from src.common import discord_utils # Added import
 
 # Import Sharer for type hinting
 if TYPE_CHECKING:
@@ -111,37 +107,7 @@ class TopArtSharing:
                 self.summarizer.logger.error(f"Error fetching top art message object {message_id}: {e_fetch}", exc_info=True)
                 return
                 
-            # Post the top art directly to the summary channel
-            author_display_name = message_object.author.display_name # Get display name
-            reaction_count = top_art_data.get('unique_reactor_count', 0) # Get reaction count from DB data
-            attachment_url = message_object.attachments[0].url if message_object.attachments else "No attachment found"
-            jump_url = message_object.jump_url
-            
-            # Construct message in the desired format
-            # content_parts = [
-            #     f"## Top Art Post By **{author_display_name}**\n" # Combined header and author
-            # ]
-            # 
-            # if message_object.content:
-            #      # Format original content as a quote block
-            #      quoted_content = '\n'.join([f'> {line}' for line in message_object.content.split('\n')])
-            #      content_parts.append(quoted_content)
-            #      
-            # content_parts.append(attachment_url)
-            # content_parts.append(f"🔗 Original post: {jump_url}")
-            # 
-            # content_to_post = "\n".join(content_parts)
-            #      
-            # await discord_utils.safe_send_message(
-            #     self.summarizer.bot, # The actual bot instance
-            #     summary_channel,
-            #     self.summarizer.rate_limiter,
-            #     self.summarizer.logger,
-            #     content=content_to_post
-            # )
-            # self.summarizer.logger.info(f"Posted top art post {message_id} directly to summary channel.")
-            
-            # Now, initiate the DM process with the author, passing the summary_channel
+            # Initiate the DM process with the author, passing the summary_channel
             self.summarizer.logger.info(f"Initiating sharing DM process for top art post {message_id} by author {author_id}")
             # Pass summary_channel to the sharer process
             await self.sharer.initiate_sharing_process_from_summary(message_object, summary_channel)

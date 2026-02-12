@@ -7,9 +7,8 @@ import os
 import re
 import sys
 import logging
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 import discord
 from dotenv import load_dotenv
 

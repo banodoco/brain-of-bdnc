@@ -1,5 +1,4 @@
 import discord
-import logging
 
 # Assuming OpenMuseInteractor will be passed or imported appropriately
 # from src.common.openmuse_interactor import OpenMuseInteractor

@@ -1,6 +1,5 @@
 import discord
 import asyncio
-import logging # Added to define logger for constants section if needed
 from urllib.parse import quote
 from discord.ext import commands # Added for commands.Bot type hint
 
