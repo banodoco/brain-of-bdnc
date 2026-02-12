@@ -4,11 +4,10 @@ Executes queries via Supabase client.
 """
 
 import asyncio
-import json
 import logging
 import os
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 import sys
 
@@ -459,7 +458,6 @@ class SupabaseQueryHandler:
         try:
             # Use RPC for date aggregation (more efficient)
             # For now, fetch all and aggregate in Python
-            all_messages = []
             offset = 0
             batch_size = 1000
             dates_set = set()
@@ -751,9 +749,9 @@ class SupabaseQueryHandler:
                                 # Add to the list immediately so it gets used in the query
                                 channel_ids_from_params = [channel_id_from_params]
                                 logger.debug(f"🔍 Extracted channel_id from params: {channel_id_from_params}")
-                        except:
+                        except (ValueError, TypeError, IndexError):
                             pass
-            
+
             # Also try to extract channel_id(s) from SQL WHERE clause (only if not already found in params)
             if not channel_ids_from_params and not message_id_from_params:
                 # First try to match IN clause with multiple IDs: channel_id IN (123, 456, 789)
@@ -775,16 +773,16 @@ class SupabaseQueryHandler:
                             channel_id_from_params = int(eq_match.group(1))
                             channel_ids_from_params = [channel_id_from_params]
                             logger.info(f"🔍 Extracted single channel_id from SQL: {channel_id_from_params}")
-                        except:
+                        except (ValueError, TypeError):
                             pass
-                
+
                 # Match patterns like: WHERE message_id = 123
                 message_match = re.search(r'message_id\s*=\s*(\d+)', sql_lower)
                 if message_match:
                     try:
                         message_id_from_params = int(message_match.group(1))
                         logger.info(f"🔍 Extracted message_id from SQL: {message_id_from_params}")
-                    except:
+                    except (ValueError, TypeError):
                         pass
                 
                 if not channel_ids_from_params and not message_id_from_params:
@@ -989,7 +987,7 @@ class SupabaseQueryHandler:
                     reactors_list = []
                 
                 unique_reactor_count = len(reactors_list)
-            except:
+            except (json.JSONDecodeError, TypeError, KeyError):
                 unique_reactor_count = 0
             
             # Add this to the message dict for sorting/filtering
@@ -1015,9 +1013,9 @@ class SupabaseQueryHandler:
                         attachments_list = attachments
                     else:
                         continue
-                except:
+                except (json.JSONDecodeError, TypeError):
                     continue
-                
+
                 if not attachments_list:
                     continue
                 
