@@ -11,10 +11,9 @@ from discord.ext import commands
 from dotenv import load_dotenv
 import streamlit as st
 import json
-from typing import Dict, List, Optional
+from typing import Dict
 import logging
 from src.common.db_handler import DatabaseHandler
-import traceback
 from src.common.llm import get_llm_response
 
 # Configure logging
@@ -212,23 +211,136 @@ async def main():
         logger.error(f"Main function error: {e}")
         loading_placeholder.error(f"Error: {str(e)}")
 
+async def enrich_single_channel(channel_data, db_handler):
+    """Connect to Discord, analyze a channel with Claude, and update the DB.
+
+    Args:
+        channel_data: Dict with at least 'id' and 'name' keys.
+        db_handler: A DatabaseHandler instance used for the DB update.
+
+    Returns:
+        True on success, False on failure.
+    """
+    try:
+        logger.info("Initializing ChannelAnalyzer for single channel processing.")
+        bot = ChannelAnalyzer()
+        logger.info("Logging in to Discord with the provided token.")
+        await bot.login(os.getenv('DISCORD_BOT_TOKEN'))
+
+        # Create an event for bot ready
+        ready_event = asyncio.Event()
+
+        @bot.event
+        async def on_ready():
+            logger.info("on_ready event triggered.")
+            ready_event.set()
+
+        # Start a background task for the connection
+        connect_task = asyncio.create_task(bot.connect())
+
+        # Wait for ready with timeout
+        try:
+            logger.info("Waiting for bot to be ready...")
+            await asyncio.wait_for(ready_event.wait(), timeout=30.0)
+            logger.info("Bot is ready, proceeding to get channel description.")
+
+            analysis = await bot.get_channel_description(channel_data)
+            logger.info("Received analysis from Claude.")
+
+            # Update the database with the analysis
+            db_handler.execute_query("""
+                UPDATE channels
+                SET description = ?,
+                    suitable_posts = ?,
+                    unsuitable_posts = ?,
+                    rules = ?,
+                    enriched = TRUE
+                WHERE channel_id = ?
+            """, (
+                str(analysis.get('description', '')),
+                str(analysis.get('suitable_posts', '')),
+                str(analysis.get('unsuitable_posts', '')),
+                str(analysis.get('rules', '')),
+                channel_data['id']
+            ))
+            logger.info("Database updated with channel analysis.")
+            return True
+
+        except asyncio.TimeoutError:
+            logger.error("Timeout waiting for bot to become ready")
+            raise
+        finally:
+            # Ensure proper cleanup
+            logger.info("Cleaning up Discord connection...")
+            await bot.close()
+            if not connect_task.done():
+                connect_task.cancel()
+                try:
+                    await connect_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Close any remaining connections
+            if not bot.http._HTTPClient__session.closed:
+                await bot.http._HTTPClient__session.close()
+
+    except Exception as e:
+        logger.error(f"Error processing channel: {e}")
+        return False
+
+
+def filter_channels(channels_data, view_mode, db_handler):
+    """Filter channels based on the selected view mode.
+
+    Args:
+        channels_data: List of channel dicts from session state.
+        view_mode: One of "All Channels", "Enriched Channels",
+                   "Unenriched Channels", "Setup Complete Channels".
+        db_handler: A DatabaseHandler instance for querying channel status.
+
+    Returns:
+        List of channel dicts matching the filter.
+    """
+    if view_mode == "All Channels":
+        return channels_data
+
+    filter_conditions = {
+        "Enriched Channels": "enriched = TRUE",
+        "Unenriched Channels": "enriched = FALSE",
+        "Setup Complete Channels": "setup_complete = TRUE",
+    }
+    condition = filter_conditions.get(view_mode)
+    if condition is None:
+        return channels_data
+
+    filtered = []
+    for channel in channels_data:
+        result = db_handler.execute_query(
+            f"SELECT channel_id FROM channels WHERE channel_id = ? AND {condition}",
+            (channel['id'],)
+        )
+        if result:
+            filtered.append(channel)
+    return filtered
+
+
 def create_streamlit_app():
     """Create Streamlit interface for reviewing channel descriptions."""
     # Create single database connection
     if 'db' not in st.session_state:
         st.session_state.db = DatabaseHandler()
-    
+
     st.title("Discord Channel Analysis")
-    
+
     if 'channels_loaded' not in st.session_state:
         st.session_state.channels_loaded = False
-        
+
     if 'channels_data' not in st.session_state:
         st.session_state.channels_data = []
-        
+
     if 'current_channel_index' not in st.session_state:
         st.session_state.current_channel_index = 0
-        
+
     if 'view_mode' not in st.session_state:
         st.session_state.view_mode = "All Channels"
 
@@ -239,7 +351,7 @@ def create_streamlit_app():
             asyncio.set_event_loop(loop)
             try:
                 # Pass the database handler to ChannelAnalyzer
-                bot = ChannelAnalyzer()
+                _bot = ChannelAnalyzer()
                 loop.run_until_complete(main())
                 st.session_state.channels_loaded = True
                 st.rerun()
@@ -250,7 +362,7 @@ def create_streamlit_app():
 
     # Use session state database connection throughout
     db = st.session_state.db
-    
+
     # Channel view selector and bulk process button
     col1, col2 = st.columns([2, 3])
     with col1:
@@ -259,12 +371,12 @@ def create_streamlit_app():
             ["All Channels", "Enriched Channels", "Unenriched Channels", "Setup Complete Channels"],
             key="view_mode"
         )
-    
+
     with col2:
-        if st.button("Enrich All Channels"):  # Renamed from "Process All Channels"
+        if st.button("Enrich All Channels"):
             db = DatabaseHandler()
-            unenriched_channels = []  # Renamed from unprocessed_channels
-            
+            unenriched_channels = []
+
             # Get all unenriched channels
             for channel in st.session_state.channels_data:
                 result = db.execute_query(
@@ -273,133 +385,36 @@ def create_streamlit_app():
                 )
                 if result:
                     unenriched_channels.append(channel)
-            
+
             if unenriched_channels:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
-                
+
                 for i, channel in enumerate(unenriched_channels):
                     progress = (i + 1) / len(unenriched_channels)
                     progress_bar.progress(progress)
                     status_text.info(f"Analyzing channel {i + 1}/{len(unenriched_channels)}: #{channel['name']}")
-                    
+
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                    
-                    async def process_single_channel():
-                        try:
-                            logger.info("Initializing ChannelAnalyzer for single channel processing.")
-                            bot = ChannelAnalyzer()
-                            logger.info("Logging in to Discord with the provided token.")
-                            await bot.login(os.getenv('DISCORD_BOT_TOKEN'))
-                            
-                            # Create an event for bot ready
-                            ready_event = asyncio.Event()
-                            
-                            @bot.event
-                            async def on_ready():
-                                logger.info("on_ready event triggered.")
-                                ready_event.set()
-                                
-                            # Start a background task for the connection
-                            connect_task = asyncio.create_task(bot.connect())
-                            
-                            # Wait for ready with timeout
-                            try:
-                                logger.info("Waiting for bot to be ready...")
-                                await asyncio.wait_for(ready_event.wait(), timeout=30.0)
-                                logger.info("Bot is ready, proceeding to get channel description.")
-                                
-                                analysis = await bot.get_channel_description(channel)
-                                logger.info("Received analysis from Claude.")
-                                
-                                # Update the database with the analysis
-                                db = DatabaseHandler()
-                                db.execute_query("""
-                                    UPDATE channels 
-                                    SET description = ?, 
-                                        suitable_posts = ?, 
-                                        unsuitable_posts = ?, 
-                                        rules = ?,
-                                        enriched = TRUE
-                                    WHERE channel_id = ?
-                                """, (
-                                    str(analysis.get('description', '')),
-                                    str(analysis.get('suitable_posts', '')),
-                                    str(analysis.get('unsuitable_posts', '')),
-                                    str(analysis.get('rules', '')),
-                                    channel['id']
-                                ))
-                                logger.info("Database updated with channel analysis.")
-                                st.success("✅ Channel analysis complete!")
-                                
-                            except asyncio.TimeoutError:
-                                logger.error("Timeout waiting for bot to become ready")
-                                raise
-                            finally:
-                                # Ensure proper cleanup
-                                logger.info("Cleaning up Discord connection...")
-                                await bot.close()
-                                if not connect_task.done():
-                                    connect_task.cancel()
-                                    try:
-                                        await connect_task
-                                    except asyncio.CancelledError:
-                                        pass
-                                
-                                # Close any remaining connections
-                                if not bot.http._HTTPClient__session.closed:
-                                    await bot.http._HTTPClient__session.close()
-                                
-                        except Exception as e:
-                            error_msg = f"Error processing channel: {str(e)}"
-                            logger.error(error_msg)
-                            status_text.error(error_msg)
-                            raise
-                    
+
                     try:
-                        loop.run_until_complete(process_single_channel())
+                        success = loop.run_until_complete(enrich_single_channel(channel, DatabaseHandler()))
+                        if success:
+                            st.success("Channel analysis complete!")
+                        else:
+                            status_text.error(f"Error processing channel: #{channel['name']}")
                         st.rerun()  # Refresh to show new data
                     finally:
                         loop.close()
-                
+
                 progress_bar.empty()
                 status_text.success(f"Finished analyzing {len(unenriched_channels)} channels!")
             else:
                 st.info("No unanalyzed channels found!")
 
     # Filter channels based on view mode
-    filtered_channels = []
-    
-    if view_mode == "All Channels":
-        filtered_channels = st.session_state.channels_data
-    elif view_mode == "Enriched Channels":
-        for channel in st.session_state.channels_data:
-            result = db.execute_query(
-                "SELECT channel_id FROM channels WHERE channel_id = ? AND enriched = TRUE",
-                (channel['id'],)
-            )
-            if result:
-                filtered_channels.append(channel)
-    elif view_mode == "Unenriched Channels":
-        for channel in st.session_state.channels_data:
-            result = db.execute_query(
-                "SELECT channel_id FROM channels WHERE channel_id = ? AND enriched = FALSE",
-                (channel['id'],)
-            )
-            if result:
-                filtered_channels.append(channel)
-    elif view_mode == "Setup Complete Channels":
-        for channel in st.session_state.channels_data:
-            result = db.execute_query(
-                "SELECT channel_id FROM channels WHERE channel_id = ? AND setup_complete = TRUE",
-                (channel['id'],)
-            )
-            if result:
-                filtered_channels.append(channel)
-
-    # Filter toggle
-
+    filtered_channels = filter_channels(st.session_state.channels_data, view_mode, db)
 
     # Reset channel index if needed
     if st.session_state.current_channel_index >= len(filtered_channels):
@@ -412,105 +427,38 @@ def create_streamlit_app():
     if filtered_channels:
         current_channel = filtered_channels[st.session_state.current_channel_index]
         st.header(f"Channel: #{current_channel['name']}")
-        
+
         # Create new DB connection for this query
         db = DatabaseHandler()
         channel_data = db.execute_query("""
             SELECT description, suitable_posts, unsuitable_posts, rules, setup_complete, enriched
             FROM channels WHERE channel_id = ?
         """, (current_channel['id'],))[0]
-        
+
         # Display channel status and process button
         status_col1, status_col2 = st.columns(2)
         with status_col1:
-            st.write("📋 Status:")
-            st.write(f"- Enriched: {'✅' if channel_data[5] else '❌'}")
-            st.write(f"- Setup Complete: {'✅' if channel_data[4] else '❌'}")
-        
+            st.write("Status:")
+            st.write(f"- Enriched: {'Yes' if channel_data[5] else 'No'}")
+            st.write(f"- Setup Complete: {'Yes' if channel_data[4] else 'No'}")
+
         with status_col2:
             if st.button("Enrich This Channel"):
                 status_text = st.empty()
                 status_text.info(f"Analyzing channel #{current_channel['name']}...")
                 logger.info(f"Starting analysis of channel #{current_channel['name']}")
-                
+
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                
-                async def process_single_channel():
-                    try:
-                        logger.info("Initializing ChannelAnalyzer for single channel processing.")
-                        bot = ChannelAnalyzer()
-                        logger.info("Logging in to Discord with the provided token.")
-                        await bot.login(os.getenv('DISCORD_BOT_TOKEN'))
-                        
-                        # Create an event for bot ready
-                        ready_event = asyncio.Event()
-                        
-                        @bot.event
-                        async def on_ready():
-                            logger.info("on_ready event triggered.")
-                            ready_event.set()
-                        
-                        # Start a background task for the connection
-                        connect_task = asyncio.create_task(bot.connect())
-                        
-                        # Wait for ready with timeout
-                        try:
-                            logger.info("Waiting for bot to be ready...")
-                            await asyncio.wait_for(ready_event.wait(), timeout=30.0)
-                            logger.info("Bot is ready, proceeding to get channel description.")
-                            
-                            analysis = await bot.get_channel_description(current_channel)
-                            logger.info("Received analysis from Claude.")
-                            
-                            # Update the database with the analysis
-                            db = DatabaseHandler()
-                            db.execute_query("""
-                                UPDATE channels 
-                                SET description = ?, 
-                                    suitable_posts = ?, 
-                                    unsuitable_posts = ?, 
-                                    rules = ?,
-                                    enriched = TRUE
-                                WHERE channel_id = ?
-                            """, (
-                                str(analysis.get('description', '')),
-                                str(analysis.get('suitable_posts', '')),
-                                str(analysis.get('unsuitable_posts', '')),
-                                str(analysis.get('rules', '')),
-                                current_channel['id']
-                            ))
-                            logger.info("Database updated with channel analysis.")
-                            st.success("✅ Channel analysis complete!")
-                            
-                        except asyncio.TimeoutError:
-                            logger.error("Timeout waiting for bot to become ready")
-                            raise
-                        finally:
-                            # Ensure proper cleanup
-                            logger.info("Cleaning up Discord connection...")
-                            await bot.close()
-                            if not connect_task.done():
-                                connect_task.cancel()
-                                try:
-                                    await connect_task
-                                except asyncio.CancelledError:
-                                    pass
-                            
-                            # Close any remaining connections
-                            if not bot.http._HTTPClient__session.closed:
-                                await bot.http._HTTPClient__session.close()
-                            
-                    except Exception as e:
-                        error_msg = f"Error processing channel: {str(e)}"
-                        logger.error(error_msg)
-                        status_text.error(error_msg)
-                        raise
-                
+
                 try:
-                    loop.run_until_complete(process_single_channel())
-                    logger.info("Process complete, refreshing page...")
-                    st.rerun()  # Refresh to show new data
+                    success = loop.run_until_complete(enrich_single_channel(current_channel, DatabaseHandler()))
+                    if success:
+                        st.success("Channel analysis complete!")
+                        logger.info("Process complete, refreshing page...")
+                        st.rerun()  # Refresh to show new data
+                    else:
+                        status_text.error(f"Failed to process channel: #{current_channel['name']}")
                 except Exception as e:
                     logger.error(f"Failed to process channel: {e}")
                     status_text.error(f"Failed to process channel: {e}")
@@ -526,19 +474,19 @@ def create_streamlit_app():
 
         # Navigation and action buttons
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             if st.button("Previous") and st.session_state.current_channel_index > 0:
                 st.session_state.current_channel_index -= 1
                 st.rerun()
-                
+
         with col2:
             if st.button("Save"):
                 db.execute_query("""
-                    UPDATE channels 
-                    SET description = ?, 
-                        suitable_posts = ?, 
-                        unsuitable_posts = ?, 
+                    UPDATE channels
+                    SET description = ?,
+                        suitable_posts = ?,
+                        unsuitable_posts = ?,
                         rules = ?
                     WHERE channel_id = ?
                 """, (
@@ -549,23 +497,23 @@ def create_streamlit_app():
                     current_channel['id']
                 ))
                 st.success("Changes saved!")
-                
+
         with col3:
             if st.button("Complete Setup"):
                 db.execute_query("""
-                    UPDATE channels 
+                    UPDATE channels
                     SET setup_complete = TRUE
                     WHERE channel_id = ?
                 """, (current_channel['id'],))
                 st.success("Channel setup marked as complete!")
                 time.sleep(1)
                 st.rerun()
-                
+
         with col4:
             if st.button("Next") and st.session_state.current_channel_index < len(filtered_channels) - 1:
                 st.session_state.current_channel_index += 1
                 st.rerun()
-                
+
         # Progress indicator
         st.progress((st.session_state.current_channel_index + 1) / len(filtered_channels))
         st.write(f"Channel {st.session_state.current_channel_index + 1} of {len(filtered_channels)}")

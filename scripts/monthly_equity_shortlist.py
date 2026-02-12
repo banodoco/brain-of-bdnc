@@ -3,7 +3,6 @@ import sys
 import os
 from datetime import datetime, timedelta
 import logging
-import calendar
 from typing import List, Dict, Any, Optional
 import json
 from collections import defaultdict
@@ -256,17 +255,121 @@ def get_month_input(month_arg: str | None) -> str:
             sys.exit(1)
 
 
-def get_month_date_range(year_month: str) -> tuple[datetime, datetime]:
-    """Calculates the start and end datetime objects for a given YYYY-MM string."""
-    year, month = map(int, year_month.split('-'))
-    _, last_day = calendar.monthrange(year, month)
-    start_date = datetime(year, month, 1, 0, 0, 0)
-    # Go to the *end* of the last day of the month
-    end_date = datetime(year, month, last_day, 23, 59, 59, 999999)
-    return start_date, end_date
+from refresh_media_urls import get_month_date_range  # noqa: E402
 
 
-# --- Formatting Helper ---
+# --- Formatting Helpers ---
+
+def _extract_attachment_urls(raw: Optional[str]) -> Optional[str]:
+    """Extract and return a comma-separated string of attachment URLs from raw JSON."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            urls = {item.get("url") for item in data if isinstance(item, dict) and item.get("url")}
+            urls.discard(None)
+            if urls:
+                return ",".join(sorted(urls))
+    except Exception:
+        pass  # Malformed JSON or unexpected structure -- ignore
+    return None
+
+
+def _build_ancestor_map(messages: List[Dict], msg_map: Dict[int, Dict]) -> Dict[int, int]:
+    """Compute the true root ancestor ID for every message, handling cycles.
+
+    Returns a dict mapping each message_id to its ultimate ancestor_id.
+    """
+    ancestor_map: Dict[int, int] = {}
+
+    def _get_true_ancestor_id(mid: int, visited_path: set[int]) -> int:
+        if mid in ancestor_map:
+            return ancestor_map[mid]
+
+        # Cycle detection
+        if mid in visited_path:
+            logger.warning(f"Detected reference cycle during ancestor lookup for message ID: {mid}. Using self as ancestor.")
+            ancestor_map[mid] = mid
+            return mid
+
+        msg = msg_map.get(mid)
+        if not msg:
+            ancestor_map[mid] = mid
+            return mid
+
+        parent = msg.get("reference_id") or msg.get("thread_id")
+        if parent and parent in msg_map:
+            visited_path.add(mid)
+            true_ancestor = _get_true_ancestor_id(parent, visited_path)
+            visited_path.remove(mid)
+            ancestor_map[mid] = true_ancestor
+            return true_ancestor
+        else:
+            ancestor_map[mid] = mid
+            return mid
+
+    for mid in msg_map:
+        if mid not in ancestor_map:
+            _get_true_ancestor_id(mid, set())
+
+    return ancestor_map
+
+
+def _build_depth_map(messages: List[Dict], msg_map: Dict[int, Dict], ancestor_map: Dict[int, int]) -> Dict[int, int]:
+    """Compute the nesting depth of every message, handling cycles.
+
+    Returns a dict mapping each message_id to its integer depth (0 = root).
+    """
+    depth_map: Dict[int, int] = {}
+
+    def _compute_depth(mid: int, visited_path: set[int]) -> int:
+        if mid in depth_map:
+            return depth_map[mid]
+
+        # Cycle detection
+        if mid in visited_path:
+            logger.warning(f"Detected reference cycle involving message ID: {mid}. Assigning depth 0.")
+            depth_map[mid] = 0
+            return 0
+
+        msg = msg_map.get(mid)
+        if not msg:
+            depth_map[mid] = 0
+            return 0
+
+        parent = msg.get("reference_id") or msg.get("thread_id")
+        if parent and parent in msg_map:
+            visited_path.add(mid)
+            parent_depth = _compute_depth(parent, visited_path)
+            visited_path.remove(mid)
+            depth_map[mid] = parent_depth + 1
+        else:
+            depth_map[mid] = 0
+        return depth_map[mid]
+
+    for mid in msg_map:
+        if mid not in depth_map:
+            _compute_depth(mid, set())
+
+    return depth_map
+
+
+def _build_author_cache(messages: List[Dict], db_handler: DatabaseHandler) -> Dict[int, str]:
+    """Look up author usernames for all messages.
+
+    Returns a dict mapping author_id to display name (username or stringified id).
+    """
+    author_ids = {m.get("author_id") for m in messages if m.get("author_id") is not None}
+    author_cache: Dict[int, str] = {}
+    for aid in author_ids:
+        member = db_handler.get_member(aid)
+        if member and member.get("username"):
+            author_cache[aid] = member["username"]
+        else:
+            author_cache[aid] = str(aid)
+    return author_cache
+
 
 def format_messages_hierarchical(messages: List[Dict], db_handler: DatabaseHandler) -> List[Dict]:
     """Format messages into an indented, thread-aware structure similar to the SQL example.
@@ -282,7 +385,7 @@ def format_messages_hierarchical(messages: List[Dict], db_handler: DatabaseHandl
     Messages are filtered to roughly match the SQL HAVING clause:
         * replies (reference_id/thread_id not NULL)
         * messages that have replies
-        * messages with ≥2 reactions
+        * messages with >=2 reactions
         * messages whose content contains an http link
     They are ordered by ancestor_id then created_at (ASC).
     """
@@ -298,107 +401,13 @@ def format_messages_hierarchical(messages: List[Dict], db_handler: DatabaseHandl
         if parent_id:
             children_map[parent_id].append(m["message_id"])
 
-    # True ancestor calculation (to group threads correctly) ------------------
-    ancestor_map: Dict[int, int] = {}
-
-    def _get_true_ancestor_id(mid: int, visited_path: set[int]) -> int:
-        """ Find the ultimate root ancestor ID for a message, handling cycles. """
-        if mid in ancestor_map:
-            return ancestor_map[mid]
-        
-        # Cycle detection
-        if mid in visited_path:
-            logger.warning(f"Detected reference cycle during ancestor lookup for message ID: {mid}. Using self as ancestor.")
-            ancestor_map[mid] = mid # Use self as ancestor to break cycle
-            return mid
-
-        msg = msgs_by_id.get(mid)
-        if not msg:
-            ancestor_map[mid] = mid # Should not happen if mid comes from messages list
-            return mid
-
-        parent = msg.get("reference_id") or msg.get("thread_id")
-        if parent and parent in msgs_by_id:
-            # Add current message to path before recursing
-            visited_path.add(mid)
-            true_ancestor = _get_true_ancestor_id(parent, visited_path)
-            # Remove current message from path after returning
-            visited_path.remove(mid)
-            ancestor_map[mid] = true_ancestor
-            return true_ancestor
-        else:
-            # No parent found in our set, this message is the root
-            ancestor_map[mid] = mid
-            return mid
-
-    # Compute ancestor for all messages
-    for mid in msgs_by_id:
-        if mid not in ancestor_map:
-            _get_true_ancestor_id(mid, set())
-
-    # Depth calculation ------------------------------------------------------
-    depth_map: Dict[int, int] = {}
-
-    def _compute_depth(mid: int, visited_path: set[int]) -> int:
-        """ Recursively compute message depth, handling cycles. """
-        if mid in depth_map:
-            return depth_map[mid]
-        
-        # Cycle detection
-        if mid in visited_path:
-            logger.warning(f"Detected reference cycle involving message ID: {mid}. Assigning depth 0.")
-            depth_map[mid] = 0 # Break the cycle
-            return 0
-
-        msg = msgs_by_id.get(mid)
-        if not msg:
-            depth_map[mid] = 0
-            return 0
-
-        parent = msg.get("reference_id") or msg.get("thread_id")
-        if parent and parent in msgs_by_id:
-            # Add current message to path before recursing
-            visited_path.add(mid)
-            parent_depth = _compute_depth(parent, visited_path)
-            # Remove current message from path after returning
-            visited_path.remove(mid)
-            depth_map[mid] = parent_depth + 1
-        else:
-            depth_map[mid] = 0
-        return depth_map[mid]
-
-    # Compute depth for all messages
-    for mid in msgs_by_id:
-        if mid not in depth_map:
-            _compute_depth(mid, set()) # Pass initial empty set for visited path
+    # Delegate independent lookup-building phases to helpers -----------------
+    ancestor_map = _build_ancestor_map(messages, msgs_by_id)
+    depth_map = _build_depth_map(messages, msgs_by_id, ancestor_map)
+    author_cache = _build_author_cache(messages, db_handler)
 
     # Has-responses calculation ---------------------------------------------
     has_responses: Dict[int, bool] = {mid: bool(children_map.get(mid)) for mid in msgs_by_id}
-
-    # Author lookup ----------------------------------------------------------
-    author_ids = {m.get("author_id") for m in messages if m.get("author_id") is not None}
-    author_cache: Dict[int, str] = {}
-    for aid in author_ids:
-        member = db_handler.get_member(aid)
-        if member and member.get("username"):
-            author_cache[aid] = member["username"]
-        else:
-            author_cache[aid] = str(aid)
-
-    # Helper to derive attachment URLs --------------------------------------
-    def _extract_attachment_urls(raw: Optional[str]) -> Optional[str]:
-        if not raw:
-            return None
-        try:
-            data = json.loads(raw)
-            if isinstance(data, list):
-                urls = {item.get("url") for item in data if isinstance(item, dict) and item.get("url")}
-                urls.discard(None)
-                if urls:
-                    return ",".join(sorted(urls))
-        except Exception:
-            pass  # Malformed JSON or unexpected structure – ignore
-        return None
 
     # Build formatted list ---------------------------------------------------
     formatted: List[Dict] = []
@@ -425,12 +434,11 @@ def format_messages_hierarchical(messages: List[Dict], db_handler: DatabaseHandl
         if not include:
             continue
 
-        # root_id = m.get("reference_id") or m.get("thread_id") or mid # Old immediate parent logic
-        ancestor_id = ancestor_map.get(mid, mid) # Get true ancestor
+        ancestor_id = ancestor_map.get(mid, mid)
         formatted.append(
             {
                 "message_id": mid,
-                "ancestor_id": ancestor_id, # Use true ancestor for sorting
+                "ancestor_id": ancestor_id,
                 "created_at": m.get("created_at"),
                 "message": formatted_text,
                 "author": author_cache.get(m.get("author_id")),
@@ -462,7 +470,184 @@ def save_results_to_md(file_path: str, data: Any, header: str):
     except Exception as e:
         logger.error(f"Failed to save results under header '{header}' to {file_path}: {e}", exc_info=True)
 
-# --- Main Script Logic ---
+# --- Main Script Logic: Stage Helpers ---
+
+async def _process_batches_llm1(
+    batches: List[List[str]],
+    llm_config: Dict[str, Any],
+    results_file_path: Optional[str],
+    args: argparse.Namespace,
+) -> List[Dict]:
+    """Run LLM1 over each batch and return a list of per-batch result dicts.
+
+    ``llm_config`` must contain the keys ``dev_mode`` (bool) used to gate
+    dev-mode logging and batch limits.
+    """
+    dev_mode = llm_config["dev_mode"]
+
+    llm1_results: List[Dict] = []
+    logger.info("Starting LLM1 batch processing...")
+    batches_to_process = len(batches)
+    if dev_mode:
+         # Limit to max 2 batches in dev mode
+         batches_to_process = min(len(batches), 2)
+         logger.info(f"--- DEV MODE: Limiting processing to first {batches_to_process} batch(es) ---")
+
+    for i, batch in enumerate(batches):
+        # --- Dev Mode Batch Limit ---
+        # Skip processing if we've hit the dev mode limit
+        if dev_mode and i >= batches_to_process:
+            logger.info(f"--- DEV MODE: Skipping batch {i+1}/{len(batches)} --- ")
+            # Ensure batch_result is defined even when skipping
+            batch_result = {"candidates": [], "info": f"Skipped batch {i+1} due to dev mode limit"}
+            llm1_results.append(batch_result)
+            # Save skipped batch info to results file if enabled
+            if results_file_path:
+                 save_results_to_md(results_file_path, batch_result, f"LLM1 Batch {i+1} Result (Skipped)")
+            continue # Skip this batch
+
+        logger.info(f"--- Processing Batch {i+1}/{len(batches)} --- ('Dev Mode Batch {i+1}' if dev_mode else '')")
+
+        # Log preview of first messages in batch (data sent to LLM 1)
+        logger.info(f"Previewing first {min(len(batch), LOG_PREVIEW_MESSAGE_COUNT)} formatted messages sent to LLM 1:")
+
+        for msg_index, line in enumerate(batch[:LOG_PREVIEW_MESSAGE_COUNT]):
+            logger.info(f"  Msg {msg_index+1}: {line}")
+        if not batch:
+            logger.info("  Batch is empty.")
+            # Handle empty batch result
+            batch_result = {"candidates": [], "info": f"Batch {i+1} was empty"}
+            llm1_results.append(batch_result)
+             # Save empty batch info to results file if enabled
+            if results_file_path:
+                 save_results_to_md(results_file_path, batch_result, f"LLM1 Batch {i+1} Result (Empty)")
+            continue
+
+        # --- Call LLM 1 ---
+        try:
+            if args.no_llm1:
+                logger.warning(f"--- SKIPPING LLM1 CALL for batch {i+1} due to --no-llm1 flag ---")
+                batch_result = {"candidates": [], "info": f"LLM1 skipped for batch {i+1}"}
+            else:
+                # Format batch content for LLM
+                # Sending the whole batch as a single user message content string
+                batch_content = "\n".join(batch)
+                messages_for_llm = [{"role": "user", "content": batch_content}]
+
+                if dev_mode:
+                     content_preview = batch_content[:500] + ("..." if len(batch_content) > 500 else "")
+                     logger.info(f"--- DEV MODE: Sending content to LLM (Preview):\n{content_preview}")
+
+                # Make the actual async LLM call
+                logger.info(f"Calling get_llm_response for LLM1 ({LLM1_CLIENT}/{LLM1_MODEL}) on batch {i+1}... Size: {len(batch_content)} chars")
+                batch_result_text = await get_llm_response(
+                    client_name=LLM1_CLIENT,
+                    model=LLM1_MODEL,
+                    system_prompt=LLM1_SYSTEM_PROMPT,
+                    messages=messages_for_llm,
+                    # Pass kwargs expected by the client
+                    # For 'o' models, openai_client expects 'max_completion_tokens'
+                    max_completion_tokens=LLM1_MAX_TOKENS,
+                    # Request JSON output if supported by the model/client
+                    response_format={"type": "json_object"},
+                    reasoning_effort="high" # Add high reasoning effort
+                )
+                logger.info(f"Received response from LLM1 ({LLM1_CLIENT}/{LLM1_MODEL}) for batch {i+1}. Length: {len(batch_result_text)}")
+
+                # --- Add this block to clean the response ---
+                cleaned_text = batch_result_text.strip()
+                if cleaned_text.startswith("```json\n") and cleaned_text.endswith("\n```"):
+                    cleaned_text = cleaned_text[len("```json\n"):-len("\n```")]
+                elif cleaned_text.startswith("```") and cleaned_text.endswith("```"):
+                    # Handle cases where it might just be ```...```
+                    cleaned_text = cleaned_text[3:-3]
+                # ---------------------------------------------
+
+                # Attempt to parse the result as JSON
+                try:
+                    # Use the cleaned_text variable here
+                    batch_result = json.loads(cleaned_text)
+                    logger.info(f"Successfully parsed JSON response for batch {i+1}.")
+                    # Optional: Validate structure further if needed
+                    if not isinstance(batch_result, dict) or "candidates" not in batch_result or not isinstance(batch_result["candidates"], list):
+                        logger.warning(f"LLM response parsed as JSON but missing expected structure (batch {i+1}): {cleaned_text[:200]}...")
+                        # Store raw text if structure is wrong, but indicate issue
+                        batch_result = {"parsing_error": "JSON structure invalid", "raw_response": batch_result_text} # Log original raw text
+                    else:
+                        logger.info(f"LLM 1 processing for batch {i+1} successful (JSON Parsed).")
+
+                except json.JSONDecodeError:
+                    logger.error(f"Failed to parse LLM response as JSON (batch {i+1}). Cleaned text: {cleaned_text[:200]}... Original text: {batch_result_text[:200]}...", exc_info=False)
+                    # Store raw text if JSON parsing fails
+                    batch_result = {"parsing_error": "Invalid JSON", "raw_response": batch_result_text} # Log original raw text
+
+            # Optional: Log a snippet of the result (now potentially a dict)
+            if isinstance(batch_result, dict) and "candidates" in batch_result:
+                summary_preview = f"Found {len(batch_result['candidates'])} potential candidates."
+            elif isinstance(batch_result, dict) and "raw_response" in batch_result:
+                summary_preview = f"Parsing Error. Raw: {batch_result['raw_response'][:70]}..."
+            else:
+                 # Fallback if it's somehow not a dict after parsing logic
+                 summary_preview = str(batch_result)[:100] + "..."
+
+            logger.debug(f"LLM 1 Result Preview (Batch {i+1}): {summary_preview}")
+            if dev_mode:
+                # Log the potentially structured result
+                logger.info(f"--- DEV MODE: Received result from LLM (Parsed/Raw):\n{json.dumps(batch_result, indent=2) if isinstance(batch_result, dict) else batch_result}")
+
+        except Exception as llm_error:
+            logger.error(f"Error processing batch {i+1} with {LLM1_CLIENT} model {LLM1_MODEL}: {llm_error}", exc_info=True)
+            # Decide how to handle failed batches: skip, retry, use dummy data?
+            # Here, we'll store an error indicator.
+            batch_result = {"error": f"Failed to process batch {i+1}: {str(llm_error)}"}
+
+        # Save batch result to file if enabled
+        if results_file_path:
+             save_results_to_md(results_file_path, batch_result, f"LLM1 Batch {i+1} Result")
+
+        llm1_results.append(batch_result)
+
+    return llm1_results
+
+
+async def _consolidate_and_run_llm2(
+    llm1_results: List[Dict],
+    llm_config: Dict[str, Any],
+    results_file_path: Optional[str],
+    args: argparse.Namespace,
+) -> Dict:
+    """Consolidate LLM1 results and optionally refine via LLM2.
+
+    Returns the final result dict (with a ``candidates`` key).
+    """
+    # Consolidate results from LLM1
+    logger.info("Consolidating results from LLM1...")
+    consolidated_candidates = _consolidate_candidates(llm1_results)
+    logger.info(f"Consolidation complete. {len(consolidated_candidates)} unique candidates found.")
+
+    # Save consolidated list to file if enabled
+    if results_file_path:
+        save_results_to_md(results_file_path, consolidated_candidates, "Consolidated LLM1 Candidates")
+
+    # Process consolidated results with the second LLM
+    # The result from LLM2 is now our final intended output
+    if args.no_llm2:
+        logger.warning("--- SKIPPING LLM2 CALL due to --no-llm2 flag ---")
+        # Use the consolidated list directly as the final result, but maintain structure
+        final_result = {"candidates": consolidated_candidates, "info": "LLM2 skipped"}
+    else:
+        logger.info("Processing consolidated candidates with LLM2...")
+        final_result = await process_candidates_with_llm2(consolidated_candidates)
+        logger.info("LLM2 processing complete.")
+
+    # Save final result to file if enabled
+    if results_file_path:
+        save_results_to_md(results_file_path, final_result, "Final Result (after LLM2)")
+
+    return final_result
+
+
+# --- Main Orchestrator ---
 
 async def main():
     parser = argparse.ArgumentParser(description="Fetch messages for a specific month, process them in batches with LLMs.")
@@ -477,7 +662,7 @@ async def main():
     dev_mode = args.dev or DEFAULT_DEV_MODE
     year_month = get_month_input(args.month)
     start_date, end_date = get_month_date_range(year_month)
-    
+
     # Save results by default, unless --no-save-results is specified
     save_results = not args.no_save_results
 
@@ -489,7 +674,7 @@ async def main():
     else: logger.info("--no-save-results flag detected. Results will NOT be saved.")
     if dev_mode:
         logger.info("--- DEVELOPMENT MODE ACTIVE ---")
-        
+
     # --- Prepare results file (enabled by default) ---
     results_file_path = None
     if save_results:
@@ -506,6 +691,9 @@ async def main():
              logger.error(f"Failed to initialize results file {results_file_path}: {e}", exc_info=True)
              results_file_path = None # Disable saving if initialization fails
     # ------------------------------------------
+
+    # Config dict shared with stage helpers
+    llm_config: Dict[str, Any] = {"dev_mode": dev_mode}
 
     try:
         # Initialize database handler
@@ -534,7 +722,6 @@ async def main():
         logger.info("Converting records to formatted lines...")
         formatted_lines: List[str] = []
         for rec in formatted_records:
-            # rec['created_at'] is stored as ISO string – keep as-is for now or convert if desired
             time_str = rec["created_at"]
             attachments_str = rec["attachments"] or ""
             # Format reaction count string
@@ -548,153 +735,11 @@ async def main():
         batches = [formatted_lines[i:i + BATCH_SIZE] for i in range(0, len(formatted_lines), BATCH_SIZE)]
         logger.info(f"Split formatted lines into {len(batches)} batches of up to {BATCH_SIZE} lines each.")
 
-        # Process each batch with the first LLM
-        llm1_results = []
-        logger.info("Starting LLM1 batch processing...")
-        batches_to_process = len(batches)
-        if dev_mode:
-             # Limit to max 2 batches in dev mode
-             batches_to_process = min(len(batches), 2)
-             logger.info(f"--- DEV MODE: Limiting processing to first {batches_to_process} batch(es) ---")
+        # Stage 1: LLM1 batch processing
+        llm1_results = await _process_batches_llm1(batches, llm_config, results_file_path, args)
 
-
-        for i, batch in enumerate(batches):
-            # --- Dev Mode Batch Limit ---
-            # Skip processing if we've hit the dev mode limit
-            if dev_mode and i >= batches_to_process:
-                logger.info(f"--- DEV MODE: Skipping batch {i+1}/{len(batches)} --- ")
-                # Ensure batch_result is defined even when skipping
-                batch_result = {"candidates": [], "info": f"Skipped batch {i+1} due to dev mode limit"}
-                llm1_results.append(batch_result)
-                # Save skipped batch info to results file if enabled
-                if results_file_path:
-                     save_results_to_md(results_file_path, batch_result, f"LLM1 Batch {i+1} Result (Skipped)")
-                continue # Skip this batch
-
-            logger.info(f"--- Processing Batch {i+1}/{len(batches)} --- ('Dev Mode Batch {i+1}' if dev_mode else '')")
-
-            # Log preview of first messages in batch (data sent to LLM 1)
-            logger.info(f"Previewing first {min(len(batch), LOG_PREVIEW_MESSAGE_COUNT)} formatted messages sent to LLM 1:")
-            
-            for msg_index, line in enumerate(batch[:LOG_PREVIEW_MESSAGE_COUNT]):
-                logger.info(f"  Msg {msg_index+1}: {line}")
-            if not batch:
-                logger.info("  Batch is empty.")
-                # Handle empty batch result
-                batch_result = {"candidates": [], "info": f"Batch {i+1} was empty"}
-                llm1_results.append(batch_result)
-                 # Save empty batch info to results file if enabled
-                if results_file_path:
-                     save_results_to_md(results_file_path, batch_result, f"LLM1 Batch {i+1} Result (Empty)")
-                continue
-
-            # --- Call LLM 1 ---
-            try:
-                if args.no_llm1:
-                    logger.warning(f"--- SKIPPING LLM1 CALL for batch {i+1} due to --no-llm1 flag ---")
-                    batch_result = {"candidates": [], "info": f"LLM1 skipped for batch {i+1}"}
-                else:
-                    # Format batch content for LLM
-                    # Sending the whole batch as a single user message content string
-                    batch_content = "\n".join(batch)
-                    messages_for_llm = [{"role": "user", "content": batch_content}]
-
-                    if dev_mode:
-                         content_preview = batch_content[:500] + ("..." if len(batch_content) > 500 else "")
-                         logger.info(f"--- DEV MODE: Sending content to LLM (Preview):\n{content_preview}")
-
-                    # Make the actual async LLM call
-                    logger.info(f"Calling get_llm_response for LLM1 ({LLM1_CLIENT}/{LLM1_MODEL}) on batch {i+1}... Size: {len(batch_content)} chars")
-                    batch_result_text = await get_llm_response(
-                        client_name=LLM1_CLIENT,
-                        model=LLM1_MODEL,
-                        system_prompt=LLM1_SYSTEM_PROMPT,
-                        messages=messages_for_llm,
-                        # Pass kwargs expected by the client
-                        # For 'o' models, openai_client expects 'max_completion_tokens'
-                        max_completion_tokens=LLM1_MAX_TOKENS,
-                        # Request JSON output if supported by the model/client
-                        response_format={"type": "json_object"},
-                        reasoning_effort="high" # Add high reasoning effort
-                    )
-                    logger.info(f"Received response from LLM1 ({LLM1_CLIENT}/{LLM1_MODEL}) for batch {i+1}. Length: {len(batch_result_text)}")
-
-                    # --- Add this block to clean the response ---
-                    cleaned_text = batch_result_text.strip()
-                    if cleaned_text.startswith("```json\n") and cleaned_text.endswith("\n```"):
-                        cleaned_text = cleaned_text[len("```json\n"):-len("\n```")]
-                    elif cleaned_text.startswith("```") and cleaned_text.endswith("```"):
-                        # Handle cases where it might just be ```...```
-                        cleaned_text = cleaned_text[3:-3]
-                    # ---------------------------------------------
-
-                    # Attempt to parse the result as JSON
-                    try:
-                        # Use the cleaned_text variable here
-                        batch_result = json.loads(cleaned_text)
-                        logger.info(f"Successfully parsed JSON response for batch {i+1}.")
-                        # Optional: Validate structure further if needed
-                        if not isinstance(batch_result, dict) or "candidates" not in batch_result or not isinstance(batch_result["candidates"], list):
-                            logger.warning(f"LLM response parsed as JSON but missing expected structure (batch {i+1}): {cleaned_text[:200]}...")
-                            # Store raw text if structure is wrong, but indicate issue
-                            batch_result = {"parsing_error": "JSON structure invalid", "raw_response": batch_result_text} # Log original raw text
-                        else:
-                            logger.info(f"LLM 1 processing for batch {i+1} successful (JSON Parsed).")
-
-                    except json.JSONDecodeError:
-                        logger.error(f"Failed to parse LLM response as JSON (batch {i+1}). Cleaned text: {cleaned_text[:200]}... Original text: {batch_result_text[:200]}...", exc_info=False)
-                        # Store raw text if JSON parsing fails
-                        batch_result = {"parsing_error": "Invalid JSON", "raw_response": batch_result_text} # Log original raw text
-
-                # Optional: Log a snippet of the result (now potentially a dict)
-                if isinstance(batch_result, dict) and "candidates" in batch_result:
-                    summary_preview = f"Found {len(batch_result['candidates'])} potential candidates."
-                elif isinstance(batch_result, dict) and "raw_response" in batch_result:
-                    summary_preview = f"Parsing Error. Raw: {batch_result['raw_response'][:70]}..."
-                else:
-                     # Fallback if it's somehow not a dict after parsing logic
-                     summary_preview = str(batch_result)[:100] + "..." 
-
-                logger.debug(f"LLM 1 Result Preview (Batch {i+1}): {summary_preview}")
-                if dev_mode:
-                    # Log the potentially structured result
-                    logger.info(f"--- DEV MODE: Received result from LLM (Parsed/Raw):\n{json.dumps(batch_result, indent=2) if isinstance(batch_result, dict) else batch_result}")
-
-            except Exception as llm_error:
-                logger.error(f"Error processing batch {i+1} with {LLM1_CLIENT} model {LLM1_MODEL}: {llm_error}", exc_info=True)
-                # Decide how to handle failed batches: skip, retry, use dummy data?
-                # Here, we'll store an error indicator.
-                batch_result = {"error": f"Failed to process batch {i+1}: {str(llm_error)}"}
-
-            # Save batch result to file if enabled
-            if results_file_path:
-                 save_results_to_md(results_file_path, batch_result, f"LLM1 Batch {i+1} Result")
-
-            llm1_results.append(batch_result)
-
-        # Consolidate results from LLM1
-        logger.info("Consolidating results from LLM1...")
-        consolidated_candidates = _consolidate_candidates(llm1_results)
-        logger.info(f"Consolidation complete. {len(consolidated_candidates)} unique candidates found.")
-        
-        # Save consolidated list to file if enabled
-        if results_file_path:
-            save_results_to_md(results_file_path, consolidated_candidates, "Consolidated LLM1 Candidates")
-
-        # Process consolidated results with the second LLM
-        # The result from LLM2 is now our final intended output
-        if args.no_llm2:
-            logger.warning("--- SKIPPING LLM2 CALL due to --no-llm2 flag ---")
-            # Use the consolidated list directly as the final result, but maintain structure
-            final_result = {"candidates": consolidated_candidates, "info": "LLM2 skipped"}
-        else:
-            logger.info("Processing consolidated candidates with LLM2...")
-            final_result = await process_candidates_with_llm2(consolidated_candidates)
-            logger.info("LLM2 processing complete.")
-            
-        # Save final result to file if enabled
-        if results_file_path:
-            save_results_to_md(results_file_path, final_result, "Final Result (after LLM2)")
+        # Stage 2: Consolidation + LLM2 refinement
+        final_result = await _consolidate_and_run_llm2(llm1_results, llm_config, results_file_path, args)
 
         # Output the final result (which is the refined list from LLM2 or an error dict)
         logger.info("--- Final Result --- Preparing to print JSON output.")
