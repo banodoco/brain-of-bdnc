@@ -489,6 +489,64 @@ class AdminCog(commands.Cog):
             )
             await interaction.response.send_message(embed=error_embed, ephemeral=True)
 
+    @app_commands.command(name="delete_user_messages", description="Delete all stored messages from a user (Admin only)")
+    @app_commands.describe(
+        user_id="The Discord user ID whose messages should be deleted",
+        dry_run="Preview how many messages would be deleted without actually deleting them"
+    )
+    async def delete_user_messages(self, interaction: discord.Interaction, user_id: str, dry_run: bool = True):
+        """Delete all messages from a specific user in the database."""
+        if not await self.bot.is_owner(interaction.user):
+            await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
+            return
+
+        if not self.db_handler or not self.db_handler.storage_handler or not self.db_handler.storage_handler.supabase_client:
+            await interaction.response.send_message("Database connection is unavailable.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            client = self.db_handler.storage_handler.supabase_client
+
+            # Look up the user
+            member = client.table('discord_members').select('username,global_name,server_nick').eq('member_id', user_id).execute()
+            display_name = "Unknown user"
+            if member.data:
+                m = member.data[0]
+                display_name = m.get('server_nick') or m.get('global_name') or m.get('username') or display_name
+
+            # Count messages
+            count_result = client.table('discord_messages').select('message_id', count='exact').eq('author_id', user_id).execute()
+            message_count = count_result.count if count_result.count is not None else len(count_result.data)
+
+            if message_count == 0:
+                await interaction.followup.send(f"No messages found for user `{user_id}` ({display_name}).", ephemeral=True)
+                return
+
+            if dry_run:
+                embed = discord.Embed(
+                    title="Dry Run — Delete User Messages",
+                    description=f"**{message_count}** messages found for **{display_name}** (`{user_id}`).\n\nRe-run with `dry_run: False` to delete them.",
+                    color=discord.Color.orange()
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                result = client.table('discord_messages').delete().eq('author_id', user_id).execute()
+                deleted_count = len(result.data)
+                logger.info(f"Admin {interaction.user.id} deleted {deleted_count} messages from user {user_id} ({display_name})")
+
+                embed = discord.Embed(
+                    title="Messages Deleted",
+                    description=f"Deleted **{deleted_count}** messages from **{display_name}** (`{user_id}`).",
+                    color=discord.Color.red()
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except Exception as e:
+            logger.error(f"Error in delete_user_messages for user {user_id}: {e}", exc_info=True)
+            await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+
 async def setup(bot: commands.Bot):
     """Sets up the AdminCog."""
     logger.info("Setting up AdminCog")
