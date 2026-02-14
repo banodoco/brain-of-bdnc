@@ -6,6 +6,8 @@ from discord import app_commands
 import os
 from datetime import datetime
 import random
+import aiohttp
+import asyncio
 
 from src.common.db_handler import DatabaseHandler
 from src.common import discord_utils
@@ -489,56 +491,107 @@ class AdminCog(commands.Cog):
             )
             await interaction.response.send_message(embed=error_embed, ephemeral=True)
 
-    @app_commands.command(name="delete_user_messages", description="Delete all stored messages from a user (Admin only)")
+    @app_commands.command(name="delete_user_messages", description="Delete all of a user's messages from Discord (Admin only)")
     @app_commands.describe(
         user_id="The Discord user ID whose messages should be deleted",
         dry_run="Preview how many messages would be deleted without actually deleting them"
     )
     async def delete_user_messages(self, interaction: discord.Interaction, user_id: str, dry_run: bool = True):
-        """Delete all messages from a specific user in the database."""
+        """Search Discord for all messages from a user and delete them."""
         if not await self.bot.is_owner(interaction.user):
             await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
-            return
-
-        if not self.db_handler or not self.db_handler.storage_handler or not self.db_handler.storage_handler.supabase_client:
-            await interaction.response.send_message("Database connection is unavailable.", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
 
         try:
-            client = self.db_handler.storage_handler.supabase_client
+            token = os.getenv('DISCORD_BOT_TOKEN')
+            guild_id = str(interaction.guild_id)
+            base_url = 'https://discord.com/api/v10'
+            headers = {'Authorization': f'Bot {token}'}
 
-            # Look up the user
-            member = client.table('discord_members').select('username,global_name,server_nick').eq('member_id', user_id).execute()
-            display_name = "Unknown user"
-            if member.data:
-                m = member.data[0]
-                display_name = m.get('server_nick') or m.get('global_name') or m.get('username') or display_name
+            # Try to get display name
+            display_name = f"User {user_id}"
+            try:
+                member = await interaction.guild.fetch_member(int(user_id))
+                display_name = member.display_name
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
-            # Count messages
-            count_result = client.table('discord_messages').select('message_id', count='exact').eq('author_id', user_id).execute()
-            message_count = count_result.count if count_result.count is not None else len(count_result.data)
+            # Search for all messages from this user via Discord search API
+            all_messages = []
+            offset = 0
+            async with aiohttp.ClientSession() as session:
+                while True:
+                    params = {'author_id': user_id}
+                    if offset > 0:
+                        params['offset'] = offset
+                    async with session.get(
+                        f'{base_url}/guilds/{guild_id}/messages/search',
+                        headers=headers, params=params
+                    ) as resp:
+                        if resp.status != 200:
+                            error_text = await resp.text()
+                            await interaction.followup.send(f"Search failed ({resp.status}): {error_text[:200]}", ephemeral=True)
+                            return
+                        data = await resp.json()
 
-            if message_count == 0:
-                await interaction.followup.send(f"No messages found for user `{user_id}` ({display_name}).", ephemeral=True)
+                    total = data.get('total_results', 0)
+                    messages = data.get('messages', [])
+                    if not messages:
+                        break
+                    for msg_group in messages:
+                        for msg in msg_group:
+                            if msg['author']['id'] == user_id:
+                                all_messages.append({'channel_id': msg['channel_id'], 'id': msg['id']})
+                    offset += 25
+                    if offset >= total:
+                        break
+                    await asyncio.sleep(1)
+
+            if not all_messages:
+                await interaction.followup.send(f"No messages found for **{display_name}** (`{user_id}`).", ephemeral=True)
                 return
 
             if dry_run:
                 embed = discord.Embed(
                     title="Dry Run — Delete User Messages",
-                    description=f"**{message_count}** messages found for **{display_name}** (`{user_id}`).\n\nRe-run with `dry_run: False` to delete them.",
+                    description=f"**{len(all_messages)}** messages found for **{display_name}** (`{user_id}`).\n\nRe-run with `dry_run: False` to delete them from Discord.",
                     color=discord.Color.orange()
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
             else:
-                result = client.table('discord_messages').delete().eq('author_id', user_id).execute()
-                deleted_count = len(result.data)
-                logger.info(f"Admin {interaction.user.id} deleted {deleted_count} messages from user {user_id} ({display_name})")
+                deleted = 0
+                failed = 0
+                async with aiohttp.ClientSession() as session:
+                    for msg in all_messages:
+                        async with session.delete(
+                            f'{base_url}/channels/{msg["channel_id"]}/messages/{msg["id"]}',
+                            headers=headers
+                        ) as resp:
+                            if resp.status == 204:
+                                deleted += 1
+                            elif resp.status == 429:
+                                retry_after = (await resp.json()).get('retry_after', 2)
+                                await asyncio.sleep(retry_after)
+                                async with session.delete(
+                                    f'{base_url}/channels/{msg["channel_id"]}/messages/{msg["id"]}',
+                                    headers=headers
+                                ) as retry_resp:
+                                    if retry_resp.status == 204:
+                                        deleted += 1
+                                    else:
+                                        failed += 1
+                            else:
+                                failed += 1
+                        await asyncio.sleep(0.5)
+
+                logger.info(f"Admin {interaction.user.id} deleted {deleted} Discord messages from user {user_id} ({display_name}), {failed} failed")
 
                 embed = discord.Embed(
                     title="Messages Deleted",
-                    description=f"Deleted **{deleted_count}** messages from **{display_name}** (`{user_id}`).",
+                    description=f"Deleted **{deleted}** messages from **{display_name}** (`{user_id}`) on Discord." +
+                                (f"\n{failed} failed to delete." if failed else ""),
                     color=discord.Color.red()
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
