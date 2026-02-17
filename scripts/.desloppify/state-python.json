@@ -1,0 +1,1644 @@
+{
+  "version": 1,
+  "created": "2026-02-12T16:45:57+00:00",
+  "last_scan": "2026-02-12T16:50:30+00:00",
+  "scan_count": 4,
+  "config": {
+    "ignore": []
+  },
+  "score": 100.0,
+  "stats": {
+    "total": 61,
+    "open": 0,
+    "fixed": 8,
+    "auto_resolved": 0,
+    "wontfix": 53,
+    "false_positive": 0,
+    "by_tier": {
+      "1": {
+        "open": 0,
+        "fixed": 1,
+        "auto_resolved": 0,
+        "wontfix": 0,
+        "false_positive": 0
+      },
+      "2": {
+        "open": 0,
+        "fixed": 3,
+        "auto_resolved": 0,
+        "wontfix": 11,
+        "false_positive": 0
+      },
+      "3": {
+        "open": 0,
+        "fixed": 4,
+        "auto_resolved": 0,
+        "wontfix": 41,
+        "false_positive": 0
+      },
+      "4": {
+        "open": 0,
+        "fixed": 0,
+        "auto_resolved": 0,
+        "wontfix": 1,
+        "false_positive": 0
+      }
+    }
+  },
+  "findings": {
+    "unused::monthly_equity_shortlist.py::calendar": {
+      "id": "unused::monthly_equity_shortlist.py::calendar",
+      "detector": "unused",
+      "file": "monthly_equity_shortlist.py",
+      "tier": 1,
+      "confidence": "high",
+      "summary": "Unused imports: calendar",
+      "detail": {
+        "line": 6,
+        "category": "imports"
+      },
+      "status": "fixed",
+      "note": "Removed unused calendar import after deduplicating get_month_date_range",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:45:57+00:00",
+      "resolved_at": "2026-02-12T16:46:35+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "structural::archive_discord.py": {
+      "id": "structural::archive_discord.py",
+      "detector": "structural",
+      "file": "archive_discord.py",
+      "tier": 4,
+      "confidence": "high",
+      "summary": "Needs decomposition: large (1394 LOC) / complexity score 89 / MessageArchiver (27 attributes, 1 long methods (>50 LOC))",
+      "detail": {
+        "loc": 1394,
+        "complexity_score": 89,
+        "complexity_signals": [
+          "function with 11 params",
+          "nesting depth 14",
+          "long function (__init__: 131 LOC)"
+        ],
+        "name": "MessageArchiver"
+      },
+      "status": "wontfix",
+      "note": "Large files are standalone scripts or core infrastructure modules \u2014 decomposition is a separate refactoring effort, not a code hygiene issue",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:17+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "structural::weekly_digest.py": {
+      "id": "structural::weekly_digest.py",
+      "detector": "structural",
+      "file": "weekly_digest.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Needs decomposition: large (991 LOC) / complexity score 42",
+      "detail": {
+        "loc": 991,
+        "complexity_score": 42,
+        "complexity_signals": [
+          "nesting depth 6",
+          "long function (main: 116 LOC)"
+        ]
+      },
+      "status": "wontfix",
+      "note": "Large files are standalone scripts or core infrastructure modules \u2014 decomposition is a separate refactoring effort, not a code hygiene issue",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:17+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "structural::debug.py": {
+      "id": "structural::debug.py",
+      "detector": "structural",
+      "file": "debug.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Needs decomposition: large (731 LOC)",
+      "detail": {
+        "loc": 731
+      },
+      "status": "wontfix",
+      "note": "Large files are standalone scripts or core infrastructure modules \u2014 decomposition is a separate refactoring effort, not a code hygiene issue",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:17+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "structural::monthly_equity_shortlist.py": {
+      "id": "structural::monthly_equity_shortlist.py",
+      "detector": "structural",
+      "file": "monthly_equity_shortlist.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Needs decomposition: large (714 LOC) / complexity score 104",
+      "detail": {
+        "loc": 714,
+        "complexity_score": 104,
+        "complexity_signals": [
+          "nesting depth 7",
+          "long function (format_messages_hierarchical: 175 LOC)"
+        ]
+      },
+      "status": "wontfix",
+      "note": "Large files are standalone scripts or core infrastructure modules \u2014 decomposition is a separate refactoring effort, not a code hygiene issue",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:17+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "structural::analyze_channels.py": {
+      "id": "structural::analyze_channels.py",
+      "detector": "structural",
+      "file": "analyze_channels.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Needs decomposition: large (576 LOC) / complexity score 298",
+      "detail": {
+        "loc": 576,
+        "complexity_score": 298,
+        "complexity_signals": [
+          "nesting depth 10",
+          "long function (create_streamlit_app: 360 LOC)"
+        ]
+      },
+      "status": "wontfix",
+      "note": "Large files are standalone scripts or core infrastructure modules \u2014 decomposition is a separate refactoring effort, not a code hygiene issue",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:17+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "structural::refresh_media_urls.py": {
+      "id": "structural::refresh_media_urls.py",
+      "detector": "structural",
+      "file": "refresh_media_urls.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Needs decomposition: large (468 LOC)",
+      "detail": {
+        "loc": 468
+      },
+      "status": "wontfix",
+      "note": "Large files are standalone scripts or core infrastructure modules \u2014 decomposition is a separate refactoring effort, not a code hygiene issue",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:17+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "structural::backfill_reactions.py": {
+      "id": "structural::backfill_reactions.py",
+      "detector": "structural",
+      "file": "backfill_reactions.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Needs decomposition: large (465 LOC) / complexity score 36",
+      "detail": {
+        "loc": 465,
+        "complexity_score": 36,
+        "complexity_signals": [
+          "nesting depth 9",
+          "long function (_find_qualifying_videos: 101 LOC)"
+        ]
+      },
+      "status": "wontfix",
+      "note": "Large files are standalone scripts or core infrastructure modules \u2014 decomposition is a separate refactoring effort, not a code hygiene issue",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:17+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "structural::find_gaps.py": {
+      "id": "structural::find_gaps.py",
+      "detector": "structural",
+      "file": "find_gaps.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Needs decomposition: large (322 LOC) / complexity score 52",
+      "detail": {
+        "loc": 322,
+        "complexity_score": 52,
+        "complexity_signals": [
+          "nesting depth 6",
+          "long function (analyze_hourly: 126 LOC)"
+        ]
+      },
+      "status": "wontfix",
+      "note": "Large files are standalone scripts or core infrastructure modules \u2014 decomposition is a separate refactoring effort, not a code hygiene issue",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:17+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "structural::delete_user_messages.py": {
+      "id": "structural::delete_user_messages.py",
+      "detector": "structural",
+      "file": "delete_user_messages.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Needs decomposition: complexity score 35",
+      "detail": {
+        "complexity_score": 35,
+        "complexity_signals": [
+          "nesting depth 10",
+          "long function (main: 97 LOC)"
+        ],
+        "loc": 286
+      },
+      "status": "wontfix",
+      "note": "Large files are standalone scripts or core infrastructure modules \u2014 decomposition is a separate refactoring effort, not a code hygiene issue",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:17+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "orphaned::archive_discord.py": {
+      "id": "orphaned::archive_discord.py",
+      "detector": "orphaned",
+      "file": "archive_discord.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Orphaned file (1394 LOC): zero importers, not an entry point",
+      "detail": {
+        "loc": 1394
+      },
+      "status": "wontfix",
+      "note": "CLI scripts and entry points \u2014 not meant to be imported",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:46:20+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "orphaned::weekly_digest.py": {
+      "id": "orphaned::weekly_digest.py",
+      "detector": "orphaned",
+      "file": "weekly_digest.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Orphaned file (991 LOC): zero importers, not an entry point",
+      "detail": {
+        "loc": 991
+      },
+      "status": "wontfix",
+      "note": "CLI scripts and entry points \u2014 not meant to be imported",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:46:20+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "orphaned::debug.py": {
+      "id": "orphaned::debug.py",
+      "detector": "orphaned",
+      "file": "debug.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Orphaned file (731 LOC): zero importers, not an entry point",
+      "detail": {
+        "loc": 731
+      },
+      "status": "wontfix",
+      "note": "CLI scripts and entry points \u2014 not meant to be imported",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:46:20+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "orphaned::monthly_equity_shortlist.py": {
+      "id": "orphaned::monthly_equity_shortlist.py",
+      "detector": "orphaned",
+      "file": "monthly_equity_shortlist.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Orphaned file (714 LOC): zero importers, not an entry point",
+      "detail": {
+        "loc": 714
+      },
+      "status": "wontfix",
+      "note": "CLI scripts and entry points \u2014 not meant to be imported",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:46:20+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "orphaned::analyze_channels.py": {
+      "id": "orphaned::analyze_channels.py",
+      "detector": "orphaned",
+      "file": "analyze_channels.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Orphaned file (576 LOC): zero importers, not an entry point",
+      "detail": {
+        "loc": 576
+      },
+      "status": "wontfix",
+      "note": "CLI scripts and entry points \u2014 not meant to be imported",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:46:20+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "orphaned::backfill_reactions.py": {
+      "id": "orphaned::backfill_reactions.py",
+      "detector": "orphaned",
+      "file": "backfill_reactions.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Orphaned file (465 LOC): zero importers, not an entry point",
+      "detail": {
+        "loc": 465
+      },
+      "status": "wontfix",
+      "note": "CLI scripts and entry points \u2014 not meant to be imported",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:46:20+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "orphaned::find_gaps.py": {
+      "id": "orphaned::find_gaps.py",
+      "detector": "orphaned",
+      "file": "find_gaps.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Orphaned file (322 LOC): zero importers, not an entry point",
+      "detail": {
+        "loc": 322
+      },
+      "status": "wontfix",
+      "note": "CLI scripts and entry points \u2014 not meant to be imported",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:46:20+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "orphaned::delete_user_messages.py": {
+      "id": "orphaned::delete_user_messages.py",
+      "detector": "orphaned",
+      "file": "delete_user_messages.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Orphaned file (286 LOC): zero importers, not an entry point",
+      "detail": {
+        "loc": 286
+      },
+      "status": "wontfix",
+      "note": "CLI scripts and entry points \u2014 not meant to be imported",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:46:20+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "orphaned::download_files.py": {
+      "id": "orphaned::download_files.py",
+      "detector": "orphaned",
+      "file": "download_files.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Orphaned file (204 LOC): zero importers, not an entry point",
+      "detail": {
+        "loc": 204
+      },
+      "status": "wontfix",
+      "note": "CLI scripts and entry points \u2014 not meant to be imported",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:46:20+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "orphaned::download_videos.py": {
+      "id": "orphaned::download_videos.py",
+      "detector": "orphaned",
+      "file": "download_videos.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Orphaned file (160 LOC): zero importers, not an entry point",
+      "detail": {
+        "loc": 160
+      },
+      "status": "wontfix",
+      "note": "CLI scripts and entry points \u2014 not meant to be imported",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:46:20+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "orphaned::cleanup_empty_threads.py": {
+      "id": "orphaned::cleanup_empty_threads.py",
+      "detector": "orphaned",
+      "file": "cleanup_empty_threads.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Orphaned file (157 LOC): zero importers, not an entry point",
+      "detail": {
+        "loc": 157
+      },
+      "status": "wontfix",
+      "note": "CLI scripts and entry points \u2014 not meant to be imported",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:46:20+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::download_files.py::swallowed_error": {
+      "id": "smells::download_files.py::swallowed_error",
+      "detector": "smells",
+      "file": "download_files.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "4x Catch block that only logs (swallowed error)",
+      "detail": {
+        "smell_id": "swallowed_error",
+        "severity": "high",
+        "count": 4,
+        "lines": [
+          102,
+          188,
+          196,
+          198
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts use catch-and-log pattern intentionally: errors in one operation should not abort the batch. Discord API calls, DB queries, and file operations are individually non-critical.",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:45+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::delete_user_messages.py::swallowed_error": {
+      "id": "smells::delete_user_messages.py::swallowed_error",
+      "detector": "smells",
+      "file": "delete_user_messages.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "7x Catch block that only logs (swallowed error)",
+      "detail": {
+        "smell_id": "swallowed_error",
+        "severity": "high",
+        "count": 7,
+        "lines": [
+          84,
+          86,
+          115,
+          117,
+          159,
+          173,
+          257
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts use catch-and-log pattern intentionally: errors in one operation should not abort the batch. Discord API calls, DB queries, and file operations are individually non-critical.",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:45+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::backfill_reactions.py::swallowed_error": {
+      "id": "smells::backfill_reactions.py::swallowed_error",
+      "detector": "smells",
+      "file": "backfill_reactions.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "3x Catch block that only logs (swallowed error)",
+      "detail": {
+        "smell_id": "swallowed_error",
+        "severity": "high",
+        "count": 3,
+        "lines": [
+          181,
+          218,
+          313
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts use catch-and-log pattern intentionally: errors in one operation should not abort the batch. Discord API calls, DB queries, and file operations are individually non-critical.",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:45+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::cleanup_empty_threads.py::swallowed_error": {
+      "id": "smells::cleanup_empty_threads.py::swallowed_error",
+      "detector": "smells",
+      "file": "cleanup_empty_threads.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "3x Catch block that only logs (swallowed error)",
+      "detail": {
+        "smell_id": "swallowed_error",
+        "severity": "high",
+        "count": 3,
+        "lines": [
+          53,
+          55,
+          58
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts use catch-and-log pattern intentionally: errors in one operation should not abort the batch. Discord API calls, DB queries, and file operations are individually non-critical.",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:45+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::analyze_channels.py::swallowed_error": {
+      "id": "smells::analyze_channels.py::swallowed_error",
+      "detector": "smells",
+      "file": "analyze_channels.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "1x Catch block that only logs (swallowed error)",
+      "detail": {
+        "smell_id": "swallowed_error",
+        "severity": "high",
+        "count": 1,
+        "lines": [
+          50
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts use catch-and-log pattern intentionally: errors in one operation should not abort the batch. Discord API calls, DB queries, and file operations are individually non-critical.",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:45+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::debug.py::swallowed_error": {
+      "id": "smells::debug.py::swallowed_error",
+      "detector": "smells",
+      "file": "debug.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "13x Catch block that only logs (swallowed error)",
+      "detail": {
+        "smell_id": "swallowed_error",
+        "severity": "high",
+        "count": 13,
+        "lines": [
+          273,
+          317,
+          419,
+          428,
+          434,
+          570,
+          572,
+          574,
+          576,
+          590
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts use catch-and-log pattern intentionally: errors in one operation should not abort the batch. Discord API calls, DB queries, and file operations are individually non-critical.",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:45+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::monthly_equity_shortlist.py::swallowed_error": {
+      "id": "smells::monthly_equity_shortlist.py::swallowed_error",
+      "detector": "smells",
+      "file": "monthly_equity_shortlist.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "1x Catch block that only logs (swallowed error)",
+      "detail": {
+        "smell_id": "swallowed_error",
+        "severity": "high",
+        "count": 1,
+        "lines": [
+          454
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts use catch-and-log pattern intentionally: errors in one operation should not abort the batch. Discord API calls, DB queries, and file operations are individually non-critical.",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:45+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::archive_discord.py::swallowed_error": {
+      "id": "smells::archive_discord.py::swallowed_error",
+      "detector": "smells",
+      "file": "archive_discord.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "18x Catch block that only logs (swallowed error)",
+      "detail": {
+        "smell_id": "swallowed_error",
+        "severity": "high",
+        "count": 18,
+        "lines": [
+          215,
+          227,
+          326,
+          423,
+          485,
+          779,
+          833,
+          868,
+          943,
+          980
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts use catch-and-log pattern intentionally: errors in one operation should not abort the batch. Discord API calls, DB queries, and file operations are individually non-critical.",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:45+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::debug.py::bare_except": {
+      "id": "smells::debug.py::bare_except",
+      "detector": "smells",
+      "file": "debug.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "2x Bare except clause (catches everything including SystemExit)",
+      "detail": {
+        "smell_id": "bare_except",
+        "severity": "high",
+        "count": 2,
+        "lines": [
+          428,
+          434
+        ]
+      },
+      "status": "fixed",
+      "note": "Fixed bare excepts, empty excepts, and deduplicated functions",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:45:57+00:00",
+      "resolved_at": "2026-02-12T16:48:39+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::weekly_digest.py::bare_except": {
+      "id": "smells::weekly_digest.py::bare_except",
+      "detector": "smells",
+      "file": "weekly_digest.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "4x Bare except clause (catches everything including SystemExit)",
+      "detail": {
+        "smell_id": "bare_except",
+        "severity": "high",
+        "count": 4,
+        "lines": [
+          136,
+          188,
+          223,
+          614
+        ]
+      },
+      "status": "fixed",
+      "note": "Fixed bare excepts, empty excepts, and deduplicated functions",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:45:57+00:00",
+      "resolved_at": "2026-02-12T16:48:39+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::analyze_channels.py::monster_function": {
+      "id": "smells::analyze_channels.py::monster_function",
+      "detector": "smells",
+      "file": "analyze_channels.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "1x Monster function (>150 LOC)",
+      "detail": {
+        "smell_id": "monster_function",
+        "severity": "high",
+        "count": 1,
+        "lines": [
+          214
+        ]
+      },
+      "status": "wontfix",
+      "note": "Large functions in scripts are self-contained workflows (archive, digest, equity analysis) \u2014 decomposition would add complexity without clear benefit for standalone scripts",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:00+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::monthly_equity_shortlist.py::monster_function": {
+      "id": "smells::monthly_equity_shortlist.py::monster_function",
+      "detector": "smells",
+      "file": "monthly_equity_shortlist.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "2x Monster function (>150 LOC)",
+      "detail": {
+        "smell_id": "monster_function",
+        "severity": "high",
+        "count": 2,
+        "lines": [
+          263,
+          459
+        ]
+      },
+      "status": "wontfix",
+      "note": "Large functions in scripts are self-contained workflows (archive, digest, equity analysis) \u2014 decomposition would add complexity without clear benefit for standalone scripts",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:00+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::archive_discord.py::monster_function": {
+      "id": "smells::archive_discord.py::monster_function",
+      "detector": "smells",
+      "file": "archive_discord.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "2x Monster function (>150 LOC)",
+      "detail": {
+        "smell_id": "monster_function",
+        "severity": "high",
+        "count": 2,
+        "lines": [
+          261,
+          607
+        ]
+      },
+      "status": "wontfix",
+      "note": "Large functions in scripts are self-contained workflows (archive, digest, equity analysis) \u2014 decomposition would add complexity without clear benefit for standalone scripts",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:00+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::debug.py::empty_except": {
+      "id": "smells::debug.py::empty_except",
+      "detector": "smells",
+      "file": "debug.py",
+      "tier": 2,
+      "confidence": "medium",
+      "summary": "1x Empty except block (except: pass)",
+      "detail": {
+        "smell_id": "empty_except",
+        "severity": "high",
+        "count": 1,
+        "lines": [
+          317
+        ]
+      },
+      "status": "fixed",
+      "note": "Fixed bare excepts, empty excepts, and deduplicated functions",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:45:57+00:00",
+      "resolved_at": "2026-02-12T16:48:39+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::download_files.py::broad_except": {
+      "id": "smells::download_files.py::broad_except",
+      "detector": "smells",
+      "file": "download_files.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "4x Broad except \u2014 check library exceptions before narrowing",
+      "detail": {
+        "smell_id": "broad_except",
+        "severity": "medium",
+        "count": 4,
+        "lines": [
+          102,
+          125,
+          188,
+          198
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts dealing with Discord API, Supabase, and subprocess calls catch broad Exception intentionally \u2014 the specific exception types from these libraries are diverse and the handling is the same (log and continue)",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:53+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::delete_user_messages.py::broad_except": {
+      "id": "smells::delete_user_messages.py::broad_except",
+      "detector": "smells",
+      "file": "delete_user_messages.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "7x Broad except \u2014 check library exceptions before narrowing",
+      "detail": {
+        "smell_id": "broad_except",
+        "severity": "medium",
+        "count": 7,
+        "lines": [
+          86,
+          115,
+          117,
+          159,
+          173,
+          183,
+          278
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts dealing with Discord API, Supabase, and subprocess calls catch broad Exception intentionally \u2014 the specific exception types from these libraries are diverse and the handling is the same (log and continue)",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:53+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::backfill_reactions.py::broad_except": {
+      "id": "smells::backfill_reactions.py::broad_except",
+      "detector": "smells",
+      "file": "backfill_reactions.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "6x Broad except \u2014 check library exceptions before narrowing",
+      "detail": {
+        "smell_id": "broad_except",
+        "severity": "medium",
+        "count": 6,
+        "lines": [
+          173,
+          181,
+          203,
+          218,
+          253,
+          313
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts dealing with Discord API, Supabase, and subprocess calls catch broad Exception intentionally \u2014 the specific exception types from these libraries are diverse and the handling is the same (log and continue)",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:53+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::cleanup_empty_threads.py::broad_except": {
+      "id": "smells::cleanup_empty_threads.py::broad_except",
+      "detector": "smells",
+      "file": "cleanup_empty_threads.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "5x Broad except \u2014 check library exceptions before narrowing",
+      "detail": {
+        "smell_id": "broad_except",
+        "severity": "medium",
+        "count": 5,
+        "lines": [
+          55,
+          58,
+          128,
+          136,
+          151
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts dealing with Discord API, Supabase, and subprocess calls catch broad Exception intentionally \u2014 the specific exception types from these libraries are diverse and the handling is the same (log and continue)",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:53+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::analyze_channels.py::broad_except": {
+      "id": "smells::analyze_channels.py::broad_except",
+      "detector": "smells",
+      "file": "analyze_channels.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "8x Broad except \u2014 check library exceptions before narrowing",
+      "detail": {
+        "smell_id": "broad_except",
+        "severity": "medium",
+        "count": 8,
+        "lines": [
+          41,
+          50,
+          122,
+          202,
+          210,
+          353,
+          503,
+          513
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts dealing with Discord API, Supabase, and subprocess calls catch broad Exception intentionally \u2014 the specific exception types from these libraries are diverse and the handling is the same (log and continue)",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:53+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::debug.py::broad_except": {
+      "id": "smells::debug.py::broad_except",
+      "detector": "smells",
+      "file": "debug.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "7x Broad except \u2014 check library exceptions before narrowing",
+      "detail": {
+        "smell_id": "broad_except",
+        "severity": "medium",
+        "count": 7,
+        "lines": [
+          317,
+          419,
+          428,
+          434,
+          576,
+          592,
+          640
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts dealing with Discord API, Supabase, and subprocess calls catch broad Exception intentionally \u2014 the specific exception types from these libraries are diverse and the handling is the same (log and continue)",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:53+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::refresh_media_urls.py::broad_except": {
+      "id": "smells::refresh_media_urls.py::broad_except",
+      "detector": "smells",
+      "file": "refresh_media_urls.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "1x Broad except \u2014 check library exceptions before narrowing",
+      "detail": {
+        "smell_id": "broad_except",
+        "severity": "medium",
+        "count": 1,
+        "lines": [
+          282
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts dealing with Discord API, Supabase, and subprocess calls catch broad Exception intentionally \u2014 the specific exception types from these libraries are diverse and the handling is the same (log and continue)",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:53+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::download_videos.py::broad_except": {
+      "id": "smells::download_videos.py::broad_except",
+      "detector": "smells",
+      "file": "download_videos.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "3x Broad except \u2014 check library exceptions before narrowing",
+      "detail": {
+        "smell_id": "broad_except",
+        "severity": "medium",
+        "count": 3,
+        "lines": [
+          39,
+          58,
+          142
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts dealing with Discord API, Supabase, and subprocess calls catch broad Exception intentionally \u2014 the specific exception types from these libraries are diverse and the handling is the same (log and continue)",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:53+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::monthly_equity_shortlist.py::broad_except": {
+      "id": "smells::monthly_equity_shortlist.py::broad_except",
+      "detector": "smells",
+      "file": "monthly_equity_shortlist.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "6x Broad except \u2014 check library exceptions before narrowing",
+      "detail": {
+        "smell_id": "broad_except",
+        "severity": "medium",
+        "count": 6,
+        "lines": [
+          203,
+          391,
+          454,
+          497,
+          655,
+          699
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts dealing with Discord API, Supabase, and subprocess calls catch broad Exception intentionally \u2014 the specific exception types from these libraries are diverse and the handling is the same (log and continue)",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:53+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::archive_discord.py::broad_except": {
+      "id": "smells::archive_discord.py::broad_except",
+      "detector": "smells",
+      "file": "archive_discord.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "3x Broad except \u2014 check library exceptions before narrowing",
+      "detail": {
+        "smell_id": "broad_except",
+        "severity": "medium",
+        "count": 3,
+        "lines": [
+          215,
+          217,
+          227
+        ]
+      },
+      "status": "wontfix",
+      "note": "Scripts dealing with Discord API, Supabase, and subprocess calls catch broad Exception intentionally \u2014 the specific exception types from these libraries are diverse and the handling is the same (log and continue)",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:48:53+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::backfill_reactions.py::hardcoded_url": {
+      "id": "smells::backfill_reactions.py::hardcoded_url",
+      "detector": "smells",
+      "file": "backfill_reactions.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "1x Hardcoded URL in source code",
+      "detail": {
+        "smell_id": "hardcoded_url",
+        "severity": "medium",
+        "count": 1,
+        "lines": [
+          303
+        ]
+      },
+      "status": "wontfix",
+      "note": "URLs are API endpoints (Discord, Railway) that are stable and appropriate inline",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:10+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::debug.py::hardcoded_url": {
+      "id": "smells::debug.py::hardcoded_url",
+      "detector": "smells",
+      "file": "debug.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "1x Hardcoded URL in source code",
+      "detail": {
+        "smell_id": "hardcoded_url",
+        "severity": "medium",
+        "count": 1,
+        "lines": [
+          555
+        ]
+      },
+      "status": "wontfix",
+      "note": "URLs are API endpoints (Discord, Railway) that are stable and appropriate inline",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:10+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::weekly_digest.py::hardcoded_url": {
+      "id": "smells::weekly_digest.py::hardcoded_url",
+      "detector": "smells",
+      "file": "weekly_digest.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "1x Hardcoded URL in source code",
+      "detail": {
+        "smell_id": "hardcoded_url",
+        "severity": "medium",
+        "count": 1,
+        "lines": [
+          610
+        ]
+      },
+      "status": "wontfix",
+      "note": "URLs are API endpoints (Discord, Railway) that are stable and appropriate inline",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:10+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::debug.py::inline_class": {
+      "id": "smells::debug.py::inline_class",
+      "detector": "smells",
+      "file": "debug.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "1x Class defined inside a function",
+      "detail": {
+        "smell_id": "inline_class",
+        "severity": "medium",
+        "count": 1,
+        "lines": [
+          692
+        ]
+      },
+      "status": "wontfix",
+      "note": "Inline class is a Streamlit component definition \u2014 standard pattern for Streamlit apps",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:10+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::delete_user_messages.py::deferred_import": {
+      "id": "smells::delete_user_messages.py::deferred_import",
+      "detector": "smells",
+      "file": "delete_user_messages.py",
+      "tier": 3,
+      "confidence": "low",
+      "summary": "1x Function-level import (possible circular import workaround)",
+      "detail": {
+        "smell_id": "deferred_import",
+        "severity": "low",
+        "count": 1,
+        "lines": [
+          238
+        ]
+      },
+      "status": "wontfix",
+      "note": "Deferred imports avoid circular imports and reduce startup time for conditionally-used modules",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:10+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::debug.py::deferred_import": {
+      "id": "smells::debug.py::deferred_import",
+      "detector": "smells",
+      "file": "debug.py",
+      "tier": 3,
+      "confidence": "low",
+      "summary": "1x Function-level import (possible circular import workaround)",
+      "detail": {
+        "smell_id": "deferred_import",
+        "severity": "low",
+        "count": 1,
+        "lines": [
+          545
+        ]
+      },
+      "status": "wontfix",
+      "note": "Deferred imports avoid circular imports and reduce startup time for conditionally-used modules",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:10+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::archive_discord.py::deferred_import": {
+      "id": "smells::archive_discord.py::deferred_import",
+      "detector": "smells",
+      "file": "archive_discord.py",
+      "tier": 3,
+      "confidence": "low",
+      "summary": "1x Function-level import (possible circular import workaround)",
+      "detail": {
+        "smell_id": "deferred_import",
+        "severity": "low",
+        "count": 1,
+        "lines": [
+          1351
+        ]
+      },
+      "status": "wontfix",
+      "note": "Deferred imports avoid circular imports and reduce startup time for conditionally-used modules",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:10+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::weekly_digest.py::deferred_import": {
+      "id": "smells::weekly_digest.py::deferred_import",
+      "detector": "smells",
+      "file": "weekly_digest.py",
+      "tier": 3,
+      "confidence": "low",
+      "summary": "3x Function-level import (possible circular import workaround)",
+      "detail": {
+        "smell_id": "deferred_import",
+        "severity": "low",
+        "count": 3,
+        "lines": [
+          513,
+          549,
+          549
+        ]
+      },
+      "status": "wontfix",
+      "note": "Deferred imports avoid circular imports and reduce startup time for conditionally-used modules",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:10+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::cleanup_empty_threads.py::magic_number": {
+      "id": "smells::cleanup_empty_threads.py::magic_number",
+      "detector": "smells",
+      "file": "cleanup_empty_threads.py",
+      "tier": 3,
+      "confidence": "low",
+      "summary": "1x Magic numbers (>1000 in logic)",
+      "detail": {
+        "smell_id": "magic_number",
+        "severity": "low",
+        "count": 1,
+        "lines": [
+          25
+        ]
+      },
+      "status": "wontfix",
+      "note": "Constants like batch sizes (1000), line limits, and timeouts are clear in context and only used once",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:10+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::debug.py::magic_number": {
+      "id": "smells::debug.py::magic_number",
+      "detector": "smells",
+      "file": "debug.py",
+      "tier": 3,
+      "confidence": "low",
+      "summary": "1x Magic numbers (>1000 in logic)",
+      "detail": {
+        "smell_id": "magic_number",
+        "severity": "low",
+        "count": 1,
+        "lines": [
+          268
+        ]
+      },
+      "status": "wontfix",
+      "note": "Constants like batch sizes (1000), line limits, and timeouts are clear in context and only used once",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:10+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::monthly_equity_shortlist.py::magic_number": {
+      "id": "smells::monthly_equity_shortlist.py::magic_number",
+      "detector": "smells",
+      "file": "monthly_equity_shortlist.py",
+      "tier": 3,
+      "confidence": "low",
+      "summary": "1x Magic numbers (>1000 in logic)",
+      "detail": {
+        "smell_id": "magic_number",
+        "severity": "low",
+        "count": 1,
+        "lines": [
+          161
+        ]
+      },
+      "status": "wontfix",
+      "note": "Constants like batch sizes (1000), line limits, and timeouts are clear in context and only used once",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:10+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "smells::archive_discord.py::magic_number": {
+      "id": "smells::archive_discord.py::magic_number",
+      "detector": "smells",
+      "file": "archive_discord.py",
+      "tier": 3,
+      "confidence": "low",
+      "summary": "1x Magic numbers (>1000 in logic)",
+      "detail": {
+        "smell_id": "magic_number",
+        "severity": "low",
+        "count": 1,
+        "lines": [
+          40
+        ]
+      },
+      "status": "wontfix",
+      "note": "Constants like batch sizes (1000), line limits, and timeouts are clear in context and only used once",
+      "first_seen": "2026-02-12T16:45:57+00:00",
+      "last_seen": "2026-02-12T16:50:30+00:00",
+      "resolved_at": "2026-02-12T16:49:10+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "dupes::weekly_digest.py::cmd_category_top::weekly_digest.py::cmd_top": {
+      "id": "dupes::weekly_digest.py::cmd_category_top::weekly_digest.py::cmd_top",
+      "detector": "dupes",
+      "file": "weekly_digest.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Near dupe: cmd_top (weekly_digest.py:684) <-> cmd_category_top (weekly_digest.py:696) [94%]",
+      "detail": {
+        "fn_a": {
+          "file": "./weekly_digest.py",
+          "name": "cmd_top",
+          "line": 684,
+          "loc": 10
+        },
+        "fn_b": {
+          "file": "./weekly_digest.py",
+          "name": "cmd_category_top",
+          "line": 696,
+          "loc": 10
+        },
+        "similarity": 0.939,
+        "kind": "near-duplicate"
+      },
+      "status": "fixed",
+      "note": "Fixed bare excepts, empty excepts, and deduplicated functions",
+      "first_seen": "2026-02-12T16:45:58+00:00",
+      "last_seen": "2026-02-12T16:45:58+00:00",
+      "resolved_at": "2026-02-12T16:48:39+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "dupes::weekly_digest.py::get_top_messages::weekly_digest.py::get_top_messages_in_category": {
+      "id": "dupes::weekly_digest.py::get_top_messages::weekly_digest.py::get_top_messages_in_category",
+      "detector": "dupes",
+      "file": "weekly_digest.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Near dupe: get_top_messages (weekly_digest.py:165) <-> get_top_messages_in_category (weekly_digest.py:195) [87%]",
+      "detail": {
+        "fn_a": {
+          "file": "./weekly_digest.py",
+          "name": "get_top_messages",
+          "line": 165,
+          "loc": 28
+        },
+        "fn_b": {
+          "file": "./weekly_digest.py",
+          "name": "get_top_messages_in_category",
+          "line": 195,
+          "loc": 33
+        },
+        "similarity": 0.87,
+        "kind": "near-duplicate"
+      },
+      "status": "fixed",
+      "note": "Fixed bare excepts, empty excepts, and deduplicated functions",
+      "first_seen": "2026-02-12T16:45:58+00:00",
+      "last_seen": "2026-02-12T16:45:58+00:00",
+      "resolved_at": "2026-02-12T16:48:39+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "dupes::debug.py::cmd_railway_logs::debug.py::cmd_railway_status": {
+      "id": "dupes::debug.py::cmd_railway_logs::debug.py::cmd_railway_status",
+      "detector": "dupes",
+      "file": "debug.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Near dupe: cmd_railway_status (debug.py:580) <-> cmd_railway_logs (debug.py:597) [86%]",
+      "detail": {
+        "fn_a": {
+          "file": "./debug.py",
+          "name": "cmd_railway_status",
+          "line": 580,
+          "loc": 15
+        },
+        "fn_b": {
+          "file": "./debug.py",
+          "name": "cmd_railway_logs",
+          "line": 597,
+          "loc": 16
+        },
+        "similarity": 0.858,
+        "kind": "near-duplicate"
+      },
+      "status": "fixed",
+      "note": "Fixed bare excepts, empty excepts, and deduplicated functions",
+      "first_seen": "2026-02-12T16:45:58+00:00",
+      "last_seen": "2026-02-12T16:45:58+00:00",
+      "resolved_at": "2026-02-12T16:48:39+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    },
+    "dupes::weekly_digest.py::get_messages_in_range::weekly_digest.py::get_top_messages": {
+      "id": "dupes::weekly_digest.py::get_messages_in_range::weekly_digest.py::get_top_messages",
+      "detector": "dupes",
+      "file": "weekly_digest.py",
+      "tier": 3,
+      "confidence": "medium",
+      "summary": "Near dupe: get_messages_in_range (weekly_digest.py:143) <-> get_top_messages (weekly_digest.py:165) [81%]",
+      "detail": {
+        "fn_a": {
+          "file": "./weekly_digest.py",
+          "name": "get_messages_in_range",
+          "line": 143,
+          "loc": 20
+        },
+        "fn_b": {
+          "file": "./weekly_digest.py",
+          "name": "get_top_messages",
+          "line": 165,
+          "loc": 28
+        },
+        "similarity": 0.807,
+        "kind": "near-duplicate"
+      },
+      "status": "fixed",
+      "note": "Fixed bare excepts, empty excepts, and deduplicated functions",
+      "first_seen": "2026-02-12T16:45:58+00:00",
+      "last_seen": "2026-02-12T16:45:58+00:00",
+      "resolved_at": "2026-02-12T16:48:39+00:00",
+      "reopen_count": 0,
+      "lang": "python"
+    }
+  },
+  "tool_hash": "ceb2dbffa5ca",
+  "potentials": {
+    "python": {
+      "unused": 12,
+      "structural": 12,
+      "flat_dirs": 1,
+      "props": 0,
+      "single_use": 1,
+      "cycles": 12,
+      "orphaned": 12,
+      "facade": 12,
+      "smells": 12,
+      "dupes": 86
+    }
+  },
+  "codebase_metrics": {
+    "python": {
+      "total_files": 12,
+      "total_loc": 6468,
+      "total_directories": 1
+    }
+  },
+  "scan_completeness": {
+    "python": "full"
+  },
+  "strict_score": 11.3,
+  "dimension_scores": {
+    "Import hygiene": {
+      "score": 100.0,
+      "strict": 100.0,
+      "checks": 12,
+      "issues": 0,
+      "tier": 1,
+      "detectors": {
+        "unused": {
+          "potential": 12,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        }
+      }
+    },
+    "File health": {
+      "score": 100.0,
+      "strict": 45.0,
+      "checks": 12,
+      "issues": 0,
+      "tier": 3,
+      "detectors": {
+        "structural": {
+          "potential": 12,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        }
+      }
+    },
+    "Coupling": {
+      "score": 100.0,
+      "strict": 100.0,
+      "checks": 1,
+      "issues": 0,
+      "tier": 3,
+      "detectors": {
+        "single_use": {
+          "potential": 1,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        }
+      }
+    },
+    "Organization": {
+      "score": 100.0,
+      "strict": 69.2,
+      "checks": 25,
+      "issues": 0,
+      "tier": 3,
+      "detectors": {
+        "orphaned": {
+          "potential": 12,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        },
+        "flat_dirs": {
+          "potential": 1,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        },
+        "facade": {
+          "potential": 12,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        }
+      }
+    },
+    "Code quality": {
+      "score": 100.0,
+      "strict": 13.3,
+      "checks": 12,
+      "issues": 0,
+      "tier": 3,
+      "detectors": {
+        "smells": {
+          "potential": 12,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0
+        }
+      }
+    },
+    "Duplication": {
+      "score": 100.0,
+      "strict": 100.0,
+      "checks": 86,
+      "issues": 0,
+      "tier": 3,
+      "detectors": {
+        "dupes": {
+          "potential": 86,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        }
+      }
+    },
+    "Dependency health": {
+      "score": 100.0,
+      "strict": 100.0,
+      "checks": 12,
+      "issues": 0,
+      "tier": 4,
+      "detectors": {
+        "cycles": {
+          "potential": 12,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        }
+      }
+    }
+  },
+  "objective_score": 100.0,
+  "objective_strict": 84.2
+}

@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "created": "2026-02-12T16:22:23+00:00",
+  "last_scan": "2026-02-12T16:24:02+00:00",
+  "scan_count": 2,
+  "config": {
+    "ignore": []
+  },
+  "score": 100.0,
+  "stats": {
+    "total": 2,
+    "open": 0,
+    "fixed": 2,
+    "auto_resolved": 0,
+    "wontfix": 0,
+    "false_positive": 0,
+    "by_tier": {
+      "1": {
+        "open": 0,
+        "fixed": 2,
+        "auto_resolved": 0,
+        "wontfix": 0,
+        "false_positive": 0
+      }
+    }
+  },
+  "findings": {
+    "logs::supabase/functions/refresh-media-urls/index.ts::fetchDiscordMessage": {
+      "id": "logs::supabase/functions/refresh-media-urls/index.ts::fetchDiscordMessage",
+      "detector": "logs",
+      "file": "supabase/functions/refresh-media-urls/index.ts",
+      "tier": 1,
+      "confidence": "high",
+      "summary": "3 tagged logs [fetchDiscordMessage]",
+      "detail": {
+        "count": 3,
+        "lines": [
+          75,
+          84,
+          88
+        ]
+      },
+      "status": "fixed",
+      "note": "Removed 3 verbose debug console.logs; kept error log with console.error",
+      "first_seen": "2026-02-12T16:22:23+00:00",
+      "last_seen": "2026-02-12T16:22:23+00:00",
+      "resolved_at": "2026-02-12T16:23:56+00:00",
+      "reopen_count": 0,
+      "lang": "typescript"
+    },
+    "logs::supabase/functions/refresh-media-urls/index.ts::refresh-media-urls": {
+      "id": "logs::supabase/functions/refresh-media-urls/index.ts::refresh-media-urls",
+      "detector": "logs",
+      "file": "supabase/functions/refresh-media-urls/index.ts",
+      "tier": 1,
+      "confidence": "high",
+      "summary": "9 tagged logs [refresh-media-urls]",
+      "detail": {
+        "count": 9,
+        "lines": [
+          127,
+          157,
+          165,
+          168,
+          186,
+          218,
+          227,
+          236,
+          252
+        ]
+      },
+      "status": "fixed",
+      "note": "Removed 7 verbose debug console.logs (raw body, DB results, type info, retry trace); kept 2 error logs with console.error and 1 success log",
+      "first_seen": "2026-02-12T16:22:23+00:00",
+      "last_seen": "2026-02-12T16:22:23+00:00",
+      "resolved_at": "2026-02-12T16:23:57+00:00",
+      "reopen_count": 0,
+      "lang": "typescript"
+    }
+  },
+  "tool_hash": "ceb2dbffa5ca",
+  "strict_score": 100.0
+}

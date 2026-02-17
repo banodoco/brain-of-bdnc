@@ -751,9 +751,17 @@ DO NOT introduce your response. Reply with ONLY the JSON array or [NO SIGNIFICAN
                 current_system_prompt = system_prompt if attempt == 1 else retry_system_prompt
                 current_user_prompt = user_prompt_content
                 
-                # On retry, add explicit instruction
+                # On retry, add explicit instruction and include the previous parse/error signal.
+                # This helps the model avoid repeating the same formatting mistake.
                 if attempt > 1:
-                    current_user_prompt += "\n\nIMPORTANT: Return ONLY the JSON array. No explanation or preamble."
+                    retry_note = "\n\nIMPORTANT: Return ONLY the JSON array. No explanation or preamble."
+                    if last_error:
+                        retry_note += (
+                            f"\n\nRETRY CONTEXT: This is retry attempt {attempt}. "
+                            f"The previous attempt failed with this error:\n{last_error}\n"
+                            "Please avoid this error and return strictly valid JSON."
+                        )
+                    current_user_prompt += retry_note
                 
                 self.logger.info(f"Calling LLM for combine_channel_summaries (attempt {attempt}/{max_attempts})...")
 
@@ -1022,5 +1030,4 @@ Check each bullet point against the full summary. Identify any inaccuracies, inv
             self.logger.error(f"Error generating short summary via LLM dispatcher: {e}", exc_info=True)
             # Return a formatted error message
             return f"📨 __{message_count} messages sent__\n• Error generating summary due to API issue."
-
 

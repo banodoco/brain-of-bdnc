@@ -1,0 +1,1787 @@
+{
+  "command": "show",
+  "query": "smells",
+  "status_filter": "wontfix",
+  "total": 106,
+  "summary": {
+    "by_tier": {
+      "T2": 32,
+      "T3": 74
+    },
+    "by_detector": {
+      "smells": 106
+    },
+    "files": 40
+  },
+  "by_file": {
+    "scripts/debug.py": [
+      {
+        "id": "smells::scripts/debug.py::swallowed_error",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "10x Catch block that only logs (swallowed error)",
+        "detail": {
+          "smell_id": "swallowed_error",
+          "severity": "high",
+          "count": 10,
+          "lines": [
+            273,
+            317,
+            419,
+            428,
+            434,
+            570,
+            572,
+            574,
+            590,
+            638
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/debug.py::bare_except",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "2x Bare except clause (catches everything including SystemExit)",
+        "detail": {
+          "smell_id": "bare_except",
+          "severity": "high",
+          "count": 2,
+          "lines": [
+            428,
+            434
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/debug.py::empty_except",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Empty except block (except: pass)",
+        "detail": {
+          "smell_id": "empty_except",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            317
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/debug.py::broad_except",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "4x Broad except \u2014 check library exceptions before narrowing",
+        "detail": {
+          "smell_id": "broad_except",
+          "severity": "medium",
+          "count": 4,
+          "lines": [
+            317,
+            419,
+            428,
+            434
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/debug.py::hardcoded_url",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Hardcoded URL in source code",
+        "detail": {
+          "smell_id": "hardcoded_url",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            555
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/debug.py::inline_class",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Class defined inside a function",
+        "detail": {
+          "smell_id": "inline_class",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            692
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/debug.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            545
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/debug.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            268
+          ]
+        }
+      }
+    ],
+    "src/features/summarising/summariser.py": [
+      {
+        "id": "smells::src/features/summarising/summariser.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            1766
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/summarising/summariser.py::bare_except",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "2x Bare except clause (catches everything including SystemExit)",
+        "detail": {
+          "smell_id": "bare_except",
+          "severity": "high",
+          "count": 2,
+          "lines": [
+            1044,
+            1185
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/summarising/summariser.py::empty_except",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "2x Empty except block (except: pass)",
+        "detail": {
+          "smell_id": "empty_except",
+          "severity": "high",
+          "count": 2,
+          "lines": [
+            1044,
+            1185
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/summarising/summariser.py::hardcoded_url",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "2x Hardcoded URL in source code",
+        "detail": {
+          "smell_id": "hardcoded_url",
+          "severity": "medium",
+          "count": 2,
+          "lines": [
+            258,
+            1956
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/summarising/summariser.py::dead_function",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "4x Dead function (body is only pass/return)",
+        "detail": {
+          "smell_id": "dead_function",
+          "severity": "medium",
+          "count": 4,
+          "lines": [
+            1593,
+            2151,
+            2160,
+            2164
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/summarising/summariser.py::star_import",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Star import (from X import *)",
+        "detail": {
+          "smell_id": "star_import",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            24
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/summarising/summariser.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "6x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 6,
+          "lines": [
+            733,
+            1002,
+            1122,
+            1580,
+            1627,
+            2157
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/summarising/summariser.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "2x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 2,
+          "lines": [
+            135,
+            313
+          ]
+        }
+      }
+    ],
+    "scripts/archive_discord.py": [
+      {
+        "id": "smells::scripts/archive_discord.py::swallowed_error",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "21x Catch block that only logs (swallowed error)",
+        "detail": {
+          "smell_id": "swallowed_error",
+          "severity": "high",
+          "count": 21,
+          "lines": [
+            215,
+            227,
+            326,
+            423,
+            485,
+            645,
+            799,
+            853,
+            889,
+            964
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/archive_discord.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "3x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 3,
+          "lines": [
+            261,
+            651,
+            862
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/archive_discord.py::broad_except",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "21x Broad except \u2014 check library exceptions before narrowing",
+        "detail": {
+          "smell_id": "broad_except",
+          "severity": "medium",
+          "count": 21,
+          "lines": [
+            215,
+            217,
+            227,
+            231,
+            247,
+            257,
+            320,
+            326,
+            412,
+            423
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/archive_discord.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            1358
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/archive_discord.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            40
+          ]
+        }
+      }
+    ],
+    "scripts/monthly_equity_shortlist.py": [
+      {
+        "id": "smells::scripts/monthly_equity_shortlist.py::swallowed_error",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Catch block that only logs (swallowed error)",
+        "detail": {
+          "smell_id": "swallowed_error",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            470
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/monthly_equity_shortlist.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "2x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 2,
+          "lines": [
+            271,
+            467
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/monthly_equity_shortlist.py::broad_except",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "6x Broad except \u2014 check library exceptions before narrowing",
+        "detail": {
+          "smell_id": "broad_except",
+          "severity": "medium",
+          "count": 6,
+          "lines": [
+            203,
+            274,
+            470,
+            598,
+            690,
+            752
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/monthly_equity_shortlist.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            161
+          ]
+        }
+      }
+    ],
+    "src/features/reacting/subfeatures/workflow_uploader.py": [
+      {
+        "id": "smells::src/features/reacting/subfeatures/workflow_uploader.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "3x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 3,
+          "lines": [
+            109,
+            702,
+            1082
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/reacting/subfeatures/workflow_uploader.py::hardcoded_url",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Hardcoded URL in source code",
+        "detail": {
+          "smell_id": "hardcoded_url",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            664
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/reacting/subfeatures/workflow_uploader.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            89
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/reacting/subfeatures/workflow_uploader.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            1177
+          ]
+        }
+      }
+    ],
+    "src/common/openmuse_interactor.py": [
+      {
+        "id": "smells::src/common/openmuse_interactor.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "2x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 2,
+          "lines": [
+            140,
+            442
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/openmuse_interactor.py::hardcoded_url",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "2x Hardcoded URL in source code",
+        "detail": {
+          "smell_id": "hardcoded_url",
+          "severity": "medium",
+          "count": 2,
+          "lines": [
+            660,
+            800
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/openmuse_interactor.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            79
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/openmuse_interactor.py::todo_fixme",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x TODO/FIXME/HACK comments",
+        "detail": {
+          "smell_id": "todo_fixme",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            667
+          ]
+        }
+      }
+    ],
+    "src/common/supabase_query_handler.py": [
+      {
+        "id": "smells::src/common/supabase_query_handler.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            721
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/supabase_query_handler.py::bare_except",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "5x Bare except clause (catches everything including SystemExit)",
+        "detail": {
+          "smell_id": "bare_except",
+          "severity": "high",
+          "count": 5,
+          "lines": [
+            752,
+            776,
+            785,
+            990,
+            1016
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/supabase_query_handler.py::empty_except",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "3x Empty except block (except: pass)",
+        "detail": {
+          "smell_id": "empty_except",
+          "severity": "high",
+          "count": 3,
+          "lines": [
+            752,
+            776,
+            785
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/supabase_query_handler.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "5x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 5,
+          "lines": [
+            556,
+            616,
+            656,
+            727,
+            961
+          ]
+        }
+      }
+    ],
+    "src/features/summarising/subfeatures/news_summary.py": [
+      {
+        "id": "smells::src/features/summarising/subfeatures/news_summary.py::hardcoded_url",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "2x Hardcoded URL in source code",
+        "detail": {
+          "smell_id": "hardcoded_url",
+          "severity": "medium",
+          "count": 2,
+          "lines": [
+            595,
+            625
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/summarising/subfeatures/news_summary.py::dead_function",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Dead function (body is only pass/return)",
+        "detail": {
+          "smell_id": "dead_function",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            1028
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/summarising/subfeatures/news_summary.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            661
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/summarising/subfeatures/news_summary.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            60
+          ]
+        }
+      }
+    ],
+    "src/common/base_bot.py": [
+      {
+        "id": "smells::src/common/base_bot.py::hardcoded_url",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Hardcoded URL in source code",
+        "detail": {
+          "smell_id": "hardcoded_url",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            202
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/base_bot.py::dead_function",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Dead function (body is only pass/return)",
+        "detail": {
+          "smell_id": "dead_function",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            176
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/base_bot.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            162
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/base_bot.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            124
+          ]
+        }
+      }
+    ],
+    "scripts/delete_user_messages.py": [
+      {
+        "id": "smells::scripts/delete_user_messages.py::swallowed_error",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "2x Catch block that only logs (swallowed error)",
+        "detail": {
+          "smell_id": "swallowed_error",
+          "severity": "high",
+          "count": 2,
+          "lines": [
+            84,
+            257
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/delete_user_messages.py::broad_except",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Broad except \u2014 check library exceptions before narrowing",
+        "detail": {
+          "smell_id": "broad_except",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            278
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/delete_user_messages.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            238
+          ]
+        }
+      }
+    ],
+    "scripts/backfill_reactions.py": [
+      {
+        "id": "smells::scripts/backfill_reactions.py::swallowed_error",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "2x Catch block that only logs (swallowed error)",
+        "detail": {
+          "smell_id": "swallowed_error",
+          "severity": "high",
+          "count": 2,
+          "lines": [
+            181,
+            218
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/backfill_reactions.py::broad_except",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "4x Broad except \u2014 check library exceptions before narrowing",
+        "detail": {
+          "smell_id": "broad_except",
+          "severity": "medium",
+          "count": 4,
+          "lines": [
+            173,
+            181,
+            218,
+            253
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/backfill_reactions.py::hardcoded_url",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Hardcoded URL in source code",
+        "detail": {
+          "smell_id": "hardcoded_url",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            303
+          ]
+        }
+      }
+    ],
+    "scripts/cleanup_empty_threads.py": [
+      {
+        "id": "smells::scripts/cleanup_empty_threads.py::swallowed_error",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Catch block that only logs (swallowed error)",
+        "detail": {
+          "smell_id": "swallowed_error",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            53
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/cleanup_empty_threads.py::broad_except",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "3x Broad except \u2014 check library exceptions before narrowing",
+        "detail": {
+          "smell_id": "broad_except",
+          "severity": "medium",
+          "count": 3,
+          "lines": [
+            128,
+            136,
+            151
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/cleanup_empty_threads.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            25
+          ]
+        }
+      }
+    ],
+    "scripts/analyze_channels.py": [
+      {
+        "id": "smells::scripts/analyze_channels.py::swallowed_error",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Catch block that only logs (swallowed error)",
+        "detail": {
+          "smell_id": "swallowed_error",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            50
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/analyze_channels.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            327
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/analyze_channels.py::broad_except",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "7x Broad except \u2014 check library exceptions before narrowing",
+        "detail": {
+          "smell_id": "broad_except",
+          "severity": "medium",
+          "count": 7,
+          "lines": [
+            41,
+            50,
+            122,
+            202,
+            210,
+            287,
+            462
+          ]
+        }
+      }
+    ],
+    "main.py": [
+      {
+        "id": "smells::main.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            74
+          ]
+        }
+      },
+      {
+        "id": "smells::main.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "3x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 3,
+          "lines": [
+            63,
+            185,
+            259
+          ]
+        }
+      },
+      {
+        "id": "smells::main.py::swallowed_error",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "8x Catch block that only logs (swallowed error)",
+        "detail": {
+          "smell_id": "swallowed_error",
+          "severity": "high",
+          "count": 8,
+          "lines": [
+            187,
+            192,
+            206,
+            235,
+            272,
+            292,
+            307,
+            324
+          ]
+        }
+      }
+    ],
+    "src/features/summarising/subfeatures/top_generations.py": [
+      {
+        "id": "smells::src/features/summarising/subfeatures/top_generations.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            20
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/summarising/subfeatures/top_generations.py::hardcoded_url",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "4x Hardcoded URL in source code",
+        "detail": {
+          "smell_id": "hardcoded_url",
+          "severity": "medium",
+          "count": 4,
+          "lines": [
+            177,
+            227,
+            279,
+            407
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/summarising/subfeatures/top_generations.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            248
+          ]
+        }
+      }
+    ],
+    "src/features/answering/answerer.py": [
+      {
+        "id": "smells::src/features/answering/answerer.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            515
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/answering/answerer.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "3x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 3,
+          "lines": [
+            491,
+            669,
+            681
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/answering/answerer.py::todo_fixme",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x TODO/FIXME/HACK comments",
+        "detail": {
+          "smell_id": "todo_fixme",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            609
+          ]
+        }
+      }
+    ],
+    "scripts/weekly_digest.py": [
+      {
+        "id": "smells::scripts/weekly_digest.py::bare_except",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "4x Bare except clause (catches everything including SystemExit)",
+        "detail": {
+          "smell_id": "bare_except",
+          "severity": "high",
+          "count": 4,
+          "lines": [
+            136,
+            188,
+            223,
+            614
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/weekly_digest.py::hardcoded_url",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Hardcoded URL in source code",
+        "detail": {
+          "smell_id": "hardcoded_url",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            610
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/weekly_digest.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "3x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 3,
+          "lines": [
+            513,
+            549,
+            549
+          ]
+        }
+      }
+    ],
+    "src/common/archive_runner.py": [
+      {
+        "id": "smells::src/common/archive_runner.py::empty_except",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Empty except block (except: pass)",
+        "detail": {
+          "smell_id": "empty_except",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            50
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/archive_runner.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            48
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/archive_runner.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "2x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 2,
+          "lines": [
+            110,
+            134
+          ]
+        }
+      }
+    ],
+    "src/features/admin_chat/tools.py": [
+      {
+        "id": "smells::src/features/admin_chat/tools.py::hardcoded_url",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "2x Hardcoded URL in source code",
+        "detail": {
+          "smell_id": "hardcoded_url",
+          "severity": "medium",
+          "count": 2,
+          "lines": [
+            238,
+            677
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/admin_chat/tools.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "7x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 7,
+          "lines": [
+            302,
+            349,
+            435,
+            487,
+            527,
+            607,
+            632
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/admin_chat/tools.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            618
+          ]
+        }
+      }
+    ],
+    "scripts/download_files.py": [
+      {
+        "id": "smells::scripts/download_files.py::swallowed_error",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "4x Catch block that only logs (swallowed error)",
+        "detail": {
+          "smell_id": "swallowed_error",
+          "severity": "high",
+          "count": 4,
+          "lines": [
+            102,
+            188,
+            196,
+            198
+          ]
+        }
+      },
+      {
+        "id": "smells::scripts/download_files.py::broad_except",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "3x Broad except \u2014 check library exceptions before narrowing",
+        "detail": {
+          "smell_id": "broad_except",
+          "severity": "medium",
+          "count": 3,
+          "lines": [
+            102,
+            188,
+            198
+          ]
+        }
+      }
+    ],
+    "src/features/reacting/subfeatures/tweet_sharer_bridge.py": [
+      {
+        "id": "smells::src/features/reacting/subfeatures/tweet_sharer_bridge.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "2x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 2,
+          "lines": [
+            97,
+            480
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/reacting/subfeatures/tweet_sharer_bridge.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            597
+          ]
+        }
+      }
+    ],
+    "src/features/reacting/subfeatures/dispute_resolver.py": [
+      {
+        "id": "smells::src/features/reacting/subfeatures/dispute_resolver.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            19
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/reacting/subfeatures/dispute_resolver.py::type_ignore",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x type: ignore comment",
+        "detail": {
+          "smell_id": "type_ignore",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            56
+          ]
+        }
+      }
+    ],
+    "src/features/reacting/subfeatures/permission_handler.py": [
+      {
+        "id": "smells::src/features/reacting/subfeatures/permission_handler.py::empty_except",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Empty except block (except: pass)",
+        "detail": {
+          "smell_id": "empty_except",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            309
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/reacting/subfeatures/permission_handler.py::hardcoded_url",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Hardcoded URL in source code",
+        "detail": {
+          "smell_id": "hardcoded_url",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            133
+          ]
+        }
+      }
+    ],
+    "src/features/sharing/subfeatures/social_poster.py": [
+      {
+        "id": "smells::src/features/sharing/subfeatures/social_poster.py::hardcoded_url",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "2x Hardcoded URL in source code",
+        "detail": {
+          "smell_id": "hardcoded_url",
+          "severity": "medium",
+          "count": 2,
+          "lines": [
+            526,
+            551
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/sharing/subfeatures/social_poster.py::todo_fixme",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "3x TODO/FIXME/HACK comments",
+        "detail": {
+          "smell_id": "todo_fixme",
+          "severity": "low",
+          "count": 3,
+          "lines": [
+            395,
+            525,
+            550
+          ]
+        }
+      }
+    ],
+    "src/common/db_handler.py": [
+      {
+        "id": "smells::src/common/db_handler.py::dead_function",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Dead function (body is only pass/return)",
+        "detail": {
+          "smell_id": "dead_function",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            59
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/db_handler.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "3x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 3,
+          "lines": [
+            27,
+            48,
+            455
+          ]
+        }
+      }
+    ],
+    "src/common/content_moderator.py": [
+      {
+        "id": "smells::src/common/content_moderator.py::global_keyword",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Global keyword usage",
+        "detail": {
+          "smell_id": "global_keyword",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            221
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/content_moderator.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            190
+          ]
+        }
+      }
+    ],
+    "src/features/sharing/sharing_cog.py": [
+      {
+        "id": "smells::src/features/sharing/sharing_cog.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            52
+          ]
+        }
+      },
+      {
+        "id": "smells::src/features/sharing/sharing_cog.py::todo_fixme",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x TODO/FIXME/HACK comments",
+        "detail": {
+          "smell_id": "todo_fixme",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            25
+          ]
+        }
+      }
+    ],
+    "src/common/log_handler.py": [
+      {
+        "id": "smells::src/common/log_handler.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            293
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/log_handler.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "3x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 3,
+          "lines": [
+            140,
+            157,
+            168
+          ]
+        }
+      }
+    ],
+    "src/common/error_handler.py": [
+      {
+        "id": "smells::src/common/error_handler.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            64
+          ]
+        }
+      },
+      {
+        "id": "smells::src/common/error_handler.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            32
+          ]
+        }
+      }
+    ],
+    "src/features/sharing/sharer.py": [
+      {
+        "id": "smells::src/features/sharing/sharer.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "1x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 1,
+          "lines": [
+            265
+          ]
+        }
+      }
+    ],
+    "src/features/curating/curator.py": [
+      {
+        "id": "smells::src/features/curating/curator.py::monster_function",
+        "tier": 2,
+        "confidence": "medium",
+        "summary": "3x Monster function (>150 LOC)",
+        "detail": {
+          "smell_id": "monster_function",
+          "severity": "high",
+          "count": 3,
+          "lines": [
+            102,
+            277,
+            112
+          ]
+        }
+      }
+    ],
+    "scripts/refresh_media_urls.py": [
+      {
+        "id": "smells::scripts/refresh_media_urls.py::broad_except",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Broad except \u2014 check library exceptions before narrowing",
+        "detail": {
+          "smell_id": "broad_except",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            282
+          ]
+        }
+      }
+    ],
+    "scripts/download_videos.py": [
+      {
+        "id": "smells::scripts/download_videos.py::broad_except",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "3x Broad except \u2014 check library exceptions before narrowing",
+        "detail": {
+          "smell_id": "broad_except",
+          "severity": "medium",
+          "count": 3,
+          "lines": [
+            39,
+            58,
+            142
+          ]
+        }
+      }
+    ],
+    "src/features/curating/curator_cog.py": [
+      {
+        "id": "smells::src/features/curating/curator_cog.py::dead_function",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Dead function (body is only pass/return)",
+        "detail": {
+          "smell_id": "dead_function",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            27
+          ]
+        }
+      }
+    ],
+    "src/common/health_server.py": [
+      {
+        "id": "smells::src/common/health_server.py::dead_function",
+        "tier": 3,
+        "confidence": "medium",
+        "summary": "1x Dead function (body is only pass/return)",
+        "detail": {
+          "smell_id": "dead_function",
+          "severity": "medium",
+          "count": 1,
+          "lines": [
+            99
+          ]
+        }
+      }
+    ],
+    "src/features/sharing/subfeatures/notify_user.py": [
+      {
+        "id": "smells::src/features/sharing/subfeatures/notify_user.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            54
+          ]
+        }
+      }
+    ],
+    "src/features/archive/archive_cog.py": [
+      {
+        "id": "smells::src/features/archive/archive_cog.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "2x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 2,
+          "lines": [
+            39,
+            66
+          ]
+        }
+      }
+    ],
+    "src/features/summarising/summariser_cog.py": [
+      {
+        "id": "smells::src/features/summarising/summariser_cog.py::deferred_import",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Function-level import (possible circular import workaround)",
+        "detail": {
+          "smell_id": "deferred_import",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            59
+          ]
+        }
+      }
+    ],
+    "src/features/admin_chat/admin_chat_cog.py": [
+      {
+        "id": "smells::src/features/admin_chat/admin_chat_cog.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "2x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 2,
+          "lines": [
+            110,
+            115
+          ]
+        }
+      }
+    ],
+    "src/features/health/health_check_cog.py": [
+      {
+        "id": "smells::src/features/health/health_check_cog.py::magic_number",
+        "tier": 3,
+        "confidence": "low",
+        "summary": "1x Magic numbers (>1000 in logic)",
+        "detail": {
+          "smell_id": "magic_number",
+          "severity": "low",
+          "count": 1,
+          "lines": [
+            157
+          ]
+        }
+      }
+    ]
+  },
+  "narrative": {
+    "phase": "first_scan",
+    "headline": "All T1 and T2 items cleared!",
+    "dimensions": {
+      "lowest_dimensions": [
+        {
+          "name": "Code quality",
+          "strict": 21.4,
+          "issues": 0,
+          "impact": 0.0
+        },
+        {
+          "name": "File health",
+          "strict": 67.1,
+          "issues": 0,
+          "impact": 0.0
+        },
+        {
+          "name": "Organization",
+          "strict": 92.7,
+          "issues": 0,
+          "impact": 0.0
+        }
+      ],
+      "biggest_gap_dimensions": [
+        {
+          "name": "Code quality",
+          "lenient": 100.0,
+          "strict": 21.4,
+          "gap": 78.6,
+          "wontfix_count": 106
+        },
+        {
+          "name": "File health",
+          "lenient": 100.0,
+          "strict": 67.1,
+          "gap": 32.9,
+          "wontfix_count": 33
+        },
+        {
+          "name": "Organization",
+          "lenient": 100.0,
+          "strict": 92.7,
+          "gap": 7.3,
+          "wontfix_count": 13
+        }
+      ],
+      "stagnant_dimensions": []
+    },
+    "actions": [
+      {
+        "priority": 1,
+        "type": "debt_review",
+        "description": "19.0 pts of wontfix debt \u2014 review stale decisions",
+        "command": "desloppify show --status wontfix",
+        "gap": 19.0
+      }
+    ],
+    "tools": {
+      "fixers": [],
+      "move": {
+        "available": true,
+        "relevant": false,
+        "reason": null,
+        "usage": "desloppify move <source> <dest> [--dry-run]"
+      },
+      "plan": {
+        "command": "desloppify plan",
+        "description": "Generate prioritized markdown cleanup plan"
+      }
+    },
+    "debt": {
+      "overall_gap": 19.0,
+      "wontfix_count": 163,
+      "worst_dimension": "Code quality",
+      "worst_gap": 78.6,
+      "trend": "stable"
+    },
+    "milestone": "All T1 and T2 items cleared!"
+  }
+}

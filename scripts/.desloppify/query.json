@@ -1,0 +1,191 @@
+{
+  "command": "scan",
+  "score": 100.0,
+  "strict_score": 11.3,
+  "prev_score": 100.0,
+  "diff": {
+    "new": 0,
+    "auto_resolved": 0,
+    "reopened": 0,
+    "total_current": 53,
+    "suspect_detectors": [],
+    "chronic_reopeners": 0,
+    "skipped_other_lang": 0,
+    "skipped_out_of_scope": 0
+  },
+  "stats": {
+    "total": 61,
+    "open": 0,
+    "fixed": 8,
+    "auto_resolved": 0,
+    "wontfix": 53,
+    "false_positive": 0,
+    "by_tier": {
+      "1": {
+        "open": 0,
+        "fixed": 1,
+        "auto_resolved": 0,
+        "wontfix": 0,
+        "false_positive": 0
+      },
+      "2": {
+        "open": 0,
+        "fixed": 3,
+        "auto_resolved": 0,
+        "wontfix": 11,
+        "false_positive": 0
+      },
+      "3": {
+        "open": 0,
+        "fixed": 4,
+        "auto_resolved": 0,
+        "wontfix": 41,
+        "false_positive": 0
+      },
+      "4": {
+        "open": 0,
+        "fixed": 0,
+        "auto_resolved": 0,
+        "wontfix": 1,
+        "false_positive": 0
+      }
+    }
+  },
+  "warnings": [],
+  "next_action": "42 structural items remain as debt (T3: 41, T4: 1). Run `desloppify status` for area breakdown. Create per-area task docs and farm to sub-agents for decomposition.",
+  "objective_score": 100.0,
+  "objective_strict": 84.2,
+  "dimension_scores": {
+    "Import hygiene": {
+      "score": 100.0,
+      "strict": 100.0,
+      "checks": 12,
+      "issues": 0,
+      "tier": 1,
+      "detectors": {
+        "unused": {
+          "potential": 12,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        }
+      }
+    },
+    "File health": {
+      "score": 100.0,
+      "strict": 45.0,
+      "checks": 12,
+      "issues": 0,
+      "tier": 3,
+      "detectors": {
+        "structural": {
+          "potential": 12,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        }
+      }
+    },
+    "Coupling": {
+      "score": 100.0,
+      "strict": 100.0,
+      "checks": 1,
+      "issues": 0,
+      "tier": 3,
+      "detectors": {
+        "single_use": {
+          "potential": 1,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        }
+      }
+    },
+    "Organization": {
+      "score": 100.0,
+      "strict": 69.2,
+      "checks": 25,
+      "issues": 0,
+      "tier": 3,
+      "detectors": {
+        "orphaned": {
+          "potential": 12,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        },
+        "flat_dirs": {
+          "potential": 1,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        },
+        "facade": {
+          "potential": 12,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        }
+      }
+    },
+    "Code quality": {
+      "score": 100.0,
+      "strict": 13.3,
+      "checks": 12,
+      "issues": 0,
+      "tier": 3,
+      "detectors": {
+        "smells": {
+          "potential": 12,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0
+        }
+      }
+    },
+    "Duplication": {
+      "score": 100.0,
+      "strict": 100.0,
+      "checks": 86,
+      "issues": 0,
+      "tier": 3,
+      "detectors": {
+        "dupes": {
+          "potential": 86,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        }
+      }
+    },
+    "Dependency health": {
+      "score": 100.0,
+      "strict": 100.0,
+      "checks": 12,
+      "issues": 0,
+      "tier": 4,
+      "detectors": {
+        "cycles": {
+          "potential": 12,
+          "pass_rate": 1.0,
+          "issues": 0,
+          "weighted_failures": 0.0
+        }
+      }
+    }
+  },
+  "potentials": {
+    "python": {
+      "unused": 12,
+      "structural": 12,
+      "flat_dirs": 1,
+      "props": 0,
+      "single_use": 1,
+      "cycles": 12,
+      "orphaned": 12,
+      "facade": 12,
+      "smells": 12,
+      "dupes": 86
+    }
+  }
+}
