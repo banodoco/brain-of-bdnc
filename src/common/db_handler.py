@@ -423,6 +423,80 @@ class DatabaseHandler:
             logger.error(f"Error updating reactions for message {message_id}: {e}")
             return False
 
+    # ========== Message Content / Edit History ==========
+
+    def update_message_content(self, message_id: int, new_content: Optional[str], new_edited_at: Optional[str]) -> Optional[bool]:
+        """Update a message's content and append the previous version to edit_history.
+
+        Reads the current row first to snapshot old content, then writes atomically
+        via the REST API.  Skips the update if content has not actually changed.
+
+        Args:
+            message_id:    Discord message ID.
+            new_content:   The edited content string from Discord.
+            new_edited_at: ISO-format timestamp of the edit, or None.
+
+        Returns:
+            True  – row was updated successfully.
+            False – message exists in DB but content is unchanged (no-op).
+            None  – message not found in DB at all.
+        """
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for update_message_content")
+            return None
+
+        client = self.storage_handler.supabase_client
+        try:
+            # 1. Read current state
+            result = (
+                client.table('discord_messages')
+                .select('content,edited_at,edit_history')
+                .eq('message_id', message_id)
+                .execute()
+            )
+            if not result.data:
+                logger.warning(f"update_message_content: message {message_id} not found in DB")
+                return None
+
+            row = result.data[0]
+            old_content = row.get('content')
+            old_edited_at = row.get('edited_at')
+
+            # 2. Skip if nothing changed (e.g. embed-resolution triggers)
+            if old_content == new_content:
+                return False
+
+            # 3. Build the new history array
+            existing_history = row.get('edit_history') or []
+            if not isinstance(existing_history, list):
+                existing_history = []
+
+            history_entry = {
+                'content': old_content,
+                'edited_at': old_edited_at,
+                'recorded_at': datetime.now(timezone.utc).isoformat()
+            }
+            updated_history = existing_history + [history_entry]
+
+            # 4. Write new content + updated history
+            (
+                client.table('discord_messages')
+                .update({
+                    'content': new_content,
+                    'edited_at': new_edited_at,
+                    'edit_history': updated_history,
+                    'synced_at': datetime.now(timezone.utc).isoformat()
+                })
+                .eq('message_id', message_id)
+                .execute()
+            )
+            logger.debug(f"update_message_content: updated message {message_id} (history depth now {len(updated_history)})")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error in update_message_content for message {message_id}: {e}", exc_info=True)
+            return False
+
     # ========== Shared Posts Tracking ==========
     
     def record_shared_post(

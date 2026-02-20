@@ -217,6 +217,60 @@ class LoggerCog(commands.Cog):
         """Public method to be called by ReactorCog to log reaction removals."""
         await self._update_reaction(reaction, user, 'remove')
 
+    @commands.Cog.listener()
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent):
+        """Track message edits by snapshotting the previous content into edit_history."""
+        try:
+            data = payload.data
+
+            # Discord fires this event for embed resolution and other non-content
+            # changes.  Skip if the payload doesn't include a content field at all.
+            if 'content' not in data:
+                return
+
+            # Skip DMs (no guild_id)
+            if not payload.guild_id:
+                return
+
+            new_content = data.get('content')
+            new_edited_at = data.get('edited_timestamp')  # ISO string or None
+
+            updated = self.db.update_message_content(
+                message_id=payload.message_id,
+                new_content=new_content,
+                new_edited_at=new_edited_at
+            )
+
+            if updated and self.dev_mode:
+                self.logger.debug(
+                    f"[LoggerCog] Recorded edit for message {payload.message_id} "
+                    f"in channel {payload.channel_id}"
+                )
+
+            # If the message wasn't in the DB at all, try to store it fresh so
+            # future edits will be tracked from here onward.
+            # Note: updated=False means content was unchanged (e.g. embed resolution) — do NOT fetch.
+            if updated is None:
+                try:
+                    channel = self.bot.get_channel(payload.channel_id)
+                    if channel and not isinstance(channel, discord.ForumChannel):
+                        message = await channel.fetch_message(payload.message_id)
+                        msg_data = await self._prepare_message_data(message)
+                        await self.db.store_messages([msg_data])
+                        if self.dev_mode:
+                            self.logger.debug(
+                                f"[LoggerCog] Fetched and stored previously-unseen "
+                                f"edited message {payload.message_id}"
+                            )
+                except Exception as fetch_err:
+                    self.logger.debug(
+                        f"[LoggerCog] Could not fetch message {payload.message_id} "
+                        f"after edit miss: {fetch_err}"
+                    )
+
+        except Exception as e:
+            self.logger.error(f"[LoggerCog] Error in on_raw_message_edit: {e}", exc_info=True)
+
     # Real-time message logging disabled - now using hourly batch processing
     # @commands.Cog.listener()
     # async def on_message(self, message):
