@@ -282,12 +282,18 @@ class AdminCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        """Auto-assign the Speaker role to new members."""
+        """Auto-assign the Speaker role to new members, unless muted in DB."""
         if member.bot:
             return
         role_id_str = os.getenv('SPEAKER_ROLE_ID')
         if not role_id_str:
             return
+
+        # Check DB — if they were muted before leaving, don't give it back
+        if self.db_handler and not self.db_handler.get_is_speaker(member.id):
+            logger.info(f"Skipping Speaker role for rejoining muted member {member.id} ({member.name})")
+            return
+
         try:
             role = member.guild.get_role(int(role_id_str))
             if role:
