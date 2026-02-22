@@ -479,22 +479,23 @@ class AdminCog(commands.Cog):
             await interaction.response.send_message(f"Error: {e}", ephemeral=True)
 
     # ------------------------------------------------------------------
-    # Timed-mute expiration loop
+    # Speaker role enforcement loop (runs every 5 minutes)
+    # - Expires timed mutes
+    # - Enforces DB state: removes role from muted, adds to unmuted
     # ------------------------------------------------------------------
     @tasks.loop(minutes=5)
     async def check_expired_mutes(self):
-        """Restore Speaker role for any mutes that have expired."""
+        """Enforce Speaker role state from DB and expire timed mutes."""
         if not self.db_handler:
-            return
-
-        expired = self.db_handler.get_expired_mutes()
-        if not expired:
             return
 
         role_id_str = os.getenv('SPEAKER_ROLE_ID')
         if not role_id_str:
             return
+        role_id = int(role_id_str)
 
+        # --- Phase 1: Expire timed mutes ---
+        expired = self.db_handler.get_expired_mutes()
         for mute in expired:
             member_id = mute['member_id']
             guild_id = mute['guild_id']
@@ -502,7 +503,7 @@ class AdminCog(commands.Cog):
                 guild = self.bot.get_guild(guild_id)
                 if not guild:
                     continue
-                role = guild.get_role(int(role_id_str))
+                role = guild.get_role(role_id)
                 if not role:
                     continue
                 member = guild.get_member(member_id)
@@ -510,12 +511,11 @@ class AdminCog(commands.Cog):
                     try:
                         member = await guild.fetch_member(member_id)
                     except discord.NotFound:
-                        # Member left the server — just clean up the record
                         self.db_handler.delete_timed_mute(member_id, guild_id)
+                        self.db_handler.set_is_speaker(member_id, True)
                         logger.info(f"Cleaned up expired mute for absent member {member_id}")
                         continue
 
-                # Restore speaker status in DB, then re-add role
                 self.db_handler.set_is_speaker(member_id, True)
                 if role not in member.roles:
                     await member.add_roles(role, reason="Timed mute expired")
@@ -524,6 +524,24 @@ class AdminCog(commands.Cog):
                 self.db_handler.delete_timed_mute(member_id, guild_id)
             except Exception as e:
                 logger.error(f"Error restoring Speaker role for member {member_id}: {e}", exc_info=True)
+
+        # --- Phase 2: Enforce is_speaker=False (remove role from muted members) ---
+        muted_ids = set(self.db_handler.get_muted_member_ids())
+        if not muted_ids:
+            return
+
+        for guild in self.bot.guilds:
+            role = guild.get_role(role_id)
+            if not role:
+                continue
+            for member_id in muted_ids:
+                member = guild.get_member(member_id)
+                if member and role in member.roles:
+                    try:
+                        await member.remove_roles(role, reason="Enforcing is_speaker=False from DB")
+                        logger.info(f"Removed Speaker role from muted member {member_id} ({member.name})")
+                    except Exception as e:
+                        logger.error(f"Failed to remove Speaker role from {member_id}: {e}", exc_info=True)
 
     @check_expired_mutes.before_loop
     async def before_check_expired_mutes(self):

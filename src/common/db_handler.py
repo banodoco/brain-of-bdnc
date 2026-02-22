@@ -707,6 +707,23 @@ class DatabaseHandler:
             logger.error(f"Error setting is_speaker for member {member_id}: {e}", exc_info=True)
             return False
 
+    def get_muted_member_ids(self) -> list[int]:
+        """Return member IDs where is_speaker is explicitly False."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('discord_members')
+                .select('member_id')
+                .eq('is_speaker', False)
+                .execute()
+            )
+            return [row['member_id'] for row in (result.data or [])]
+        except Exception as e:
+            logger.error(f"Error fetching muted member IDs: {e}", exc_info=True)
+            return []
+
     def get_is_speaker(self, member_id: int) -> bool:
         """Check if a member should have the Speaker role. Returns True by default."""
         if not self.storage_handler or not self.storage_handler.supabase_client:
