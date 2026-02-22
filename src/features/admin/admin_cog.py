@@ -1,10 +1,12 @@
 # src/features/admin/admin_cog.py
 import discord
 import logging
-from discord.ext import commands
+from typing import Optional
+from discord.ext import commands, tasks
 from discord import app_commands
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import re
 import random
 import aiohttp
 import asyncio
@@ -127,7 +129,25 @@ class AdminUpdateSocialsModal(discord.ui.Modal):
             else:
                 await interaction.followup.send("An error occurred after the initial response while updating your preferences.", ephemeral=True)
 
-# --- Admin Cog Class --- 
+def _parse_duration(duration_str: str) -> Optional[timedelta]:
+    """Parse a duration string like '7d', '24h', '2w' into a timedelta.
+
+    Returns None if the string is not a valid duration.
+    """
+    match = re.fullmatch(r'(\d+)(h|d|w)', duration_str.strip().lower())
+    if not match:
+        return None
+    value, unit = int(match.group(1)), match.group(2)
+    if unit == 'h':
+        return timedelta(hours=value)
+    elif unit == 'd':
+        return timedelta(days=value)
+    elif unit == 'w':
+        return timedelta(weeks=value)
+    return None
+
+
+# --- Admin Cog Class ---
 class AdminCog(commands.Cog):
     _commands_synced = False  # Add flag to track if commands have been synced
 
@@ -136,12 +156,16 @@ class AdminCog(commands.Cog):
         self.db_handler = bot.db_handler if hasattr(bot, 'db_handler') else None
         # Initialize Supabase sync handler
         self.supabase_sync = SupabaseSyncHandler(
-            self.db_handler, 
-            logger, 
+            self.db_handler,
+            logger,
             sync_interval=300  # 5 minutes
         ) if self.db_handler else None
-        # Assuming self.bot will have self.bot.rate_limiter initialized by main bot setup
+        # Start the timed-mute expiration loop
+        self.check_expired_mutes.start()
         logger.info("AdminCog initialized")
+
+    def cog_unload(self):
+        self.check_expired_mutes.cancel()
 
     async def cog_load(self):
         """Called when the cog is loaded."""
@@ -255,6 +279,249 @@ class AdminCog(commands.Cog):
             logger.warning(f"Cannot send robot sounds DM reply to {message.author.id}.")
         except Exception as e:
             logger.error(f"Failed to send robot sounds DM reply to {message.author.id}: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        """Auto-assign the Speaker role to new members."""
+        if member.bot:
+            return
+        role_id_str = os.getenv('SPEAKER_ROLE_ID')
+        if not role_id_str:
+            return
+        try:
+            role = member.guild.get_role(int(role_id_str))
+            if role:
+                await member.add_roles(role, reason="Auto-assign Speaker role on join")
+                logger.info(f"Assigned Speaker role to new member {member.id} ({member.name})")
+        except Exception as e:
+            logger.error(f"Failed to assign Speaker role to {member.id}: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
+        """Auto-apply Speaker role permissions to newly created channels."""
+        if not isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.VoiceChannel, discord.StageChannel)):
+            return
+        role_id_str = os.getenv('SPEAKER_ROLE_ID')
+        if not role_id_str:
+            return
+
+        # Skip exempt channels (e.g. moderation channel where anyone can post)
+        exempt_str = os.getenv('SPEAKER_EXEMPT_CHANNELS', '')
+        exempt_ids = {int(x.strip()) for x in exempt_str.split(',') if x.strip()}
+        if channel.id in exempt_ids:
+            logger.info(f"Skipping Speaker perms for exempt channel #{channel.name} ({channel.id})")
+            return
+
+        role = channel.guild.get_role(int(role_id_str))
+        if not role:
+            return
+
+        try:
+            everyone_overwrite = channel.overwrites_for(channel.guild.default_role)
+            everyone_overwrite.send_messages = False
+            everyone_overwrite.send_messages_in_threads = False
+            everyone_overwrite.create_public_threads = False
+            everyone_overwrite.create_private_threads = False
+
+            speaker_overwrite = channel.overwrites_for(role)
+            speaker_overwrite.send_messages = True
+            speaker_overwrite.send_messages_in_threads = True
+            speaker_overwrite.create_public_threads = True
+            speaker_overwrite.create_private_threads = True
+
+            await channel.set_permissions(
+                channel.guild.default_role, overwrite=everyone_overwrite,
+                reason="Speaker role — deny send for @everyone",
+            )
+            await channel.set_permissions(
+                role, overwrite=speaker_overwrite,
+                reason="Speaker role — allow send for Speaker",
+            )
+            logger.info(f"Applied Speaker perms to new channel #{channel.name} ({channel.id})")
+        except Exception as e:
+            logger.error(f"Failed to apply Speaker perms to #{channel.name} ({channel.id}): {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """Re-add Speaker role if it was removed but the member should still have it."""
+        role_id_str = os.getenv('SPEAKER_ROLE_ID')
+        if not role_id_str or not self.db_handler:
+            return
+
+        role_id = int(role_id_str)
+        had_role = any(r.id == role_id for r in before.roles)
+        has_role = any(r.id == role_id for r in after.roles)
+
+        if had_role and not has_role:
+            # Speaker role was just removed — check if they should still have it
+            if self.db_handler.get_is_speaker(after.id):
+                role = after.guild.get_role(role_id)
+                if role:
+                    try:
+                        await after.add_roles(role, reason="Auto-restore Speaker role (is_speaker=True in DB)")
+                        logger.info(f"Auto-restored Speaker role for {after.id} ({after.name}) — removed without /mute")
+                    except Exception as e:
+                        logger.error(f"Failed to auto-restore Speaker role for {after.id}: {e}", exc_info=True)
+
+    @app_commands.command(name="mute", description="Remove Speaker role from a user (Admin only)")
+    @app_commands.describe(user="The user to mute", duration="Optional duration (e.g. 1h, 7d, 2w). Omit for permanent.")
+    async def mute_user(self, interaction: discord.Interaction, user: discord.Member, duration: Optional[str] = None):
+        """Remove the Speaker role from a user, preventing them from sending messages."""
+        if not await self.bot.is_owner(interaction.user):
+            await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
+            return
+
+        role_id_str = os.getenv('SPEAKER_ROLE_ID')
+        if not role_id_str:
+            await interaction.response.send_message("SPEAKER_ROLE_ID is not configured.", ephemeral=True)
+            return
+
+        role = interaction.guild.get_role(int(role_id_str))
+        if not role:
+            await interaction.response.send_message("Speaker role not found in this server.", ephemeral=True)
+            return
+
+        if role not in user.roles:
+            await interaction.response.send_message(f"{user.mention} is already muted.", ephemeral=True)
+            return
+
+        # Parse duration if provided
+        td = None
+        if duration:
+            td = _parse_duration(duration)
+            if td is None:
+                await interaction.response.send_message(
+                    f"Invalid duration `{duration}`. Use a number + h/d/w (e.g. `1h`, `7d`, `2w`).",
+                    ephemeral=True,
+                )
+                return
+
+        try:
+            # Mark as not-speaker in DB first so on_member_update won't re-add the role
+            if self.db_handler:
+                self.db_handler.set_is_speaker(user.id, False)
+
+            await user.remove_roles(role, reason=f"Muted by {interaction.user.name}" + (f" for {duration}" if duration else ""))
+
+            # Record timed mute in DB
+            if td and self.db_handler:
+                mute_end = datetime.now(timezone.utc) + td
+                saved = self.db_handler.create_timed_mute(
+                    member_id=user.id,
+                    guild_id=interaction.guild_id,
+                    mute_end_at=mute_end.isoformat(),
+                    reason=f"Muted by {interaction.user.name}",
+                    muted_by_id=interaction.user.id,
+                )
+                if saved:
+                    await interaction.response.send_message(
+                        f"Muted {user.mention} for {duration} — Speaker role removed. Unmute <t:{int(mute_end.timestamp())}:R>.",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.response.send_message(
+                        f"Muted {user.mention} — Speaker role removed, but failed to schedule auto-unmute. Use `/unmute` manually.",
+                        ephemeral=True,
+                    )
+            else:
+                await interaction.response.send_message(f"Muted {user.mention} — Speaker role removed.", ephemeral=True)
+
+            logger.info(f"Admin {interaction.user.id} muted user {user.id} ({user.name})" + (f" for {duration}" if duration else " permanently"))
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to remove that role.", ephemeral=True)
+        except Exception as e:
+            logger.error(f"Error muting user {user.id}: {e}", exc_info=True)
+            await interaction.response.send_message(f"Error: {e}", ephemeral=True)
+
+    @app_commands.command(name="unmute", description="Re-add Speaker role to a user (Admin only)")
+    @app_commands.describe(user="The user to unmute")
+    async def unmute_user(self, interaction: discord.Interaction, user: discord.Member):
+        """Re-add the Speaker role to a user, allowing them to send messages again."""
+        if not await self.bot.is_owner(interaction.user):
+            await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
+            return
+
+        role_id_str = os.getenv('SPEAKER_ROLE_ID')
+        if not role_id_str:
+            await interaction.response.send_message("SPEAKER_ROLE_ID is not configured.", ephemeral=True)
+            return
+
+        role = interaction.guild.get_role(int(role_id_str))
+        if not role:
+            await interaction.response.send_message("Speaker role not found in this server.", ephemeral=True)
+            return
+
+        if role in user.roles:
+            await interaction.response.send_message(f"{user.mention} is already unmuted.", ephemeral=True)
+            return
+
+        try:
+            # Mark as speaker in DB first
+            if self.db_handler:
+                self.db_handler.set_is_speaker(user.id, True)
+
+            await user.add_roles(role, reason=f"Unmuted by {interaction.user.name}")
+            # Clear any timed mute record
+            if self.db_handler:
+                self.db_handler.delete_timed_mute(user.id, interaction.guild_id)
+            await interaction.response.send_message(f"Unmuted {user.mention} — Speaker role restored.", ephemeral=True)
+            logger.info(f"Admin {interaction.user.id} unmuted user {user.id} ({user.name})")
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to add that role.", ephemeral=True)
+        except Exception as e:
+            logger.error(f"Error unmuting user {user.id}: {e}", exc_info=True)
+            await interaction.response.send_message(f"Error: {e}", ephemeral=True)
+
+    # ------------------------------------------------------------------
+    # Timed-mute expiration loop
+    # ------------------------------------------------------------------
+    @tasks.loop(minutes=5)
+    async def check_expired_mutes(self):
+        """Restore Speaker role for any mutes that have expired."""
+        if not self.db_handler:
+            return
+
+        expired = self.db_handler.get_expired_mutes()
+        if not expired:
+            return
+
+        role_id_str = os.getenv('SPEAKER_ROLE_ID')
+        if not role_id_str:
+            return
+
+        for mute in expired:
+            member_id = mute['member_id']
+            guild_id = mute['guild_id']
+            try:
+                guild = self.bot.get_guild(guild_id)
+                if not guild:
+                    continue
+                role = guild.get_role(int(role_id_str))
+                if not role:
+                    continue
+                member = guild.get_member(member_id)
+                if not member:
+                    try:
+                        member = await guild.fetch_member(member_id)
+                    except discord.NotFound:
+                        # Member left the server — just clean up the record
+                        self.db_handler.delete_timed_mute(member_id, guild_id)
+                        logger.info(f"Cleaned up expired mute for absent member {member_id}")
+                        continue
+
+                # Restore speaker status in DB, then re-add role
+                self.db_handler.set_is_speaker(member_id, True)
+                if role not in member.roles:
+                    await member.add_roles(role, reason="Timed mute expired")
+                    logger.info(f"Restored Speaker role for member {member_id} (timed mute expired)")
+
+                self.db_handler.delete_timed_mute(member_id, guild_id)
+            except Exception as e:
+                logger.error(f"Error restoring Speaker role for member {member_id}: {e}", exc_info=True)
+
+    @check_expired_mutes.before_loop
+    async def before_check_expired_mutes(self):
+        await self.bot.wait_until_ready()
 
     @app_commands.command(name="update_details", description="Update your social media handles and website link.")
     async def update_details(self, interaction: discord.Interaction):

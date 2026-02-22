@@ -686,6 +686,107 @@ class DatabaseHandler:
             self.query_handler.get_messages_by_ids(message_ids)
         )
 
+    # ========== Timed Mutes ==========
+
+    def set_is_speaker(self, member_id: int, is_speaker: bool) -> bool:
+        """Update the is_speaker flag for a member."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for set_is_speaker")
+            return False
+
+        try:
+            (
+                self.storage_handler.supabase_client.table('discord_members')
+                .update({'is_speaker': is_speaker})
+                .eq('member_id', member_id)
+                .execute()
+            )
+            logger.info(f"Set is_speaker={is_speaker} for member {member_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting is_speaker for member {member_id}: {e}", exc_info=True)
+            return False
+
+    def get_is_speaker(self, member_id: int) -> bool:
+        """Check if a member should have the Speaker role. Returns True by default."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return True
+
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('discord_members')
+                .select('is_speaker')
+                .eq('member_id', member_id)
+                .execute()
+            )
+            if result.data:
+                # Default to True if NULL
+                return result.data[0].get('is_speaker') is not False
+            return True
+        except Exception as e:
+            logger.error(f"Error getting is_speaker for member {member_id}: {e}", exc_info=True)
+            return True
+
+    def create_timed_mute(self, member_id: int, guild_id: int, mute_end_at: str, reason: Optional[str] = None, muted_by_id: Optional[int] = None) -> bool:
+        """Upsert a timed mute record."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for create_timed_mute")
+            return False
+
+        try:
+            data = {
+                'member_id': member_id,
+                'guild_id': guild_id,
+                'mute_end_at': mute_end_at,
+                'reason': reason,
+                'muted_by_id': muted_by_id,
+            }
+            self.storage_handler.supabase_client.table('timed_mutes').upsert(data).execute()
+            logger.info(f"Created timed mute for member {member_id} in guild {guild_id}, expires {mute_end_at}")
+            return True
+        except Exception as e:
+            logger.error(f"Error creating timed mute for member {member_id}: {e}", exc_info=True)
+            return False
+
+    def get_expired_mutes(self) -> List[Dict]:
+        """Get all timed mutes that have expired."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for get_expired_mutes")
+            return []
+
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            result = (
+                self.storage_handler.supabase_client.table('timed_mutes')
+                .select('*')
+                .lte('mute_end_at', now)
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error fetching expired mutes: {e}", exc_info=True)
+            return []
+
+    def delete_timed_mute(self, member_id: int, guild_id: int) -> bool:
+        """Delete a timed mute record."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for delete_timed_mute")
+            return False
+
+        try:
+            (
+                self.storage_handler.supabase_client.table('timed_mutes')
+                .delete()
+                .eq('member_id', member_id)
+                .eq('guild_id', guild_id)
+                .execute()
+            )
+            logger.info(f"Deleted timed mute for member {member_id} in guild {guild_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting timed mute for member {member_id}: {e}", exc_info=True)
+            return False
+
     def get_messages_in_range(self, start_date: datetime, end_date: datetime, channel_id: Optional[int] = None) -> List[Dict]:
         """Get messages within a date range."""
         try:
