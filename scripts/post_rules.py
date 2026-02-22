@@ -23,15 +23,25 @@ RULES_FILE = os.path.join(os.path.dirname(__file__), "..", "rules.md")
 
 
 def load_rules_messages():
-    """Load rules from rules.md, splitting on code block boundaries."""
+    """Load rules from rules.md. Text before the first code block becomes
+    the first message (e.g. a markdown header). Each code block becomes
+    its own message."""
+    import re
     with open(RULES_FILE) as f:
         content = f.read()
-    # Split between closing ``` and opening ``` of next block
-    import re
-    blocks = re.split(r'```\s*\n\s*\n\s*```', content)
-    # Re-add the ``` delimiters that were consumed by the split
+
     messages = []
-    for i, block in enumerate(blocks):
+    # Extract any text before the first code block as its own message
+    first_block = content.find('```')
+    if first_block > 0:
+        preamble = content[:first_block].strip()
+        if preamble:
+            messages.append(preamble)
+        content = content[first_block:]
+
+    # Split remaining content between closing ``` and opening ```
+    blocks = re.split(r'```\s*\n\s*\n\s*```', content)
+    for block in blocks:
         block = block.strip()
         if not block:
             continue

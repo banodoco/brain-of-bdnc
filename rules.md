@@ -1,40 +1,37 @@
-```Comprehensive Community Rules```
+# Comprehensive Community Rules
 
-```1. Communication Guidelines for a Respectful Community:
+```1. Respectful Communication:
 
-    • Respectful Dialogue: Engage respectfully with all members. No personal attacks or harassment.
-    • No Political or Religious Discourse: Keep discussions focused on AI art and technology, avoiding political or religious debates.
-    • Encourage Inclusivity: Embrace diversity and inclusivity in all communications.
-    • Constructive Feedback: Feedback is welcome and encouraged, but keep the tone constructive and supportive.
-    • Privacy and Confidentiality: Do not share personal information without consent.```
+    • No Attacks or Harassment: No directing offensive language at others.
+    • Stay On Topic: Keep discussions focused on AI art and technology — no political or religious debates or content.
+    • Inclusivity: Embrace diversity in all communications.
+    • Constructive Feedback: Feedback is encouraged, but keep the tone constructive and supportive.
+    • Privacy: Do not share personal information without consent.```
 
-```2. Advancing Open-Source Together:
+```2. Open-Source Values:
 
-    • The purpose of this space is to bring together people who believe in open-source technology and want to work on it, promote it, and create art with it.
-    • Contribute Back: Engage in giving back to the ecosystem through sharing code, insights, or resources.
-    • Reciprocity Culture: Utilization of open-source tech should come with contributions back to the ecosystem.```
+    • Purpose: This space is for people who believe in open-source technology and want to work on it, promote it, and create art with it.
+    • Give Back: It's strongly encouraged that you share code, insights, and resources with others — after all, that's the purpose of the space.```
 
-```3. NSFW Content Guidelines:
+```3. NSFW Content:
 
-    • NSFW content is generally not allowed, but may be posted in specifically designated NSFW channels.
-    • Strict Age Limit: Only for individuals 18 and older. No content involving minors or anyone who looks like they could be a minor.
-    • Content Restrictions: Avoid content featuring celebrities, politicians, or anyone without explicit consent.
-    • Dignity and Consent: Respect the dignity of all individuals and adhere to consent principles.
-    • Appropriate Tagging: Tag NSFW content clearly for informed engagement decisions.```
+    • Designated Channels Only: NSFW content may only be posted in specifically designated NSFW channels.
+    • No Minors: No content involving minors or anyone who looks like they could be a minor. 18+ only.
+    • No Real People: No content featuring celebrities, politicians, or anyone without their explicit consent.```
 
-```4. Encourage Sharing and Credit:
+```4. Sharing and Credit:
 
-    • Anything posted here may be shared elsewhere, but it must include specific attribution to the original creator, including a direct link to their work or profile.
-    • Respect Copyrights: Understand and respect copyright laws. Ensure you have the right to share or modify works before doing so.```
+    • Attribution Required: Anything posted here may be shared elsewhere, but must include attribution to the original creator with a direct link to their work or profile.
+    • Copyright Is On You: If you share something, make sure you're comfortable being responsible for it in the unlikely event it gets followed up on.```
 
-```5. Universal Respect:
+```5. Respect:
 
-    • Value All Contributions: Every member of this community, whether they are developing models, experimenting with technology, creating tools, or producing art, plays a vital role. Recognize and respect the diversity and value of everyone's contributions.
-    • Foster a Supportive Environment: Encourage, support, and uplift one another. Constructive criticism is welcome, but it should always be aimed at helping others improve and feel supported.
-    • Celebrate Achievements: Take the time to celebrate the milestones and achievements within our community. Recognition of hard work and success fosters a positive and motivating environment for all.```
+    • Value All Contributions: Every member plays a vital role, whether developing models, creating tools, or producing art.
+    • Be Supportive: Encourage and uplift one another. Criticism should aim to help, not tear down.
+    • Celebrate Wins: Recognize milestones and achievements within the community.```
 
 ```6. Moderation and Subjective Judgment:
 
-    • Our primary goal is to maintain a space that people genuinely enjoy being part of. While the rules above cover clear-cut situations, not everything that affects the quality of a community can be captured by strict rules alone.
-    • Moderators may exercise subjective judgment to preserve the overall atmosphere and experience of the community. When we do, we will always explain our reasoning and aim to be as sparing and fair as possible.
-    • At the end of the day, fostering a welcoming, enjoyable space sometimes requires discretion beyond what any rulebook can define.```
+    • Beyond the Rules: Not everything that affects the quality of a community can be captured by strict rules alone.
+    • Discretion: Moderators may exercise subjective judgment to preserve the atmosphere of the community.
+    • Transparency: We will always explain our reasoning and aim to be as sparing and fair as possible.```
