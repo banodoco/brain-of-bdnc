@@ -892,6 +892,25 @@ class DatabaseHandler:
             logger.error(f"Error in ensure_channel_exists for channel {channel_id}: {e}", exc_info=True)
             return False
 
+    # ========== Onboarding Defaults ==========
+
+    def get_onboarding_default_ids(self) -> List[int]:
+        """Return channel IDs where onboarding_default is True."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('discord_channels')
+                .select('channel_id')
+                .eq('onboarding_default', True)
+                .execute()
+            )
+            return [row['channel_id'] for row in (result.data or [])]
+        except Exception as e:
+            logger.error(f"Error fetching onboarding default IDs: {e}", exc_info=True)
+            return []
+
     def get_messages_in_range(self, start_date: datetime, end_date: datetime, channel_id: Optional[int] = None) -> List[Dict]:
         """Get messages within a date range."""
         try:

@@ -535,11 +535,12 @@ class AdminCog(commands.Cog):
     # ------------------------------------------------------------------
     # Channel permission enforcement loop
     # First run fires immediately on bot ready, then every 30 minutes.
-    # Syncs guild channels to DB, then corrects any drifted permissions.
+    # Syncs guild channels to DB, then corrects any drifted permissions
+    # and onboarding defaults.
     # ------------------------------------------------------------------
     @tasks.loop(minutes=30)
     async def enforce_channel_permissions(self):
-        """Enforce Speaker role channel permissions from DB."""
+        """Enforce Speaker role channel permissions and onboarding defaults from DB."""
         if not self.db_handler:
             return
 
@@ -556,19 +557,21 @@ class AdminCog(commands.Cog):
             if not role:
                 continue
 
-            # Phase 1: Sync all guild channels into DB
+            # Phase 1: Sync all guild channels (including categories) into DB
             synced = 0
             for channel in guild.channels:
-                if not isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.VoiceChannel, discord.StageChannel)):
-                    continue
-                category_id = channel.category_id if hasattr(channel, 'category_id') else None
-                nsfw = getattr(channel, 'nsfw', False)
-                self.db_handler.ensure_channel_exists(channel.id, channel.name, category_id, nsfw)
-                synced += 1
+                if isinstance(channel, discord.CategoryChannel):
+                    self.db_handler.ensure_channel_exists(channel.id, channel.name)
+                    synced += 1
+                elif isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.VoiceChannel, discord.StageChannel)):
+                    category_id = channel.category_id if hasattr(channel, 'category_id') else None
+                    nsfw = getattr(channel, 'nsfw', False)
+                    self.db_handler.ensure_channel_exists(channel.id, channel.name, category_id, nsfw)
+                    synced += 1
 
             logger.info(f"[PermEnforce] Synced {synced} channels to DB")
 
-            # Phase 2: Fetch modes from DB and enforce
+            # Phase 2: Enforce Speaker role permissions
             modes = self.db_handler.get_all_channel_speaker_modes()
 
             checked = 0
@@ -598,7 +601,72 @@ class AdminCog(commands.Cog):
                     errors += 1
                     logger.error(f"[PermEnforce] Error on #{channel.name} ({channel.id}): {e}", exc_info=True)
 
-            logger.info(f"[PermEnforce] Done: checked={checked}, fixed={fixed}, errors={errors}")
+            logger.info(f"[PermEnforce] Perms done: checked={checked}, fixed={fixed}, errors={errors}")
+
+            # Phase 3: Enforce onboarding defaults from DB
+            await self._enforce_onboarding_defaults(guild)
+
+    async def _enforce_onboarding_defaults(self, guild: discord.Guild):
+        """Sync onboarding default channels from DB to Discord."""
+        if not self.db_handler:
+            return
+
+        try:
+            db_default_ids = self.db_handler.get_onboarding_default_ids()
+            if not db_default_ids:
+                return
+
+            # Fetch current onboarding config from Discord
+            token = os.getenv('DISCORD_BOT_TOKEN')
+            if not token:
+                return
+
+            async with aiohttp.ClientSession() as session:
+                headers = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
+
+                async with session.get(
+                    f'https://discord.com/api/v10/guilds/{guild.id}/onboarding',
+                    headers=headers,
+                ) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"[Onboarding] Failed to fetch onboarding: {resp.status}")
+                        return
+                    onboarding = await resp.json()
+
+                current_ids = set(int(cid) for cid in onboarding.get('default_channel_ids', []))
+                desired_ids = set(db_default_ids)
+
+                if current_ids == desired_ids:
+                    logger.info("[Onboarding] Defaults already match DB — no changes")
+                    return
+
+                # PUT updated defaults (preserve prompts and other settings)
+                payload = {
+                    'prompts': onboarding.get('prompts', []),
+                    'default_channel_ids': [str(cid) for cid in sorted(desired_ids)],
+                    'enabled': onboarding.get('enabled', True),
+                    'mode': onboarding.get('mode', 1),
+                }
+
+                async with session.put(
+                    f'https://discord.com/api/v10/guilds/{guild.id}/onboarding',
+                    headers=headers,
+                    json=payload,
+                ) as resp:
+                    if resp.status == 200:
+                        added = desired_ids - current_ids
+                        removed = current_ids - desired_ids
+                        logger.info(
+                            f"[Onboarding] Updated defaults: "
+                            f"+{len(added)} added, -{len(removed)} removed, "
+                            f"{len(desired_ids)} total"
+                        )
+                    else:
+                        body = await resp.text()
+                        logger.error(f"[Onboarding] Failed to update: {resp.status} — {body[:300]}")
+
+        except Exception as e:
+            logger.error(f"[Onboarding] Error enforcing defaults: {e}", exc_info=True)
 
     @enforce_channel_permissions.before_loop
     async def before_enforce_channel_permissions(self):
