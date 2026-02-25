@@ -257,6 +257,9 @@ class StorageHandler:
         try:
             supabase_channels = []
             for channel in channels:
+                # NOTE: speaker_mode is intentionally omitted here so that
+                # upserts do not overwrite the DB-managed value. New rows get
+                # the DB default ('normal'); existing rows keep their current mode.
                 supabase_channel = {
                     'channel_id': channel.get('channel_id'),
                     'channel_name': channel.get('channel_name'),

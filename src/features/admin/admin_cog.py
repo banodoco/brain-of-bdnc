@@ -14,6 +14,7 @@ import asyncio
 from src.common.db_handler import DatabaseHandler
 from src.common import discord_utils
 from src.common.supabase_sync_handler import SupabaseSyncHandler
+from src.common.speaker_perms import apply_perms_to_channel
 
 logger = logging.getLogger('DiscordBot')
 
@@ -160,12 +161,14 @@ class AdminCog(commands.Cog):
             logger,
             sync_interval=300  # 5 minutes
         ) if self.db_handler else None
-        # Start the timed-mute expiration loop
+        # Start task loops
         self.check_expired_mutes.start()
+        self.enforce_channel_permissions.start()
         logger.info("AdminCog initialized")
 
     def cog_unload(self):
         self.check_expired_mutes.cancel()
+        self.enforce_channel_permissions.cancel()
 
     async def cog_load(self):
         """Called when the cog is loaded."""
@@ -296,39 +299,36 @@ class AdminCog(commands.Cog):
         if not role_id_str:
             return
 
-        # Skip exempt channels (e.g. moderation channel where anyone can post)
-        exempt_str = os.getenv('SPEAKER_EXEMPT_CHANNELS', '')
-        exempt_ids = {int(x.strip()) for x in exempt_str.split(',') if x.strip()}
-        if channel.id in exempt_ids:
-            logger.info(f"Skipping Speaker perms for exempt channel #{channel.name} ({channel.id})")
-            return
-
         role = channel.guild.get_role(int(role_id_str))
         if not role:
             return
 
+        # Add channel to DB (defaults to speaker_mode='normal')
+        if self.db_handler:
+            category_id = channel.category_id if hasattr(channel, 'category_id') else None
+            nsfw = getattr(channel, 'nsfw', False)
+            self.db_handler.ensure_channel_exists(channel.id, channel.name, category_id, nsfw)
+
+        # Determine mode — new channels default to 'normal'
+        mode = 'normal'
+        if self.db_handler:
+            ch_row = self.db_handler.get_channel(channel.id)
+            if ch_row:
+                mode = ch_row.get('speaker_mode') or 'normal'
+
+        # Env var fallback — if listed as exempt there, honour it
+        exempt_str = os.getenv('SPEAKER_EXEMPT_CHANNELS', '')
+        exempt_ids = {int(x.strip()) for x in exempt_str.split(',') if x.strip()}
+        if channel.id in exempt_ids:
+            mode = 'exempt'
+
+        if mode == 'exempt':
+            logger.info(f"Skipping Speaker perms for exempt channel #{channel.name} ({channel.id})")
+            return
+
         try:
-            everyone_overwrite = channel.overwrites_for(channel.guild.default_role)
-            everyone_overwrite.send_messages = False
-            everyone_overwrite.send_messages_in_threads = False
-            everyone_overwrite.create_public_threads = False
-            everyone_overwrite.create_private_threads = False
-
-            speaker_overwrite = channel.overwrites_for(role)
-            speaker_overwrite.send_messages = True
-            speaker_overwrite.send_messages_in_threads = True
-            speaker_overwrite.create_public_threads = True
-            speaker_overwrite.create_private_threads = True
-
-            await channel.set_permissions(
-                channel.guild.default_role, overwrite=everyone_overwrite,
-                reason="Speaker role — deny send for @everyone",
-            )
-            await channel.set_permissions(
-                role, overwrite=speaker_overwrite,
-                reason="Speaker role — allow send for Speaker",
-            )
-            logger.info(f"Applied Speaker perms to new channel #{channel.name} ({channel.id})")
+            changed, api_calls = await apply_perms_to_channel(channel, role, mode)
+            logger.info(f"Applied Speaker perms to new channel #{channel.name} ({channel.id}) — mode={mode}, changed={changed}")
         except Exception as e:
             logger.error(f"Failed to apply Speaker perms to #{channel.name} ({channel.id}): {e}", exc_info=True)
 
@@ -530,6 +530,78 @@ class AdminCog(commands.Cog):
 
     @check_expired_mutes.before_loop
     async def before_check_expired_mutes(self):
+        await self.bot.wait_until_ready()
+
+    # ------------------------------------------------------------------
+    # Channel permission enforcement loop
+    # First run fires immediately on bot ready, then every 30 minutes.
+    # Syncs guild channels to DB, then corrects any drifted permissions.
+    # ------------------------------------------------------------------
+    @tasks.loop(minutes=30)
+    async def enforce_channel_permissions(self):
+        """Enforce Speaker role channel permissions from DB."""
+        if not self.db_handler:
+            return
+
+        role_id_str = os.getenv('SPEAKER_ROLE_ID')
+        if not role_id_str:
+            return
+
+        # Env var fallback for exempt channels
+        exempt_str = os.getenv('SPEAKER_EXEMPT_CHANNELS', '')
+        env_exempt_ids = {int(x.strip()) for x in exempt_str.split(',') if x.strip()}
+
+        for guild in self.bot.guilds:
+            role = guild.get_role(int(role_id_str))
+            if not role:
+                continue
+
+            # Phase 1: Sync all guild channels into DB
+            synced = 0
+            for channel in guild.channels:
+                if not isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.VoiceChannel, discord.StageChannel)):
+                    continue
+                category_id = channel.category_id if hasattr(channel, 'category_id') else None
+                nsfw = getattr(channel, 'nsfw', False)
+                self.db_handler.ensure_channel_exists(channel.id, channel.name, category_id, nsfw)
+                synced += 1
+
+            logger.info(f"[PermEnforce] Synced {synced} channels to DB")
+
+            # Phase 2: Fetch modes from DB and enforce
+            modes = self.db_handler.get_all_channel_speaker_modes()
+
+            checked = 0
+            fixed = 0
+            errors = 0
+
+            for channel in guild.channels:
+                if not isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.VoiceChannel, discord.StageChannel)):
+                    continue
+
+                mode = modes.get(channel.id) or 'normal'
+
+                # Env var fallback — if listed as exempt in env, honour it
+                if channel.id in env_exempt_ids:
+                    mode = 'exempt'
+
+                if mode == 'exempt':
+                    continue
+
+                checked += 1
+                try:
+                    changed, api_calls = await apply_perms_to_channel(channel, role, mode)
+                    if changed:
+                        fixed += 1
+                        logger.info(f"[PermEnforce] Fixed #{channel.name} ({channel.id}) — mode={mode}, api_calls={api_calls}")
+                except Exception as e:
+                    errors += 1
+                    logger.error(f"[PermEnforce] Error on #{channel.name} ({channel.id}): {e}", exc_info=True)
+
+            logger.info(f"[PermEnforce] Done: checked={checked}, fixed={fixed}, errors={errors}")
+
+    @enforce_channel_permissions.before_loop
+    async def before_enforce_channel_permissions(self):
         await self.bot.wait_until_ready()
 
     @app_commands.command(name="update_details", description="Update your social media handles and website link.")

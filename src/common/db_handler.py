@@ -804,6 +804,94 @@ class DatabaseHandler:
             logger.error(f"Error deleting timed mute for member {member_id}: {e}", exc_info=True)
             return False
 
+    # ========== Channel Speaker Modes ==========
+
+    def get_all_channel_speaker_modes(self) -> Dict[int, str]:
+        """Bulk fetch speaker_mode for all channels.
+
+        Returns:
+            Dict mapping channel_id (int) -> speaker_mode string.
+        """
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for get_all_channel_speaker_modes")
+            return {}
+
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('discord_channels')
+                .select('channel_id,speaker_mode')
+                .execute()
+            )
+            return {
+                row['channel_id']: row.get('speaker_mode', 'normal')
+                for row in (result.data or [])
+            }
+        except Exception as e:
+            logger.error(f"Error fetching channel speaker modes: {e}", exc_info=True)
+            return {}
+
+    def set_channel_speaker_mode(self, channel_id: int, mode: str) -> bool:
+        """Update the speaker_mode for a single channel.
+
+        Args:
+            channel_id: Discord channel ID.
+            mode: One of 'normal', 'readonly', 'exempt'.
+
+        Returns:
+            True if update succeeded.
+        """
+        if mode not in ('normal', 'readonly', 'exempt'):
+            logger.error(f"Invalid speaker_mode '{mode}' for channel {channel_id}")
+            return False
+
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for set_channel_speaker_mode")
+            return False
+
+        try:
+            (
+                self.storage_handler.supabase_client.table('discord_channels')
+                .update({'speaker_mode': mode})
+                .eq('channel_id', channel_id)
+                .execute()
+            )
+            logger.info(f"Set speaker_mode='{mode}' for channel {channel_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting speaker_mode for channel {channel_id}: {e}", exc_info=True)
+            return False
+
+    def ensure_channel_exists(self, channel_id: int, channel_name: str,
+                              category_id: Optional[int] = None, nsfw: bool = False) -> bool:
+        """Upsert a channel row without overwriting speaker_mode.
+
+        If the channel already exists, only channel_name/category_id/nsfw are refreshed.
+        If it doesn't exist, it's created with speaker_mode defaulting to 'normal' (DB default).
+
+        Returns:
+            True if upsert succeeded.
+        """
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for ensure_channel_exists")
+            return False
+
+        try:
+            data = {
+                'channel_id': channel_id,
+                'channel_name': channel_name,
+                'category_id': category_id,
+                'nsfw': nsfw,
+            }
+            (
+                self.storage_handler.supabase_client.table('discord_channels')
+                .upsert(data)
+                .execute()
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error in ensure_channel_exists for channel {channel_id}: {e}", exc_info=True)
+            return False
+
     def get_messages_in_range(self, start_date: datetime, end_date: datetime, channel_id: Optional[int] = None) -> List[Dict]:
         """Get messages within a date range."""
         try:
