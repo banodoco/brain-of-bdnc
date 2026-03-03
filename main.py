@@ -191,6 +191,11 @@ async def main_async(args):
             await bot.add_cog(AdminChatCog(bot, bot.db_handler, sharer_instance))
         except Exception as e:
             logger.warning(f"Failed to load AdminChatCog (skipping): {e}")
+        try:
+            from src.features.gating.gating_cog import GatingCog
+            await bot.add_cog(GatingCog(bot))
+        except Exception as e:
+            logger.warning(f"Failed to load GatingCog (skipping): {e}")
 
         logger.info(f"All cogs loaded.")
 

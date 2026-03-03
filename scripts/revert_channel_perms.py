@@ -61,6 +61,7 @@ async def on_ready():
             everyone_overwrite.send_messages_in_threads = None
             everyone_overwrite.create_public_threads = None
             everyone_overwrite.create_private_threads = None
+            everyone_overwrite.add_reactions = None
 
             await channel.set_permissions(
                 guild.default_role, overwrite=everyone_overwrite,

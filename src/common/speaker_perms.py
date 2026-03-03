@@ -6,12 +6,13 @@ import discord
 
 logger = logging.getLogger('DiscordBot')
 
-# The four permission attributes we manage on every channel.
+# The permission attributes we manage on every channel.
 SEND_PERMS = [
     'send_messages',
     'send_messages_in_threads',
     'create_public_threads',
     'create_private_threads',
+    'add_reactions',
 ]
 
 

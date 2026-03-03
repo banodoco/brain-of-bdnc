@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple
 import asyncio
 
@@ -909,6 +909,121 @@ class DatabaseHandler:
             return [row['channel_id'] for row in (result.data or [])]
         except Exception as e:
             logger.error(f"Error fetching onboarding default IDs: {e}", exc_info=True)
+            return []
+
+    # ========== Pending Intros (Gated Entry) ==========
+
+    def create_pending_intro(self, member_id: int, message_id: int, channel_id: int) -> bool:
+        """Insert a new pending intro record."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            self.storage_handler.supabase_client.table('pending_intros').insert({
+                'member_id': member_id,
+                'message_id': message_id,
+                'channel_id': channel_id,
+            }).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error creating pending intro for member {member_id}: {e}", exc_info=True)
+            return False
+
+    def get_pending_intro_by_member(self, member_id: int) -> Optional[Dict]:
+        """Return the latest pending intro for a member, or None."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return None
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('pending_intros')
+                .select('*')
+                .eq('member_id', member_id)
+                .eq('status', 'pending')
+                .order('created_at', desc=True)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error fetching pending intro for member {member_id}: {e}", exc_info=True)
+            return None
+
+    def get_pending_intro_by_message(self, message_id: int) -> Optional[Dict]:
+        """Lookup a pending intro by message ID."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return None
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('pending_intros')
+                .select('*')
+                .eq('message_id', message_id)
+                .eq('status', 'pending')
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error fetching pending intro for message {message_id}: {e}", exc_info=True)
+            return None
+
+    def approve_pending_intro(self, message_id: int) -> bool:
+        """Mark a pending intro as approved."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            self.storage_handler.supabase_client.table('pending_intros').update({
+                'status': 'approved',
+                'approved_at': datetime.now(timezone.utc).isoformat(),
+            }).eq('message_id', message_id).eq('status', 'pending').execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error approving pending intro for message {message_id}: {e}", exc_info=True)
+            return False
+
+    def expire_pending_intro(self, message_id: int) -> bool:
+        """Mark a pending intro as expired."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            self.storage_handler.supabase_client.table('pending_intros').update({
+                'status': 'expired',
+                'expired_at': datetime.now(timezone.utc).isoformat(),
+            }).eq('message_id', message_id).eq('status', 'pending').execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error expiring pending intro for message {message_id}: {e}", exc_info=True)
+            return False
+
+    def get_expired_pending_intros(self, expiry_days: int = 7) -> List[Dict]:
+        """Return pending intros older than expiry_days."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=expiry_days)).isoformat()
+            result = (
+                self.storage_handler.supabase_client.table('pending_intros')
+                .select('*')
+                .eq('status', 'pending')
+                .lt('created_at', cutoff)
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error fetching expired pending intros: {e}", exc_info=True)
+            return []
+
+    def get_all_pending_intros(self) -> List[Dict]:
+        """Return all pending intros (for bot restart recovery)."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('pending_intros')
+                .select('*')
+                .eq('status', 'pending')
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error fetching all pending intros: {e}", exc_info=True)
             return []
 
     def get_messages_in_range(self, start_date: datetime, end_date: datetime, channel_id: Optional[int] = None) -> List[Dict]:
