@@ -154,35 +154,12 @@ class GatingCog(commands.Cog):
             self._pending_message_ids.discard(payload.message_id)
             return
 
-        # Super Approver = instant approval
-        if is_super:
-            await self._approve_member(guild, intro)
-            return
+        # Record the vote
+        voter_role = 'super_approver' if is_super else 'approver'
+        self.db.record_intro_vote(intro['id'], payload.message_id, payload.user_id, voter_role)
 
-        # Count approver reactions on the message
-        channel = guild.get_channel(payload.channel_id)
-        if not channel:
-            return
-        try:
-            message = await channel.fetch_message(payload.message_id)
-        except discord.NotFound:
-            self.db.expire_pending_intro(payload.message_id)
-            self._pending_message_ids.discard(payload.message_id)
-            return
-
-        approver_count = 0
-        for reaction in message.reactions:
-            if str(reaction.emoji) == self.approval_emoji:
-                async for user in reaction.users():
-                    if user.bot:
-                        continue
-                    user_role_ids = {r.id for r in user.roles} if isinstance(user, discord.Member) else set()
-                    if self.approver_role_id in user_role_ids or self.super_approver_role_id in user_role_ids:
-                        approver_count += 1
-                break
-
-        if approver_count >= 3:
-            await self._approve_member(guild, intro)
+        # 1 vote from either role is enough
+        await self._approve_member(guild, intro)
 
     async def _approve_member(self, guild: discord.Guild, intro: dict):
         """Grant Speaker role and update DB."""

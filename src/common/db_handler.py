@@ -1026,6 +1026,25 @@ class DatabaseHandler:
             logger.error(f"Error fetching all pending intros: {e}", exc_info=True)
             return []
 
+    def record_intro_vote(self, intro_id: int, message_id: int, voter_id: int, voter_role: str) -> bool:
+        """Record a vote on an intro. Returns False if already voted."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            self.storage_handler.supabase_client.table('intro_votes').insert({
+                'intro_id': intro_id,
+                'message_id': message_id,
+                'voter_id': voter_id,
+                'voter_role': voter_role,
+            }).execute()
+            return True
+        except Exception as e:
+            # Unique constraint violation means already voted
+            if 'duplicate' in str(e).lower() or '23505' in str(e):
+                return False
+            logger.error(f"Error recording intro vote: {e}", exc_info=True)
+            return False
+
     def get_messages_in_range(self, start_date: datetime, end_date: datetime, channel_id: Optional[int] = None) -> List[Dict]:
         """Get messages within a date range."""
         try:
