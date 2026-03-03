@@ -68,6 +68,10 @@ class GatingCog(commands.Cog):
         """Ping the new member in the gate channel, then delete after 5s."""
         if not self.configured:
             return
+        # Don't welcome members who already have Speaker role (e.g. rejoining)
+        speaker_role = member.guild.get_role(self.speaker_role_id)
+        if speaker_role and speaker_role in member.roles:
+            return
         channel = member.guild.get_channel(self.gate_channel_id)
         if not channel:
             return
