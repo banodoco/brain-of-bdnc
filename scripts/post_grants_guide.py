@@ -100,10 +100,12 @@ async def main(send: bool):
             starter_content = new_messages[0]
             followup_messages = new_messages[1:]
 
-            # Delete existing threads
+            # Find existing threads
             existing = await find_bot_threads(channel, client.user.id)
-            for key, thread in existing.items():
-                await delete_thread(thread, send)
+
+            # Only delete the guide thread — keep questions thread
+            if 'guide' in existing:
+                await delete_thread(existing['guide'], send)
 
             # Create guide thread
             print(f"\n{'Creating' if send else 'Would create'} forum post: \"{GUIDE_THREAD_NAME}\"")
@@ -128,23 +130,26 @@ async def main(send: bool):
                 for i, msg in enumerate(followup_messages):
                     print(f"  Message {i+2}: {msg[:80]}...")
 
-            # Create questions thread
-            print(f"\n{'Creating' if send else 'Would create'} forum post: \"{QUESTIONS_THREAD_NAME}\"")
+            # Create questions thread only if it doesn't exist
+            if 'questions' not in existing:
+                print(f"\n{'Creating' if send else 'Would create'} forum post: \"{QUESTIONS_THREAD_NAME}\"")
 
-            questions_content = (
-                "Use this thread for questions about the micro-grants program.\n\n"
-                "For grant applications, create a new post in the forum instead."
-            )
-
-            if send:
-                result = await channel.create_thread(
-                    name=QUESTIONS_THREAD_NAME,
-                    content=questions_content,
+                questions_content = (
+                    "Use this thread for questions about the micro-grants program.\n\n"
+                    "For grant applications, create a new post in the forum instead."
                 )
-                q_thread = result.thread if hasattr(result, 'thread') else result
-                print(f"  Created thread: {q_thread.id}")
+
+                if send:
+                    result = await channel.create_thread(
+                        name=QUESTIONS_THREAD_NAME,
+                        content=questions_content,
+                    )
+                    q_thread = result.thread if hasattr(result, 'thread') else result
+                    print(f"  Created thread: {q_thread.id}")
+                else:
+                    print(f"  Content: {questions_content[:80]}...")
             else:
-                print(f"  Content: {questions_content[:80]}...")
+                print(f"\nQuestions thread already exists ({existing['questions'].id}), keeping it.")
 
             print(f"\n{'Done!' if send else 'Dry run complete. Use --send to execute.'}")
 
