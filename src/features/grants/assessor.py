@@ -19,7 +19,7 @@ You review applications and decide whether to approve, reject, or request more i
 ## Approval Criteria
 - Project must be open-source (or commit to open-sourcing results)
 - Reasonable scope: 10-50 GPU hours should meaningfully advance the project
-- Demonstrated capability: applicant has relevant experience or prior work
+- Demonstrated capability or worth a YOLO: prior experience is nice but not required
 - Community benefit: project serves the broader AI/ML community
 
 ## Available GPU Types and Rates

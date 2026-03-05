@@ -22,7 +22,7 @@ If more information is needed, the bot will tell you what's missing — just rep
 
 - Project must be **open-source** (or commit to open-sourcing results)
 - **Reasonable scope** — 10-50 GPU hours should meaningfully advance the project
-- **Demonstrated capability** — you have relevant experience or prior work
+- **Demonstrated capability or worth a YOLO** — prior experience is nice but not required
 - **Community benefit** — the project serves the broader AI/ML community
 
 ### Grant limits
