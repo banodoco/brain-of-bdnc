@@ -117,6 +117,14 @@ class GatingCog(commands.Cog):
             if not is_reply_to_other:
                 try:
                     await message.delete()
+                    hint = await message.channel.send(
+                        f"{message.author.mention} Proper introductions only! Try to mention:\n\n"
+                        f"• Things you've made or contributed to the space\n"
+                        f"• Why you're passionate about open-source AI art\n"
+                        f"• What you're working on or want to contribute"
+                    )
+                    await asyncio.sleep(10)
+                    await hint.delete()
                     logger.info(f"GatingCog: deleted short message from {message.author} in intros ({len(message.content)} chars)")
                 except Exception as e:
                     logger.error(f"GatingCog: failed to delete short message: {e}")
