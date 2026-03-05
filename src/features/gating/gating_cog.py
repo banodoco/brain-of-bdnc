@@ -23,6 +23,8 @@ class GatingCog(commands.Cog):
         self.super_approver_role_id = self._env_int('SUPER_APPROVER_ROLE_ID')
         self.approval_emoji = os.getenv('APPROVAL_EMOJI', '\u2705')
 
+        self.welcome_channel_id = self._env_int('WELCOME_CHANNEL_ID')
+
         self.configured = all([
             self.gate_channel_id,
             self.intro_channel_id,
@@ -102,6 +104,24 @@ class GatingCog(commands.Cog):
         if message.channel.id != self.intro_channel_id:
             return
 
+        # Delete short messages unless they're a reply to someone else
+        MIN_INTRO_LENGTH = 50
+        if len(message.content) < MIN_INTRO_LENGTH:
+            is_reply_to_other = (
+                message.reference
+                and message.reference.message_id
+                and message.reference.resolved
+                and getattr(message.reference.resolved, 'author', None)
+                and message.reference.resolved.author.id != message.author.id
+            )
+            if not is_reply_to_other:
+                try:
+                    await message.delete()
+                    logger.info(f"GatingCog: deleted short message from {message.author} in intros ({len(message.content)} chars)")
+                except Exception as e:
+                    logger.error(f"GatingCog: failed to delete short message: {e}")
+                return
+
         # Only track non-Speakers
         speaker_role = message.guild.get_role(self.speaker_role_id)
         if not speaker_role:
@@ -176,8 +196,36 @@ class GatingCog(commands.Cog):
             self.db.approve_pending_intro(intro['message_id'])
             self._pending_message_ids.discard(intro['message_id'])
             logger.info(f"GatingCog: approved {member} (msg {intro['message_id']})")
+
+            # Post a welcome message in the getting-started channel
+            await self._send_speaker_welcome(guild, member)
         except Exception as e:
             logger.error(f"GatingCog: failed to approve {member}: {e}", exc_info=True)
+
+    async def _send_speaker_welcome(self, guild: discord.Guild, member: discord.Member):
+        """Post a temporary welcome in the getting-started channel, auto-deletes after 5 minutes."""
+        if not self.welcome_channel_id:
+            return
+        channel = guild.get_channel(self.welcome_channel_id)
+        if not channel:
+            return
+        try:
+            # Find the bot's reference message (first bot message in the channel)
+            reference = None
+            async for hist_msg in channel.history(limit=50, oldest_first=True):
+                if hist_msg.author.id == self.bot.user.id:
+                    reference = hist_msg
+                    break
+
+            msg = await channel.send(
+                f"Welcome {member.mention}! You now have Speaker access. "
+                f"Check out the message above to get started \U0001f446",
+                reference=reference,
+            )
+            await asyncio.sleep(300)
+            await msg.delete()
+        except Exception as e:
+            logger.error(f"GatingCog: failed to send speaker welcome for {member.id}: {e}", exc_info=True)
 
     # ========== Task Loop ==========
 
