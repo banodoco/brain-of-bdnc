@@ -121,8 +121,8 @@ async def main(send: bool):
                     await asyncio.sleep(0.5)
                     print(f"  Posted message {i+2}/{len(new_messages)}")
 
-                await guide_thread.edit(pinned=True)
-                print("  Pinned.")
+                await guide_thread.edit(pinned=True, locked=True)
+                print("  Pinned and locked.")
             else:
                 print(f"  Starter: {starter_content[:80]}...")
                 for i, msg in enumerate(followup_messages):

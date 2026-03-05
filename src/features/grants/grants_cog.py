@@ -38,6 +38,9 @@ class GrantsCog(commands.Cog):
         # Thread names the bot should ignore (guide + questions)
         self._ignored_thread_names = {"How Micro-Grants Work", "Questions & Discussion"}
 
+        # Forum tags — populated on_ready once we can read the forum channel
+        self._tags: dict[str, discord.ForumTag] = {}
+
         # In-memory guard against concurrent processing of the same thread
         self._processing_threads: set[int] = set()
 
@@ -45,13 +48,24 @@ class GrantsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        """Scan for unprocessed grant threads missed while bot was down."""
+        """Load forum tags and scan for unprocessed threads."""
         if not self.configured:
             return
         try:
+            await self._load_forum_tags()
             await self._scan_missed_threads()
         except Exception as e:
-            logger.error(f"GrantsCog: startup scan failed: {e}", exc_info=True)
+            logger.error(f"GrantsCog: startup failed: {e}", exc_info=True)
+
+    async def _load_forum_tags(self):
+        """Cache forum tags by name for applying to threads."""
+        for guild in self.bot.guilds:
+            forum = guild.get_channel(self.grants_channel_id)
+            if forum and isinstance(forum, discord.ForumChannel):
+                for tag in forum.available_tags:
+                    self._tags[tag.name.lower()] = tag
+                logger.info(f"GrantsCog: loaded {len(self._tags)} forum tags: {list(self._tags.keys())}")
+                return
 
     async def _scan_missed_threads(self):
         """Find forum threads with no DB record and process them."""
@@ -212,7 +226,7 @@ class GrantsCog(commands.Cog):
                 "You already have an active grant application. "
                 "Please wait for it to be completed before submitting a new one."
             )
-            await thread.edit(archived=True, locked=True)
+            await thread.edit(archived=True)
             return
 
         # Fetch the starter message content
@@ -269,6 +283,15 @@ class GrantsCog(commands.Cog):
 
         await self._handle_assessment(thread, assessment)
 
+    async def _apply_tag(self, thread: discord.Thread, tag_name: str):
+        """Apply a forum tag to a thread if the tag exists."""
+        tag = self._tags.get(tag_name.lower())
+        if tag:
+            try:
+                await thread.edit(applied_tags=[tag])
+            except Exception as e:
+                logger.warning(f"GrantsCog: failed to apply tag '{tag_name}' to thread {thread.id}: {e}")
+
     async def _handle_assessment(self, thread: discord.Thread, assessment: dict):
         """Handle an LLM assessment result — update DB and reply."""
         thread_id = thread.id
@@ -289,7 +312,7 @@ class GrantsCog(commands.Cog):
             self.db.update_grant_status(thread_id, 'rejected', llm_assessment=llm_assessment,
                                         rejected_at='now()')
             await thread.send(f"**Application not approved**\n\n{response}")
-            await thread.edit(archived=True, locked=True)
+            await thread.edit(archived=True)
 
         elif decision == 'approved':
             gpu_type = assessment['gpu_type']
@@ -307,6 +330,7 @@ class GrantsCog(commands.Cog):
                 approved_at='now()',
             )
 
+            await self._apply_tag(thread, 'accepted')
             await thread.send(
                 f"**Grant Approved!**\n\n"
                 f"{response}\n\n"
@@ -334,6 +358,7 @@ class GrantsCog(commands.Cog):
         # Update wallet in DB before sending
         self.db.update_grant_status(thread_id, 'awaiting_wallet', wallet_address=wallet)
 
+        await self._apply_tag(thread, 'in progress')
         await thread.send(
             f"Processing payment of **{sol_amount:.4f} SOL** (~${total_usd:.2f} at ${sol_price:.2f}/SOL)..."
         )
@@ -362,4 +387,4 @@ class GrantsCog(commands.Cog):
             f"({grant['recommended_hours']}hrs) has been funded. Good luck with your project!"
         )
 
-        await thread.edit(archived=True, locked=True)
+        await thread.edit(archived=True)
