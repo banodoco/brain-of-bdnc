@@ -3,7 +3,7 @@
 import json
 import logging
 
-from src.features.grants.pricing import GPU_RATES, MAX_GRANT_USD
+from src.features.grants.pricing import GPU_RATES, MAX_GRANT_USD, calculate_grant_cost
 
 logger = logging.getLogger('DiscordBot')
 
@@ -37,13 +37,15 @@ For applicants with past paid grants, apply higher scrutiny — they should demo
 First-time applicants with no history should be evaluated normally.
 
 ## Response Format
-Return ONLY valid JSON (no markdown, no code fences):
-{{"status": "approved" | "rejected" | "needs_info", "explanation": "brief explanation for the applicant", "gpu_type": "H100_80GB" | "H200" | "B200" | null, "recommended_hours": <number 10-50 or null>}}
+Return ONLY valid JSON (no markdown, no code fences) with these exact fields:
 
-- For "approved": include gpu_type and recommended_hours based on project needs
-- For "needs_info": explain what specific information is missing
-- For "rejected": explain why clearly and constructively
-- Keep explanations concise (2-4 sentences)"""
+{{"reasoning": "your internal analysis of the application (2-4 sentences — project viability, applicant capability, scope assessment)", "decision": "approved" | "rejected" | "needs_info", "response": "message to show the applicant (2-4 sentences — friendly, constructive)", "gpu_type": "H100_80GB" | "H200" | "B200" | null, "recommended_hours": <number 10-50 or null>}}
+
+- "reasoning": your private assessment rationale (stored in DB, not shown to applicant)
+- "decision": one of "approved", "rejected", "needs_info"
+- "response": the public-facing message shown to the applicant
+- "gpu_type": required for "approved", null otherwise
+- "recommended_hours": required for "approved" (10-50), null otherwise"""
 
 
 def _build_system_prompt() -> str:
@@ -51,19 +53,48 @@ def _build_system_prompt() -> str:
     return SYSTEM_PROMPT.format(gpu_info=gpu_info, max_grant_usd=MAX_GRANT_USD)
 
 
-async def assess_application(claude_client, thread_content: str, grant_history: list | None = None) -> dict:
-    """Assess a grant application using Claude.
+def _parse_json(text: str) -> dict:
+    """Extract JSON from LLM response, stripping markdown fences if present."""
+    cleaned = text.strip()
+    if cleaned.startswith('```'):
+        cleaned = cleaned.split('\n', 1)[1] if '\n' in cleaned else cleaned[3:]
+        if cleaned.endswith('```'):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+    return json.loads(cleaned)
 
-    Args:
-        claude_client: ClaudeClient instance (from bot.claude_client)
-        thread_content: The full text of the forum post
-        grant_history: List of past grant dicts for this applicant (optional)
+
+def _validate(result: dict) -> str | None:
+    """Validate assessment structure. Returns error string or None if valid."""
+    required = ['reasoning', 'decision', 'response']
+    for field in required:
+        if field not in result or not isinstance(result[field], str) or not result[field].strip():
+            return f"Missing or empty required field: '{field}'"
+
+    if result['decision'] not in ('approved', 'rejected', 'needs_info'):
+        return f"Invalid decision: '{result['decision']}'. Must be 'approved', 'rejected', or 'needs_info'"
+
+    if result['decision'] == 'approved':
+        if not result.get('gpu_type') or result['gpu_type'] not in GPU_RATES:
+            return f"Invalid gpu_type: '{result.get('gpu_type')}'. Must be one of {list(GPU_RATES.keys())}"
+        hours = result.get('recommended_hours')
+        if not hours or not isinstance(hours, (int, float)) or not (10 <= hours <= 50):
+            return f"Invalid recommended_hours: {hours}. Must be a number between 10 and 50"
+        cost = calculate_grant_cost(result['gpu_type'], hours)
+        if cost > MAX_GRANT_USD:
+            return f"Grant cost ${cost:.2f} exceeds max ${MAX_GRANT_USD:.2f}. Reduce hours or pick a cheaper GPU"
+
+    return None
+
+
+async def assess_application(claude_client, thread_content: str, grant_history: list | None = None) -> dict:
+    """Assess a grant application using Claude with structured output and retry.
 
     Returns:
-        dict with keys: status, explanation, gpu_type, recommended_hours
+        dict with keys: reasoning, decision, response, gpu_type, recommended_hours
 
     Raises:
-        RuntimeError if LLM call fails or returns invalid JSON
+        RuntimeError if all attempts fail
     """
     system_prompt = _build_system_prompt()
 
@@ -87,42 +118,41 @@ async def assess_application(claude_client, thread_content: str, grant_history: 
         {'role': 'user', 'content': user_content}
     ]
 
-    response_text = await claude_client.generate_chat_completion(
-        model='claude-sonnet-4-20250514',
-        system_prompt=system_prompt,
-        messages=messages,
-        max_tokens=1024,
-        temperature=0.3,
-    )
+    max_attempts = 3
+    last_error = None
 
-    # Strip any markdown fences the model might add
-    cleaned = response_text.strip()
-    if cleaned.startswith('```'):
-        cleaned = cleaned.split('\n', 1)[1] if '\n' in cleaned else cleaned[3:]
-        if cleaned.endswith('```'):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
+    for attempt in range(max_attempts):
+        response_text = await claude_client.generate_chat_completion(
+            model='claude-sonnet-4-20250514',
+            system_prompt=system_prompt,
+            messages=messages,
+            max_tokens=1024,
+            temperature=0.3,
+        )
 
-    try:
-        result = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        logger.error(f"Grant assessor returned invalid JSON: {response_text}")
-        raise RuntimeError(f"LLM returned invalid JSON: {e}")
+        # Try to parse
+        try:
+            result = _parse_json(response_text)
+        except json.JSONDecodeError as e:
+            last_error = f"Invalid JSON: {e}"
+            logger.warning(f"Grant assessor attempt {attempt + 1}: {last_error}")
+            # Feed error back for retry
+            messages.append({'role': 'assistant', 'content': response_text})
+            messages.append({'role': 'user', 'content': f"Your response was not valid JSON. Error: {e}\n\nPlease return ONLY valid JSON with the exact fields specified."})
+            continue
 
-    # Validate required fields
-    if 'status' not in result or result['status'] not in ('approved', 'rejected', 'needs_info'):
-        raise RuntimeError(f"Invalid assessment status: {result.get('status')}")
+        # Validate structure
+        validation_error = _validate(result)
+        if validation_error:
+            last_error = validation_error
+            logger.warning(f"Grant assessor attempt {attempt + 1}: {last_error}")
+            # Feed error back for retry
+            messages.append({'role': 'assistant', 'content': response_text})
+            messages.append({'role': 'user', 'content': f"Your response had a validation error: {validation_error}\n\nPlease fix and return valid JSON."})
+            continue
 
-    if result['status'] == 'approved':
-        if not result.get('gpu_type') or result['gpu_type'] not in GPU_RATES:
-            raise RuntimeError(f"Invalid gpu_type for approved grant: {result.get('gpu_type')}")
-        hours = result.get('recommended_hours')
-        if not hours or not (10 <= hours <= 50):
-            raise RuntimeError(f"Invalid recommended_hours: {hours} (must be 10-50)")
-        # Enforce budget cap
-        from src.features.grants.pricing import calculate_grant_cost
-        cost = calculate_grant_cost(result['gpu_type'], hours)
-        if cost > MAX_GRANT_USD:
-            raise RuntimeError(f"Grant cost ${cost} exceeds max ${MAX_GRANT_USD}")
+        # Success
+        logger.info(f"Grant assessment succeeded on attempt {attempt + 1}: decision={result['decision']}")
+        return result
 
-    return result
+    raise RuntimeError(f"Grant assessment failed after {max_attempts} attempts. Last error: {last_error}")

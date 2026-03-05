@@ -1,5 +1,6 @@
 """Cog for compute micro-grants: forum post → LLM review → SOL payment."""
 
+import json
 import logging
 import os
 
@@ -225,48 +226,7 @@ class GrantsCog(commands.Cog):
             await thread.send("Unable to process this application right now. A team member will review it manually.")
             return
 
-        status = assessment['status']
-        explanation = assessment['explanation']
-
-        if status == 'needs_info':
-            self.db.update_grant_status(thread_id, 'needs_info', llm_assessment=explanation)
-            await thread.send(
-                f"**More information needed**\n\n{explanation}\n\n"
-                f"Please reply here with the requested details and I'll re-review your application."
-            )
-
-        elif status == 'rejected':
-            self.db.update_grant_status(thread_id, 'rejected', llm_assessment=explanation,
-                                        rejected_at='now()')
-            await thread.send(f"**Application not approved**\n\n{explanation}")
-            await thread.edit(archived=True, locked=True)
-
-        elif status == 'approved':
-            gpu_type = assessment['gpu_type']
-            hours = assessment['recommended_hours']
-            rate = GPU_RATES[gpu_type]
-            total_cost = calculate_grant_cost(gpu_type, hours)
-
-            self.db.update_grant_status(
-                thread_id, 'awaiting_wallet',
-                llm_assessment=explanation,
-                gpu_type=gpu_type,
-                recommended_hours=hours,
-                gpu_rate_usd=rate,
-                total_cost_usd=total_cost,
-                approved_at='now()',
-            )
-
-            await thread.send(
-                f"**Grant Approved!**\n\n"
-                f"{explanation}\n\n"
-                f"**Grant Details:**\n"
-                f"- GPU: {gpu_type.replace('_', ' ')}\n"
-                f"- Hours: {hours}\n"
-                f"- Rate: ${rate:.2f}/hr (+ 10% fee buffer)\n"
-                f"- Total: ${total_cost:.2f} USD (paid in SOL)\n\n"
-                f"Please reply with your **Solana wallet address** to receive the grant."
-            )
+        await self._handle_assessment(thread, assessment)
 
     async def _reassess_application(self, thread: discord.Thread, grant: dict):
         """Re-assess after applicant provides more info."""
@@ -298,21 +258,31 @@ class GrantsCog(commands.Cog):
             self.db.update_grant_status(thread_id, 'needs_info')
             return
 
-        status = assessment['status']
-        explanation = assessment['explanation']
+        await self._handle_assessment(thread, assessment)
 
-        if status == 'needs_info':
-            self.db.update_grant_status(thread_id, 'needs_info', llm_assessment=explanation)
+    async def _handle_assessment(self, thread: discord.Thread, assessment: dict):
+        """Handle an LLM assessment result — update DB and reply."""
+        thread_id = thread.id
+        decision = assessment['decision']
+        response = assessment['response']
+        reasoning = assessment['reasoning']
+        # Store both reasoning and response in llm_assessment
+        llm_assessment = json.dumps({'reasoning': reasoning, 'response': response})
+
+        if decision == 'needs_info':
+            self.db.update_grant_status(thread_id, 'needs_info', llm_assessment=llm_assessment)
             await thread.send(
-                f"**Still need more information**\n\n{explanation}"
+                f"**More information needed**\n\n{response}\n\n"
+                f"Please reply here with the requested details and I'll re-review your application."
             )
 
-        elif status == 'rejected':
-            self.db.update_grant_status(thread_id, 'rejected', llm_assessment=explanation, rejected_at='now()')
-            await thread.send(f"**Application not approved**\n\n{explanation}")
+        elif decision == 'rejected':
+            self.db.update_grant_status(thread_id, 'rejected', llm_assessment=llm_assessment,
+                                        rejected_at='now()')
+            await thread.send(f"**Application not approved**\n\n{response}")
             await thread.edit(archived=True, locked=True)
 
-        elif status == 'approved':
+        elif decision == 'approved':
             gpu_type = assessment['gpu_type']
             hours = assessment['recommended_hours']
             rate = GPU_RATES[gpu_type]
@@ -320,7 +290,7 @@ class GrantsCog(commands.Cog):
 
             self.db.update_grant_status(
                 thread_id, 'awaiting_wallet',
-                llm_assessment=explanation,
+                llm_assessment=llm_assessment,
                 gpu_type=gpu_type,
                 recommended_hours=hours,
                 gpu_rate_usd=rate,
@@ -330,7 +300,7 @@ class GrantsCog(commands.Cog):
 
             await thread.send(
                 f"**Grant Approved!**\n\n"
-                f"{explanation}\n\n"
+                f"{response}\n\n"
                 f"**Grant Details:**\n"
                 f"- GPU: {gpu_type.replace('_', ' ')}\n"
                 f"- Hours: {hours}\n"
