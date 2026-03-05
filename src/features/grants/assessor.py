@@ -3,7 +3,7 @@
 import json
 import logging
 
-from src.features.grants.pricing import GPU_RATES
+from src.features.grants.pricing import GPU_RATES, MAX_GRANT_USD
 
 logger = logging.getLogger('DiscordBot')
 
@@ -25,6 +25,11 @@ You review applications and decide whether to approve, reject, or request more i
 ## Available GPU Types and Rates
 {gpu_info}
 
+## Budget Cap
+The maximum grant is capped at ${max_grant_usd:.0f} USD (equivalent to 50 hours of H100).
+The applicant may request a specific GPU type or hours — honour their preference if reasonable, but the total cost must not exceed the cap.
+If they don't specify, choose based on project needs.
+
 ## Prior Grant History
 If the applicant has received grants before, this will be noted below the application.
 Be VERY hesitant to approve someone who already has an open/active grant (status: reviewing, awaiting_wallet).
@@ -43,7 +48,7 @@ Return ONLY valid JSON (no markdown, no code fences):
 
 def _build_system_prompt() -> str:
     gpu_info = '\n'.join(f'- {name}: ${rate:.2f}/hr' for name, rate in GPU_RATES.items())
-    return SYSTEM_PROMPT.format(gpu_info=gpu_info)
+    return SYSTEM_PROMPT.format(gpu_info=gpu_info, max_grant_usd=MAX_GRANT_USD)
 
 
 async def assess_application(claude_client, thread_content: str, grant_history: list | None = None) -> dict:
@@ -114,5 +119,10 @@ async def assess_application(claude_client, thread_content: str, grant_history: 
         hours = result.get('recommended_hours')
         if not hours or not (10 <= hours <= 50):
             raise RuntimeError(f"Invalid recommended_hours: {hours} (must be 10-50)")
+        # Enforce budget cap
+        from src.features.grants.pricing import calculate_grant_cost
+        cost = calculate_grant_cost(result['gpu_type'], hours)
+        if cost > MAX_GRANT_USD:
+            raise RuntimeError(f"Grant cost ${cost} exceeds max ${MAX_GRANT_USD}")
 
     return result

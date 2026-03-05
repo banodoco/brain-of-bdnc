@@ -7,7 +7,7 @@ import aiohttp
 
 logger = logging.getLogger('DiscordBot')
 
-# Prime Intellect approximate rates (USD/hr)
+# Approximate cloud GPU rates (USD/hr)
 GPU_RATES = {
     'H100_80GB': 2.50,
     'H200': 3.50,
@@ -16,6 +16,9 @@ GPU_RATES = {
 
 # 20% buffer for platform fees
 FEE_MULTIPLIER = 1.2
+
+# Max grant: 50hrs of H100 (including fee buffer)
+MAX_GRANT_USD = 50 * GPU_RATES['H100_80GB'] * FEE_MULTIPLIER  # $150
 
 # Cache SOL price for 60 seconds
 _sol_price_cache = {'price': None, 'timestamp': 0}
