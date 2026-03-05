@@ -130,7 +130,7 @@ async def main(send: bool):
                 for i, msg in enumerate(followup_messages):
                     print(f"  Message {i+2}: {msg[:80]}...")
 
-            # Create questions thread only if it doesn't exist
+            # Create questions thread only if it doesn't exist, otherwise ensure it's unarchived
             if 'questions' not in existing:
                 print(f"\n{'Creating' if send else 'Would create'} forum post: \"{QUESTIONS_THREAD_NAME}\"")
 
@@ -149,7 +149,11 @@ async def main(send: bool):
                 else:
                     print(f"  Content: {questions_content[:80]}...")
             else:
-                print(f"\nQuestions thread already exists ({existing['questions'].id}), keeping it.")
+                q_thread = existing['questions']
+                print(f"\nQuestions thread already exists ({q_thread.id}), keeping it.")
+                if send and q_thread.archived:
+                    await q_thread.edit(archived=False)
+                    print("  Unarchived questions thread.")
 
             print(f"\n{'Done!' if send else 'Dry run complete. Use --send to execute.'}")
 
