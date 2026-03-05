@@ -129,7 +129,7 @@ class GrantsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Handle wallet address replies in grant threads."""
+        """Handle replies in grant threads (follow-up info or wallet address)."""
         if not self.configured:
             return
         if message.author.bot or not message.guild:
@@ -147,31 +147,43 @@ class GrantsCog(commands.Cog):
         if not grant:
             return
 
-        # Only process if awaiting wallet from the original applicant
-        if grant['status'] != 'awaiting_wallet':
-            return
+        # Only respond to the original applicant
         if message.author.id != grant['applicant_id']:
             return
 
-        # Extract wallet address from message
-        wallet = message.content.strip()
-        if not is_valid_solana_address(wallet):
-            await message.reply("That doesn't look like a valid Solana wallet address. Please send a valid base58-encoded address.")
-            return
+        if grant['status'] == 'needs_info':
+            # Re-assess with full conversation
+            if thread_id in self._processing_threads:
+                return
+            self._processing_threads.add(thread_id)
+            try:
+                await self._reassess_application(channel, grant)
+            except Exception as e:
+                logger.error(f"GrantsCog: re-assessment error for thread {thread_id}: {e}", exc_info=True)
+                await channel.send("An error occurred while re-reviewing. A team member will follow up.")
+            finally:
+                self._processing_threads.discard(thread_id)
 
-        # Race condition guard
-        if thread_id in self._processing_threads:
-            return
-        self._processing_threads.add(thread_id)
+        elif grant['status'] == 'awaiting_wallet':
+            # Extract wallet address from message
+            wallet = message.content.strip()
+            if not is_valid_solana_address(wallet):
+                await message.reply("That doesn't look like a valid Solana wallet address. Please send a valid base58-encoded address.")
+                return
 
-        try:
-            await self._process_payment(channel, grant, wallet)
-        except Exception as e:
-            logger.error(f"GrantsCog: payment error for thread {thread_id}: {e}", exc_info=True)
-            self.db.update_grant_status(thread_id, 'failed')
-            await channel.send(f"Payment failed: {e}\n\nA team member will follow up to resolve this.")
-        finally:
-            self._processing_threads.discard(thread_id)
+            # Race condition guard
+            if thread_id in self._processing_threads:
+                return
+            self._processing_threads.add(thread_id)
+
+            try:
+                await self._process_payment(channel, grant, wallet)
+            except Exception as e:
+                logger.error(f"GrantsCog: payment error for thread {thread_id}: {e}", exc_info=True)
+                self.db.update_grant_status(thread_id, 'failed')
+                await channel.send(f"Payment failed: {e}\n\nA team member will follow up to resolve this.")
+            finally:
+                self._processing_threads.discard(thread_id)
 
     # ========== Core Logic ==========
 
@@ -220,13 +232,83 @@ class GrantsCog(commands.Cog):
             self.db.update_grant_status(thread_id, 'needs_info', llm_assessment=explanation)
             await thread.send(
                 f"**More information needed**\n\n{explanation}\n\n"
-                f"Please create a new post with the requested details."
+                f"Please reply here with the requested details and I'll re-review your application."
             )
-            await thread.edit(archived=True, locked=True)
 
         elif status == 'rejected':
             self.db.update_grant_status(thread_id, 'rejected', llm_assessment=explanation,
                                         rejected_at='now()')
+            await thread.send(f"**Application not approved**\n\n{explanation}")
+            await thread.edit(archived=True, locked=True)
+
+        elif status == 'approved':
+            gpu_type = assessment['gpu_type']
+            hours = assessment['recommended_hours']
+            rate = GPU_RATES[gpu_type]
+            total_cost = calculate_grant_cost(gpu_type, hours)
+
+            self.db.update_grant_status(
+                thread_id, 'awaiting_wallet',
+                llm_assessment=explanation,
+                gpu_type=gpu_type,
+                recommended_hours=hours,
+                gpu_rate_usd=rate,
+                total_cost_usd=total_cost,
+                approved_at='now()',
+            )
+
+            await thread.send(
+                f"**Grant Approved!**\n\n"
+                f"{explanation}\n\n"
+                f"**Grant Details:**\n"
+                f"- GPU: {gpu_type.replace('_', ' ')}\n"
+                f"- Hours: {hours}\n"
+                f"- Rate: ${rate:.2f}/hr (+ 20% fee buffer)\n"
+                f"- Total: ${total_cost:.2f} USD (paid in SOL)\n\n"
+                f"Please reply with your **Solana wallet address** to receive the grant."
+            )
+
+    async def _reassess_application(self, thread: discord.Thread, grant: dict):
+        """Re-assess after applicant provides more info."""
+        thread_id = thread.id
+        applicant_id = grant['applicant_id']
+
+        # Gather full conversation: starter message + all follow-up messages
+        messages = []
+        async for msg in thread.history(limit=100, oldest_first=True):
+            if msg.author.bot:
+                messages.append(f"[Reviewer]: {msg.content}")
+            else:
+                messages.append(f"[Applicant]: {msg.content}")
+
+        thread_content = f"**{thread.name}**\n\n" + "\n\n".join(messages)
+
+        # Update stored content
+        self.db.update_grant_status(thread_id, 'reviewing', thread_content=thread_content)
+
+        # Fetch grant history
+        grant_history = self.db.get_grant_history_for_applicant(applicant_id)
+        grant_history = [g for g in grant_history if g.get('status') not in ('reviewing', 'needs_info')]
+
+        try:
+            assessment = await assess_application(self.claude_client, thread_content, grant_history=grant_history or None)
+        except RuntimeError as e:
+            logger.error(f"GrantsCog: re-assessment failed for thread {thread_id}: {e}")
+            await thread.send("Unable to re-review right now. A team member will follow up.")
+            self.db.update_grant_status(thread_id, 'needs_info')
+            return
+
+        status = assessment['status']
+        explanation = assessment['explanation']
+
+        if status == 'needs_info':
+            self.db.update_grant_status(thread_id, 'needs_info', llm_assessment=explanation)
+            await thread.send(
+                f"**Still need more information**\n\n{explanation}"
+            )
+
+        elif status == 'rejected':
+            self.db.update_grant_status(thread_id, 'rejected', llm_assessment=explanation, rejected_at='now()')
             await thread.send(f"**Application not approved**\n\n{explanation}")
             await thread.edit(archived=True, locked=True)
 
