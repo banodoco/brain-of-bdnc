@@ -37,6 +37,68 @@ class GrantsCog(commands.Cog):
         # In-memory guard against concurrent processing of the same thread
         self._processing_threads: set[int] = set()
 
+    # ========== Startup Scan ==========
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Scan for unprocessed grant threads missed while bot was down."""
+        if not self.configured:
+            return
+        try:
+            await self._scan_missed_threads()
+        except Exception as e:
+            logger.error(f"GrantsCog: startup scan failed: {e}", exc_info=True)
+
+    async def _scan_missed_threads(self):
+        """Find forum threads with no DB record and process them."""
+        guild = None
+        for g in self.bot.guilds:
+            channel = g.get_channel(self.grants_channel_id)
+            if channel:
+                guild = g
+                break
+        if not guild:
+            return
+
+        forum = guild.get_channel(self.grants_channel_id)
+        if not forum or not isinstance(forum, discord.ForumChannel):
+            return
+
+        # Get all active (non-archived) threads
+        threads = forum.threads
+        # Also fetch archived threads that might have been missed
+        archived = []
+        async for thread in forum.archived_threads(limit=50):
+            archived.append(thread)
+
+        all_threads = list(threads) + archived
+        processed = 0
+
+        for thread in all_threads:
+            # Skip if already in DB
+            existing = self.db.get_grant_by_thread(thread.id)
+            if existing:
+                continue
+
+            # Skip locked threads (already handled manually)
+            if thread.locked:
+                continue
+
+            logger.info(f"GrantsCog: found missed thread {thread.id} ({thread.name}), processing...")
+            if thread.id in self._processing_threads:
+                continue
+            self._processing_threads.add(thread.id)
+            try:
+                await self._process_new_application(thread)
+                processed += 1
+            except Exception as e:
+                logger.error(f"GrantsCog: error processing missed thread {thread.id}: {e}", exc_info=True)
+            finally:
+                self._processing_threads.discard(thread.id)
+
+        if processed:
+            logger.info(f"GrantsCog: processed {processed} missed thread(s) on startup")
+
     # ========== Listeners ==========
 
     @commands.Cog.listener()
