@@ -226,7 +226,10 @@ class GrantsCog(commands.Cog):
                 "You already have an active grant application. "
                 "Please wait for it to be completed before submitting a new one."
             )
-            await thread.edit(archived=True)
+            try:
+                await thread.edit(archived=True)
+            except Exception as e:
+                logger.warning(f"GrantsCog: failed to archive duplicate thread {thread_id}: {e}")
             return
 
         # Fetch the starter message content
@@ -312,7 +315,10 @@ class GrantsCog(commands.Cog):
             self.db.update_grant_status(thread_id, 'rejected', llm_assessment=llm_assessment,
                                         rejected_at='now()')
             await thread.send(f"**Application not approved**\n\n{response}")
-            await thread.edit(archived=True)
+            try:
+                await thread.edit(archived=True)
+            except Exception as e:
+                logger.warning(f"GrantsCog: failed to archive rejected thread {thread_id}: {e}")
 
         elif decision == 'approved':
             gpu_type = assessment['gpu_type']
@@ -387,4 +393,7 @@ class GrantsCog(commands.Cog):
             f"({grant['recommended_hours']}hrs) has been funded. Good luck with your project!"
         )
 
-        await thread.edit(archived=True)
+        try:
+            await thread.edit(archived=True)
+        except Exception as e:
+            logger.warning(f"GrantsCog: failed to archive paid thread {thread_id}: {e}")

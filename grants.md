@@ -11,6 +11,13 @@ We offer micro-grants of **10-50 GPU hours** (H100, H200, or B200) to support op
 
 If more information is needed, the bot will tell you what's missing — just reply in the same thread and it will re-review.
 
+Have questions? Ask in the [Questions & Discussion](https://discord.com/channels/1076117621407223829/1479211913652207706) thread.
+
+### Example projects
+
+- **Train new control dimensions for LTX with IC-LoRAs** — you can train a whole new control dimension onto LTX in as little as eight hours
+- **Train edit LoRAs for Flux, Qwen Edit, etc.** — add new modalities and control types that help models accomplish tasks they can't do out of the box
+
 ### What to include in your application
 
 - **Project description** — what are you building?
@@ -47,3 +54,5 @@ You can pay for GPU compute directly with crypto on [RunPod](https://docs.runpod
 
 Want to help fund more grants? Send SOL to:
 `FBXSuVueW9Z1U2RmgmYazAX1GGdzay75AKHD9ijJpszq`
+
+Are you a company who wants to contribute or make a bounty? Message <@301463647895683072>
