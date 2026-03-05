@@ -30,3 +30,8 @@ tweepy>=4.0.0
 
 # Database
 psycopg2-binary>=2.9.0
+
+# Solana
+solana>=0.34.0
+solders>=0.21.0
+base58>=2.1.0

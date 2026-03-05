@@ -1045,6 +1045,119 @@ class DatabaseHandler:
             logger.error(f"Error recording intro vote: {e}", exc_info=True)
             return False
 
+    # ========== Grant Applications ==========
+
+    def create_grant_application(self, thread_id: int, applicant_id: int, thread_content: str) -> bool:
+        """Insert a new grant application record."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            self.storage_handler.supabase_client.table('grant_applications').insert({
+                'thread_id': thread_id,
+                'applicant_id': applicant_id,
+                'thread_content': thread_content,
+                'status': 'reviewing',
+            }).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error creating grant application for thread {thread_id}: {e}", exc_info=True)
+            return False
+
+    def get_grant_by_thread(self, thread_id: int) -> Optional[Dict]:
+        """Return the grant application for a thread, or None."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return None
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('grant_applications')
+                .select('*')
+                .eq('thread_id', thread_id)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error fetching grant for thread {thread_id}: {e}", exc_info=True)
+            return None
+
+    def update_grant_status(self, thread_id: int, status: str, **kwargs) -> bool:
+        """Update a grant application's status and any additional fields."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            data = {'status': status}
+            # Handle timestamp fields that use 'now()'
+            for key, value in kwargs.items():
+                if value == 'now()':
+                    data[key] = datetime.now(timezone.utc).isoformat()
+                else:
+                    data[key] = value
+            (
+                self.storage_handler.supabase_client.table('grant_applications')
+                .update(data)
+                .eq('thread_id', thread_id)
+                .execute()
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error updating grant status for thread {thread_id}: {e}", exc_info=True)
+            return False
+
+    def record_grant_payment(self, thread_id: int, tx_signature: str, sol_amount: float, sol_price_usd: float) -> bool:
+        """Record a successful grant payment."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            (
+                self.storage_handler.supabase_client.table('grant_applications')
+                .update({
+                    'status': 'paid',
+                    'tx_signature': tx_signature,
+                    'sol_amount': sol_amount,
+                    'sol_price_usd': sol_price_usd,
+                    'paid_at': datetime.now(timezone.utc).isoformat(),
+                })
+                .eq('thread_id', thread_id)
+                .execute()
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error recording grant payment for thread {thread_id}: {e}", exc_info=True)
+            return False
+
+    def get_active_grants_for_applicant(self, applicant_id: int) -> List[Dict]:
+        """Return active (non-terminal) grant applications for a user."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('grant_applications')
+                .select('*')
+                .eq('applicant_id', applicant_id)
+                .in_('status', ['reviewing', 'awaiting_wallet'])
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error fetching active grants for applicant {applicant_id}: {e}", exc_info=True)
+            return []
+
+    def get_grant_history_for_applicant(self, applicant_id: int) -> List[Dict]:
+        """Return all past grant applications for a user (any status)."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('grant_applications')
+                .select('status,gpu_type,recommended_hours,total_cost_usd,created_at,paid_at')
+                .eq('applicant_id', applicant_id)
+                .order('created_at', desc=True)
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error fetching grant history for applicant {applicant_id}: {e}", exc_info=True)
+            return []
+
     def get_messages_in_range(self, start_date: datetime, end_date: datetime, channel_id: Optional[int] = None) -> List[Dict]:
         """Get messages within a date range."""
         try:

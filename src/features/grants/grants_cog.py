@@ -1,0 +1,242 @@
+"""Cog for compute micro-grants: forum post → LLM review → SOL payment."""
+
+import logging
+import os
+
+import discord
+from discord.ext import commands
+
+from src.features.grants.assessor import assess_application
+from src.features.grants.pricing import GPU_RATES, FEE_MULTIPLIER, calculate_grant_cost, get_sol_price_usd, usd_to_sol
+from src.features.grants.solana_client import SolanaClient, is_valid_solana_address
+
+logger = logging.getLogger('DiscordBot')
+
+
+class GrantsCog(commands.Cog):
+    """Micro-grants: applicants post in forum → Claude reviews → SOL payment."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db = getattr(bot, 'db_handler', None)
+        self.claude_client = getattr(bot, 'claude_client', None)
+
+        channel_id = os.getenv('GRANTS_CHANNEL_ID')
+        self.grants_channel_id = int(channel_id) if channel_id else None
+
+        self.solana_client = None
+        try:
+            self.solana_client = SolanaClient()
+        except Exception as e:
+            logger.warning(f"GrantsCog: Solana client init failed (payments disabled): {e}")
+
+        self.configured = all([self.grants_channel_id, self.db, self.claude_client])
+        if not self.configured:
+            logger.warning("GrantsCog: missing config, handlers will no-op")
+
+        # In-memory guard against concurrent processing of the same thread
+        self._processing_threads: set[int] = set()
+
+    # ========== Listeners ==========
+
+    @commands.Cog.listener()
+    async def on_thread_create(self, thread: discord.Thread):
+        """Handle new forum posts in the grants channel."""
+        if not self.configured:
+            return
+        if not thread.parent_id or thread.parent_id != self.grants_channel_id:
+            return
+
+        thread_id = thread.id
+
+        # Race condition guard
+        if thread_id in self._processing_threads:
+            return
+        self._processing_threads.add(thread_id)
+
+        try:
+            await self._process_new_application(thread)
+        except Exception as e:
+            logger.error(f"GrantsCog: error processing thread {thread_id}: {e}", exc_info=True)
+            try:
+                await thread.send("An error occurred while reviewing this application. A team member will follow up.")
+            except Exception:
+                pass
+        finally:
+            self._processing_threads.discard(thread_id)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Handle wallet address replies in grant threads."""
+        if not self.configured:
+            return
+        if message.author.bot or not message.guild:
+            return
+
+        # Must be in a thread under the grants channel
+        channel = message.channel
+        if not isinstance(channel, discord.Thread):
+            return
+        if not channel.parent_id or channel.parent_id != self.grants_channel_id:
+            return
+
+        thread_id = channel.id
+        grant = self.db.get_grant_by_thread(thread_id)
+        if not grant:
+            return
+
+        # Only process if awaiting wallet from the original applicant
+        if grant['status'] != 'awaiting_wallet':
+            return
+        if message.author.id != grant['applicant_id']:
+            return
+
+        # Extract wallet address from message
+        wallet = message.content.strip()
+        if not is_valid_solana_address(wallet):
+            await message.reply("That doesn't look like a valid Solana wallet address. Please send a valid base58-encoded address.")
+            return
+
+        # Race condition guard
+        if thread_id in self._processing_threads:
+            return
+        self._processing_threads.add(thread_id)
+
+        try:
+            await self._process_payment(channel, grant, wallet)
+        except Exception as e:
+            logger.error(f"GrantsCog: payment error for thread {thread_id}: {e}", exc_info=True)
+            self.db.update_grant_status(thread_id, 'failed')
+            await channel.send(f"Payment failed: {e}\n\nA team member will follow up to resolve this.")
+        finally:
+            self._processing_threads.discard(thread_id)
+
+    # ========== Core Logic ==========
+
+    async def _process_new_application(self, thread: discord.Thread):
+        """Assess a new grant application and respond."""
+        thread_id = thread.id
+        applicant_id = thread.owner_id
+
+        # Join the thread so the bot can post
+        await thread.join()
+
+        # Check for existing active grants
+        active = self.db.get_active_grants_for_applicant(applicant_id)
+        if active:
+            await thread.send(
+                "You already have an active grant application. "
+                "Please wait for it to be completed before submitting a new one."
+            )
+            await thread.edit(archived=True, locked=True)
+            return
+
+        # Fetch the starter message content
+        starter_message = await thread.fetch_message(thread_id)
+        thread_content = f"**{thread.name}**\n\n{starter_message.content}"
+
+        # Record in DB
+        self.db.create_grant_application(thread_id, applicant_id, thread_content)
+
+        # Fetch grant history for this applicant
+        grant_history = self.db.get_grant_history_for_applicant(applicant_id)
+        # Exclude the current application we just created
+        grant_history = [g for g in grant_history if g.get('status') != 'reviewing' or g.get('thread_id') != thread_id]
+
+        # Assess with LLM
+        try:
+            assessment = await assess_application(self.claude_client, thread_content, grant_history=grant_history or None)
+        except RuntimeError as e:
+            logger.error(f"GrantsCog: assessment failed for thread {thread_id}: {e}")
+            await thread.send("Unable to process this application right now. A team member will review it manually.")
+            return
+
+        status = assessment['status']
+        explanation = assessment['explanation']
+
+        if status == 'needs_info':
+            self.db.update_grant_status(thread_id, 'needs_info', llm_assessment=explanation)
+            await thread.send(
+                f"**More information needed**\n\n{explanation}\n\n"
+                f"Please create a new post with the requested details."
+            )
+            await thread.edit(archived=True, locked=True)
+
+        elif status == 'rejected':
+            self.db.update_grant_status(thread_id, 'rejected', llm_assessment=explanation,
+                                        rejected_at='now()')
+            await thread.send(f"**Application not approved**\n\n{explanation}")
+            await thread.edit(archived=True, locked=True)
+
+        elif status == 'approved':
+            gpu_type = assessment['gpu_type']
+            hours = assessment['recommended_hours']
+            rate = GPU_RATES[gpu_type]
+            total_cost = calculate_grant_cost(gpu_type, hours)
+
+            self.db.update_grant_status(
+                thread_id, 'awaiting_wallet',
+                llm_assessment=explanation,
+                gpu_type=gpu_type,
+                recommended_hours=hours,
+                gpu_rate_usd=rate,
+                total_cost_usd=total_cost,
+                approved_at='now()',
+            )
+
+            await thread.send(
+                f"**Grant Approved!**\n\n"
+                f"{explanation}\n\n"
+                f"**Grant Details:**\n"
+                f"- GPU: {gpu_type.replace('_', ' ')}\n"
+                f"- Hours: {hours}\n"
+                f"- Rate: ${rate:.2f}/hr (+ 20% fee buffer)\n"
+                f"- Total: ${total_cost:.2f} USD (paid in SOL)\n\n"
+                f"Please reply with your **Solana wallet address** to receive the grant."
+            )
+
+    async def _process_payment(self, thread: discord.Thread, grant: dict, wallet: str):
+        """Send SOL payment and finalize the grant."""
+        thread_id = thread.id
+
+        if not self.solana_client:
+            await thread.send("Payment system is not configured. A team member will process this manually.")
+            return
+
+        # Fetch current SOL price
+        sol_price = await get_sol_price_usd()
+        total_usd = float(grant['total_cost_usd'])
+        sol_amount = usd_to_sol(total_usd, sol_price)
+
+        # Update wallet in DB before sending
+        self.db.update_grant_status(thread_id, 'awaiting_wallet', wallet_address=wallet)
+
+        await thread.send(
+            f"Processing payment of **{sol_amount:.4f} SOL** (~${total_usd:.2f} at ${sol_price:.2f}/SOL)..."
+        )
+
+        # Send SOL
+        tx_sig = await self.solana_client.send_sol(wallet, sol_amount)
+
+        # Record payment
+        self.db.record_grant_payment(thread_id, tx_sig, sol_amount, sol_price)
+
+        # Determine explorer URL based on RPC
+        rpc_url = self.solana_client.rpc_url
+        if 'devnet' in rpc_url:
+            explorer = f"https://explorer.solana.com/tx/{tx_sig}?cluster=devnet"
+        elif 'testnet' in rpc_url:
+            explorer = f"https://explorer.solana.com/tx/{tx_sig}?cluster=testnet"
+        else:
+            explorer = f"https://explorer.solana.com/tx/{tx_sig}"
+
+        await thread.send(
+            f"**Payment sent!**\n\n"
+            f"- Amount: {sol_amount:.4f} SOL (~${total_usd:.2f})\n"
+            f"- Wallet: `{wallet}`\n"
+            f"- Transaction: [View on Explorer]({explorer})\n\n"
+            f"Your compute grant for {grant['gpu_type'].replace('_', ' ')} "
+            f"({grant['recommended_hours']}hrs) has been funded. Good luck with your project!"
+        )
+
+        await thread.edit(archived=True, locked=True)

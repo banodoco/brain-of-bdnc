@@ -196,6 +196,11 @@ async def main_async(args):
             await bot.add_cog(GatingCog(bot))
         except Exception as e:
             logger.warning(f"Failed to load GatingCog (skipping): {e}")
+        try:
+            from src.features.grants.grants_cog import GrantsCog
+            await bot.add_cog(GrantsCog(bot))
+        except Exception as e:
+            logger.warning(f"Failed to load GrantsCog (skipping): {e}")
 
         logger.info(f"All cogs loaded.")
 
