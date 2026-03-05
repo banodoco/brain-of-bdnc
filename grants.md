@@ -39,6 +39,10 @@ If more information is needed, the bot will tell you what's missing — just rep
 
 A 10% fee buffer is added to cover platform costs.
 
+### Using your grant
+
+You can pay for GPU compute directly with crypto on [RunPod](https://docs.runpod.io/references/billing-information#payment-methods), or convert the SOL to your local currency and use any provider you prefer.
+
 ### Donations
 
 Want to help fund more grants? Send SOL to:
