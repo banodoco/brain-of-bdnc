@@ -35,6 +35,9 @@ class GrantsCog(commands.Cog):
         if not self.configured:
             logger.warning("GrantsCog: missing config, handlers will no-op")
 
+        # Thread names the bot should ignore (guide + questions)
+        self._ignored_thread_names = {"How Micro-Grants Work", "Questions & Discussion"}
+
         # In-memory guard against concurrent processing of the same thread
         self._processing_threads: set[int] = set()
 
@@ -76,6 +79,10 @@ class GrantsCog(commands.Cog):
         processed = 0
 
         for thread in all_threads:
+            # Skip guide/questions threads
+            if thread.name in self._ignored_thread_names:
+                continue
+
             # Skip if already in DB
             existing = self.db.get_grant_by_thread(thread.id)
             if existing:
@@ -108,6 +115,8 @@ class GrantsCog(commands.Cog):
         if not self.configured:
             return
         if not thread.parent_id or thread.parent_id != self.grants_channel_id:
+            return
+        if thread.name in self._ignored_thread_names:
             return
 
         thread_id = thread.id
