@@ -14,8 +14,8 @@ GPU_RATES = {
     'B200': 5.00,
 }
 
-# 20% buffer for platform fees
-FEE_MULTIPLIER = 1.2
+# 10% buffer for platform fees
+FEE_MULTIPLIER = 1.1
 
 # Max grant: 50hrs of H100 (including fee buffer)
 MAX_GRANT_USD = 50 * GPU_RATES['H100_80GB'] * FEE_MULTIPLIER  # $150

@@ -263,7 +263,7 @@ class GrantsCog(commands.Cog):
                 f"**Grant Details:**\n"
                 f"- GPU: {gpu_type.replace('_', ' ')}\n"
                 f"- Hours: {hours}\n"
-                f"- Rate: ${rate:.2f}/hr (+ 20% fee buffer)\n"
+                f"- Rate: ${rate:.2f}/hr (+ 10% fee buffer)\n"
                 f"- Total: ${total_cost:.2f} USD (paid in SOL)\n\n"
                 f"Please reply with your **Solana wallet address** to receive the grant."
             )
@@ -334,7 +334,7 @@ class GrantsCog(commands.Cog):
                 f"**Grant Details:**\n"
                 f"- GPU: {gpu_type.replace('_', ' ')}\n"
                 f"- Hours: {hours}\n"
-                f"- Rate: ${rate:.2f}/hr (+ 20% fee buffer)\n"
+                f"- Rate: ${rate:.2f}/hr (+ 10% fee buffer)\n"
                 f"- Total: ${total_cost:.2f} USD (paid in SOL)\n\n"
                 f"Please reply with your **Solana wallet address** to receive the grant."
             )
