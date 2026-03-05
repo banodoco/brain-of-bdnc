@@ -29,7 +29,7 @@ Have questions? Ask in the [Questions & Discussion](https://discord.com/channels
 
 - Project must be **open-source** (or commit to open-sourcing results)
 - **Reasonable scope** — 10-50 GPU hours should meaningfully advance the project
-- **Demonstrated capability or worth a YOLO** — prior experience is nice but not required
+- **Merit and reputation** — public contributions, previous work, and clearly articulated training goals. If you're new, start small.
 - **Community benefit** — the project serves the broader AI/ML community
 
 ### Grant limits
