@@ -39,13 +39,15 @@ First-time applicants with no history should be evaluated normally.
 ## Response Format
 Return ONLY valid JSON (no markdown, no code fences) with these exact fields:
 
-{{"reasoning": "your internal analysis of the application (2-4 sentences — project viability, applicant capability, scope assessment)", "decision": "approved" | "rejected" | "needs_info", "response": "message to show the applicant (2-4 sentences — friendly, constructive)", "gpu_type": "H100_80GB" | "H200" | "B200" | null, "recommended_hours": <number 10-50 or null>}}
+{{"reasoning": "your internal analysis of the application (2-4 sentences — project viability, applicant capability, scope assessment)", "decision": "approved" | "rejected" | "needs_info" | "spam", "response": "message to show the applicant (2-4 sentences — friendly, constructive)", "gpu_type": "H100_80GB" | "H200" | "B200" | null, "recommended_hours": <number 10-50 or null>}}
 
 - "reasoning": your private assessment rationale (stored in DB, not shown to applicant)
-- "decision": one of "approved", "rejected", "needs_info"
-- "response": the public-facing message shown to the applicant
+- "decision": one of "approved", "rejected", "needs_info", "spam"
+- "response": the public-facing message shown to the applicant (not used for spam — thread is deleted)
 - "gpu_type": required for "approved", null otherwise
-- "recommended_hours": required for "approved" (10-50), null otherwise"""
+- "recommended_hours": required for "approved" (10-50), null otherwise
+
+Use "spam" for posts that are clearly not real applications — e.g. test posts, gibberish, jokes, off-topic messages, or obvious low-effort spam. These threads will be silently deleted."""
 
 
 def _build_system_prompt() -> str:
@@ -71,7 +73,7 @@ def _validate(result: dict) -> str | None:
         if field not in result or not isinstance(result[field], str) or not result[field].strip():
             return f"Missing or empty required field: '{field}'"
 
-    if result['decision'] not in ('approved', 'rejected', 'needs_info'):
+    if result['decision'] not in ('approved', 'rejected', 'needs_info', 'spam'):
         return f"Invalid decision: '{result['decision']}'. Must be 'approved', 'rejected', or 'needs_info'"
 
     if result['decision'] == 'approved':

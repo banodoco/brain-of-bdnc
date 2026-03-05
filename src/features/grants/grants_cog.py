@@ -304,6 +304,16 @@ class GrantsCog(commands.Cog):
         # Store both reasoning and response in llm_assessment
         llm_assessment = json.dumps({'reasoning': reasoning, 'response': response})
 
+        if decision == 'spam':
+            self.db.update_grant_status(thread_id, 'rejected', llm_assessment=llm_assessment,
+                                        rejected_at='now()')
+            logger.info(f"GrantsCog: deleting spam thread {thread_id}: {reasoning[:100]}")
+            try:
+                await thread.delete()
+            except Exception as e:
+                logger.warning(f"GrantsCog: failed to delete spam thread {thread_id}: {e}")
+            return
+
         if decision == 'needs_info':
             self.db.update_grant_status(thread_id, 'needs_info', llm_assessment=llm_assessment)
             await thread.send(
