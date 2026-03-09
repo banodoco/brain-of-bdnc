@@ -359,7 +359,7 @@ class GrantsCog(commands.Cog):
 
             await self._apply_tag(thread, 'accepted')
             await thread.send(
-                f"**Grant Approved!**\n\n"
+                f"<@{thread.owner_id}> **Grant Approved!**\n\n"
                 f"{response}\n\n"
                 f"**Grant Details:**\n"
                 f"- GPU: {gpu_type.replace('_', ' ')}\n"
