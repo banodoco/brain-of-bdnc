@@ -1157,6 +1157,36 @@ class DatabaseHandler:
             logger.error(f"Error fetching inflight payments: {e}", exc_info=True)
             return []
 
+    def get_member_engagement(self, member_id: int) -> Dict:
+        """Get engagement stats for a member: total message count and last 20 messages >50 chars."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return {'total_messages': 0, 'recent_messages': []}
+        try:
+            sb = self.storage_handler.supabase_client
+            # Total message count
+            count_resp = sb.table('discord_messages').select('message_id', count='exact').eq('author_id', member_id).execute()
+            total = count_resp.count or 0
+            # Last 20 substantive messages (>50 chars)
+            msgs_resp = (
+                sb.table('discord_messages')
+                .select('content,channel_id,created_at')
+                .eq('author_id', member_id)
+                .gt('content', '')  # non-empty
+                .order('created_at', desc=True)
+                .limit(100)
+                .execute()
+            )
+            # Filter to >50 chars client-side (Supabase REST can't filter by length)
+            substantive = [
+                {'content': m['content'][:200], 'channel_id': m['channel_id'], 'created_at': m['created_at'][:10]}
+                for m in (msgs_resp.data or [])
+                if m.get('content') and len(m['content']) > 50
+            ][:20]
+            return {'total_messages': total, 'recent_messages': substantive}
+        except Exception as e:
+            logger.error(f"Error fetching engagement for member {member_id}: {e}", exc_info=True)
+            return {'total_messages': 0, 'recent_messages': []}
+
     def get_active_grants_for_applicant(self, applicant_id: int) -> List[Dict]:
         """Return active (non-terminal) grant applications for a user."""
         if not self.storage_handler or not self.storage_handler.supabase_client:

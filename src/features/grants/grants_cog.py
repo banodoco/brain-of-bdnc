@@ -33,6 +33,9 @@ class GrantsCog(commands.Cog):
         except Exception as e:
             logger.warning(f"GrantsCog: Solana client init failed (payments disabled): {e}")
 
+        admin_id = os.getenv('ADMIN_USER_ID')
+        self.admin_id = int(admin_id) if admin_id else None
+
         self.configured = all([self.grants_channel_id, self.db, self.claude_client])
         if not self.configured:
             logger.warning("GrantsCog: missing config, handlers will no-op")
@@ -45,6 +48,10 @@ class GrantsCog(commands.Cog):
 
         # In-memory guard against concurrent processing of the same thread
         self._processing_threads: set[int] = set()
+
+    @property
+    def _admin_mention(self) -> str:
+        return f"<@{self.admin_id}>" if self.admin_id else "@admin"
 
     # ========== Startup Scan ==========
 
@@ -202,7 +209,7 @@ class GrantsCog(commands.Cog):
         except Exception as e:
             logger.error(f"GrantsCog: error processing thread {thread_id}: {e}", exc_info=True)
             try:
-                await thread.send("An error occurred while reviewing this application. A team member will follow up.")
+                await thread.send(f"An error occurred while reviewing this application. {self._admin_mention} will follow up.")
             except Exception:
                 pass
         finally:
@@ -241,7 +248,7 @@ class GrantsCog(commands.Cog):
                 await self._reassess_application(channel, grant)
             except Exception as e:
                 logger.error(f"GrantsCog: re-assessment error for thread {thread_id}: {e}", exc_info=True)
-                await channel.send("An error occurred while re-reviewing. A team member will follow up.")
+                await channel.send(f"An error occurred while re-reviewing. {self._admin_mention} will follow up.")
             finally:
                 self._processing_threads.discard(thread_id)
 
@@ -271,7 +278,7 @@ class GrantsCog(commands.Cog):
                     # Money may be on-chain — don't touch, recovery will handle it
                     await channel.send(
                         f"Payment was submitted but encountered an error: {e}\n\n"
-                        f"The transaction may still confirm — a team member will verify."
+                        f"The transaction may still confirm — {self._admin_mention} will verify."
                     )
                 elif ps == 'sending':
                     # Was mid-send — unclear if tx left, reset to none so they can retry
@@ -336,17 +343,22 @@ class GrantsCog(commands.Cog):
         # Record in DB
         self.db.create_grant_application(thread_id, applicant_id, thread_content, attachment_urls=attachment_urls)
 
-        # Fetch grant history for this applicant
+        # Fetch grant history and engagement data for this applicant
         grant_history = self.db.get_grant_history_for_applicant(applicant_id)
         # Exclude the current application we just created
         grant_history = [g for g in grant_history if g.get('status') != 'reviewing' or g.get('thread_id') != thread_id]
+        engagement = self.db.get_member_engagement(applicant_id)
 
         # Assess with LLM
         try:
-            assessment = await assess_application(self.claude_client, thread_content, grant_history=grant_history or None)
+            assessment = await assess_application(
+                self.claude_client, thread_content,
+                grant_history=grant_history or None,
+                engagement=engagement,
+            )
         except RuntimeError as e:
             logger.error(f"GrantsCog: assessment failed for thread {thread_id}: {e}")
-            await thread.send("Unable to process this application right now. A team member will review it manually.")
+            await thread.send(f"Unable to process this application right now. {self._admin_mention} will review it manually.")
             return
 
         await self._handle_assessment(thread, assessment)
@@ -369,15 +381,20 @@ class GrantsCog(commands.Cog):
         # Update stored content
         self.db.update_grant_status(thread_id, 'reviewing', thread_content=thread_content)
 
-        # Fetch grant history
+        # Fetch grant history and engagement
         grant_history = self.db.get_grant_history_for_applicant(applicant_id)
         grant_history = [g for g in grant_history if g.get('status') not in ('reviewing', 'needs_info')]
+        engagement = self.db.get_member_engagement(applicant_id)
 
         try:
-            assessment = await assess_application(self.claude_client, thread_content, grant_history=grant_history or None)
+            assessment = await assess_application(
+                self.claude_client, thread_content,
+                grant_history=grant_history or None,
+                engagement=engagement,
+            )
         except RuntimeError as e:
             logger.error(f"GrantsCog: re-assessment failed for thread {thread_id}: {e}")
-            await thread.send("Unable to re-review right now. A team member will follow up.")
+            await thread.send(f"Unable to re-review right now. {self._admin_mention} will follow up.")
             self.db.update_grant_status(thread_id, 'needs_info')
             return
 
@@ -478,6 +495,24 @@ class GrantsCog(commands.Cog):
                 f"Please reply here with the requested details and I'll re-review your application."
             )
 
+        elif decision == 'needs_review':
+            self.db.update_grant_status(thread_id, 'needs_review', llm_assessment=llm_assessment)
+            # Include LLM's recommended GPU/hours if provided
+            details = ""
+            if assessment.get('gpu_type') and assessment.get('recommended_hours'):
+                gpu_type = assessment['gpu_type']
+                hours = assessment['recommended_hours']
+                cost = calculate_grant_cost(gpu_type, hours)
+                details = (
+                    f"\n\n**LLM recommendation (if approved):** "
+                    f"{gpu_type.replace('_', ' ')} / {hours}hrs / ${cost:.2f}"
+                )
+            await thread.send(
+                f"{self._admin_mention} **Manual review needed**\n\n"
+                f"**LLM assessment:** {response}{details}\n\n"
+                f"**Reasoning:** {reasoning}"
+            )
+
         elif decision == 'rejected':
             self.db.update_grant_status(thread_id, 'rejected', llm_assessment=llm_assessment,
                                         rejected_at='now()')
@@ -533,7 +568,7 @@ class GrantsCog(commands.Cog):
         thread_id = thread.id
 
         if not self.solana_client:
-            await thread.send("Payment system is not configured. A team member will process this manually.")
+            await thread.send(f"Payment system is not configured. {self._admin_mention} will process this manually.")
             return
 
         # Guard: if we already sent a tx, check its status instead of re-sending
@@ -598,7 +633,7 @@ class GrantsCog(commands.Cog):
             await thread.send(
                 f"Payment was submitted but confirmation timed out. "
                 f"Transaction: [View on Explorer]({self._explorer_url(tx_sig)})\n\n"
-                f"A team member will verify and follow up."
+                f"{self._admin_mention} will verify and follow up."
             )
             return
 

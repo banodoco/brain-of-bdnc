@@ -36,16 +36,21 @@ Be VERY hesitant to approve someone who already has an open/active grant (status
 For applicants with past paid grants, apply higher scrutiny — they should demonstrate clear results from previous grants before receiving more.
 First-time applicants with no history should be evaluated normally.
 
+## Discord Engagement
+The applicant's Discord activity will be provided below the application. This shows their total message count in our server and their most recent substantive messages. Use this to gauge whether they are an active community member or a drive-by applicant. Low engagement doesn't automatically disqualify, but it should raise scrutiny.
+
 ## Response Format
 Return ONLY valid JSON (no markdown, no code fences) with these exact fields:
 
-{{"reasoning": "your internal analysis of the application (2-4 sentences — project viability, applicant capability, scope assessment)", "decision": "approved" | "rejected" | "needs_info" | "spam", "response": "message to show the applicant (2-4 sentences — friendly, constructive)", "gpu_type": "H100_80GB" | "H200" | "B200" | null, "recommended_hours": <number 10-50 or null>}}
+{{"reasoning": "your internal analysis of the application (2-4 sentences — project viability, applicant capability, scope assessment)", "decision": "approved" | "rejected" | "needs_info" | "needs_review" | "spam", "response": "message to show the applicant (2-4 sentences — friendly, constructive)", "gpu_type": "H100_80GB" | "H200" | "B200" | null, "recommended_hours": <number 10-50 or null>}}
 
 - "reasoning": your private assessment rationale (stored in DB, not shown to applicant)
-- "decision": one of "approved", "rejected", "needs_info", "spam"
+- "decision": one of "approved", "rejected", "needs_info", "needs_review", "spam"
 - "response": the public-facing message shown to the applicant (not used for spam — thread is deleted)
-- "gpu_type": required for "approved", null otherwise
-- "recommended_hours": required for "approved" (10-50), null otherwise
+- "gpu_type": required for "approved", null otherwise. For "needs_review", include your recommended gpu_type and hours if you would approve.
+- "recommended_hours": required for "approved" (10-50), null otherwise. For "needs_review", include your recommendation if you would approve.
+
+Use "needs_review" when you're unsure — e.g. borderline applications, unusual requests, or cases where you'd want a human to make the final call. An admin will be tagged to review.
 
 Use "spam" for posts that are clearly not real applications — e.g. test posts, gibberish, jokes, off-topic messages, or obvious low-effort spam. These threads will be silently deleted."""
 
@@ -73,8 +78,8 @@ def _validate(result: dict) -> str | None:
         if field not in result or not isinstance(result[field], str) or not result[field].strip():
             return f"Missing or empty required field: '{field}'"
 
-    if result['decision'] not in ('approved', 'rejected', 'needs_info', 'spam'):
-        return f"Invalid decision: '{result['decision']}'. Must be 'approved', 'rejected', or 'needs_info'"
+    if result['decision'] not in ('approved', 'rejected', 'needs_info', 'needs_review', 'spam'):
+        return f"Invalid decision: '{result['decision']}'. Must be 'approved', 'rejected', 'needs_info', 'needs_review', or 'spam'"
 
     if result['decision'] == 'approved':
         if not result.get('gpu_type') or result['gpu_type'] not in GPU_RATES:
@@ -89,7 +94,8 @@ def _validate(result: dict) -> str | None:
     return None
 
 
-async def assess_application(claude_client, thread_content: str, grant_history: list | None = None) -> dict:
+async def assess_application(claude_client, thread_content: str, grant_history: list | None = None,
+                             engagement: dict | None = None) -> dict:
     """Assess a grant application using Claude with structured output and retry.
 
     Returns:
@@ -115,6 +121,17 @@ async def assess_application(claude_client, thread_content: str, grant_history: 
             f"\n\n---\n**PRIOR GRANT HISTORY FOR THIS APPLICANT:**\n"
             + '\n'.join(history_lines)
         )
+
+    if engagement:
+        total = engagement.get('total_messages', 0)
+        recent = engagement.get('recent_messages', [])
+        user_content += f"\n\n---\n**DISCORD ENGAGEMENT:**\nTotal messages in server: {total}\n"
+        if recent:
+            user_content += f"Last {len(recent)} substantive messages (>50 chars):\n"
+            for m in recent:
+                user_content += f"- [{m['created_at']}] {m['content']}\n"
+        else:
+            user_content += "No substantive messages found.\n"
 
     messages = [
         {'role': 'user', 'content': user_content}
