@@ -251,6 +251,9 @@ class GrantsCog(commands.Cog):
         # Upload attachments to Supabase storage
         attachment_urls = await self._upload_attachments(thread_id, starter_message)
 
+        # Upload applicant's avatar to permanent storage
+        await self._upload_avatar(thread)
+
         # Record in DB
         self.db.create_grant_application(thread_id, applicant_id, thread_content, attachment_urls=attachment_urls)
 
@@ -320,6 +323,23 @@ class GrantsCog(commands.Cog):
             except Exception as e:
                 logger.warning(f"GrantsCog: failed to upload attachment {att.filename}: {e}")
         return uploaded
+
+    async def _upload_avatar(self, thread: discord.Thread):
+        """Upload the applicant's Discord avatar to permanent storage."""
+        if not self.storage:
+            return
+        try:
+            member = thread.guild.get_member(thread.owner_id)
+            if not member or not member.display_avatar:
+                return
+            avatar_url = str(member.display_avatar.with_size(256).with_format('png'))
+            storage_path = f"avatars/{member.id}.png"
+            stored_url = await self.storage.download_and_upload_url(avatar_url, storage_path)
+            if stored_url:
+                self.db.update_member_stored_avatar(member.id, stored_url)
+                logger.info(f"GrantsCog: uploaded avatar for member {member.id}")
+        except Exception as e:
+            logger.warning(f"GrantsCog: failed to upload avatar for thread owner {thread.owner_id}: {e}")
 
     async def _apply_tag(self, thread: discord.Thread, tag_name: str):
         """Apply a forum tag to a thread if the tag exists."""

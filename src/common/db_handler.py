@@ -400,6 +400,19 @@ class DatabaseHandler:
                 return False
         return False
 
+    def update_member_stored_avatar(self, member_id: int, stored_avatar_url: str) -> bool:
+        """Save a permanent avatar URL for a member."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            self.storage_handler.supabase_client.table('discord_members').update({
+                'stored_avatar_url': stored_avatar_url,
+            }).eq('member_id', member_id).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating stored avatar for member {member_id}: {e}", exc_info=True)
+            return False
+
     # ========== Reaction Updates ==========
 
     def update_reactions(self, message_id: int, reaction_count: int, reactors: list) -> bool:
