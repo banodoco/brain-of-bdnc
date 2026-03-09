@@ -261,12 +261,16 @@ class GrantsCog(commands.Cog):
                 await self._process_payment(channel, grant, wallet)
             except Exception as e:
                 logger.error(f"GrantsCog: payment error for thread {thread_id}: {e}", exc_info=True)
-                # Only mark as failed if we never sent money (payment_status is still
-                # 'none' or 'sending'). If 'sent', money may be on-chain — don't clobber.
+                # Status stays 'awaiting_wallet' — the application is still approved,
+                # only the payment failed. They can re-submit their wallet to retry.
                 current = self.db.get_grant_by_thread(thread_id)
                 if current and current.get('payment_status') not in ('sent', 'confirmed'):
-                    self.db.update_grant_status(thread_id, 'failed', payment_status='failed')
-                await channel.send(f"Payment failed: {e}\n\nA team member will follow up to resolve this.")
+                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='failed')
+                await channel.send(
+                    f"Payment failed: {e}\n\n"
+                    f"Please re-send your Solana wallet address to try again, "
+                    f"or a team member will follow up."
+                )
             finally:
                 self._processing_threads.discard(thread_id)
 
