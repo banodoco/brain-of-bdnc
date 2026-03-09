@@ -368,13 +368,13 @@ class GrantsCog(commands.Cog):
         # Fetch the starter message content (retry — on_thread_create can fire
         # before the starter message is available via the API)
         starter_message = None
-        for attempt in range(4):
+        for attempt in range(6):
             try:
                 starter_message = await thread.fetch_message(thread_id)
                 break
             except discord.NotFound:
-                if attempt < 3:
-                    await asyncio.sleep(2 ** attempt)  # 1s, 2s, 4s
+                if attempt < 5:
+                    await asyncio.sleep(2 ** attempt)  # 1, 2, 4, 8, 16s (~31s total)
                 else:
                     raise
         thread_content = f"**{thread.name}**\n\n{starter_message.content}"
