@@ -261,16 +261,32 @@ class GrantsCog(commands.Cog):
                 await self._process_payment(channel, grant, wallet)
             except Exception as e:
                 logger.error(f"GrantsCog: payment error for thread {thread_id}: {e}", exc_info=True)
-                # Status stays 'awaiting_wallet' — the application is still approved,
-                # only the payment failed. They can re-submit their wallet to retry.
+                # Check current state — don't mark 'failed' if money may be in flight.
+                # Only mark failed for definitive pre-send errors (bad address, insufficient
+                # balance). Transient errors (429, timeout, network) leave payment_status
+                # as-is so startup recovery can verify on-chain.
                 current = self.db.get_grant_by_thread(thread_id)
-                if current and current.get('payment_status') not in ('sent', 'confirmed'):
-                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='failed')
-                await channel.send(
-                    f"Payment failed: {e}\n\n"
-                    f"Please re-send your Solana wallet address to try again, "
-                    f"or a team member will follow up."
-                )
+                ps = current.get('payment_status', 'none') if current else 'none'
+                if ps in ('sent', 'confirmed'):
+                    # Money may be on-chain — don't touch, recovery will handle it
+                    await channel.send(
+                        f"Payment was submitted but encountered an error: {e}\n\n"
+                        f"The transaction may still confirm — a team member will verify."
+                    )
+                elif ps == 'sending':
+                    # Was mid-send — unclear if tx left, reset to none so they can retry
+                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='none')
+                    await channel.send(
+                        f"Payment encountered an error: {e}\n\n"
+                        f"Please re-send your Solana wallet address to try again."
+                    )
+                else:
+                    # Never got to sending (balance check, price fetch, etc.)
+                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='none')
+                    await channel.send(
+                        f"Payment failed: {e}\n\n"
+                        f"Please re-send your Solana wallet address to try again."
+                    )
             finally:
                 self._processing_threads.discard(thread_id)
 
