@@ -1141,6 +1141,22 @@ class DatabaseHandler:
             logger.error(f"Error recording grant payment for thread {thread_id}: {e}", exc_info=True)
             return False
 
+    def get_inflight_payments(self) -> List[Dict]:
+        """Return grants where payment was sent but not yet confirmed."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('grant_applications')
+                .select('*')
+                .in_('payment_status', ['sending', 'sent'])
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error fetching inflight payments: {e}", exc_info=True)
+            return []
+
     def get_active_grants_for_applicant(self, applicant_id: int) -> List[Dict]:
         """Return active (non-terminal) grant applications for a user."""
         if not self.storage_handler or not self.storage_handler.supabase_client:

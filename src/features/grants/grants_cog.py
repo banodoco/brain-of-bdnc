@@ -55,6 +55,7 @@ class GrantsCog(commands.Cog):
             return
         try:
             await self._load_forum_tags()
+            await self._recover_inflight_payments()
             await self._scan_missed_threads()
         except Exception as e:
             logger.error(f"GrantsCog: startup failed: {e}", exc_info=True)
@@ -68,6 +69,59 @@ class GrantsCog(commands.Cog):
                     self._tags[tag.name.lower()] = tag
                 logger.info(f"GrantsCog: loaded {len(self._tags)} forum tags: {list(self._tags.keys())}")
                 return
+
+    async def _recover_inflight_payments(self):
+        """On startup, check any payments that were sent but not confirmed."""
+        if not self.solana_client:
+            return
+
+        inflight = self.db.get_inflight_payments()
+        for grant in inflight:
+            thread_id = grant['thread_id']
+            tx_sig = grant.get('tx_signature')
+            payment_status = grant.get('payment_status')
+
+            if not tx_sig:
+                # Was 'sending' but never got a tx — reset to awaiting_wallet
+                logger.warning(f"GrantsCog: grant {thread_id} stuck in '{payment_status}' with no tx, resetting")
+                self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='none')
+                continue
+
+            # Has a tx signature — check on-chain
+            try:
+                status = await self.solana_client.check_tx_status(tx_sig)
+            except Exception as e:
+                logger.error(f"GrantsCog: failed to check tx {tx_sig} for thread {thread_id}: {e}")
+                continue
+
+            if status == 'confirmed':
+                sol_amount = float(grant.get('sol_amount') or 0)
+                sol_price = float(grant.get('sol_price_usd') or 0)
+                self.db.record_grant_payment(thread_id, tx_sig, sol_amount, sol_price)
+                logger.info(f"GrantsCog: recovered confirmed payment {tx_sig} for thread {thread_id}")
+
+                # Notify in thread
+                try:
+                    for guild in self.bot.guilds:
+                        forum = guild.get_channel(self.grants_channel_id)
+                        if forum:
+                            thread = forum.get_thread(thread_id)
+                            if thread:
+                                await thread.send(
+                                    f"**Payment confirmed!** (recovered on restart)\n\n"
+                                    f"- Transaction: [View on Explorer]({self._explorer_url(tx_sig)})"
+                                )
+                            break
+                except Exception:
+                    pass
+
+            elif status == 'failed':
+                logger.warning(f"GrantsCog: tx {tx_sig} for thread {thread_id} failed on-chain, resetting")
+                self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='none',
+                                            tx_signature=None)
+            else:
+                # not_found — could be expired or still propagating, leave as-is for next restart
+                logger.info(f"GrantsCog: tx {tx_sig} for thread {thread_id} not found on-chain, will retry next startup")
 
     async def _scan_missed_threads(self):
         """Find forum threads with no DB record and process them."""

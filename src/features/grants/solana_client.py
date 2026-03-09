@@ -99,9 +99,12 @@ class SolanaClient:
                     return signature
                 except Exception as e:
                     last_err = e
-                    if 'Blockhash not found' in str(e) and attempt < 2:
-                        logger.warning(f"Blockhash expired (attempt {attempt + 1}/3), retrying...")
-                        await asyncio.sleep(1)
+                    err_str = str(e)
+                    retryable = 'Blockhash not found' in err_str or '429' in err_str
+                    if retryable and attempt < 2:
+                        delay = 2 ** attempt  # 1s, 2s
+                        logger.warning(f"Send failed (attempt {attempt + 1}/3): {err_str[:100]}, retrying in {delay}s...")
+                        await asyncio.sleep(delay)
                         continue
                     raise
 
