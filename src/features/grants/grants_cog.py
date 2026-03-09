@@ -107,18 +107,30 @@ class GrantsCog(commands.Cog):
                 if not wallet:
                     logger.warning(f"GrantsCog: grant {thread_id} needs retry but no wallet stored")
                     continue
-                logger.info(f"GrantsCog: retrying payment for thread {thread_id} to wallet {wallet}")
-                try:
-                    if thread:
+                if not thread:
+                    logger.warning(f"GrantsCog: can't retry payment for thread {thread_id} — thread not found")
+                    continue
+
+                # Retry up to 3 times with increasing delays
+                max_retries = 3
+                succeeded = False
+                for retry in range(max_retries):
+                    logger.info(f"GrantsCog: payment attempt {retry + 1}/{max_retries} for thread {thread_id} to {wallet}")
+                    try:
                         await self._process_payment(thread, grant, wallet)
-                    else:
-                        logger.warning(f"GrantsCog: can't retry payment for thread {thread_id} — thread not found")
-                except Exception as e:
-                    logger.error(f"GrantsCog: retry payment failed for thread {thread_id}: {e}", exc_info=True)
-                    if thread:
-                        await thread.send(
-                            f"Payment retry failed: {e}\n\n{self._admin_mention} will follow up."
-                        )
+                        succeeded = True
+                        break
+                    except Exception as e:
+                        logger.warning(f"GrantsCog: payment attempt {retry + 1}/{max_retries} failed for thread {thread_id}: {e}")
+                        if retry < max_retries - 1:
+                            await asyncio.sleep(5 * (retry + 1))  # 5s, 10s
+
+                if not succeeded:
+                    logger.error(f"GrantsCog: all {max_retries} payment attempts failed for thread {thread_id}")
+                    await thread.send(
+                        f"Payment failed after {max_retries} attempts.\n\n"
+                        f"{self._admin_mention} will follow up."
+                    )
                 continue
 
             if not tx_sig:

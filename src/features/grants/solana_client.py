@@ -8,6 +8,7 @@ import re
 import base58
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Confirmed
+from solana.rpc.types import TxOpts
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.system_program import transfer, TransferParams
@@ -93,7 +94,10 @@ class SolanaClient:
                 tx = VersionedTransaction(msg, [self.keypair])
 
                 try:
-                    result = await client.send_transaction(tx)
+                    # Skip preflight — the simulation can fail with stale blockhash
+                    # on congested public RPCs even when the actual send would succeed
+                    opts = TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+                    result = await client.send_transaction(tx, opts=opts)
                     signature = str(result.value)
                     logger.info(f"SOL transfer sent: {signature} ({amount_sol:.4f} SOL to {recipient_address})")
                     return signature
