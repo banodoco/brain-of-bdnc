@@ -12,6 +12,7 @@ from solana.rpc.types import TxOpts
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.system_program import transfer, TransferParams
+from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 from solders.message import MessageV0
 
@@ -117,7 +118,8 @@ class SolanaClient:
     async def confirm_tx(self, signature: str) -> bool:
         """Wait for a transaction to be confirmed. Returns True if confirmed."""
         async with AsyncClient(self.rpc_url) as client:
-            await client.confirm_transaction(signature, commitment=Confirmed)
+            sig = Signature.from_string(signature)
+            await client.confirm_transaction(sig, commitment=Confirmed)
             logger.info(f"SOL transfer confirmed: {signature}")
             return True
 
@@ -127,7 +129,8 @@ class SolanaClient:
         Returns 'confirmed', 'failed', or 'not_found'.
         """
         async with AsyncClient(self.rpc_url) as client:
-            resp = await client.get_signature_statuses([signature])
+            sig = Signature.from_string(signature)
+            resp = await client.get_signature_statuses([sig], search_transaction_history=True)
             statuses = resp.value
             if not statuses or statuses[0] is None:
                 return 'not_found'
