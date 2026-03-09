@@ -12,7 +12,6 @@ SEND_PERMS = [
     'send_messages_in_threads',
     'create_public_threads',
     'create_private_threads',
-    'add_reactions',
 ]
 
 
@@ -73,7 +72,12 @@ async def apply_perms_to_channel(
     # --- @everyone overwrite ---
     everyone_expected = _expected_values(mode, 'everyone')
     everyone_ow = channel.overwrites_for(everyone)
-    if not check_overwrite_matches(everyone_ow, everyone_expected):
+    needs_everyone_update = not check_overwrite_matches(everyone_ow, everyone_expected)
+    # Clean up legacy add_reactions overwrite (no longer managed)
+    if everyone_ow.add_reactions is not None:
+        everyone_ow.add_reactions = None
+        needs_everyone_update = True
+    if needs_everyone_update:
         for attr, value in everyone_expected.items():
             setattr(everyone_ow, attr, value)
         await channel.set_permissions(
@@ -86,7 +90,12 @@ async def apply_perms_to_channel(
     # --- Speaker role overwrite ---
     speaker_expected = _expected_values(mode, 'speaker')
     speaker_ow = channel.overwrites_for(role)
-    if not check_overwrite_matches(speaker_ow, speaker_expected):
+    needs_speaker_update = not check_overwrite_matches(speaker_ow, speaker_expected)
+    # Clean up legacy add_reactions overwrite (no longer managed)
+    if speaker_ow.add_reactions is not None:
+        speaker_ow.add_reactions = None
+        needs_speaker_update = True
+    if needs_speaker_update:
         for attr, value in speaker_expected.items():
             setattr(speaker_ow, attr, value)
         await channel.set_permissions(
