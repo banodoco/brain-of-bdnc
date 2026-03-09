@@ -1148,7 +1148,7 @@ class DatabaseHandler:
         try:
             result = (
                 self.storage_handler.supabase_client.table('grant_applications')
-                .select('status,gpu_type,recommended_hours,total_cost_usd,created_at,paid_at')
+                .select('thread_id,status,gpu_type,recommended_hours,total_cost_usd,created_at,paid_at')
                 .eq('applicant_id', applicant_id)
                 .order('created_at', desc=True)
                 .execute()
