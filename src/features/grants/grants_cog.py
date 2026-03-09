@@ -62,8 +62,10 @@ class GrantsCog(commands.Cog):
             return
         try:
             await self._load_forum_tags()
-            await self._recover_inflight_payments()
             await self._scan_missed_threads()
+            # Run payment recovery as a background task — it makes HTTP calls
+            # that can get cancelled if they block the on_ready handler too long
+            self.bot.loop.create_task(self._recover_inflight_payments())
         except Exception as e:
             logger.error(f"GrantsCog: startup failed: {e}", exc_info=True)
 
