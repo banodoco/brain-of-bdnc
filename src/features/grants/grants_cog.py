@@ -115,9 +115,16 @@ class GrantsCog(commands.Cog):
                 max_retries = 3
                 succeeded = False
                 for retry in range(max_retries):
+                    # Re-fetch grant from DB every attempt — previous attempt may have
+                    # updated payment_status/tx_signature, and _process_payment uses
+                    # these to check for in-flight transactions
+                    fresh_grant = self.db.get_grant_by_thread(thread_id)
+                    if not fresh_grant or fresh_grant.get('payment_status') == 'confirmed':
+                        succeeded = True
+                        break
                     logger.info(f"GrantsCog: payment attempt {retry + 1}/{max_retries} for thread {thread_id} to {wallet}")
                     try:
-                        await self._process_payment(thread, grant, wallet)
+                        await self._process_payment(thread, fresh_grant, wallet)
                         succeeded = True
                         break
                     except Exception as e:
