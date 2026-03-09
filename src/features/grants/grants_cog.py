@@ -1,5 +1,6 @@
 """Cog for compute micro-grants: forum post → LLM review → SOL payment."""
 
+import asyncio
 import json
 import logging
 import os
@@ -232,8 +233,18 @@ class GrantsCog(commands.Cog):
                 logger.warning(f"GrantsCog: failed to archive duplicate thread {thread_id}: {e}")
             return
 
-        # Fetch the starter message content
-        starter_message = await thread.fetch_message(thread_id)
+        # Fetch the starter message content (retry — on_thread_create can fire
+        # before the starter message is available via the API)
+        starter_message = None
+        for attempt in range(4):
+            try:
+                starter_message = await thread.fetch_message(thread_id)
+                break
+            except discord.NotFound:
+                if attempt < 3:
+                    await asyncio.sleep(2 ** attempt)  # 1s, 2s, 4s
+                else:
+                    raise
         thread_content = f"**{thread.name}**\n\n{starter_message.content}"
 
         # Record in DB
