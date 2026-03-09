@@ -78,7 +78,7 @@ class GrantsCog(commands.Cog):
                 return
 
     async def _recover_inflight_payments(self):
-        """On startup, check any payments that were sent but not confirmed."""
+        """On startup, recover in-flight payments and retry failed ones."""
         if not self.solana_client:
             return
 
@@ -87,11 +87,45 @@ class GrantsCog(commands.Cog):
             thread_id = grant['thread_id']
             tx_sig = grant.get('tx_signature')
             payment_status = grant.get('payment_status')
+            wallet = grant.get('wallet_address')
+
+            # Resolve the thread for messaging
+            thread = None
+            try:
+                for guild in self.bot.guilds:
+                    forum = guild.get_channel(self.grants_channel_id)
+                    if forum:
+                        thread = forum.get_thread(thread_id)
+                        break
+            except Exception:
+                pass
+
+            if payment_status == 'retry':
+                # Previous payment failed — retry with stored wallet
+                if not wallet:
+                    logger.warning(f"GrantsCog: grant {thread_id} needs retry but no wallet stored")
+                    continue
+                logger.info(f"GrantsCog: retrying payment for thread {thread_id} to wallet {wallet}")
+                try:
+                    if thread:
+                        await self._process_payment(thread, grant, wallet)
+                    else:
+                        logger.warning(f"GrantsCog: can't retry payment for thread {thread_id} — thread not found")
+                except Exception as e:
+                    logger.error(f"GrantsCog: retry payment failed for thread {thread_id}: {e}", exc_info=True)
+                    if thread:
+                        await thread.send(
+                            f"Payment retry failed: {e}\n\n{self._admin_mention} will follow up."
+                        )
+                continue
 
             if not tx_sig:
-                # Was 'sending' but never got a tx — reset to awaiting_wallet
-                logger.warning(f"GrantsCog: grant {thread_id} stuck in '{payment_status}' with no tx, resetting")
-                self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='none')
+                # Was 'sending' but never got a tx — mark for retry
+                logger.warning(f"GrantsCog: grant {thread_id} stuck in '{payment_status}' with no tx")
+                if wallet:
+                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='retry')
+                else:
+                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='none')
                 continue
 
             # Has a tx signature — check on-chain
@@ -106,26 +140,23 @@ class GrantsCog(commands.Cog):
                 sol_price = float(grant.get('sol_price_usd') or 0)
                 self.db.record_grant_payment(thread_id, tx_sig, sol_amount, sol_price)
                 logger.info(f"GrantsCog: recovered confirmed payment {tx_sig} for thread {thread_id}")
-
-                # Notify in thread
-                try:
-                    for guild in self.bot.guilds:
-                        forum = guild.get_channel(self.grants_channel_id)
-                        if forum:
-                            thread = forum.get_thread(thread_id)
-                            if thread:
-                                await thread.send(
-                                    f"**Payment confirmed!** (recovered on restart)\n\n"
-                                    f"- Transaction: [View on Explorer]({self._explorer_url(tx_sig)})"
-                                )
-                            break
-                except Exception:
-                    pass
+                if thread:
+                    try:
+                        await thread.send(
+                            f"**Payment confirmed!** (recovered on restart)\n\n"
+                            f"- Transaction: [View on Explorer]({self._explorer_url(tx_sig)})"
+                        )
+                    except Exception:
+                        pass
 
             elif status == 'failed':
-                logger.warning(f"GrantsCog: tx {tx_sig} for thread {thread_id} failed on-chain, resetting")
-                self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='none',
-                                            tx_signature=None)
+                logger.warning(f"GrantsCog: tx {tx_sig} for thread {thread_id} failed on-chain")
+                if wallet:
+                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='retry',
+                                                tx_signature=None)
+                else:
+                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='none',
+                                                tx_signature=None)
             else:
                 # not_found — could be expired or still propagating, leave as-is for next restart
                 logger.info(f"GrantsCog: tx {tx_sig} for thread {thread_id} not found on-chain, will retry next startup")
@@ -280,19 +311,12 @@ class GrantsCog(commands.Cog):
                         f"Payment was submitted but encountered an error: {e}\n\n"
                         f"The transaction may still confirm — {self._admin_mention} will verify."
                     )
-                elif ps == 'sending':
-                    # Was mid-send — unclear if tx left, reset to none so they can retry
-                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='none')
+                else:
+                    # Payment never landed — mark for auto-retry on next startup
+                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='retry')
                     await channel.send(
                         f"Payment encountered an error: {e}\n\n"
-                        f"Please re-send your Solana wallet address to try again."
-                    )
-                else:
-                    # Never got to sending (balance check, price fetch, etc.)
-                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='none')
-                    await channel.send(
-                        f"Payment failed: {e}\n\n"
-                        f"Please re-send your Solana wallet address to try again."
+                        f"It will be retried automatically shortly."
                     )
             finally:
                 self._processing_threads.discard(thread_id)

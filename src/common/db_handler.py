@@ -1142,14 +1142,14 @@ class DatabaseHandler:
             return False
 
     def get_inflight_payments(self) -> List[Dict]:
-        """Return grants where payment was sent but not yet confirmed."""
+        """Return grants where payment needs recovery: in-flight or pending retry."""
         if not self.storage_handler or not self.storage_handler.supabase_client:
             return []
         try:
             result = (
                 self.storage_handler.supabase_client.table('grant_applications')
                 .select('*')
-                .in_('payment_status', ['sending', 'sent'])
+                .in_('payment_status', ['sending', 'sent', 'retry'])
                 .execute()
             )
             return result.data or []
