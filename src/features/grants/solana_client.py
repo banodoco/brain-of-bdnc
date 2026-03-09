@@ -1,5 +1,6 @@
 """Solana wallet and SOL transfer for micro-grants."""
 
+import asyncio
 import logging
 import os
 import re
@@ -54,9 +55,9 @@ class SolanaClient:
             return lamports / 1_000_000_000
 
     async def send_sol(self, recipient_address: str, amount_sol: float) -> str:
-        """Send SOL to a recipient. Returns tx signature string.
+        """Send SOL to a recipient. Returns tx signature after submission (before confirmation).
 
-        Raises RuntimeError on failure.
+        Raises RuntimeError on failure. Retries blockhash errors up to 3 times.
         """
         recipient = Pubkey.from_string(recipient_address)
         lamports = int(amount_sol * 1_000_000_000)
@@ -71,31 +72,59 @@ class SolanaClient:
                     f"need {amount_sol:.4f} SOL + fees"
                 )
 
-            # Build versioned transaction
             ix = transfer(TransferParams(
                 from_pubkey=self.public_key,
                 to_pubkey=recipient,
                 lamports=lamports,
             ))
 
-            blockhash_resp = await client.get_latest_blockhash(commitment=Confirmed)
-            blockhash = blockhash_resp.value.blockhash
+            # Retry up to 3 times — blockhashes can expire under network load
+            last_err = None
+            for attempt in range(3):
+                blockhash_resp = await client.get_latest_blockhash(commitment=Confirmed)
+                blockhash = blockhash_resp.value.blockhash
 
-            msg = MessageV0.try_compile(
-                payer=self.public_key,
-                instructions=[ix],
-                address_lookup_table_accounts=[],
-                recent_blockhash=blockhash,
-            )
-            tx = VersionedTransaction(msg, [self.keypair])
+                msg = MessageV0.try_compile(
+                    payer=self.public_key,
+                    instructions=[ix],
+                    address_lookup_table_accounts=[],
+                    recent_blockhash=blockhash,
+                )
+                tx = VersionedTransaction(msg, [self.keypair])
 
-            # Send and confirm
-            result = await client.send_transaction(tx)
-            signature = str(result.value)
-            logger.info(f"SOL transfer sent: {signature} ({amount_sol:.4f} SOL to {recipient_address})")
+                try:
+                    result = await client.send_transaction(tx)
+                    signature = str(result.value)
+                    logger.info(f"SOL transfer sent: {signature} ({amount_sol:.4f} SOL to {recipient_address})")
+                    return signature
+                except Exception as e:
+                    last_err = e
+                    if 'Blockhash not found' in str(e) and attempt < 2:
+                        logger.warning(f"Blockhash expired (attempt {attempt + 1}/3), retrying...")
+                        await asyncio.sleep(1)
+                        continue
+                    raise
 
-            # Wait for confirmation
+            raise RuntimeError(f"Transaction failed after 3 attempts: {last_err}")
+
+    async def confirm_tx(self, signature: str) -> bool:
+        """Wait for a transaction to be confirmed. Returns True if confirmed."""
+        async with AsyncClient(self.rpc_url) as client:
             await client.confirm_transaction(signature, commitment=Confirmed)
             logger.info(f"SOL transfer confirmed: {signature}")
+            return True
 
-            return signature
+    async def check_tx_status(self, signature: str) -> str:
+        """Check if a transaction succeeded, failed, or is unknown.
+
+        Returns 'confirmed', 'failed', or 'not_found'.
+        """
+        async with AsyncClient(self.rpc_url) as client:
+            resp = await client.get_signature_statuses([signature])
+            statuses = resp.value
+            if not statuses or statuses[0] is None:
+                return 'not_found'
+            status = statuses[0]
+            if status.err:
+                return 'failed'
+            return 'confirmed'

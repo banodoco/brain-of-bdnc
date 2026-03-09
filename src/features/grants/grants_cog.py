@@ -207,7 +207,11 @@ class GrantsCog(commands.Cog):
                 await self._process_payment(channel, grant, wallet)
             except Exception as e:
                 logger.error(f"GrantsCog: payment error for thread {thread_id}: {e}", exc_info=True)
-                self.db.update_grant_status(thread_id, 'failed')
+                # Only mark as failed if we never sent money (payment_status is still
+                # 'none' or 'sending'). If 'sent', money may be on-chain — don't clobber.
+                current = self.db.get_grant_by_thread(thread_id)
+                if current and current.get('payment_status') not in ('sent', 'confirmed'):
+                    self.db.update_grant_status(thread_id, 'failed', payment_status='failed')
                 await channel.send(f"Payment failed: {e}\n\nA team member will follow up to resolve this.")
             finally:
                 self._processing_threads.discard(thread_id)
@@ -437,47 +441,101 @@ class GrantsCog(commands.Cog):
                 f"Please reply with your **Solana wallet address** to receive the grant."
             )
 
+    def _explorer_url(self, tx_sig: str) -> str:
+        """Build a Solana Explorer URL for a transaction."""
+        rpc_url = self.solana_client.rpc_url
+        if 'devnet' in rpc_url:
+            return f"https://explorer.solana.com/tx/{tx_sig}?cluster=devnet"
+        elif 'testnet' in rpc_url:
+            return f"https://explorer.solana.com/tx/{tx_sig}?cluster=testnet"
+        return f"https://explorer.solana.com/tx/{tx_sig}"
+
     async def _process_payment(self, thread: discord.Thread, grant: dict, wallet: str):
-        """Send SOL payment and finalize the grant."""
+        """Send SOL payment and finalize the grant.
+
+        Payment flow is idempotent — if a previous tx was sent but not confirmed,
+        we check its on-chain status before re-sending.
+        """
         thread_id = thread.id
 
         if not self.solana_client:
             await thread.send("Payment system is not configured. A team member will process this manually.")
             return
 
+        # Guard: if we already sent a tx, check its status instead of re-sending
+        existing_tx = grant.get('tx_signature')
+        if existing_tx and grant.get('payment_status') in ('sent', 'sending'):
+            logger.info(f"GrantsCog: found existing tx {existing_tx} for thread {thread_id}, checking status...")
+            tx_status = await self.solana_client.check_tx_status(existing_tx)
+            if tx_status == 'confirmed':
+                # Already paid — record and notify
+                sol_amount = float(grant.get('sol_amount', 0))
+                sol_price = float(grant.get('sol_price_usd', 0))
+                self.db.record_grant_payment(thread_id, existing_tx, sol_amount, sol_price)
+                await thread.send(
+                    f"**Payment confirmed!** (recovered from previous attempt)\n\n"
+                    f"- Transaction: [View on Explorer]({self._explorer_url(existing_tx)})"
+                )
+                try:
+                    await thread.edit(archived=True)
+                except Exception:
+                    pass
+                return
+            elif tx_status == 'failed':
+                logger.warning(f"GrantsCog: previous tx {existing_tx} failed on-chain, re-sending...")
+            else:
+                # not_found — tx may still be propagating or expired, safe to retry
+                logger.warning(f"GrantsCog: previous tx {existing_tx} not found on-chain, re-sending...")
+
         # Fetch current SOL price
         sol_price = await get_sol_price_usd()
         total_usd = float(grant['total_cost_usd'])
         sol_amount = usd_to_sol(total_usd, sol_price)
 
-        # Update wallet in DB before sending
-        self.db.update_grant_status(thread_id, 'awaiting_wallet', wallet_address=wallet)
+        # Mark as sending with wallet + amounts BEFORE sending money
+        self.db.update_grant_status(
+            thread_id, 'awaiting_wallet',
+            payment_status='sending',
+            wallet_address=wallet,
+            sol_amount=sol_amount,
+            sol_price_usd=sol_price,
+        )
 
         await self._apply_tag(thread, 'in progress')
         await thread.send(
             f"Processing payment of **{sol_amount:.4f} SOL** (~${total_usd:.2f} at ${sol_price:.2f}/SOL)..."
         )
 
-        # Send SOL
+        # Send SOL — returns signature immediately (before confirmation)
         tx_sig = await self.solana_client.send_sol(wallet, sol_amount)
 
-        # Record payment
-        self.db.record_grant_payment(thread_id, tx_sig, sol_amount, sol_price)
+        # Record signature immediately so we can recover if confirmation fails
+        self.db.update_grant_status(
+            thread_id, 'awaiting_wallet',
+            payment_status='sent',
+            tx_signature=tx_sig,
+        )
 
-        # Determine explorer URL based on RPC
-        rpc_url = self.solana_client.rpc_url
-        if 'devnet' in rpc_url:
-            explorer = f"https://explorer.solana.com/tx/{tx_sig}?cluster=devnet"
-        elif 'testnet' in rpc_url:
-            explorer = f"https://explorer.solana.com/tx/{tx_sig}?cluster=testnet"
-        else:
-            explorer = f"https://explorer.solana.com/tx/{tx_sig}"
+        # Now wait for confirmation
+        try:
+            await self.solana_client.confirm_tx(tx_sig)
+        except Exception as e:
+            logger.error(f"GrantsCog: tx {tx_sig} sent but confirmation failed: {e}", exc_info=True)
+            await thread.send(
+                f"Payment was submitted but confirmation timed out. "
+                f"Transaction: [View on Explorer]({self._explorer_url(tx_sig)})\n\n"
+                f"A team member will verify and follow up."
+            )
+            return
+
+        # Fully confirmed — finalize
+        self.db.record_grant_payment(thread_id, tx_sig, sol_amount, sol_price)
 
         await thread.send(
             f"**Payment sent!**\n\n"
             f"- Amount: {sol_amount:.4f} SOL (~${total_usd:.2f})\n"
             f"- Wallet: `{wallet}`\n"
-            f"- Transaction: [View on Explorer]({explorer})\n\n"
+            f"- Transaction: [View on Explorer]({self._explorer_url(tx_sig)})\n\n"
             f"Your compute grant for {grant['gpu_type'].replace('_', ' ')} "
             f"({grant['recommended_hours']}hrs) has been funded. Good luck with your project!"
         )
