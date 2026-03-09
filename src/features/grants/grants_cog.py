@@ -22,6 +22,7 @@ class GrantsCog(commands.Cog):
         self.bot = bot
         self.db = getattr(bot, 'db_handler', None)
         self.claude_client = getattr(bot, 'claude_client', None)
+        self.storage = getattr(self.db, 'storage_handler', None) if self.db else None
 
         channel_id = os.getenv('GRANTS_CHANNEL_ID')
         self.grants_channel_id = int(channel_id) if channel_id else None
@@ -247,8 +248,11 @@ class GrantsCog(commands.Cog):
                     raise
         thread_content = f"**{thread.name}**\n\n{starter_message.content}"
 
+        # Upload attachments to Supabase storage
+        attachment_urls = await self._upload_attachments(thread_id, starter_message)
+
         # Record in DB
-        self.db.create_grant_application(thread_id, applicant_id, thread_content)
+        self.db.create_grant_application(thread_id, applicant_id, thread_content, attachment_urls=attachment_urls)
 
         # Fetch grant history for this applicant
         grant_history = self.db.get_grant_history_for_applicant(applicant_id)
@@ -296,6 +300,26 @@ class GrantsCog(commands.Cog):
             return
 
         await self._handle_assessment(thread, assessment)
+
+    async def _upload_attachments(self, thread_id: int, message: discord.Message) -> list:
+        """Download message attachments and upload to Supabase storage.
+
+        Returns a list of dicts with 'filename' and 'url' for each uploaded file.
+        """
+        if not message.attachments or not self.storage:
+            return []
+
+        uploaded = []
+        for att in message.attachments:
+            storage_path = f"grants/{thread_id}/{att.filename}"
+            try:
+                url = await self.storage.download_and_upload_url(att.url, storage_path)
+                if url:
+                    uploaded.append({'filename': att.filename, 'url': url})
+                    logger.info(f"GrantsCog: uploaded attachment {att.filename} for thread {thread_id}")
+            except Exception as e:
+                logger.warning(f"GrantsCog: failed to upload attachment {att.filename}: {e}")
+        return uploaded
 
     async def _apply_tag(self, thread: discord.Thread, tag_name: str):
         """Apply a forum tag to a thread if the tag exists."""

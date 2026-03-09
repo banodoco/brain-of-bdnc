@@ -1047,17 +1047,21 @@ class DatabaseHandler:
 
     # ========== Grant Applications ==========
 
-    def create_grant_application(self, thread_id: int, applicant_id: int, thread_content: str) -> bool:
+    def create_grant_application(self, thread_id: int, applicant_id: int, thread_content: str,
+                                 attachment_urls: list | None = None) -> bool:
         """Insert a new grant application record."""
         if not self.storage_handler or not self.storage_handler.supabase_client:
             return False
         try:
-            self.storage_handler.supabase_client.table('grant_applications').insert({
+            data = {
                 'thread_id': thread_id,
                 'applicant_id': applicant_id,
                 'thread_content': thread_content,
                 'status': 'reviewing',
-            }).execute()
+            }
+            if attachment_urls:
+                data['attachment_urls'] = attachment_urls
+            self.storage_handler.supabase_client.table('grant_applications').insert(data).execute()
             return True
         except Exception as e:
             logger.error(f"Error creating grant application for thread {thread_id}: {e}", exc_info=True)
