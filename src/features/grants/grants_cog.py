@@ -532,8 +532,10 @@ class GrantsCog(commands.Cog):
                     f"{gpu_type.replace('_', ' ')} / {hours}hrs / ${cost:.2f}"
                 )
             await thread.send(
-                f"{self._admin_mention} **Manual review needed**\n\n"
-                f"**LLM assessment:** {response}{details}\n\n"
+                f"<@{thread.owner_id}> {response}\n\n"
+                f"If you have any additional links, examples, or details that would strengthen "
+                f"your application, please share them here.\n\n"
+                f"{self._admin_mention} **Manual review needed**{details}\n"
                 f"**Reasoning:** {reasoning}"
             )
 
