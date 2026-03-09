@@ -99,9 +99,10 @@ class GrantsCog(commands.Cog):
             if thread.name in self._ignored_thread_names:
                 continue
 
-            # Skip if already in DB
+            # If already in DB, backfill missing attachments/avatar then skip
             existing = self.db.get_grant_by_thread(thread.id)
             if existing:
+                await self._backfill_media(thread, existing)
                 continue
 
             # Skip locked threads (already handled manually)
@@ -303,6 +304,29 @@ class GrantsCog(commands.Cog):
             return
 
         await self._handle_assessment(thread, assessment)
+
+    async def _backfill_media(self, thread: discord.Thread, grant: dict):
+        """Backfill attachments and avatar for an existing grant if missing."""
+        needs_attachments = not grant.get('attachment_urls')
+        member = self.db.get_member(thread.owner_id)
+        needs_avatar = not (member and member.get('stored_avatar_url'))
+
+        if not needs_attachments and not needs_avatar:
+            return
+
+        try:
+            if needs_avatar:
+                await self._upload_avatar(thread)
+
+            if needs_attachments:
+                starter_message = await thread.fetch_message(thread.id)
+                if starter_message.attachments:
+                    urls = await self._upload_attachments(thread.id, starter_message)
+                    if urls:
+                        self.db.update_grant_status(thread.id, grant['status'], attachment_urls=urls)
+                        logger.info(f"GrantsCog: backfilled {len(urls)} attachment(s) for thread {thread.id}")
+        except Exception as e:
+            logger.warning(f"GrantsCog: backfill failed for thread {thread.id}: {e}")
 
     async def _upload_attachments(self, thread_id: int, message: discord.Message) -> list:
         """Download message attachments and upload to Supabase storage.
