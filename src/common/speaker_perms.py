@@ -28,6 +28,9 @@ def _expected_values(mode: str, target: str) -> dict:
     if mode == 'readonly':
         # Both @everyone and Speaker are denied
         return {p: False for p in SEND_PERMS}
+    if mode == 'exempt':
+        # Everyone can post — no Speaker restriction
+        return {p: True for p in SEND_PERMS}
     # 'normal' (and fallback)
     if target == 'everyone':
         return {p: False for p in SEND_PERMS}
@@ -62,9 +65,6 @@ async def apply_perms_to_channel(
     Returns:
         (changed, api_calls) — whether anything was fixed, and how many API calls made.
     """
-    if mode == 'exempt':
-        return (False, 0)
-
     everyone = channel.guild.default_role
     changed = False
     api_calls = 0

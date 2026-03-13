@@ -322,10 +322,6 @@ class AdminCog(commands.Cog):
         if channel.id in exempt_ids:
             mode = 'exempt'
 
-        if mode == 'exempt':
-            logger.info(f"Skipping Speaker perms for exempt channel #{channel.name} ({channel.id})")
-            return
-
         try:
             changed, api_calls = await apply_perms_to_channel(channel, role, mode)
             logger.info(f"Applied Speaker perms to new channel #{channel.name} ({channel.id}) — mode={mode}, changed={changed}")
@@ -587,9 +583,6 @@ class AdminCog(commands.Cog):
                 # Env var fallback — if listed as exempt in env, honour it
                 if channel.id in env_exempt_ids:
                     mode = 'exempt'
-
-                if mode == 'exempt':
-                    continue
 
                 checked += 1
                 try:

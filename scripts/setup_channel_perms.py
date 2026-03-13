@@ -78,11 +78,6 @@ async def on_ready():
         if channel.id in EXEMPT_CHANNELS:
             mode = 'exempt'
 
-        if mode == 'exempt':
-            logger.info(f"  Skipping exempt channel #{channel.name} ({channel.id})")
-            skipped += 1
-            continue
-
         try:
             changed, api_calls = await apply_perms_to_channel(channel, role, mode)
             if changed:
