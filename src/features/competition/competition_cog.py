@@ -416,14 +416,19 @@ class CompetitionCog(commands.Cog):
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
 
+    async def cog_command_error(self, ctx, error):
+        logger.error(f"Competition command error: {error}", exc_info=True)
+        await ctx.send(f"Error: {error}")
+
     # ------------------------------------------------------------------
     # Admin commands (owner-only)
     # ------------------------------------------------------------------
 
     @commands.command(name='comp_test')
-    @commands.is_owner()
     async def comp_test(self, ctx, slug: str, channel_id: int):
         """Test-post voting to a specific channel without activating moderation."""
+        if not await self.bot.is_owner(ctx.author):
+            return
         comp = await asyncio.to_thread(self.db.get_competition, slug)
         if not comp:
             await ctx.send(f"No competition found with slug `{slug}`")
@@ -462,9 +467,10 @@ class CompetitionCog(commands.Cog):
         await ctx.send(f"Done — posted {len(refreshed)} entries.")
 
     @commands.command(name='comp_wipe')
-    @commands.is_owner()
     async def comp_wipe(self, ctx, channel_id: int):
         """Delete all bot messages from a channel (for cleaning up test posts)."""
+        if not await self.bot.is_owner(ctx.author):
+            return
         channel = self.bot.get_channel(channel_id)
         if not channel:
             channel = await self.bot.fetch_channel(channel_id)
