@@ -167,12 +167,12 @@ class CompetitionCog(commands.Cog):
             entry_num = self._next_entry_number
             self._next_entry_number += 1
 
-            # Find a "—" separator message to edit inline
-            separator_msg = None
+            # Find a random "—" separator message to edit inline
+            separators = []
             async for msg in voting_channel.history(limit=200):
                 if msg.author.id == self.bot.user.id and msg.content.strip() == "—":
-                    separator_msg = msg
-                    break
+                    separators.append(msg)
+            separator_msg = random.choice(separators) if separators else None
 
             if separator_msg:
                 await separator_msg.edit(
