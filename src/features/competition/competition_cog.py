@@ -167,11 +167,20 @@ class CompetitionCog(commands.Cog):
             entry_num = self._next_entry_number
             self._next_entry_number += 1
 
-            # Post separator then entry in the voting channel
-            await voting_channel.send("—")
-            await voting_channel.send(
-                f"## By {author_name}\n{att.url}",
-            )
+            # Find a "—" separator message to edit inline
+            separator_msg = None
+            async for msg in voting_channel.history(limit=200):
+                if msg.author.id == self.bot.user.id and msg.content.strip() == "—":
+                    separator_msg = msg
+                    break
+
+            if separator_msg:
+                await separator_msg.edit(
+                    content=f"—\n\n## By {author_name}\n{att.url}\n\n—"
+                )
+            else:
+                # No separator found — post normally
+                await voting_channel.send(f"—\n\n## By {author_name}\n{att.url}\n\n—")
 
             # Record in DB
             if self.db and self._active_slug:
