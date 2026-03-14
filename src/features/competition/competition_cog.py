@@ -368,16 +368,16 @@ class CompetitionCog(commands.Cog):
                 await channel.send("—")
                 await asyncio.sleep(0.3)
 
-        # Post questions/late-entries message (replaces the final separator)
+        # Post discussions/questions/late-entries message
         questions_msg = await channel.send(
-            "## Questions & Late Entries\n\n"
-            "If you have any questions, or want to submit a late entry, "
-            "post in the thread below. For a late entry, post a message "
+            "## Discussions, Questions & Late Entries\n\n"
+            "Want to discuss the entries, ask a question, or submit a late entry? "
+            "Post in the thread below. For a late entry, post a message "
             "with #lateentry and I'll add it!"
         )
-        thread = await questions_msg.create_thread(name="Questions & Late Entries")
+        thread = await questions_msg.create_thread(name="Discussions, Questions & Late Entries")
         self._questions_thread_id = thread.id
-        logger.info(f"Created Questions & Late Entries thread ({thread.id})")
+        logger.info(f"Created Discussions, Questions & Late Entries thread ({thread.id})")
 
         return len(entries)
 
