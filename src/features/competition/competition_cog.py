@@ -17,7 +17,6 @@ import discord
 import logging
 import random
 import asyncio
-import io
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -168,15 +167,10 @@ class CompetitionCog(commands.Cog):
             entry_num = self._next_entry_number
             self._next_entry_number += 1
 
-            # Download and re-upload
-            file_bytes = await att.read()
-            discord_file = discord.File(io.BytesIO(file_bytes), filename=att.filename)
-
             # Post separator then entry in the voting channel
             await voting_channel.send("—")
             await voting_channel.send(
-                f"## {entry_num}. By {author_name}",
-                file=discord_file,
+                f"## {entry_num}. By {author_name}\n{att.url}",
             )
 
             # Record in DB
@@ -362,23 +356,17 @@ class CompetitionCog(commands.Cog):
             att = best_attachment(msg_obj)
 
             if att:
-                # Download and re-upload so the file is permanent (CDN URLs expire)
-                file_bytes = await att.read()
-                discord_file = discord.File(io.BytesIO(file_bytes), filename=att.filename)
-                await channel.send(
-                    f"## {i}. By {entry['author_name']}",
-                    file=discord_file,
-                )
+                await channel.send(f"## {i}. By {entry['author_name']}\n{att.url}")
             else:
                 await channel.send(f"## {i}. By {entry['author_name']}\n{msg_obj.jump_url}")
 
             logger.info(f"Posted entry {i}/{len(entries)}: {entry['author_name']}")
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(0.5)
 
             # Separator between entries — doubles as an editable slot
             if i < len(entries):
                 await channel.send("—")
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
 
         # Post questions/late-entries message (replaces the final separator)
         questions_msg = await channel.send(
