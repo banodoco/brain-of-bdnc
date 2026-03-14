@@ -383,12 +383,14 @@ class CompetitionCog(commands.Cog):
             "## Discussions, Questions & Late Entries\n\n"
             "Want to discuss the entries, ask a question, or submit a late entry? "
             "Post in the thread below. For a **late entry**, post a message "
-            "containing the words \"late entry\" with your video attached and I'll add it!\n\n"
-            f"[Jump to top]({header_msg.jump_url})"
+            "containing the words \"late entry\" with your video attached and I'll add it!"
         )
         thread = await questions_msg.create_thread(name="Discussions, Questions & Late Entries")
         self._questions_thread_id = thread.id
         logger.info(f"Created Discussions, Questions & Late Entries thread ({thread.id})")
+
+        # Jump to top link as the final message
+        await channel.send(f"[Jump to top]({header_msg.jump_url})")
 
         return len(entries)
 
