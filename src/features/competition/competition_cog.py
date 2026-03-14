@@ -133,9 +133,9 @@ class CompetitionCog(commands.Cog):
             self._clear_voting_state()
             return
 
-        # Questions thread: if someone tags the bot with an attachment, add it as an entry
+        # Questions thread: if someone posts with #lateentry, add their attachment as an entry
         if self._questions_thread_id and message.channel.id == self._questions_thread_id:
-            if self.bot.user and self.bot.user.mentioned_in(message):
+            if '#lateentry' in message.content.lower():
                 await self._handle_late_entry(message)
             return
 
@@ -154,7 +154,7 @@ class CompetitionCog(commands.Cog):
         att = best_attachment(message)
         if not att:
             await message.reply(
-                "Tag me with your video/image attached and I'll add it as an entry!"
+                "Attach your video/image to your message with #lateentry and I'll add it!"
             )
             return
 
@@ -372,8 +372,8 @@ class CompetitionCog(commands.Cog):
         questions_msg = await channel.send(
             "## Questions & Late Entries\n\n"
             "If you have any questions, or want to submit a late entry, "
-            "post in the thread below. Tag me with your video attached "
-            "and I'll add it!"
+            "post in the thread below. For a late entry, post a message "
+            "with #lateentry and I'll add it!"
         )
         thread = await questions_msg.create_thread(name="Questions & Late Entries")
         self._questions_thread_id = thread.id
