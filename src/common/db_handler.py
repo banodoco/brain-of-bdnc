@@ -1242,3 +1242,135 @@ class DatabaseHandler:
         except Exception as e:
             logger.error(f"Supabase query failed: {e}")
             raise
+
+    # ------------------------------------------------------------------
+    # Competitions
+    # ------------------------------------------------------------------
+
+    def upsert_competition(self, data: Dict) -> bool:
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            self.storage_handler.supabase_client.table('competitions').upsert(
+                data, on_conflict='slug'
+            ).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error upserting competition: {e}", exc_info=True)
+            return False
+
+    def get_competition(self, slug: str) -> Optional[Dict]:
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return None
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('competitions')
+                .select('*').eq('slug', slug).execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error fetching competition {slug}: {e}", exc_info=True)
+            return None
+
+    def get_active_competitions(self) -> List[Dict]:
+        """Return competitions with status 'voting'."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('competitions')
+                .select('*').eq('status', 'voting').execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error fetching active competitions: {e}", exc_info=True)
+            return []
+
+    def get_scheduled_competitions(self) -> List[Dict]:
+        """Return competitions in 'setup' status that have a voting_starts_at set."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('competitions')
+                .select('*')
+                .eq('status', 'setup')
+                .not_.is_('voting_starts_at', 'null')
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error fetching scheduled competitions: {e}", exc_info=True)
+            return []
+
+    def update_competition(self, slug: str, data: Dict) -> bool:
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            (
+                self.storage_handler.supabase_client.table('competitions')
+                .update(data).eq('slug', slug).execute()
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error updating competition {slug}: {e}", exc_info=True)
+            return False
+
+    # ------------------------------------------------------------------
+    # Competition entries
+    # ------------------------------------------------------------------
+
+    def upsert_competition_entry(self, entry: Dict) -> bool:
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            self.storage_handler.supabase_client.table('competition_entries').upsert(
+                entry, on_conflict='competition_slug,message_id'
+            ).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error upserting competition entry: {e}", exc_info=True)
+            return False
+
+    def get_competition_entries(self, slug: str) -> List[Dict]:
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('competition_entries')
+                .select('*')
+                .eq('competition_slug', slug)
+                .order('created_at')
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error fetching competition entries for {slug}: {e}", exc_info=True)
+            return []
+
+    def delete_competition_entry(self, slug: str, message_id: int) -> bool:
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            (
+                self.storage_handler.supabase_client.table('competition_entries')
+                .delete().eq('competition_slug', slug).eq('message_id', message_id)
+                .execute()
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting competition entry {message_id}: {e}", exc_info=True)
+            return False
+
+    def clear_competition_entries(self, slug: str) -> bool:
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            (
+                self.storage_handler.supabase_client.table('competition_entries')
+                .delete().eq('competition_slug', slug).execute()
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing competition entries for {slug}: {e}", exc_info=True)
+            return False
