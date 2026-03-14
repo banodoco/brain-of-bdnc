@@ -356,7 +356,7 @@ class CompetitionCog(commands.Cog):
             )
             header += "---"
 
-        await channel.send(header)
+        header_msg = await channel.send(header)
         await asyncio.sleep(1)
 
         for i, entry in enumerate(entries, 1):
@@ -382,7 +382,8 @@ class CompetitionCog(commands.Cog):
             "## Discussions, Questions & Late Entries\n\n"
             "Want to discuss the entries, ask a question, or submit a late entry? "
             "Post in the thread below. For a **late entry**, post a message "
-            "containing the words \"late entry\" with your video attached and I'll add it!"
+            "containing the words \"late entry\" with your video attached and I'll add it!\n\n"
+            f"[Jump to top]({header_msg.jump_url})"
         )
         thread = await questions_msg.create_thread(name="Discussions, Questions & Late Entries")
         self._questions_thread_id = thread.id
