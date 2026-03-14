@@ -178,9 +178,10 @@ class CompetitionCog(commands.Cog):
                 await separator_msg.edit(
                     content=f"—\n\n## By {author_name}\n{att.url}"
                 )
+                entry_msg = separator_msg
             else:
                 # No separator found — post normally
-                await voting_channel.send(f"—\n\n## By {author_name}\n{att.url}")
+                entry_msg = await voting_channel.send(f"—\n\n## By {author_name}\n{att.url}")
 
             # Record in DB
             if self.db and self._active_slug:
@@ -193,7 +194,7 @@ class CompetitionCog(commands.Cog):
                     'entry_number': entry_num,
                 })
 
-            await message.reply(f"Added as entry #{entry_num}!")
+            await message.reply(f"Added! {entry_msg.jump_url}")
             logger.info(f"Added late entry #{entry_num} from {author_name}")
 
         except Exception as e:
