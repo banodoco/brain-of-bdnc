@@ -170,7 +170,7 @@ class CompetitionCog(commands.Cog):
             # Post separator then entry in the voting channel
             await voting_channel.send("—")
             await voting_channel.send(
-                f"## {entry_num}. By {author_name}\n{att.url}",
+                f"## By {author_name}\n{att.url}",
             )
 
             # Record in DB
@@ -356,9 +356,9 @@ class CompetitionCog(commands.Cog):
             att = best_attachment(msg_obj)
 
             if att:
-                await channel.send(f"## {i}. By {entry['author_name']}\n{att.url}")
+                await channel.send(f"## By {entry['author_name']}\n{att.url}")
             else:
-                await channel.send(f"## {i}. By {entry['author_name']}\n{msg_obj.jump_url}")
+                await channel.send(f"## By {entry['author_name']}\n{msg_obj.jump_url}")
 
             logger.info(f"Posted entry {i}/{len(entries)}: {entry['author_name']}")
             await asyncio.sleep(0.5)
@@ -447,12 +447,18 @@ class CompetitionCog(commands.Cog):
             return
 
         voting_hours = comp.get('voting_hours', 24)
-        await self._post_voting(
+        entry_count = await self._post_voting(
             channel, refreshed, comp['name'],
             voting_hours, comp.get('min_join_weeks', 4),
             comp.get('voting_header'),
         )
-        await ctx.send(f"Done — posted {len(refreshed)} entries.")
+
+        # Set active state so late entries via the questions thread work
+        self._active_slug = slug
+        self._active_channel_id = channel_id
+        self._next_entry_number = entry_count + 1
+
+        await ctx.send(f"Done — posted {len(refreshed)} entries. Late entries enabled.")
 
     @commands.command(name='comp_wipe')
     async def comp_wipe(self, ctx, channel_id: int):
