@@ -299,29 +299,32 @@ class CompetitionCog(commands.Cog):
                 return
 
             voting_hours = comp.get('voting_hours', 24)
+            voting_end = datetime.now(timezone.utc) + timedelta(hours=voting_hours)
+
+            # Set active state before posting so late entries work immediately
+            self._active_slug = slug
+            self._active_channel_id = voting_ch_id
+            self._voting_end = voting_end
+
             entry_count = await self._post_voting(
                 voting_channel, refreshed, comp['name'],
                 voting_hours, comp.get('min_join_weeks', 4),
                 comp.get('voting_header'),
             )
 
+            self._next_entry_number = entry_count + 1
+
             # Persist entry numbers
             for e in refreshed:
                 if e.get('entry_number'):
                     await asyncio.to_thread(self.db.upsert_competition_entry, e)
 
-            voting_end = datetime.now(timezone.utc) + timedelta(hours=voting_hours)
             await asyncio.to_thread(self.db.update_competition, slug, {
                 'status': 'voting',
                 'voting_started_at': datetime.now(timezone.utc).isoformat(),
                 'voting_ends_at': voting_end.isoformat(),
                 'questions_thread_id': self._questions_thread_id,
             })
-
-            self._active_slug = slug
-            self._active_channel_id = voting_ch_id
-            self._voting_end = voting_end
-            self._next_entry_number = entry_count + 1
 
             if not self._check_voting_expiry.is_running():
                 self._check_voting_expiry.start()
