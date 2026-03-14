@@ -176,11 +176,11 @@ class CompetitionCog(commands.Cog):
 
             if separator_msg:
                 await separator_msg.edit(
-                    content=f"—\n\n## By {author_name}\n{att.url}"
+                    content=f"—\n\n## By {author_name}\n{att.url}\n\n—"
                 )
             else:
                 # No separator found — post normally
-                await voting_channel.send(f"—\n\n## By {author_name}\n{att.url}")
+                await voting_channel.send(f"—\n\n## By {author_name}\n{att.url}\n\n—")
 
             # Record in DB
             if self.db and self._active_slug:
