@@ -1128,6 +1128,7 @@ class DatabaseHandler:
                 self.storage_handler.supabase_client.table('grant_applications')
                 .update({
                     'status': 'paid',
+                    'payment_status': 'confirmed',
                     'tx_signature': tx_signature,
                     'sol_amount': sol_amount,
                     'sol_price_usd': sol_price_usd,
