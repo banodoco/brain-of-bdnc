@@ -640,8 +640,14 @@ class GrantsCog(commands.Cog):
             elif tx_status == 'failed':
                 logger.warning(f"GrantsCog: previous tx {existing_tx} failed on-chain, re-sending...")
             else:
-                # not_found — tx may still be propagating or expired, safe to retry
-                logger.warning(f"GrantsCog: previous tx {existing_tx} not found on-chain, re-sending...")
+                # not_found — tx may still be propagating, do NOT re-send to avoid double-payment
+                logger.warning(f"GrantsCog: previous tx {existing_tx} status unknown ({tx_status}), not re-sending")
+                await thread.send(
+                    f"Previous payment transaction status is unclear.\n"
+                    f"Transaction: [View on Explorer]({self._explorer_url(existing_tx)})\n\n"
+                    f"{self._admin_mention} will verify and follow up."
+                )
+                return
 
         # Fetch current SOL price
         sol_price = await get_sol_price_usd()
