@@ -1,6 +1,6 @@
 """
-Post the grants guide as a pinned forum post in #micro-grants.
-Always deletes and reposts to ensure clean formatting.
+Update the grants guide in the pinned #micro-grants forum post.
+Edits existing messages in place rather than deleting and reposting.
 
 Usage:
     python scripts/post_grants_guide.py          # dry run
@@ -59,19 +59,54 @@ async def find_bot_threads(forum, bot_id):
     return threads
 
 
-async def delete_thread(thread, send):
-    """Delete a thread, unarchiving first if needed."""
+async def get_bot_messages(thread, bot_id):
+    """Get all messages from the bot in a thread, ordered oldest first."""
+    messages = []
+    async for msg in thread.history(limit=100, oldest_first=True):
+        if msg.author.id == bot_id:
+            messages.append(msg)
+    return messages
+
+
+async def update_guide_thread(thread, new_messages, bot_id, send):
+    """Edit existing messages in the guide thread, adding or removing as needed."""
+    # Unarchive/unlock if needed so we can edit
+    if send and (thread.archived or thread.locked):
+        await thread.edit(archived=False, locked=False)
+        await asyncio.sleep(0.5)
+
+    existing_msgs = await get_bot_messages(thread, bot_id)
+    print(f"  Found {len(existing_msgs)} existing bot messages, need {len(new_messages)}")
+
+    # The first message in a forum thread is the starter message.
+    # Edit messages that exist, send new ones if we have more, delete extras if we have fewer.
+    for i, new_content in enumerate(new_messages):
+        if i < len(existing_msgs):
+            old_msg = existing_msgs[i]
+            if old_msg.content != new_content:
+                print(f"  {'Editing' if send else 'Would edit'} message {i+1}")
+                if send:
+                    await old_msg.edit(content=new_content)
+                    await asyncio.sleep(0.5)
+            else:
+                print(f"  Message {i+1} unchanged, skipping")
+        else:
+            print(f"  {'Sending' if send else 'Would send'} new message {i+1}")
+            if send:
+                await thread.send(new_content)
+                await asyncio.sleep(0.5)
+
+    # Delete extra messages if the new content has fewer parts
+    for i in range(len(new_messages), len(existing_msgs)):
+        print(f"  {'Deleting' if send else 'Would delete'} extra message {i+1}")
+        if send:
+            await existing_msgs[i].delete()
+            await asyncio.sleep(0.5)
+
+    # Re-lock and pin
     if send:
-        if thread.archived:
-            await thread.edit(archived=False)
-            await asyncio.sleep(0.5)
-        # Unpin before deleting
-        if hasattr(thread.flags, 'pinned') and thread.flags.pinned:
-            await thread.edit(pinned=False)
-            await asyncio.sleep(0.5)
-        await thread.delete()
-        await asyncio.sleep(1)
-    print(f"  {'Deleted' if send else 'Would delete'} thread: {thread.name} ({thread.id})")
+        await thread.edit(pinned=True, locked=True)
+        print("  Pinned and locked.")
 
 
 async def main(send: bool):
@@ -97,40 +132,42 @@ async def main(send: bool):
                 print("No content found in grants.md")
                 return
 
-            starter_content = new_messages[0]
-            followup_messages = new_messages[1:]
-
             # Find existing threads
             existing = await find_bot_threads(channel, client.user.id)
 
-            # Only delete the guide thread — keep questions thread
             if 'guide' in existing:
-                await delete_thread(existing['guide'], send)
-
-            # Create guide thread
-            print(f"\n{'Creating' if send else 'Would create'} forum post: \"{GUIDE_THREAD_NAME}\"")
-
-            if send:
-                result = await channel.create_thread(
-                    name=GUIDE_THREAD_NAME,
-                    content=starter_content,
-                )
-                guide_thread = result.thread if hasattr(result, 'thread') else result
-                print(f"  Created thread: {guide_thread.id}")
-
-                for i, msg in enumerate(followup_messages):
-                    await guide_thread.send(msg)
-                    await asyncio.sleep(0.5)
-                    print(f"  Posted message {i+2}/{len(new_messages)}")
-
-                await guide_thread.edit(pinned=True, locked=True)
-                print("  Pinned and locked.")
+                # Edit existing thread messages in place
+                guide_thread = existing['guide']
+                print(f"\nUpdating existing guide thread ({guide_thread.id})")
+                await update_guide_thread(guide_thread, new_messages, client.user.id, send)
             else:
-                print(f"  Starter: {starter_content[:80]}...")
-                for i, msg in enumerate(followup_messages):
-                    print(f"  Message {i+2}: {msg[:80]}...")
+                # No existing thread — create fresh
+                starter_content = new_messages[0]
+                followup_messages = new_messages[1:]
 
-            # Create questions thread only if it doesn't exist, otherwise ensure it's unarchived
+                print(f"\n{'Creating' if send else 'Would create'} forum post: \"{GUIDE_THREAD_NAME}\"")
+
+                if send:
+                    result = await channel.create_thread(
+                        name=GUIDE_THREAD_NAME,
+                        content=starter_content,
+                    )
+                    guide_thread = result.thread if hasattr(result, 'thread') else result
+                    print(f"  Created thread: {guide_thread.id}")
+
+                    for i, msg in enumerate(followup_messages):
+                        await guide_thread.send(msg)
+                        await asyncio.sleep(0.5)
+                        print(f"  Posted message {i+2}/{len(new_messages)}")
+
+                    await guide_thread.edit(pinned=True, locked=True)
+                    print("  Pinned and locked.")
+                else:
+                    print(f"  Starter: {starter_content[:80]}...")
+                    for i, msg in enumerate(followup_messages):
+                        print(f"  Message {i+2}: {msg[:80]}...")
+
+            # Create questions thread only if it doesn't exist
             if 'questions' not in existing:
                 print(f"\n{'Creating' if send else 'Would create'} forum post: \"{QUESTIONS_THREAD_NAME}\"")
 
@@ -164,7 +201,7 @@ async def main(send: bool):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Post grants guide to forum channel")
+    parser = argparse.ArgumentParser(description="Update grants guide in forum channel")
     parser.add_argument("--send", action="store_true", help="Actually make changes (default is dry run)")
     args = parser.parse_args()
 
