@@ -416,6 +416,68 @@ class CompetitionCog(commands.Cog):
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
 
+    # ------------------------------------------------------------------
+    # Admin commands (owner-only)
+    # ------------------------------------------------------------------
+
+    @commands.command(name='comp_test')
+    @commands.is_owner()
+    async def comp_test(self, ctx, slug: str, channel_id: int):
+        """Test-post voting to a specific channel without activating moderation."""
+        comp = await asyncio.to_thread(self.db.get_competition, slug)
+        if not comp:
+            await ctx.send(f"No competition found with slug `{slug}`")
+            return
+
+        channel = self.bot.get_channel(channel_id)
+        if not channel:
+            channel = await self.bot.fetch_channel(channel_id)
+
+        await ctx.send(f"Posting test voting for `{slug}` to <#{channel_id}>...")
+
+        entry_rows = await asyncio.to_thread(self.db.get_competition_entries, slug)
+        if not entry_rows:
+            await ctx.send("No entries found.")
+            return
+
+        refreshed = []
+        for entry in entry_rows:
+            msg = await self._find_message(comp['channel_id'], entry['message_id'])
+            if msg:
+                entry['_msg'] = msg
+                entry['author_name'] = get_display_name(msg.author)
+                refreshed.append(entry)
+            await asyncio.sleep(0.3)
+
+        if not refreshed:
+            await ctx.send("Couldn't fetch any entry messages.")
+            return
+
+        voting_hours = comp.get('voting_hours', 24)
+        await self._post_voting(
+            channel, refreshed, comp['name'],
+            voting_hours, comp.get('min_join_weeks', 4),
+            comp.get('voting_header'),
+        )
+        await ctx.send(f"Done — posted {len(refreshed)} entries.")
+
+    @commands.command(name='comp_wipe')
+    @commands.is_owner()
+    async def comp_wipe(self, ctx, channel_id: int):
+        """Delete all bot messages from a channel (for cleaning up test posts)."""
+        channel = self.bot.get_channel(channel_id)
+        if not channel:
+            channel = await self.bot.fetch_channel(channel_id)
+
+        await ctx.send(f"Wiping bot messages from <#{channel_id}>...")
+        deleted = 0
+        async for msg in channel.history(limit=500):
+            if msg.author.id == self.bot.user.id:
+                await msg.delete()
+                deleted += 1
+                await asyncio.sleep(0.5)
+        await ctx.send(f"Deleted {deleted} messages.")
+
     async def _find_message(self, channel_id: int, message_id: int) -> Optional[discord.Message]:
         try:
             channel = self.bot.get_channel(channel_id)
