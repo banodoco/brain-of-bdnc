@@ -98,8 +98,8 @@ TOOLS = [
                 },
                 "sort": {
                     "type": "string",
-                    "enum": ["reactions", "date"],
-                    "description": "Sort order (default: reactions)"
+                    "enum": ["reactions", "unique_reactors", "date"],
+                    "description": "Sort order (default: reactions). unique_reactors = number of distinct users who reacted."
                 },
                 "refresh_media": {
                     "type": "boolean",
@@ -358,6 +358,7 @@ def format_message_for_llm(msg: Dict, include_link: bool = True) -> Dict:
         "author": msg.get('author_name', 'Unknown'),
         "content": (msg.get('content', '') or '')[:300],
         "reactions": msg.get('reaction_count', 0),
+        "unique_reactors": msg.get('unique_reactor_count'),
         "has_media": bool(msg.get('attachments') or msg.get('attachment_urls')),
         "date": msg.get('created_at', '')[:10] if msg.get('created_at') else None,
         "channel_id": str(msg.get('channel_id', '')),
@@ -390,7 +391,9 @@ def _build_summary(formatted: List[Dict], header: str, media_urls_map: Dict[str,
         media_url = media_urls_map.get(msg['message_id'])
         channel_tag = f" in #{msg['channel']}" if msg.get('channel') else ""
 
-        entry = f"**{i}. {msg['author']}** — {msg['reactions']} reactions{channel_tag}"
+        ur = msg.get('unique_reactors')
+        react_str = f"{ur} unique reactors" if ur is not None else f"{msg['reactions']} reactions"
+        entry = f"**{i}. {msg['author']}** — {react_str}{channel_tag}"
         if content_preview:
             entry += f"\n> {content_preview}"
         entry += f"\n`{msg['message_id']}`"
@@ -483,8 +486,8 @@ async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = No
                 channel = await bot.fetch_channel(int(channel_id))
 
             messages = []
-            # When sorting by reactions, collect more candidates since best ones may be older
-            need_all = (sort == 'reactions')
+            # When sorting by reactions/reactors, collect more candidates since best ones may be older
+            need_all = sort in ('reactions', 'unique_reactors')
             fetch_limit = limit * 3 if need_all else limit * 2
             async for msg in channel.history(limit=min(fetch_limit, 500)):
                 if author_id and msg.author.id != author_id:
@@ -513,7 +516,9 @@ async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = No
                     break
 
             # Sort and trim
-            if sort == 'reactions':
+            if sort == 'unique_reactors':
+                messages.sort(key=lambda m: m.get('unique_reactor_count', 0), reverse=True)
+            elif sort == 'reactions':
                 messages.sort(key=lambda m: m['reaction_count'], reverse=True)
             messages = messages[:limit]
 
@@ -545,15 +550,22 @@ async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = No
             if has_media:
                 q = q.neq('attachments', [])
 
-            # Sort and limit at the DB level
-            if sort == 'date':
-                q = q.order('created_at', desc=True)
+            # Sort and limit at the DB level when possible
+            if sort == 'unique_reactors':
+                # Can't sort by array length in Supabase REST — over-fetch and sort client-side
+                q = q.order('reaction_count', desc=True).limit(limit * 3)
+            elif sort == 'date':
+                q = q.order('created_at', desc=True).limit(limit)
             else:
-                q = q.order('reaction_count', desc=True)
-            q = q.limit(limit)
+                q = q.order('reaction_count', desc=True).limit(limit)
 
             messages = q.execute().data
-            _enrich_messages(messages, channel_names=safe_channels)
+            _enrich_messages(messages, channel_names=safe_channels, parse_reactors=True)
+
+            # Client-side sort for unique_reactors
+            if sort == 'unique_reactors':
+                messages.sort(key=lambda m: m.get('unique_reactor_count', 0), reverse=True)
+                messages = messages[:limit]
 
         # ---- Common output for both paths ----
         if not messages:
