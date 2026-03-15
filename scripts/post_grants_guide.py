@@ -20,7 +20,7 @@ import discord
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 GRANTS_CHANNEL_ID = int(os.getenv("GRANTS_CHANNEL_ID", "1479173703441846404"))
 
-GRANTS_FILE = os.path.join(os.path.dirname(__file__), "..", "grants.md")
+GRANTS_FILE = os.path.join(os.path.dirname(__file__), "..", "posts", "grants.md")
 GUIDE_THREAD_NAME = "How Micro-Grants Work"
 QUESTIONS_THREAD_NAME = "Questions & Discussion"
 

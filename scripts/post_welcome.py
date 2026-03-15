@@ -22,7 +22,7 @@ import discord
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 GATE_CHANNEL_ID = int(os.getenv("GATE_CHANNEL_ID", "0"))
 
-WELCOME_FILE = os.path.join(os.path.dirname(__file__), "..", "welcome.md")
+WELCOME_FILE = os.path.join(os.path.dirname(__file__), "..", "posts", "welcome.md")
 
 
 def load_welcome_message():

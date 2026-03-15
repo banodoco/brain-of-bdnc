@@ -23,7 +23,7 @@ import discord
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 RULES_CHANNEL_ID = 1138515622582562947
 
-RULES_FILE = os.path.join(os.path.dirname(__file__), "..", "rules.md")
+RULES_FILE = os.path.join(os.path.dirname(__file__), "..", "posts", "rules.md")
 
 
 def load_rules_messages():
