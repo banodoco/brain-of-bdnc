@@ -591,7 +591,7 @@ async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = No
 
             # Build query — chain all applicable filters
             MSG_SELECT = 'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
-            q = client.table('discord_messages').select(MSG_SELECT).gte('created_at', cutoff).eq('is_deleted', False).eq('is_bot', False)
+            q = client.table('discord_messages').select(MSG_SELECT).gte('created_at', cutoff).eq('is_deleted', False)
 
             # Only search in safe (non-NSFW) channels
             if channel_id:

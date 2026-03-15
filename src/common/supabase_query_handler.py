@@ -296,7 +296,7 @@ class SupabaseQueryHandler:
                         .gte('created_at', start_date.isoformat())
                         .lte('created_at', end_date.isoformat())
                         .eq('is_deleted', False)
-                        .eq('is_bot', False))
+                        .eq('is_system', False))
 
                 if channel_id:
                     query = query.eq('channel_id', channel_id)
