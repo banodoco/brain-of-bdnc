@@ -55,7 +55,7 @@ Data:
 Actions:
 - send_message: Send a message to any channel/thread (can reply to a specific message). Discord CDN URLs are auto-refreshed.
 - edit_message: Edit a bot message
-- delete_message: Delete bot message(s). Pass channel_id + message_id for a specific message, OR use last_n to delete the last N messages you sent this session.
+- delete_message: Delete any message by ID. Use find_messages(live=true) first to see messages and their IDs, then delete specific ones.
 - upload_file: Upload a file to a channel
 - share_to_social: Share a message to Twitter/Instagram/TikTok/YouTube (needs message_id or link)
 - resolve_user: Look up a username to get their Discord ID and mention tag
@@ -114,7 +114,7 @@ IMPORTANT:
 - share_to_social requires messages with attachments (has_media=true)
 - Always show message_id so user can reference specific messages
 - send_message auto-refreshes expired Discord CDN URLs — you don't need to refresh manually before sending
-- You CAN delete messages you sent — use delete_message(channel_id=..., last_n=N) to scan the channel and delete your last N messages. This works across restarts.
+- To delete messages: first browse the channel with find_messages(channel_id=..., live=true) to see content and IDs, then delete specific ones with delete_message(channel_id, message_id). You can delete ANY message, not just your own.
 - Use query_table for any data that isn't covered by the search tools (competitions, reactions, events, grants, etc.)"""
 
 MAX_CONVERSATION_LENGTH = 20

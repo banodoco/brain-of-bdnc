@@ -25,10 +25,6 @@ if str(project_root) not in sys.path:
 # Server ID for Discord links
 GUILD_ID = int(os.getenv('GUILD_ID', os.getenv('DEV_GUILD_ID', '0')))
 
-# Track messages sent by the bot this session (for delete_message last_n)
-# List of (channel_id, message_id) tuples, most recent last
-_sent_messages: List[tuple] = []
-
 # Cached Supabase client
 _supabase_client = None
 
@@ -308,7 +304,7 @@ TOOLS = [
     },
     {
         "name": "delete_message",
-        "description": "Delete bot message(s). Either delete a specific message by ID, or scan a channel and delete the bot's last N messages there.",
+        "description": "Delete one or more messages by ID. Use find_messages(live=true) first to see messages and their IDs, then delete the ones that need removing.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -318,11 +314,12 @@ TOOLS = [
                 },
                 "message_id": {
                     "type": "string",
-                    "description": "Specific message ID to delete"
+                    "description": "Single message ID to delete"
                 },
-                "last_n": {
-                    "type": "integer",
-                    "description": "Delete the bot's last N messages in the channel. Scans channel history to find them — works even after restart."
+                "message_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of message IDs to delete (for bulk deletion)"
                 }
             },
             "required": ["channel_id"]
@@ -1151,10 +1148,6 @@ async def execute_send_message(bot: discord.Client, params: Dict[str, Any]) -> D
                 pass  # Send without reply if message not found
 
         msg = await channel.send(content, **kwargs)
-
-        # Track for later deletion
-        _sent_messages.append((int(channel_id), msg.id))
-
         return {
             "success": True,
             "message_id": str(msg.id),
@@ -1191,13 +1184,20 @@ async def execute_edit_message(bot: discord.Client, params: Dict[str, Any]) -> D
 
 
 async def execute_delete_message(bot: discord.Client, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Delete bot message(s). Supports specific ID or last_n in a channel."""
+    """Delete one or more messages by ID."""
     channel_id = params.get('channel_id', '')
     message_id = params.get('message_id', '')
-    last_n = params.get('last_n')
+    message_ids = params.get('message_ids', [])
 
     if not channel_id:
         return {"success": False, "error": "channel_id is required"}
+
+    # Combine single + list into one list
+    ids_to_delete = list(message_ids)
+    if message_id:
+        ids_to_delete.append(message_id)
+    if not ids_to_delete:
+        return {"success": False, "error": "message_id or message_ids is required"}
 
     try:
         channel = bot.get_channel(int(channel_id))
@@ -1206,48 +1206,24 @@ async def execute_delete_message(bot: discord.Client, params: Dict[str, Any]) ->
     except Exception as e:
         return {"success": False, "error": f"Could not find channel: {e}"}
 
-    # Mode 1: delete bot's last N messages in channel (scan via Discord API)
-    if last_n:
-        deleted = 0
-        errors = []
+    deleted = []
+    errors = []
+    for mid in ids_to_delete:
         try:
-            bot_messages = []
-            async for msg in channel.history(limit=200):
-                if msg.author.id == bot.user.id:
-                    bot_messages.append(msg)
-                    if len(bot_messages) >= last_n:
-                        break
-
-            for msg in bot_messages:
-                try:
-                    await msg.delete()
-                    deleted += 1
-                except Exception as e:
-                    errors.append(f"{msg.id}: {e}")
-
+            msg = await channel.fetch_message(int(mid))
+            await msg.delete()
+            deleted.append(mid)
+        except discord.NotFound:
+            errors.append(f"{mid}: not found")
+        except discord.Forbidden:
+            errors.append(f"{mid}: missing permissions")
         except Exception as e:
-            return {"success": False, "error": f"Could not scan channel: {e}"}
+            errors.append(f"{mid}: {e}")
 
-        result = {"success": True, "deleted": deleted}
-        if errors:
-            result["errors"] = errors
-        return result
-
-    # Mode 2: delete specific message
-    if not message_id:
-        return {"success": False, "error": "Provide message_id or last_n"}
-
-    try:
-        msg = await channel.fetch_message(int(message_id))
-        if msg.author.id != bot.user.id:
-            return {"success": False, "error": "Can only delete bot's own messages"}
-        await msg.delete()
-        return {"success": True}
-    except discord.NotFound:
-        return {"success": False, "error": "Message not found"}
-    except Exception as e:
-        logger.error(f"[AdminChat] Error in delete_message: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+    result = {"success": True, "deleted": len(deleted), "deleted_ids": deleted}
+    if errors:
+        result["errors"] = errors
+    return result
 
 
 async def execute_upload_file(bot: discord.Client, params: Dict[str, Any]) -> Dict[str, Any]:
