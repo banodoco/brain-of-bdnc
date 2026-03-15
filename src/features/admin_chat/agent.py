@@ -33,6 +33,7 @@ Search:
     find_messages(query="SharkSampling")                — text search
     find_messages(channel_id="123", live=true)          — live channel browse
     find_messages(min_reactions=3, has_media=true, refresh_media=true) — shareable content with working URLs
+    find_messages(sort="unique_reactors", days=7)       — top posts by distinct people who reacted
 - inspect_message: Deep look at one message — full content, emoji-level reactions, context, replies, fresh media URLs
 
 Info:
