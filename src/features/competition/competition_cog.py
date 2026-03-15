@@ -210,9 +210,15 @@ class CompetitionCog(commands.Cog):
         except discord.NotFound:
             return
 
+        thread_url = ""
+        if self._questions_thread_id:
+            thread_url = (
+                f" https://discord.com/channels/{message.guild.id}"
+                f"/{message.channel.id}/{self._questions_thread_id}"
+            )
         notice = await message.channel.send(
             f"{message.author.mention} Voting is in progress — "
-            f"feel free to discuss entries in their threads!"
+            f"you can discuss and share questions in this thread:{thread_url}"
         )
         await asyncio.sleep(10)
         try:
