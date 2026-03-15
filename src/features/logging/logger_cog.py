@@ -274,6 +274,7 @@ class LoggerCog(commands.Cog):
                 'message_type': str(message.type),
                 'flags': message.flags.value,
                 'is_deleted': False,
+                'is_bot': message.author.bot,
                 'display_name': display_name,
                 'global_name': global_name,
                 'category_id': category_id,

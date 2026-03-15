@@ -126,6 +126,7 @@ class StorageHandler:
                     'message_type': msg.get('message_type'),
                     'flags': msg.get('flags'),
                     'is_deleted': bool(msg.get('is_deleted', False)),
+                    'is_bot': bool(msg.get('is_bot', False)),
                     'indexed_at': msg.get('indexed_at') or datetime.utcnow().isoformat(),
                     'synced_at': datetime.utcnow().isoformat()
                 }
