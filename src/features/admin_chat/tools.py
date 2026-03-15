@@ -103,7 +103,7 @@ TOOLS = [
                 },
                 "refresh_media": {
                     "type": "boolean",
-                    "description": "Get fresh media URLs for up to 5 results (use for showing images/videos)"
+                    "description": "Get fresh media URLs for results (use for showing images/videos)"
                 },
                 "live": {
                     "type": "boolean",
@@ -587,7 +587,7 @@ async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = No
         # Refresh media URLs for top results if requested
         media_urls_map = {}
         if do_refresh_media and bot:
-            for msg in messages[:5]:
+            for msg in messages[:min(limit, 20)]:
                 try:
                     ch_id = msg.get('channel_id')
                     m_id = msg.get('message_id')
