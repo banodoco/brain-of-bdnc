@@ -114,6 +114,28 @@ class AdminChatCog(commands.Cog):
                     channel_context["parent_channel_id"] = str(ch.parent_id)
                     channel_context["parent_channel_name"] = ch.parent.name
 
+                # If replying to a message, include it
+                if message.reference and message.reference.resolved:
+                    ref = message.reference.resolved
+                    if isinstance(ref, discord.Message):
+                        channel_context["replied_to"] = {
+                            "message_id": str(ref.id),
+                            "author": ref.author.display_name,
+                            "content": (ref.content or '')[:500],
+                        }
+
+                # Grab recent messages for surrounding context
+                try:
+                    recent = []
+                    async for msg in ch.history(limit=10):
+                        if msg.id == message.id:
+                            continue
+                        recent.append(f"{msg.author.display_name}: {(msg.content or '')[:150]}")
+                    recent.reverse()
+                    channel_context["recent_messages"] = recent
+                except Exception:
+                    pass
+
             # Show typing indicator while processing
             async with message.channel.typing():
                 responses = await self.agent.chat(

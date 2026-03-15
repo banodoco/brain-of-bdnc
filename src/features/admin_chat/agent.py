@@ -170,7 +170,20 @@ class AdminChatAgent:
             if channel_context.get('is_thread'):
                 ctx_parts.append(f", thread in #{channel_context.get('parent_channel_name', 'unknown')}")
             ctx_parts.append(")]")
-            full_message = "".join(ctx_parts) + "\n" + user_message
+
+            # Include replied-to message
+            replied_to = channel_context.get('replied_to')
+            if replied_to:
+                ctx_parts.append(f"\n[Replying to {replied_to['author']}: {replied_to['content']}]")
+
+            # Include recent channel messages
+            recent = channel_context.get('recent_messages', [])
+            if recent:
+                ctx_parts.append("\n\nRecent messages in this channel:")
+                for line in recent:
+                    ctx_parts.append(f"\n  {line}")
+
+            full_message = "".join(ctx_parts) + "\n\n" + user_message
         if conversation:
             history_text = '\n'.join([
                 f"{'Bot' if m.get('role') == 'assistant' else 'User'}: {m.get('content', '')[:500]}"
