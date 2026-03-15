@@ -308,13 +308,13 @@ TOOLS = [
     },
     {
         "name": "delete_message",
-        "description": "Delete bot message(s). Pass a specific channel_id + message_id, OR use last_n to delete the last N messages the bot sent this session (from any channel).",
+        "description": "Delete bot message(s). Either delete a specific message by ID, or scan a channel and delete the bot's last N messages there.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "channel_id": {
                     "type": "string",
-                    "description": "Discord channel ID (required with message_id)"
+                    "description": "Discord channel ID"
                 },
                 "message_id": {
                     "type": "string",
@@ -322,10 +322,10 @@ TOOLS = [
                 },
                 "last_n": {
                     "type": "integer",
-                    "description": "Delete the last N messages the bot sent this session. Use this when asked to 'delete what you just sent' or similar."
+                    "description": "Delete the bot's last N messages in the channel. Scans channel history to find them — works even after restart."
                 }
             },
-            "required": []
+            "required": ["channel_id"]
         }
     },
     {
@@ -1191,34 +1191,42 @@ async def execute_edit_message(bot: discord.Client, params: Dict[str, Any]) -> D
 
 
 async def execute_delete_message(bot: discord.Client, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Delete bot message(s). Supports specific ID or last_n from session."""
+    """Delete bot message(s). Supports specific ID or last_n in a channel."""
     channel_id = params.get('channel_id', '')
     message_id = params.get('message_id', '')
     last_n = params.get('last_n')
 
-    # Mode 1: delete last N sent messages
-    if last_n:
-        if not _sent_messages:
-            return {"success": False, "error": "No messages sent this session to delete"}
+    if not channel_id:
+        return {"success": False, "error": "channel_id is required"}
 
-        to_delete = _sent_messages[-last_n:]
+    try:
+        channel = bot.get_channel(int(channel_id))
+        if not channel:
+            channel = await bot.fetch_channel(int(channel_id))
+    except Exception as e:
+        return {"success": False, "error": f"Could not find channel: {e}"}
+
+    # Mode 1: delete bot's last N messages in channel (scan via Discord API)
+    if last_n:
         deleted = 0
         errors = []
-        for ch_id, msg_id in reversed(to_delete):
-            try:
-                channel = bot.get_channel(ch_id)
-                if not channel:
-                    channel = await bot.fetch_channel(ch_id)
-                msg = await channel.fetch_message(msg_id)
+        try:
+            bot_messages = []
+            async for msg in channel.history(limit=200):
                 if msg.author.id == bot.user.id:
+                    bot_messages.append(msg)
+                    if len(bot_messages) >= last_n:
+                        break
+
+            for msg in bot_messages:
+                try:
                     await msg.delete()
                     deleted += 1
-                    _sent_messages.remove((ch_id, msg_id))
-            except discord.NotFound:
-                _sent_messages.remove((ch_id, msg_id))
-                deleted += 1  # Already gone
-            except Exception as e:
-                errors.append(f"{msg_id}: {e}")
+                except Exception as e:
+                    errors.append(f"{msg.id}: {e}")
+
+        except Exception as e:
+            return {"success": False, "error": f"Could not scan channel: {e}"}
 
         result = {"success": True, "deleted": deleted}
         if errors:
@@ -1226,21 +1234,14 @@ async def execute_delete_message(bot: discord.Client, params: Dict[str, Any]) ->
         return result
 
     # Mode 2: delete specific message
-    if not channel_id or not message_id:
-        return {"success": False, "error": "Provide channel_id + message_id, or last_n"}
+    if not message_id:
+        return {"success": False, "error": "Provide message_id or last_n"}
 
     try:
-        channel = bot.get_channel(int(channel_id))
-        if not channel:
-            channel = await bot.fetch_channel(int(channel_id))
         msg = await channel.fetch_message(int(message_id))
         if msg.author.id != bot.user.id:
             return {"success": False, "error": "Can only delete bot's own messages"}
         await msg.delete()
-        # Remove from tracking if present
-        pair = (int(channel_id), int(message_id))
-        if pair in _sent_messages:
-            _sent_messages.remove(pair)
         return {"success": True}
     except discord.NotFound:
         return {"success": False, "error": "Message not found"}

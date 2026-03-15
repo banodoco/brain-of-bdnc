@@ -183,8 +183,6 @@ class LoggerCog(commands.Cog):
         try:
             if not message.guild:
                 return
-            if message.author.bot:
-                return
 
             message_data = await self._prepare_message_data(message)
             reaction_rows = message_data.pop('_reaction_rows', [])

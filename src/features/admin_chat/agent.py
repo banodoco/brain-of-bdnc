@@ -114,7 +114,7 @@ IMPORTANT:
 - share_to_social requires messages with attachments (has_media=true)
 - Always show message_id so user can reference specific messages
 - send_message auto-refreshes expired Discord CDN URLs — you don't need to refresh manually before sending
-- You CAN delete messages you sent — use delete_message(last_n=N) to delete your recent messages without needing specific IDs
+- You CAN delete messages you sent — use delete_message(channel_id=..., last_n=N) to scan the channel and delete your last N messages. This works across restarts.
 - Use query_table for any data that isn't covered by the search tools (competitions, reactions, events, grants, etc.)"""
 
 MAX_CONVERSATION_LENGTH = 20
