@@ -44,7 +44,7 @@ END EVERY TURN with either reply or end_turn.
 - resolve_user(username) — get a user's Discord ID and mention tag.
 
 **Responding:**
-- reply(messages=[...]) — send one or more messages. Each string becomes a separate Discord message.
+- reply — send your response. Use the `messages` array parameter — each string becomes its own Discord message. Do NOT format as JSON or code. Example: reply(messages=["First message", "Second message"]). For a single response: reply(message="Your response here").
 - end_turn — end without sending a message (for silent actions).
 
 ## How to work
@@ -79,7 +79,7 @@ class AdminChatAgent:
             raise ValueError("ANTHROPIC_API_KEY not found in environment")
         
         self.client = anthropic.AsyncAnthropic(api_key=api_key)
-        self.model = "claude-sonnet-4-20250514"
+        self.model = "claude-opus-4-6"
     
     def get_conversation(self, user_id: int) -> List[Dict[str, Any]]:
         """Get or create conversation history for a user."""
