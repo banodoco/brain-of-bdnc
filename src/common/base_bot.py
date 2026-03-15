@@ -164,14 +164,26 @@ class BaseDiscordBot(commands.Bot):
         except ImportError:
             self.logger.warning("No custom error_handler found or import failed.")
 
-        # Attempt to verify admin user
+        # Notify admin of startup via DM
         try:
             admin_id = int(os.getenv("ADMIN_USER_ID", "0"))
             if admin_id != 0:
                 admin_user = await self.fetch_user(admin_id)
                 self.logger.info(f"Successfully connected and can notify admin: {admin_user.name}")
+                if not self.dev_mode:
+                    import subprocess
+                    try:
+                        sha = subprocess.check_output(
+                            ["git", "rev-parse", "--short", "HEAD"],
+                            cwd=os.path.dirname(os.path.abspath(__file__)),
+                            timeout=5
+                        ).decode().strip()
+                    except Exception:
+                        sha = "unknown"
+                    dm = await admin_user.create_dm()
+                    await dm.send(f"Bot restarted — `{sha}` on {len(self.guilds)} guild(s)")
         except Exception as e:
-            self.logger.error(f"Failed to verify admin notification capability: {e}")
+            self.logger.error(f"Failed to verify/notify admin: {e}")
 
     async def cleanup(self) -> None:
         """Perform any necessary cleanup. Default implementation does nothing."""

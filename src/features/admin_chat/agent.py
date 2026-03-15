@@ -248,11 +248,26 @@ class AdminChatAgent:
             # Log completion
             logger.info(f"[AdminChat] Completed: {len(actions)} actions, replies={len(final_replies)}")
             
-            # Update conversation history
+            # Update conversation history — include tool calls so the agent
+            # knows what it did on subsequent turns
             conversation.append({"role": "user", "content": user_message})
+
+            # Build assistant history: tool calls + reply
+            assistant_parts = []
+            for action in actions:
+                tool = action["tool"]
+                if tool in ("reply", "end_turn"):
+                    continue
+                inp = action.get("input", {})
+                result = action.get("result", {})
+                count = result.get("count")
+                error = result.get("error")
+                status = f"error: {error}" if error else f"{count} results" if count is not None else "ok"
+                assistant_parts.append(f"[{tool}({inp}) → {status}]")
             if final_replies:
-                # Store combined reply in history
-                conversation.append({"role": "assistant", "content": "\n---\n".join(final_replies)})
+                assistant_parts.append("\n---\n".join(final_replies))
+            if assistant_parts:
+                conversation.append({"role": "assistant", "content": "\n".join(assistant_parts)})
             
             self._trim_conversation(user_id)
             
