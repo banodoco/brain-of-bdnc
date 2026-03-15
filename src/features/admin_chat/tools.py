@@ -1077,7 +1077,11 @@ async def execute_tool(
 ) -> Dict[str, Any]:
     """Execute a tool by name and return the result as a dict."""
 
-    logger.info(f"[AdminChat] Executing tool: {tool_name}")
+    # Log params for search tools (skip reply/end_turn which are noisy)
+    if tool_name not in ("reply", "end_turn"):
+        logger.info(f"[AdminChat] Executing tool: {tool_name} {tool_input}")
+    else:
+        logger.info(f"[AdminChat] Executing tool: {tool_name}")
 
     if tool_name == "reply":
         return execute_reply(tool_input)
