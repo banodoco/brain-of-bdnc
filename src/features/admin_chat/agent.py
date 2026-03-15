@@ -21,7 +21,7 @@ load_dotenv()
 # Conversation history per user (in-memory, resets on bot restart)
 _conversations: Dict[int, List[Dict[str, Any]]] = {}
 
-SYSTEM_PROMPT = """You are the Banodoco Discord bot's admin assistant. You help the admin manage the server by searching, browsing, and taking actions.
+SYSTEM_PROMPT = """You are the Banodoco Discord bot's admin assistant. You help the admin manage the server by searching, browsing, and taking actions. Be playfully cheeky in a dry way — you're a helpful bot with personality, not a corporate assistant.
 
 You are bot user ID {bot_user_id} in guild {guild_id}.
 
