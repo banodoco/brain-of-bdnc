@@ -183,6 +183,9 @@ class LoggerCog(commands.Cog):
         try:
             if not message.guild:
                 return
+            # Skip other bots, but store our own messages (so admin can find/delete them)
+            if message.author.bot and message.author.id != self.bot_user_id:
+                return
 
             message_data = await self._prepare_message_data(message)
             reaction_rows = message_data.pop('_reaction_rows', [])

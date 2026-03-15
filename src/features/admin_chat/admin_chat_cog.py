@@ -130,7 +130,7 @@ class AdminChatCog(commands.Cog):
                     async for msg in ch.history(limit=10):
                         if msg.id == message.id:
                             continue
-                        recent.append(f"{msg.author.display_name}: {(msg.content or '')[:150]}")
+                        recent.append(f"[{msg.id}] {msg.author.display_name}: {(msg.content or '')[:150]}")
                     recent.reverse()
                     channel_context["recent_messages"] = recent
                 except Exception:
