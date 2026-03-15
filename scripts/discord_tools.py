@@ -1,0 +1,759 @@
+#!/usr/bin/env python3
+"""
+Discord Tools — unified interface for searching, browsing, and interacting with Discord.
+
+Wraps Supabase DB queries, Discord REST API, and media operations into clean
+functions that an agent (or CLI) can call directly.
+
+== DB-backed (indexed messages) ==
+    python scripts/discord_tools.py search "query" --days 7
+    python scripts/discord_tools.py top --days 7 --min-reactions 3
+    python scripts/discord_tools.py top CHANNEL_ID --days 7
+    python scripts/discord_tools.py messages CHANNEL_ID --days 7
+    python scripts/discord_tools.py context MESSAGE_ID
+    python scripts/discord_tools.py thread MESSAGE_ID
+    python scripts/discord_tools.py user "username" --days 7
+    python scripts/discord_tools.py channels
+    python scripts/discord_tools.py summaries --days 7
+
+== Discord API (live, not limited to indexed data) ==
+    python scripts/discord_tools.py api-get CHANNEL_ID                    # fetch recent messages
+    python scripts/discord_tools.py api-get CHANNEL_ID MESSAGE_ID         # fetch single message
+    python scripts/discord_tools.py api-post CHANNEL_ID "message text"    # send a message
+    python scripts/discord_tools.py api-edit CHANNEL_ID MESSAGE_ID "new"  # edit a bot message
+    python scripts/discord_tools.py api-delete CHANNEL_ID MESSAGE_ID      # delete a bot message
+    python scripts/discord_tools.py api-reply CHANNEL_ID MESSAGE_ID "txt" # reply to a message
+    python scripts/discord_tools.py api-react CHANNEL_ID MESSAGE_ID 👍    # add reaction
+    python scripts/discord_tools.py api-threads CHANNEL_ID                # list threads
+    python scripts/discord_tools.py api-upload CHANNEL_ID FILE "caption"  # upload file
+
+== Media ==
+    python scripts/discord_tools.py refresh MESSAGE_ID [MESSAGE_ID ...]   # refresh expired CDN URLs
+    python scripts/discord_tools.py get-urls MESSAGE_ID [MESSAGE_ID ...]  # get attachment URLs from DB
+"""
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+from collections import defaultdict
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
+from supabase import create_client
+
+load_dotenv()
+
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+GUILD_ID = int(os.getenv('GUILD_ID', os.getenv('DEV_GUILD_ID', '0')))
+MSG_SELECT = (
+    'message_id, channel_id, author_id, content, created_at, '
+    'attachments, reaction_count, reactors, reference_id'
+)
+
+
+# ============================================================
+# Clients
+# ============================================================
+
+def _supabase():
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_SERVICE_KEY")
+    if not url or not key:
+        print("Error: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set")
+        sys.exit(1)
+    return create_client(url, key)
+
+
+def _discord_headers():
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    if not token:
+        print("Error: DISCORD_BOT_TOKEN must be set")
+        sys.exit(1)
+    return {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+
+
+def _discord_headers_multipart():
+    """Headers for file upload (no Content-Type — requests sets it)."""
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    if not token:
+        print("Error: DISCORD_BOT_TOKEN must be set")
+        sys.exit(1)
+    return {"Authorization": f"Bot {token}"}
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def _member_name(m: Dict) -> str:
+    if m.get('include_in_updates') is False:
+        return 'A community member'
+    return m.get('server_nick') or m.get('global_name') or m.get('username') or 'Unknown'
+
+
+def _enrich(messages: List[Dict], channel_names: Dict = None) -> List[Dict]:
+    """Add author_name (and optionally channel_name) to messages."""
+    if not messages:
+        return messages
+    db = _supabase()
+    ids = list({m['author_id'] for m in messages})
+    members = db.table('discord_members').select(
+        'member_id, username, global_name, server_nick, include_in_updates'
+    ).in_('member_id', ids).execute()
+    mmap = {m['member_id']: _member_name(m) for m in members.data}
+
+    for msg in messages:
+        msg['author_name'] = mmap.get(msg['author_id'], 'Unknown')
+        if channel_names:
+            msg['channel_name'] = channel_names.get(msg['channel_id'], 'Unknown')
+        # Parse reactor count
+        reactors = msg.get('reactors', [])
+        if isinstance(reactors, str):
+            try:
+                reactors = json.loads(reactors)
+            except Exception:
+                reactors = []
+        msg['unique_reactor_count'] = len(reactors) if isinstance(reactors, list) else 0
+    return messages
+
+
+def _channel_map(exclude_nsfw: bool = True) -> Dict:
+    db = _supabase()
+    rows = db.table('discord_channels').select('channel_id, channel_name, nsfw').execute()
+    if exclude_nsfw:
+        return {r['channel_id']: r['channel_name'] for r in rows.data if not r.get('nsfw')}
+    return {r['channel_id']: r['channel_name'] for r in rows.data}
+
+
+def jump_url(channel_id, message_id) -> str:
+    return f"https://discord.com/channels/{GUILD_ID}/{channel_id}/{message_id}"
+
+
+def _fmt(msg: Dict) -> str:
+    """Format a single message for display."""
+    lines = []
+    author = msg.get('author_name', 'Unknown')
+    ts = msg.get('created_at', '')[:16].replace('T', ' ')
+    ch = f" #{msg['channel_name']}" if msg.get('channel_name') else ''
+    lines.append(f"**{author}** ({ts}){ch}")
+    lines.append(f"  ID: {msg['message_id']}")
+    if msg.get('content'):
+        c = msg['content'][:400]
+        if len(msg['content']) > 400:
+            c += '...'
+        lines.append(f"  {c}")
+    rc = msg.get('reaction_count', 0)
+    if rc:
+        lines.append(f"  Reactions: {rc}")
+    atts = msg.get('attachments') or []
+    if isinstance(atts, str):
+        try:
+            atts = json.loads(atts)
+        except Exception:
+            atts = []
+    if atts:
+        for a in atts[:3]:
+            lines.append(f"  Attachment: {a.get('filename', 'file')}")
+    lines.append(f"  {jump_url(msg['channel_id'], msg['message_id'])}")
+    return '\n'.join(lines)
+
+
+# ============================================================
+# DB-backed queries
+# ============================================================
+
+def search(query: str, days: int = 7, channel_id: int = None,
+           limit: int = 30, exclude_nsfw: bool = True) -> List[Dict]:
+    """Search messages by content (case-insensitive)."""
+    db = _supabase()
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    q = db.table('discord_messages').select(MSG_SELECT) \
+        .gte('created_at', cutoff).ilike('content', f'%{query}%') \
+        .order('created_at', desc=True).limit(limit)
+    if channel_id:
+        q = q.eq('channel_id', channel_id)
+    elif exclude_nsfw:
+        cmap = _channel_map(exclude_nsfw=True)
+        q = q.in_('channel_id', list(cmap.keys()))
+    messages = q.execute().data
+    cmap = _channel_map(exclude_nsfw=False)
+    return _enrich(messages, channel_names=cmap)
+
+
+def top(days: int = 7, min_reactions: int = 3, limit: int = 30,
+        channel_id: int = None, exclude_nsfw: bool = True) -> List[Dict]:
+    """Top messages by reaction count, server-wide or in a channel."""
+    db = _supabase()
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    q = db.table('discord_messages').select(MSG_SELECT) \
+        .gte('created_at', cutoff).gte('reaction_count', min_reactions) \
+        .order('reaction_count', desc=True).limit(limit)
+    if channel_id:
+        q = q.eq('channel_id', channel_id)
+    elif exclude_nsfw:
+        cmap = _channel_map(exclude_nsfw=True)
+        q = q.in_('channel_id', list(cmap.keys()))
+    messages = q.execute().data
+    cmap = _channel_map(exclude_nsfw=False)
+    return _enrich(messages, channel_names=cmap)
+
+
+def messages(channel_id: int, days: int = 7, limit: int = 50) -> List[Dict]:
+    """Recent messages from a channel."""
+    db = _supabase()
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    result = db.table('discord_messages').select(MSG_SELECT) \
+        .eq('channel_id', channel_id).gte('created_at', cutoff) \
+        .order('created_at', desc=True).limit(limit).execute()
+    return _enrich(result.data)
+
+
+def context(message_id: int, surrounding: int = 5) -> Dict[str, Any]:
+    """Get a message with surrounding context and replies."""
+    db = _supabase()
+    result = db.table('discord_messages').select('*').eq('message_id', message_id).execute()
+    if not result.data:
+        return {"error": f"Message {message_id} not found"}
+    target = result.data[0]
+    ch = target['channel_id']
+    ts = target['created_at']
+
+    before = list(reversed(
+        db.table('discord_messages').select('*').eq('channel_id', ch)
+        .lt('created_at', ts).order('created_at', desc=True)
+        .limit(surrounding).execute().data
+    ))
+    after = db.table('discord_messages').select('*').eq('channel_id', ch) \
+        .gt('created_at', ts).order('created_at').limit(surrounding).execute().data
+    replies = db.table('discord_messages').select('*') \
+        .eq('reference_id', message_id).order('created_at').execute().data
+
+    all_msgs = [target] + before + after + replies
+    ids = list({m['author_id'] for m in all_msgs})
+    members = db.table('discord_members').select(
+        'member_id, username, global_name, server_nick, include_in_updates'
+    ).in_('member_id', ids).execute()
+    mmap = {m['member_id']: _member_name(m) for m in members.data}
+    for m in all_msgs:
+        m['author_name'] = mmap.get(m['author_id'], 'Unknown')
+
+    return {"target": target, "before": before, "after": after,
+            "replies": replies, "reply_count": len(replies)}
+
+
+def thread(message_id: int) -> Dict[str, Any]:
+    """Follow a reply chain up to root, then down through all replies."""
+    db = _supabase()
+    result = db.table('discord_messages').select('*').eq('message_id', message_id).execute()
+    if not result.data:
+        return {"error": f"Message {message_id} not found"}
+
+    current = result.data[0]
+    chain = [current]
+    visited = {message_id}
+
+    # Walk up
+    root = current
+    while root.get('reference_id'):
+        ref = root['reference_id']
+        if ref in visited:
+            break
+        visited.add(ref)
+        parent = db.table('discord_messages').select('*').eq('message_id', ref).execute()
+        if not parent.data:
+            break
+        root = parent.data[0]
+        chain.insert(0, root)
+
+    # Walk down (BFS)
+    queue = [root['message_id']]
+    while queue:
+        cid = queue.pop(0)
+        replies = db.table('discord_messages').select('*') \
+            .eq('reference_id', cid).order('created_at').execute()
+        for r in replies.data:
+            if r['message_id'] not in visited:
+                visited.add(r['message_id'])
+                chain.append(r)
+                queue.append(r['message_id'])
+
+    chain.sort(key=lambda x: x['created_at'])
+    _enrich(chain)
+    return {"root": chain[0], "messages": chain, "length": len(chain)}
+
+
+def user(username: str, days: int = 7, limit: int = 30) -> List[Dict]:
+    """Get messages from a user (fuzzy name match)."""
+    db = _supabase()
+    # Find user
+    for field in ('username', 'server_nick', 'global_name'):
+        r = db.table('discord_members').select('*').eq(field, username).execute()
+        if r.data:
+            break
+    else:
+        r = db.table('discord_members').select('*').ilike('username', f'%{username}%').limit(1).execute()
+    if not r.data:
+        r = db.table('discord_members').select('*').ilike('server_nick', f'%{username}%').limit(1).execute()
+    if not r.data:
+        return []
+
+    member = r.data[0]
+    uid = member['member_id']
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    msgs = db.table('discord_messages').select(MSG_SELECT) \
+        .eq('author_id', uid).gte('created_at', cutoff) \
+        .order('created_at', desc=True).limit(limit).execute().data
+    cmap = _channel_map(exclude_nsfw=False)
+    name = _member_name(member)
+    for m in msgs:
+        m['author_name'] = name
+        m['channel_name'] = cmap.get(m['channel_id'], 'Unknown')
+    return msgs
+
+
+def channels(days: int = 7, exclude_nsfw: bool = True) -> List[Dict]:
+    """Active channels with message counts."""
+    db = _supabase()
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    cmap = _channel_map(exclude_nsfw)
+    rows = db.table('discord_messages').select('channel_id') \
+        .gte('created_at', cutoff).execute().data
+    counts = {}
+    for r in rows:
+        cid = r['channel_id']
+        if cid in cmap:
+            counts[cid] = counts.get(cid, 0) + 1
+    return sorted([
+        {'channel_id': cid, 'channel_name': cmap[cid], 'messages': n}
+        for cid, n in counts.items()
+    ], key=lambda x: x['messages'], reverse=True)
+
+
+def summaries(days: int = 7, channel_id: int = None) -> List[Dict]:
+    """Get daily summaries from the bot."""
+    db = _supabase()
+    cutoff = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
+    q = db.table('daily_summaries').select('date, channel_id, short_summary') \
+        .gte('date', cutoff).order('date', desc=True)
+    if channel_id:
+        q = q.eq('channel_id', str(channel_id))
+    return q.execute().data
+
+
+def get_member_id(username: str) -> Optional[str]:
+    """Resolve a username to a Discord member ID."""
+    db = _supabase()
+    for field in ('username', 'server_nick', 'global_name'):
+        r = db.table('discord_members').select('member_id').eq(field, username).execute()
+        if r.data:
+            return r.data[0]['member_id']
+    r = db.table('discord_members').select('member_id') \
+        .ilike('username', f'%{username}%').limit(1).execute()
+    if r.data:
+        return r.data[0]['member_id']
+    return None
+
+
+def get_author_id(message_id: int) -> Optional[str]:
+    """Get the author_id for a message."""
+    db = _supabase()
+    r = db.table('discord_messages').select('author_id') \
+        .eq('message_id', message_id).execute()
+    return r.data[0]['author_id'] if r.data else None
+
+
+# ============================================================
+# Discord REST API
+# ============================================================
+
+def api_get_messages(channel_id: int, limit: int = 50,
+                     before: int = None, after: int = None) -> List[Dict]:
+    """Fetch messages from Discord API (live, not DB)."""
+    import requests
+    headers = _discord_headers()
+    url = f"https://discord.com/api/v10/channels/{channel_id}/messages?limit={limit}"
+    if before:
+        url += f"&before={before}"
+    if after:
+        url += f"&after={after}"
+    resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def api_get_message(channel_id: int, message_id: int) -> Dict:
+    """Fetch a single message from Discord API."""
+    import requests
+    headers = _discord_headers()
+    resp = requests.get(
+        f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}",
+        headers=headers
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def api_post(channel_id: int, content: str,
+             reply_to: int = None) -> Dict:
+    """Send a message to a channel. Optionally reply to a message."""
+    import requests
+    headers = _discord_headers()
+    payload = {"content": content}
+    if reply_to:
+        payload["message_reference"] = {"message_id": str(reply_to)}
+    resp = requests.post(
+        f"https://discord.com/api/v10/channels/{channel_id}/messages",
+        headers=headers, json=payload
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def api_edit(channel_id: int, message_id: int, content: str) -> Dict:
+    """Edit a bot message."""
+    import requests
+    headers = _discord_headers()
+    resp = requests.patch(
+        f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}",
+        headers=headers, json={"content": content}
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def api_delete(channel_id: int, message_id: int) -> bool:
+    """Delete a bot message."""
+    import requests
+    headers = _discord_headers()
+    resp = requests.delete(
+        f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}",
+        headers=headers
+    )
+    return resp.status_code == 204
+
+
+def api_react(channel_id: int, message_id: int, emoji: str) -> bool:
+    """Add a reaction to a message."""
+    import requests
+    headers = _discord_headers()
+    import urllib.parse
+    encoded = urllib.parse.quote(emoji)
+    resp = requests.put(
+        f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}"
+        f"/reactions/{encoded}/@me",
+        headers=headers
+    )
+    return resp.status_code == 204
+
+
+def api_threads(channel_id: int) -> List[Dict]:
+    """List active threads in a channel."""
+    import requests
+    headers = _discord_headers()
+    # Active threads from guild
+    resp = requests.get(
+        f"https://discord.com/api/v10/guilds/{GUILD_ID}/threads/active",
+        headers=headers
+    )
+    resp.raise_for_status()
+    return [t for t in resp.json().get('threads', [])
+            if t.get('parent_id') == str(channel_id)]
+
+
+def api_upload(channel_id: int, file_path: str, content: str = "") -> Dict:
+    """Upload a file to a channel."""
+    import requests
+    headers = _discord_headers_multipart()
+    fname = os.path.basename(file_path)
+    with open(file_path, 'rb') as f:
+        resp = requests.post(
+            f"https://discord.com/api/v10/channels/{channel_id}/messages",
+            headers=headers,
+            data={"content": content},
+            files={"file": (fname, f)}
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ============================================================
+# Media
+# ============================================================
+
+def get_urls(message_ids: List[int]) -> Dict[int, List[Dict]]:
+    """Get attachment URLs from DB for multiple messages."""
+    db = _supabase()
+    result = {}
+    for mid in message_ids:
+        r = db.table('discord_messages').select('attachments') \
+            .eq('message_id', mid).execute()
+        if r.data:
+            atts = r.data[0].get('attachments') or []
+            if isinstance(atts, str):
+                try:
+                    atts = json.loads(atts)
+                except Exception:
+                    atts = []
+            result[mid] = atts
+        else:
+            result[mid] = []
+    return result
+
+
+def refresh(message_ids: List[int]) -> Dict[str, Any]:
+    """Refresh expired Discord CDN URLs by re-fetching from API."""
+    # Import the weekly_digest refresh which handles the bot login
+    from scripts.weekly_digest import batch_refresh_media
+    return batch_refresh_media(message_ids)
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def _print_messages(msgs: List[Dict], title: str = ""):
+    if title:
+        print(f"\n{title}\n")
+    print(f"Total: {len(msgs)}\n")
+    for m in msgs:
+        print(_fmt(m))
+        print()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Discord Tools — search, browse, and interact with Discord",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    sub = parser.add_subparsers(dest='cmd')
+
+    # -- DB queries --
+    p = sub.add_parser('search', help='Search messages by content')
+    p.add_argument('query')
+    p.add_argument('--days', type=int, default=7)
+    p.add_argument('--channel', type=int, default=None)
+    p.add_argument('--limit', type=int, default=30)
+
+    p = sub.add_parser('top', help='Top messages by reactions')
+    p.add_argument('channel', nargs='?', type=int, default=None)
+    p.add_argument('--days', type=int, default=7)
+    p.add_argument('--min-reactions', type=int, default=3)
+    p.add_argument('--limit', type=int, default=30)
+
+    p = sub.add_parser('messages', help='Recent messages from a channel')
+    p.add_argument('channel', type=int)
+    p.add_argument('--days', type=int, default=7)
+    p.add_argument('--limit', type=int, default=50)
+
+    p = sub.add_parser('context', help='Message with surrounding context')
+    p.add_argument('message_id', type=int)
+    p.add_argument('--surrounding', type=int, default=5)
+
+    p = sub.add_parser('thread', help='Follow reply chain')
+    p.add_argument('message_id', type=int)
+
+    p = sub.add_parser('user', help='Messages from a user')
+    p.add_argument('username')
+    p.add_argument('--days', type=int, default=7)
+    p.add_argument('--limit', type=int, default=30)
+
+    p = sub.add_parser('channels', help='Active channels')
+    p.add_argument('--days', type=int, default=7)
+
+    p = sub.add_parser('summaries', help='Daily summaries')
+    p.add_argument('--days', type=int, default=7)
+    p.add_argument('--channel', type=int, default=None)
+
+    # -- Discord API --
+    p = sub.add_parser('api-get', help='Fetch messages from Discord API')
+    p.add_argument('channel', type=int)
+    p.add_argument('message_id', nargs='?', type=int, default=None)
+    p.add_argument('--limit', type=int, default=20)
+
+    p = sub.add_parser('api-post', help='Send a message')
+    p.add_argument('channel', type=int)
+    p.add_argument('content')
+    p.add_argument('--reply-to', type=int, default=None)
+
+    p = sub.add_parser('api-edit', help='Edit a bot message')
+    p.add_argument('channel', type=int)
+    p.add_argument('message_id', type=int)
+    p.add_argument('content')
+
+    p = sub.add_parser('api-delete', help='Delete a bot message')
+    p.add_argument('channel', type=int)
+    p.add_argument('message_id', type=int)
+
+    p = sub.add_parser('api-reply', help='Reply to a message')
+    p.add_argument('channel', type=int)
+    p.add_argument('message_id', type=int)
+    p.add_argument('content')
+
+    p = sub.add_parser('api-react', help='Add a reaction')
+    p.add_argument('channel', type=int)
+    p.add_argument('message_id', type=int)
+    p.add_argument('emoji')
+
+    p = sub.add_parser('api-threads', help='List threads in a channel')
+    p.add_argument('channel', type=int)
+
+    p = sub.add_parser('api-upload', help='Upload a file')
+    p.add_argument('channel', type=int)
+    p.add_argument('file')
+    p.add_argument('--caption', default='')
+
+    # -- Media --
+    p = sub.add_parser('refresh', help='Refresh expired CDN URLs')
+    p.add_argument('message_ids', nargs='+', type=int)
+
+    p = sub.add_parser('get-urls', help='Get attachment URLs from DB')
+    p.add_argument('message_ids', nargs='+', type=int)
+
+    p = sub.add_parser('member-id', help='Resolve username to member ID')
+    p.add_argument('username')
+
+    p = sub.add_parser('author-id', help='Get author ID for a message')
+    p.add_argument('message_id', type=int)
+
+    args = parser.parse_args()
+
+    if args.cmd == 'search':
+        _print_messages(search(args.query, args.days, args.channel, args.limit),
+                        f"Search: '{args.query}' (last {args.days} days)")
+
+    elif args.cmd == 'top':
+        _print_messages(top(args.days, args.min_reactions, args.limit, args.channel),
+                        f"Top messages (last {args.days} days, min {args.min_reactions} reactions)")
+
+    elif args.cmd == 'messages':
+        _print_messages(messages(args.channel, args.days, args.limit),
+                        f"Messages from {args.channel}")
+
+    elif args.cmd == 'context':
+        r = context(args.message_id, args.surrounding)
+        if r.get('error'):
+            print(r['error'])
+            return
+        print("\n=== BEFORE ===")
+        for m in r['before']:
+            print(_fmt(m)); print()
+        print("=== TARGET ===")
+        print(_fmt(r['target'])); print()
+        print("=== AFTER ===")
+        for m in r['after']:
+            print(_fmt(m)); print()
+        if r['replies']:
+            print(f"=== REPLIES ({r['reply_count']}) ===")
+            for m in r['replies']:
+                print(_fmt(m)); print()
+
+    elif args.cmd == 'thread':
+        r = thread(args.message_id)
+        if r.get('error'):
+            print(r['error'])
+            return
+        print(f"\nThread ({r['length']} messages):\n")
+        for m in r['messages']:
+            print(_fmt(m)); print()
+
+    elif args.cmd == 'user':
+        _print_messages(user(args.username, args.days, args.limit),
+                        f"Messages from {args.username}")
+
+    elif args.cmd == 'channels':
+        chs = channels(args.days)
+        print(f"\nActive channels (last {args.days} days):\n")
+        for ch in chs:
+            print(f"  {ch['channel_name']}: {ch['messages']} msgs ({ch['channel_id']})")
+
+    elif args.cmd == 'summaries':
+        rows = summaries(args.days, args.channel)
+        by_date = defaultdict(list)
+        for r in rows:
+            by_date[r['date']].append(r)
+        for date in sorted(by_date.keys(), reverse=True):
+            items = by_date[date]
+            print(f"\n=== {date} ({len(items)} channels) ===")
+            for item in items:
+                s = (item.get('short_summary') or '')[:400]
+                print(f"  [{item['channel_id']}] {s}\n")
+
+    elif args.cmd == 'api-get':
+        if args.message_id:
+            msg = api_get_message(args.channel, args.message_id)
+            print(json.dumps(msg, indent=2))
+        else:
+            msgs = api_get_messages(args.channel, limit=args.limit)
+            for m in reversed(msgs):
+                author = m['author']['username']
+                content = (m.get('content') or '')[:200]
+                atts = [a['filename'] for a in m.get('attachments', [])]
+                print(f"{m['id']} | {author} | {content}")
+                for a in atts:
+                    print(f"  ATT: {a}")
+
+    elif args.cmd == 'api-post':
+        r = api_post(args.channel, args.content)
+        print(f"Sent: {r['id']}")
+
+    elif args.cmd == 'api-edit':
+        r = api_edit(args.channel, args.message_id, args.content)
+        print(f"Edited: {r['id']}")
+
+    elif args.cmd == 'api-delete':
+        ok = api_delete(args.channel, args.message_id)
+        print("Deleted" if ok else "Failed")
+
+    elif args.cmd == 'api-reply':
+        r = api_post(args.channel, args.content, reply_to=args.message_id)
+        print(f"Replied: {r['id']}")
+
+    elif args.cmd == 'api-react':
+        ok = api_react(args.channel, args.message_id, args.emoji)
+        print("Reacted" if ok else "Failed")
+
+    elif args.cmd == 'api-threads':
+        threads = api_threads(args.channel)
+        for t in threads:
+            print(f"{t['id']} | {t['name']}")
+
+    elif args.cmd == 'api-upload':
+        r = api_upload(args.channel, args.file, args.caption)
+        for a in r.get('attachments', []):
+            print(f"{a['filename']}: {a['url']}")
+
+    elif args.cmd == 'refresh':
+        r = refresh(args.message_ids)
+        for s in r.get('success', []):
+            print(f"OK {s['message_id']}: {len(s.get('urls', []))} URLs")
+        for f in r.get('failed', []):
+            print(f"FAIL {f['message_id']}: {f.get('error')}")
+
+    elif args.cmd == 'get-urls':
+        r = get_urls(args.message_ids)
+        for mid, atts in r.items():
+            for a in atts:
+                print(f"{mid} | {a.get('filename', '')} | {a.get('url', '')}")
+
+    elif args.cmd == 'member-id':
+        mid = get_member_id(args.username)
+        print(mid or "Not found")
+
+    elif args.cmd == 'author-id':
+        aid = get_author_id(args.message_id)
+        print(aid or "Not found")
+
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
