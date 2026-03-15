@@ -94,11 +94,26 @@ class AdminChatCog(commands.Cog):
             # Initialize agent if needed
             self._ensure_agent()
 
+            # Build channel context for non-DM messages
+            channel_context = None
+            if not is_dm:
+                ch = message.channel
+                channel_context = {
+                    "channel_id": str(ch.id),
+                    "channel_name": getattr(ch, 'name', 'unknown'),
+                }
+                # If it's a thread, include parent info
+                if isinstance(ch, discord.Thread) and ch.parent:
+                    channel_context["is_thread"] = True
+                    channel_context["parent_channel_id"] = str(ch.parent_id)
+                    channel_context["parent_channel_name"] = ch.parent.name
+
             # Show typing indicator while processing
             async with message.channel.typing():
                 responses = await self.agent.chat(
                     user_id=message.author.id,
-                    user_message=content
+                    user_message=content,
+                    channel_context=channel_context
                 )
 
             # responses is a list of messages, or None if ended without reply

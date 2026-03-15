@@ -141,25 +141,37 @@ class AdminChatAgent:
         if len(conv) > MAX_CONVERSATION_LENGTH * 2:
             _conversations[user_id] = conv[-(MAX_CONVERSATION_LENGTH * 2):]
     
-    async def chat(self, user_id: int, user_message: str) -> Optional[List[str]]:
+    async def chat(self, user_id: int, user_message: str, channel_context: dict = None) -> Optional[List[str]]:
         """Process a chat message and return the response.
-        
+
         Follows the Arnold pattern:
         1. Send message to Claude with available tools
         2. If Claude calls tools, execute them and feed results back
         3. Repeat until Claude calls the 'reply' tool
+
+        Args:
+            channel_context: If the message came from a public channel, contains
+                channel_id, channel_name, and thread info.
         """
-        
+
         # Handle special commands
         if user_message.strip().lower() in ['clear', 'reset', '/clear', '/reset']:
             self.clear_conversation(user_id)
             return ["Conversation cleared!"]
-        
+
         # Build messages with conversation history
         conversation = self.get_conversation(user_id)
-        
+
         # Format: include recent history in the user message for context
         full_message = user_message
+
+        # Add channel context for @mentions in public channels
+        if channel_context:
+            ctx_parts = [f"[Sent in #{channel_context.get('channel_name', 'unknown')} (channel_id: {channel_context.get('channel_id')}"]
+            if channel_context.get('is_thread'):
+                ctx_parts.append(f", thread in #{channel_context.get('parent_channel_name', 'unknown')}")
+            ctx_parts.append(")]")
+            full_message = "".join(ctx_parts) + "\n" + user_message
         if conversation:
             history_text = '\n'.join([
                 f"{'Bot' if m.get('role') == 'assistant' else 'User'}: {m.get('content', '')[:500]}"
