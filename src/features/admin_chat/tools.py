@@ -209,6 +209,33 @@ TOOLS = [
         }
     },
     {
+        "name": "search_logs",
+        "description": "Search the bot's system logs. See errors, recent tool calls, feature traces. Use to check what happened, diagnose issues, or review your own recent actions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Text to search for in log messages (e.g. 'AdminChat', 'error', 'share')"
+                },
+                "level": {
+                    "type": "string",
+                    "enum": ["ERROR", "WARNING", "INFO"],
+                    "description": "Filter by log level (default: all levels)"
+                },
+                "hours": {
+                    "type": "integer",
+                    "description": "Hours back to search (default 6, max 48)"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default 30, max 100)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
         "name": "send_message",
         "description": "Send a message to a Discord channel as the bot. Can optionally reply to a specific message.",
         "input_schema": {
@@ -931,6 +958,60 @@ async def execute_get_bot_status(bot: discord.Client) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+async def execute_search_logs(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Search bot system logs from Supabase."""
+    from supabase import create_client as sc
+
+    query = params.get('query', '')
+    level = params.get('level', '')
+    hours = min(params.get('hours', 6), 48)
+    limit = min(params.get('limit', 30), 100)
+
+    try:
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_SERVICE_KEY")
+        client = sc(url, key)
+
+        cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        q = client.table('system_logs').select(
+            'timestamp, level, logger_name, message'
+        ).gte('timestamp', cutoff).order('timestamp', desc=True)
+
+        if level:
+            q = q.eq('level', level)
+        if query:
+            q = q.ilike('message', f'%{query}%')
+        q = q.limit(limit)
+
+        rows = q.execute().data
+
+        if not rows:
+            return {
+                "success": True,
+                "count": 0,
+                "summary": f"No logs found{' matching ' + repr(query) if query else ''} in the last {hours}h."
+            }
+
+        # Format oldest-first for readability
+        rows.reverse()
+        lines = []
+        for r in rows:
+            ts = r['timestamp'][:19].replace('T', ' ')
+            lvl = r['level'][:4]
+            msg = r['message'][:200]
+            lines.append(f"`{ts}` **{lvl}** {msg}")
+
+        return {
+            "success": True,
+            "count": len(rows),
+            "summary": "\n".join(lines)
+        }
+
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in search_logs: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 async def execute_send_message(bot: discord.Client, params: Dict[str, Any]) -> Dict[str, Any]:
     """Send a message to a channel, optionally as a reply."""
     channel_id = params.get('channel_id', '')
@@ -1101,6 +1182,8 @@ async def execute_tool(
         return await execute_get_member_info(db_handler, tool_input)
     elif tool_name == "get_bot_status":
         return await execute_get_bot_status(bot)
+    elif tool_name == "search_logs":
+        return await execute_search_logs(tool_input)
     elif tool_name == "send_message":
         return await execute_send_message(bot, tool_input)
     elif tool_name == "edit_message":

@@ -40,6 +40,7 @@ Info:
 - get_daily_summaries: Bot-generated daily channel summaries (great for overview)
 - get_member_info: Detailed member info (sharing prefs, social handles)
 - get_bot_status: Check bot health
+- search_logs: Search bot system logs — see errors, recent tool calls, what happened. Use to diagnose issues or review your own recent actions.
 
 Actions:
 - send_message: Send a message to any channel/thread (can reply to a specific message)
