@@ -156,7 +156,7 @@ class AdminChatAgent:
         actions: List[Dict[str, Any]] = []
         final_replies: List[str] = []  # Can have multiple messages
         
-        max_iterations = 50
+        max_iterations = 100
         
         try:
             for iteration in range(max_iterations):
