@@ -171,15 +171,7 @@ class BaseDiscordBot(commands.Bot):
                 admin_user = await self.fetch_user(admin_id)
                 self.logger.info(f"Successfully connected and can notify admin: {admin_user.name}")
                 if not self.dev_mode:
-                    import subprocess
-                    try:
-                        sha = subprocess.check_output(
-                            ["git", "rev-parse", "--short", "HEAD"],
-                            cwd=os.path.dirname(os.path.abspath(__file__)),
-                            timeout=5
-                        ).decode().strip()
-                    except Exception:
-                        sha = "unknown"
+                    sha = os.getenv("RAILWAY_GIT_COMMIT_SHA", "")[:7] or "unknown"
                     dm = await admin_user.create_dm()
                     await dm.send(f"Bot restarted — `{sha}` on {len(self.guilds)} guild(s)")
         except Exception as e:
