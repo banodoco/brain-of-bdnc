@@ -1,6 +1,7 @@
-"""Discord cog for admin chat - handles DMs from ADMIN_USER_ID.
+"""Discord cog for admin chat - handles DMs and @mentions from ADMIN_USER_ID.
 
-Listens for DMs from the admin and processes them through the Claude agent.
+Listens for DMs from the admin and @mentions of the bot by the admin in
+public channels, then processes them through the Claude agent.
 """
 import os
 import logging
@@ -48,76 +49,101 @@ class AdminChatCog(commands.Cog):
                 logger.error(f"[AdminChat] Failed to initialize agent: {e}", exc_info=True)
                 raise
     
+    def _is_admin_message(self, message: discord.Message) -> bool:
+        """Check if a message is from the admin and directed at the bot."""
+        if message.author.bot:
+            return False
+        if self.admin_user_id is None or message.author.id != self.admin_user_id:
+            return False
+        if not message.content.strip():
+            return False
+
+        # DMs always count
+        if isinstance(message.channel, discord.DMChannel):
+            return True
+
+        # In public channels, only respond if the bot is @mentioned
+        if self.bot.user and self.bot.user.mentioned_in(message):
+            return True
+
+        return False
+
+    def _strip_mention(self, content: str) -> str:
+        """Remove the bot @mention from message content."""
+        if self.bot.user:
+            content = content.replace(f'<@{self.bot.user.id}>', '').replace(f'<@!{self.bot.user.id}>', '')
+        return content.strip()
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Listen for DMs from the admin user."""
-        
-        # Ignore messages from bots (including self)
-        if message.author.bot:
+        """Listen for DMs and @mentions from the admin user."""
+
+        if not self._is_admin_message(message):
             return
-        
-        # Only respond to DMs
-        if not isinstance(message.channel, discord.DMChannel):
+
+        is_dm = isinstance(message.channel, discord.DMChannel)
+        content = message.content if is_dm else self._strip_mention(message.content)
+
+        if not content:
             return
-        
-        # Only respond to the admin user
-        if self.admin_user_id is None or message.author.id != self.admin_user_id:
-            return
-        
-        # Ignore empty messages
-        if not message.content.strip():
-            return
-        
-        logger.info(f"[AdminChat] Received DM from admin: {message.content[:50]}...")
-        
+
+        source = "DM" if is_dm else f"#{getattr(message.channel, 'name', 'unknown')}"
+        logger.info(f"[AdminChat] Received from admin in {source}: {content[:50]}...")
+
         try:
             # Initialize agent if needed
             self._ensure_agent()
-            
+
             # Show typing indicator while processing
             async with message.channel.typing():
                 responses = await self.agent.chat(
                     user_id=message.author.id,
-                    user_message=message.content
+                    user_message=content
                 )
-            
+
             # responses is a list of messages, or None if ended without reply
             if responses is None:
                 logger.info("[AdminChat] Turn ended without reply (silent action)")
                 return
-            
+
             # Send each response message
             total_chars = 0
             messages_sent = 0
-            
+
+            # In public channels, reply to the original message for the first response
+            reply_ref = message if not is_dm else None
+
             for response in responses:
                 # Skip empty responses
                 if not response or not response.strip():
                     continue
-                
+
                 # Split on ---SPLIT--- marker for proper media embedding
                 # Each part becomes a separate Discord message
                 parts = response.split('\n---SPLIT---\n')
-                
+
                 for part in parts:
                     part = part.strip()
                     if not part:
                         continue
-                    
+
                     total_chars += len(part)
-                    
+
                     # Handle long messages by splitting
                     if len(part) <= 2000:
-                        await message.channel.send(part)
+                        await message.channel.send(part, reference=reply_ref)
                         messages_sent += 1
                     else:
                         # Split into chunks
                         chunks = [part[i:i+1990] for i in range(0, len(part), 1990)]
                         for chunk in chunks:
                             if chunk.strip():
-                                await message.channel.send(chunk)
+                                await message.channel.send(chunk, reference=reply_ref)
                                 messages_sent += 1
-            
+
+                    # Only reply-thread the first message
+                    reply_ref = None
+
             logger.info(f"[AdminChat] Sent {messages_sent} message(s) ({total_chars} chars total)")
             
         except Exception as e:
