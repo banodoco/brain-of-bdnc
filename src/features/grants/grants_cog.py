@@ -4,11 +4,10 @@ import asyncio
 import json
 import logging
 import os
-
 import discord
 from discord.ext import commands
 
-from src.features.grants.assessor import assess_application
+from src.features.grants.assessor import assess_application, interpret_admin_decision
 from src.features.grants.pricing import GPU_RATES, FEE_MULTIPLIER, calculate_grant_cost, get_sol_price_usd, usd_to_sol
 from src.features.grants.solana_client import SolanaClient, is_valid_solana_address
 
@@ -237,6 +236,40 @@ class GrantsCog(commands.Cog):
         if processed:
             logger.info(f"GrantsCog: processed {processed} missed thread(s) on startup")
 
+    # ========== Admin Review ==========
+
+    async def _handle_admin_review(self, thread: discord.Thread, grant: dict, admin_message: str):
+        """Route admin's natural-language reply through LLM to interpret their decision."""
+        thread_id = thread.id
+
+        # Gather full thread conversation for context
+        messages = []
+        async for msg in thread.history(limit=100, oldest_first=True):
+            prefix = "[Reviewer]" if msg.author.bot else "[Applicant]" if msg.author.id == grant['applicant_id'] else "[Admin]"
+            messages.append(f"{prefix}: {msg.content}")
+        thread_content = f"**{thread.name}**\n\n" + "\n\n".join(messages)
+
+        # Get original LLM recommendation if available
+        llm_recommendation = None
+        if grant.get('llm_assessment'):
+            try:
+                llm_recommendation = json.loads(grant['llm_assessment'])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        assessment = await interpret_admin_decision(
+            self.claude_client, thread_content, admin_message,
+            llm_recommendation=llm_recommendation,
+        )
+
+        # interpret_admin_decision returns needs_review if admin intent was unclear —
+        # in that case just post the response as a message and keep the thread open
+        if assessment['decision'] == 'needs_review':
+            await thread.send(assessment['response'])
+            return
+
+        await self._handle_assessment(thread, assessment)
+
     # ========== Listeners ==========
 
     @commands.Cog.listener()
@@ -285,6 +318,21 @@ class GrantsCog(commands.Cog):
         thread_id = channel.id
         grant = self.db.get_grant_by_thread(thread_id)
         if not grant:
+            return
+
+        # Admin replies — interpret decision for needs_review grants
+        if self.admin_id and message.author.id == self.admin_id:
+            if grant['status'] == 'needs_review':
+                if thread_id in self._processing_threads:
+                    return
+                self._processing_threads.add(thread_id)
+                try:
+                    await self._handle_admin_review(channel, grant, message.content)
+                except Exception as e:
+                    logger.error(f"GrantsCog: admin review error for thread {thread_id}: {e}", exc_info=True)
+                    await channel.send(f"Error processing review: {e}")
+                finally:
+                    self._processing_threads.discard(thread_id)
             return
 
         # Only respond to the original applicant

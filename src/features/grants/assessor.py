@@ -94,6 +94,102 @@ def _validate(result: dict) -> str | None:
     return None
 
 
+ADMIN_REVIEW_PROMPT = """You are processing an admin's decision on a grant application that was flagged for manual review.
+
+The admin has replied in the grant thread. Interpret their message and return a final decision.
+
+## Available GPU Types and Rates
+{gpu_info}
+
+## Fee Structure
+All grants include a 10% fee buffer. So 20hrs of H100 = 20 × $2.50 × 1.1 = $55.00.
+
+## Budget Cap
+Maximum grant: ${max_grant_usd:.0f} USD.
+
+## How to interpret the admin's message
+- If the admin approves (e.g. "looks good", "approve", "yes", "give them $50"), return decision "approved" with appropriate gpu_type and recommended_hours.
+- If the admin specifies a dollar amount (e.g. "$50", "give them 50 bucks"), pick the cheapest GPU and calculate the hours that fit within that budget (including the 10% fee). Round hours to nearest whole number.
+- If the admin specifies GPU and/or hours, use those.
+- If the admin approves without specifics, use the original LLM recommendation if one was provided.
+- If the admin rejects (e.g. "no", "reject", "not enough detail"), return decision "rejected".
+- If the admin asks a question or their intent is unclear, return decision "needs_review" — this keeps the thread open for further discussion.
+- The "response" field is the message shown to the applicant. For approvals, be congratulatory. For rejections, be constructive. For needs_review, explain that the review is still in progress.
+
+## Response Format
+Return ONLY valid JSON (no markdown, no code fences):
+
+{{"reasoning": "your interpretation of the admin's intent", "decision": "approved" | "rejected" | "needs_review", "response": "message to show the applicant", "gpu_type": "H100_80GB" | "H200" | "B200" | null, "recommended_hours": <number or null>}}"""
+
+
+def _build_admin_review_prompt() -> str:
+    gpu_info = '\n'.join(f'- {name}: ${rate:.2f}/hr' for name, rate in GPU_RATES.items())
+    return ADMIN_REVIEW_PROMPT.format(gpu_info=gpu_info, max_grant_usd=MAX_GRANT_USD)
+
+
+async def interpret_admin_decision(claude_client, thread_content: str, admin_message: str,
+                                   llm_recommendation: dict | None = None) -> dict:
+    """Interpret an admin's natural-language reply on a needs_review grant.
+
+    Returns:
+        dict with keys: reasoning, decision, response, gpu_type, recommended_hours
+
+    Raises:
+        RuntimeError if all attempts fail
+    """
+    system_prompt = _build_admin_review_prompt()
+
+    user_content = f"## Original Application\n\n{thread_content}"
+
+    if llm_recommendation:
+        user_content += (
+            f"\n\n## Original LLM Recommendation\n"
+            f"- Decision: {llm_recommendation.get('decision', 'needs_review')}\n"
+            f"- GPU: {llm_recommendation.get('gpu_type', 'not specified')}\n"
+            f"- Hours: {llm_recommendation.get('recommended_hours', 'not specified')}\n"
+            f"- Reasoning: {llm_recommendation.get('reasoning', 'none')}"
+        )
+
+    user_content += f"\n\n## Admin's Reply\n\n{admin_message}"
+
+    messages = [{'role': 'user', 'content': user_content}]
+
+    max_attempts = 3
+    last_error = None
+
+    for attempt in range(max_attempts):
+        response_text = await claude_client.generate_chat_completion(
+            model='claude-sonnet-4-20250514',
+            system_prompt=system_prompt,
+            messages=messages,
+            max_tokens=1024,
+            temperature=0.2,
+        )
+
+        try:
+            result = _parse_json(response_text)
+        except json.JSONDecodeError as e:
+            last_error = f"Invalid JSON: {e}"
+            logger.warning(f"Admin review interpreter attempt {attempt + 1}: {last_error}")
+            messages.append({'role': 'assistant', 'content': response_text})
+            messages.append({'role': 'user', 'content': f"Your response was not valid JSON. Error: {e}\n\nPlease return ONLY valid JSON."})
+            continue
+
+        # Use same validation — but allow needs_review to come back (admin was unclear)
+        validation_error = _validate(result)
+        if validation_error:
+            last_error = validation_error
+            logger.warning(f"Admin review interpreter attempt {attempt + 1}: {last_error}")
+            messages.append({'role': 'assistant', 'content': response_text})
+            messages.append({'role': 'user', 'content': f"Validation error: {validation_error}\n\nPlease fix and return valid JSON."})
+            continue
+
+        logger.info(f"Admin review interpretation succeeded on attempt {attempt + 1}: decision={result['decision']}")
+        return result
+
+    raise RuntimeError(f"Admin review interpretation failed after {max_attempts} attempts. Last error: {last_error}")
+
+
 async def assess_application(claude_client, thread_content: str, grant_history: list | None = None,
                              engagement: dict | None = None) -> dict:
     """Assess a grant application using Claude with structured output and retry.
