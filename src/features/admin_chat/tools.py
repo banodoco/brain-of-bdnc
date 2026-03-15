@@ -8,7 +8,8 @@ import re
 import sys
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
 import discord
 from dotenv import load_dotenv
 
@@ -62,6 +63,75 @@ TOOLS = [
         }
     },
     {
+        "name": "find_messages",
+        "description": "Search and browse Discord messages. Combine any filters. Use for ALL message finding: top posts, user posts, content search, channel browsing.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Text search (case-insensitive)"
+                },
+                "username": {
+                    "type": "string",
+                    "description": "Filter by user (partial match)"
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Filter to channel/thread"
+                },
+                "min_reactions": {
+                    "type": "integer",
+                    "description": "Min reactions (default 0)"
+                },
+                "has_media": {
+                    "type": "boolean",
+                    "description": "Only posts with attachments"
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "Days back (default 7)"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default 20, max 50)"
+                },
+                "sort": {
+                    "type": "string",
+                    "enum": ["reactions", "date"],
+                    "description": "Sort order (default: reactions)"
+                },
+                "refresh_media": {
+                    "type": "boolean",
+                    "description": "Get fresh media URLs for up to 5 results (use for showing images/videos)"
+                },
+                "live": {
+                    "type": "boolean",
+                    "description": "Use live Discord API instead of DB (requires channel_id). Good for seeing current state including bot posts."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "inspect_message",
+        "description": "Deep look at one message: full content, reactions with emoji counts, surrounding context, replies, fresh media URLs. Use to drill into a specific post.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message_id": {
+                    "type": "string",
+                    "description": "Discord message ID"
+                },
+                "context_size": {
+                    "type": "integer",
+                    "description": "Number of surrounding messages to include (default 3)"
+                }
+            },
+            "required": ["message_id"]
+        }
+    },
+    {
         "name": "share_to_social",
         "description": "Share a Discord message to social media (Twitter, Instagram, TikTok, YouTube). Uses the existing sharing pipeline. Respects user opt-out preferences. The message MUST have attachments (images/videos). After sharing, use the reply tool to confirm.",
         "input_schema": {
@@ -80,76 +150,6 @@ TOOLS = [
         }
     },
     {
-        "name": "get_top_messages",
-        "description": "Get the most popular messages by reaction count. Can search server-wide or in a specific channel. Great for finding content to share. Returns message IDs you can use with share_to_social.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "channel_id": {
-                    "type": "string",
-                    "description": "Filter to a specific channel ID (optional - if omitted, searches server-wide)"
-                },
-                "days": {
-                    "type": "integer",
-                    "description": "How many days back to search (default 7)"
-                },
-                "min_reactions": {
-                    "type": "integer",
-                    "description": "Minimum reaction count to include (default 3)"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max results to return (default 20, max 50)"
-                },
-                "has_media": {
-                    "type": "boolean",
-                    "description": "Only return messages with attachments/media (default false)"
-                }
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "search_content",
-        "description": "Search messages by text content. Useful for finding specific topics, LoRAs, tools, etc.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Text to search for (case-insensitive)"
-                },
-                "days": {
-                    "type": "integer",
-                    "description": "How many days back to search (default 7)"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max results to return (default 20)"
-                }
-            },
-            "required": ["query"]
-        }
-    },
-    {
-        "name": "get_message_context",
-        "description": "Get a message with its full context: the message itself, all replies to it, and surrounding messages. Use this to understand community response to a post.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "message_id": {
-                    "type": "string",
-                    "description": "Discord message ID"
-                },
-                "surrounding": {
-                    "type": "integer",
-                    "description": "Number of surrounding messages to include (default 5)"
-                }
-            },
-            "required": ["message_id"]
-        }
-    },
-    {
         "name": "get_active_channels",
         "description": "List channels that have been active recently, sorted by message count. Use this to find where the activity is.",
         "input_schema": {
@@ -158,6 +158,24 @@ TOOLS = [
                 "days": {
                     "type": "integer",
                     "description": "How many days back to check (default 7)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "get_daily_summaries",
+        "description": "Get the bot-generated daily summaries for active channels. Great for getting a high-level overview of what happened without reading every message.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "How many days of summaries to fetch (default 7)"
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Optional: filter to a specific channel"
                 }
             },
             "required": []
@@ -191,17 +209,101 @@ TOOLS = [
         }
     },
     {
-        "name": "refresh_media",
-        "description": "Get fresh media URLs for a message. Discord CDN URLs expire, so use this to get current downloadable/viewable URLs for attachments. Returns URLs you can include in replies.",
+        "name": "send_message",
+        "description": "Send a message to a Discord channel as the bot. Can optionally reply to a specific message.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "message_id": {
+                "channel_id": {
                     "type": "string",
-                    "description": "Discord message ID"
+                    "description": "Discord channel or thread ID to send to"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Message content to send"
+                },
+                "reply_to": {
+                    "type": "string",
+                    "description": "Optional: message ID to reply to"
                 }
             },
-            "required": ["message_id"]
+            "required": ["channel_id", "content"]
+        }
+    },
+    {
+        "name": "edit_message",
+        "description": "Edit a bot message in a Discord channel. Can only edit messages sent by the bot.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID"
+                },
+                "message_id": {
+                    "type": "string",
+                    "description": "Message ID to edit"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "New message content"
+                }
+            },
+            "required": ["channel_id", "message_id", "content"]
+        }
+    },
+    {
+        "name": "delete_message",
+        "description": "Delete a bot message from a Discord channel. Can only delete messages sent by the bot.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID"
+                },
+                "message_id": {
+                    "type": "string",
+                    "description": "Message ID to delete"
+                }
+            },
+            "required": ["channel_id", "message_id"]
+        }
+    },
+    {
+        "name": "upload_file",
+        "description": "Upload a file to a Discord channel. Use for sharing videos, images, or other files. The file must be accessible on the local filesystem.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID"
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "Local file path to upload"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Optional message to send with the file"
+                }
+            },
+            "required": ["channel_id", "file_path"]
+        }
+    },
+    {
+        "name": "resolve_user",
+        "description": "Resolve a username to a Discord user ID (for mentions). Also returns their display name.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "username": {
+                    "type": "string",
+                    "description": "Username to look up"
+                }
+            },
+            "required": ["username"]
         }
     }
 ]
@@ -231,12 +333,47 @@ def format_message_for_llm(msg: Dict, include_link: bool = True) -> Dict:
         "reactions": msg.get('reaction_count', 0),
         "has_media": bool(msg.get('attachments') or msg.get('attachment_urls')),
         "date": msg.get('created_at', '')[:10] if msg.get('created_at') else None,
+        "channel_id": str(msg.get('channel_id', '')),
     }
     if msg.get('channel_name'):
         result["channel"] = msg.get('channel_name')
+    if msg.get('media_urls'):
+        result["media_urls"] = msg['media_urls']
     if include_link:
         result["link"] = f"https://discord.com/channels/{GUILD_ID}/{msg.get('channel_id')}/{msg.get('message_id')}"
     return result
+
+
+def _build_summary(formatted: List[Dict], header: str, media_urls_map: Dict[str, str] = None) -> str:
+    """Build a pre-formatted summary string from formatted messages.
+
+    Uses ---SPLIT--- markers so the cog sends each entry as a separate message
+    for proper media embedding.
+    """
+    media_urls_map = media_urls_map or {}
+    SPLIT_MARKER = "\n---SPLIT---\n"
+
+    parts = [header]
+
+    for i, msg in enumerate(formatted, 1):
+        content_preview = msg.get('content', '')[:100]
+        if len(msg.get('content', '')) > 100:
+            content_preview += "..."
+
+        media_url = media_urls_map.get(msg['message_id'])
+        channel_tag = f" in #{msg['channel']}" if msg.get('channel') else ""
+
+        entry = f"**{i}. {msg['author']}** — {msg['reactions']} reactions{channel_tag}"
+        if content_preview:
+            entry += f"\n> {content_preview}"
+        entry += f"\n`{msg['message_id']}`"
+
+        if media_url:
+            entry += f"\n{media_url}"
+
+        parts.append(entry)
+
+    return SPLIT_MARKER.join(parts)
 
 
 # ========== Tool Executors ==========
@@ -246,23 +383,23 @@ def execute_reply(params: Dict[str, Any]) -> Dict[str, Any]:
     # Support both single message and array of messages
     messages = params.get('messages', [])
     single_message = params.get('message', '')
-    
+
     # Handle case where messages is passed as a string instead of array
     if isinstance(messages, str):
         messages = [messages]
-    
+
     if single_message and not messages:
         messages = [single_message]
-    
+
     if not messages:
         return {"success": False, "error": "No message provided"}
-    
+
     # Filter out empty messages
     messages = [m for m in messages if m and m.strip()]
-    
+
     if not messages:
         return {"success": False, "error": "All messages were empty"}
-    
+
     return {
         "success": True,
         "messages": messages  # Array of messages to send
@@ -280,16 +417,318 @@ def execute_end_turn(params: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = None) -> Dict[str, Any]:
+    """Unified message search. Builds one query with all filters, or uses live Discord API."""
+    from scripts.weekly_digest import get_client, get_user_by_name, _enrich_messages
+    from src.common.discord_utils import refresh_media_url
+
+    query = params.get('query', '')
+    username = params.get('username', '')
+    channel_id = params.get('channel_id', '')
+    min_reactions = params.get('min_reactions', 0)
+    has_media = params.get('has_media', False)
+    days = params.get('days', 7)
+    limit = min(params.get('limit', 20), 50)
+    sort = params.get('sort', 'reactions')
+    do_refresh_media = params.get('refresh_media', False)
+    live = params.get('live', False)
+
+    # Resolve username to author_id upfront (used by both paths)
+    author_id = None
+    resolved_username = None
+    if username:
+        user_data = get_user_by_name(username)
+        if not user_data:
+            return {"success": False, "error": f"User '{username}' not found"}
+        author_id = user_data['member_id']
+        resolved_username = user_data.get('username', username)
+
+    try:
+        # ---- Live path: use Discord API directly ----
+        if live:
+            if not channel_id:
+                return {"success": False, "error": "channel_id is required when live=true"}
+            if not bot:
+                return {"success": False, "error": "Bot not available for live queries"}
+
+            channel = bot.get_channel(int(channel_id))
+            if not channel:
+                channel = await bot.fetch_channel(int(channel_id))
+
+            messages = []
+            # When sorting by reactions, collect more candidates since best ones may be older
+            need_all = (sort == 'reactions')
+            fetch_limit = limit * 3 if need_all else limit * 2
+            async for msg in channel.history(limit=min(fetch_limit, 500)):
+                if author_id and msg.author.id != author_id:
+                    continue
+                if query and query.lower() not in (msg.content or '').lower():
+                    continue
+                total_reactions = sum(r.count for r in msg.reactions) if msg.reactions else 0
+                if min_reactions and total_reactions < min_reactions:
+                    continue
+                if has_media and not msg.attachments:
+                    continue
+
+                # Build a dict that matches the DB shape so format_message_for_llm works
+                messages.append({
+                    "message_id": msg.id,
+                    "channel_id": int(channel_id),
+                    "author_name": msg.author.display_name,
+                    "content": (msg.content or '')[:400],
+                    "reaction_count": total_reactions,
+                    "attachments": [a.url for a in msg.attachments] if msg.attachments else [],
+                    "media_urls": [a.url for a in msg.attachments] if msg.attachments else None,
+                    "created_at": msg.created_at.isoformat(),
+                })
+                # For date sort, stop early once we have enough
+                if not need_all and len(messages) >= limit:
+                    break
+
+            # Sort and trim
+            if sort == 'reactions':
+                messages.sort(key=lambda m: m['reaction_count'], reverse=True)
+            messages = messages[:limit]
+
+        # ---- DB path: build single Supabase query ----
+        else:
+            client = get_client()
+            cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+
+            # Get channel names for enrichment + NSFW filtering
+            channels_result = client.table('discord_channels').select('channel_id, channel_name, nsfw').execute()
+            safe_channels = {ch['channel_id']: ch['channel_name'] for ch in channels_result.data if not ch.get('nsfw')}
+
+            # Build query — chain all applicable filters
+            MSG_SELECT = 'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
+            q = client.table('discord_messages').select(MSG_SELECT).gte('created_at', cutoff)
+
+            # Only search in safe (non-NSFW) channels
+            if channel_id:
+                q = q.eq('channel_id', int(channel_id))
+            else:
+                q = q.in_('channel_id', list(safe_channels.keys()))
+
+            if author_id:
+                q = q.eq('author_id', author_id)
+            if query:
+                q = q.ilike('content', f'%{query}%')
+            if min_reactions:
+                q = q.gte('reaction_count', min_reactions)
+            if has_media:
+                q = q.neq('attachments', [])
+
+            # Sort and limit at the DB level
+            if sort == 'date':
+                q = q.order('created_at', desc=True)
+            else:
+                q = q.order('reaction_count', desc=True)
+            q = q.limit(limit)
+
+            messages = q.execute().data
+            _enrich_messages(messages, channel_names=safe_channels)
+
+        # ---- Common output for both paths ----
+        if not messages:
+            desc_parts = []
+            if query:
+                desc_parts.append(f"matching '{query}'")
+            if resolved_username:
+                desc_parts.append(f"from {resolved_username}")
+            if min_reactions:
+                desc_parts.append(f"with {min_reactions}+ reactions")
+            desc = " ".join(desc_parts) or "matching your filters"
+            return {
+                "success": True,
+                "count": 0,
+                "summary": f"No messages found {desc} in the last {days} days.",
+                "messages": []
+            }
+
+        # Refresh media URLs for top results if requested
+        media_urls_map = {}
+        if do_refresh_media and bot:
+            for msg in messages[:5]:
+                try:
+                    ch_id = msg.get('channel_id')
+                    m_id = msg.get('message_id')
+                    result = await refresh_media_url(bot, ch_id, m_id, logger)
+                    if result and result.get('success'):
+                        urls = [att['url'] for att in result.get('attachments', []) if att.get('url')]
+                        if urls:
+                            media_urls_map[str(m_id)] = urls[0]
+                            msg['media_urls'] = urls
+                except Exception as e:
+                    logger.debug(f"[AdminChat] Could not refresh media for {msg.get('message_id')}: {e}")
+
+        formatted = [format_message_for_llm(msg) for msg in messages]
+
+        # Build header
+        header_parts = ["**Found ", str(len(formatted)), " messages"]
+        if query:
+            header_parts.append(f" matching '{query}'")
+        if resolved_username:
+            header_parts.append(f" from {resolved_username}")
+        if live:
+            header_parts.append(f" in <#{channel_id}>")
+        header_parts.append(":**")
+
+        summary = _build_summary(formatted, "".join(header_parts), media_urls_map)
+
+        return {
+            "success": True,
+            "count": len(formatted),
+            "summary": summary,
+            "messages": formatted
+        }
+
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in find_messages: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_inspect_message(params: Dict[str, Any], bot: discord.Client = None) -> Dict[str, Any]:
+    """Deep look at one message: content, reactions, context, replies, fresh media."""
+    from scripts.weekly_digest import get_message_context, get_message_by_id
+    from src.common.discord_utils import refresh_media_url
+
+    message_id = params.get('message_id', '')
+    context_size = params.get('context_size', 3)
+
+    if not message_id:
+        return {"success": False, "error": "message_id is required"}
+
+    try:
+        # Get message + context from DB
+        context = get_message_context(int(message_id), surrounding=context_size)
+
+        if context.get('error'):
+            return {"success": False, "error": context['error']}
+
+        target = context.get('target_message', {})
+        replies = context.get('replies', [])
+        before = context.get('before', [])
+        after = context.get('after', [])
+
+        # Try to get live data from Discord API (fresh URLs + reaction detail)
+        live_reactions = []
+        media_urls = []
+        channel_id = target.get('channel_id')
+
+        if bot and channel_id:
+            try:
+                channel = bot.get_channel(channel_id)
+                if not channel:
+                    channel = await bot.fetch_channel(channel_id)
+
+                # Handle ForumChannel
+                if isinstance(channel, discord.ForumChannel):
+                    try:
+                        thread = await bot.fetch_channel(int(message_id))
+                        if isinstance(thread, discord.Thread):
+                            channel = thread
+                    except Exception:
+                        pass
+
+                if hasattr(channel, 'fetch_message'):
+                    live_msg = await channel.fetch_message(int(message_id))
+
+                    # Fresh reaction detail
+                    for r in live_msg.reactions:
+                        live_reactions.append({
+                            "emoji": str(r.emoji),
+                            "count": r.count
+                        })
+
+                    # Fresh attachment URLs
+                    for att in live_msg.attachments:
+                        media_urls.append({
+                            "filename": att.filename,
+                            "url": att.url,
+                            "content_type": att.content_type,
+                        })
+            except Exception as e:
+                logger.debug(f"[AdminChat] Could not fetch live message {message_id}: {e}")
+
+        # Format target
+        formatted_target = format_message_for_llm(target, include_link=True)
+        # Override with full content (not truncated)
+        formatted_target["content"] = (target.get('content', '') or '')
+
+        # Format replies
+        formatted_replies = [
+            {
+                "author": r.get('author_name', 'Unknown'),
+                "content": (r.get('content', '') or '')[:200],
+                "message_id": str(r.get('message_id', '')),
+                "reactions": r.get('reaction_count', 0),
+            }
+            for r in replies[:10]
+        ]
+
+        # Format surrounding context
+        formatted_before = [
+            {"author": m.get('author_name', 'Unknown'), "content": (m.get('content', '') or '')[:150]}
+            for m in before
+        ]
+        formatted_after = [
+            {"author": m.get('author_name', 'Unknown'), "content": (m.get('content', '') or '')[:150]}
+            for m in after
+        ]
+
+        # Build summary using ---SPLIT--- so the cog sends media URLs as separate messages
+        SPLIT = "\n---SPLIT---\n"
+        total_reactions = sum(r['count'] for r in live_reactions) if live_reactions else target.get('reaction_count', 0)
+
+        # First part: message info
+        info_lines = [f"**Message by {formatted_target['author']}** — {total_reactions} reactions"]
+        if formatted_target['content']:
+            info_lines.append(f"> {formatted_target['content'][:500]}")
+        else:
+            info_lines.append("*(no text content)*")
+        info_lines.append(formatted_target.get('link', ''))
+        if live_reactions:
+            reaction_str = "  ".join(f"{r['emoji']} {r['count']}" for r in live_reactions)
+            info_lines.append(reaction_str)
+        if formatted_replies:
+            info_lines.append(f"\n**Replies** ({len(formatted_replies)})")
+            for r in formatted_replies[:5]:
+                reply_preview = r['content'][:100] + ("..." if len(r['content']) > 100 else "")
+                info_lines.append(f"> **{r['author']}:** {reply_preview}")
+
+        parts = ["\n".join(info_lines)]
+
+        # Each media URL as its own split part so it embeds properly
+        for m in media_urls:
+            parts.append(m['url'])
+
+        return {
+            "success": True,
+            "message": formatted_target,
+            "reactions": live_reactions,
+            "media": media_urls,
+            "replies": formatted_replies,
+            "reply_count": len(replies),
+            "context_before": formatted_before,
+            "context_after": formatted_after,
+            "summary": SPLIT.join(parts),
+        }
+
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in inspect_message: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 async def execute_share_to_social(
     bot: discord.Client,
     sharer,
     params: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Execute the share_to_social tool using existing sharer.finalize_sharing()."""
-    
+
     message_link = params.get('message_link', '')
     message_id = params.get('message_id', '')
-    
+
     # Parse link or use direct ID
     if message_link:
         parsed = parse_message_link(message_link)
@@ -307,21 +746,21 @@ async def execute_share_to_social(
         message_id = int(message_id)
     else:
         return {"success": False, "error": "Provide either message_link or message_id"}
-    
+
     try:
         channel = bot.get_channel(channel_id)
         if not channel:
             return {"success": False, "error": f"Could not find channel {channel_id}"}
-        
+
         message = await channel.fetch_message(message_id)
         if not message:
             return {"success": False, "error": f"Could not find message {message_id}"}
-        
+
         if not message.attachments:
             return {"success": False, "error": f"Message has no attachments to share. Content: '{message.content[:100]}...'"}
-        
+
         logger.info(f"[AdminChat] Triggering share for message {message_id} by user {message.author.id}")
-        
+
         # Use existing sharing path
         await sharer.finalize_sharing(
             user_id=message.author.id,
@@ -329,12 +768,12 @@ async def execute_share_to_social(
             channel_id=channel.id,
             summary_channel=None
         )
-        
+
         return {
             "success": True,
             "message": f"Initiated sharing for message {message_id} by {message.author.display_name}. Will post to Twitter/Instagram/TikTok/YouTube."
         }
-        
+
     except discord.NotFound:
         return {"success": False, "error": f"Message {message_id} not found"}
     except discord.Forbidden:
@@ -344,193 +783,15 @@ async def execute_share_to_social(
         return {"success": False, "error": str(e)}
 
 
-async def execute_get_top_messages(params: Dict[str, Any], bot: discord.Client = None) -> Dict[str, Any]:
-    """Get top messages by reaction count."""
-    from scripts.weekly_digest import get_top_messages_server_wide, get_top_messages, get_messages_with_media
-    from src.common.discord_utils import refresh_media_url
-    
-    channel_id = params.get('channel_id')
-    days = params.get('days', 7)
-    min_reactions = params.get('min_reactions', 3)
-    limit = min(params.get('limit', 20), 50)
-    has_media = params.get('has_media', False)
-    
-    try:
-        if has_media:
-            # Use media-specific function
-            if channel_id:
-                messages = get_messages_with_media(channel_id=int(channel_id), days=days, min_reactions=min_reactions, limit=limit)
-            else:
-                messages = get_messages_with_media(days=days, min_reactions=min_reactions, limit=limit)
-        elif channel_id:
-            messages = get_top_messages(int(channel_id), days=days, min_reactions=min_reactions, limit=limit)
-        else:
-            messages = get_top_messages_server_wide(days=days, min_reactions=min_reactions, limit=limit)
-        
-        if not messages:
-            return {
-                "success": True,
-                "count": 0,
-                "summary": f"No messages found with {min_reactions}+ reactions in the last {days} days.",
-                "messages": []
-            }
-        
-        # Format for LLM
-        formatted = [format_message_for_llm(msg) for msg in messages[:limit]]
-        
-        # Automatically fetch fresh media URLs for top 5 results if has_media requested
-        media_urls_map = {}
-        if has_media and bot:
-            for msg in messages[:5]:  # Top 5 only to limit API calls
-                try:
-                    result = await refresh_media_url(bot, msg['channel_id'], msg['message_id'], logger)
-                    if result and result.get('success'):
-                        urls = [att.get('url') for att in result.get('attachments', []) if att.get('url')]
-                        if urls:
-                            media_urls_map[str(msg['message_id'])] = urls[0]  # First attachment URL
-                except Exception as e:
-                    logger.debug(f"[AdminChat] Could not refresh media for {msg['message_id']}: {e}")
-        
-        # Create formatted summary with ---SPLIT--- delimiters
-        # The cog will split on this and send each as separate message for proper media embedding
-        SPLIT_MARKER = "\n---SPLIT---\n"
-        
-        parts = [f"**Found {len(formatted)} messages:**"]
-        
-        for i, msg in enumerate(formatted, 1):
-            content_preview = msg.get('content', '')[:100]
-            if len(msg.get('content', '')) > 100:
-                content_preview += "..."
-            
-            media_url = media_urls_map.get(msg['message_id'])
-            
-            entry = f"**{i}. {msg['author']}** ({msg['reactions']} reactions)"
-            if content_preview:
-                entry += f"\n{content_preview}"
-            entry += f"\nID: `{msg['message_id']}`"
-            
-            # Add URL on its own line if we have it
-            if media_url:
-                entry += f"\n{media_url}"
-            
-            parts.append(entry)
-        
-        # Join with split markers - cog will send each part as separate message
-        summary = SPLIT_MARKER.join(parts)
-        
-        return {
-            "success": True,
-            "count": len(formatted),
-            "summary": summary,
-            "messages": formatted
-        }
-        
-    except Exception as e:
-        logger.error(f"[AdminChat] Error in get_top_messages: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-
-async def execute_search_content(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Search messages by content."""
-    from scripts.weekly_digest import search_messages_by_content
-    
-    query = params.get('query', '')
-    days = params.get('days', 7)
-    limit = min(params.get('limit', 20), 50)
-    
-    if not query:
-        return {"success": False, "error": "query is required"}
-    
-    try:
-        messages = search_messages_by_content(query, days=days, limit=limit)
-        
-        if not messages:
-            return {
-                "success": True,
-                "query": query,
-                "count": 0,
-                "summary": f"No messages found matching '{query}' in the last {days} days.",
-                "messages": []
-            }
-        
-        # Format for LLM
-        formatted = [format_message_for_llm(msg) for msg in messages[:limit]]
-        
-        # Create pre-formatted summary
-        summary_lines = [f"Found {len(formatted)} messages matching '{query}':\n"]
-        for i, msg in enumerate(formatted, 1):
-            media_tag = " 📷" if msg.get('has_media') else ""
-            content_preview = msg.get('content', '')[:80]
-            if len(msg.get('content', '')) > 80:
-                content_preview += "..."
-            summary_lines.append(
-                f"**{i}. {msg['author']}** ({msg['reactions']} reactions{media_tag})\n"
-                f"   {content_preview}\n"
-                f"   ID: `{msg['message_id']}`"
-            )
-        
-        return {
-            "success": True,
-            "query": query,
-            "count": len(formatted),
-            "summary": "\n".join(summary_lines),
-            "messages": formatted
-        }
-        
-    except Exception as e:
-        logger.error(f"[AdminChat] Error in search_content: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-
-async def execute_get_message_context(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Get message with context (replies, surrounding)."""
-    from scripts.weekly_digest import get_message_context
-    
-    message_id = params.get('message_id', '')
-    surrounding = params.get('surrounding', 5)
-    
-    if not message_id:
-        return {"success": False, "error": "message_id is required"}
-    
-    try:
-        context = get_message_context(int(message_id), surrounding=surrounding)
-        
-        if context.get('error'):
-            return {"success": False, "error": context['error']}
-        
-        # Format the target message
-        target = context.get('target_message', {})
-        formatted_target = format_message_for_llm(target, include_link=True) if target else None
-        
-        # Format replies
-        replies = context.get('replies', [])
-        formatted_replies = [
-            {"author": r.get('author_name', 'Unknown'), "content": (r.get('content', '') or '')[:200]}
-            for r in replies[:10]  # Limit replies
-        ]
-        
-        return {
-            "success": True,
-            "target_message": formatted_target,
-            "reply_count": len(replies),
-            "replies": formatted_replies,
-            "has_community_response": len(replies) > 0
-        }
-        
-    except Exception as e:
-        logger.error(f"[AdminChat] Error in get_message_context: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
-
-
 async def execute_get_active_channels(params: Dict[str, Any]) -> Dict[str, Any]:
     """Get list of active channels."""
     from scripts.weekly_digest import get_active_channels
-    
+
     days = params.get('days', 7)
-    
+
     try:
         channels = get_active_channels(days=days)
-        
+
         # Format for LLM (top 20)
         formatted = [
             {
@@ -540,27 +801,70 @@ async def execute_get_active_channels(params: Dict[str, Any]) -> Dict[str, Any]:
             }
             for ch in channels[:20]
         ]
-        
+
         return {
             "success": True,
             "count": len(formatted),
             "channels": formatted
         }
-        
+
     except Exception as e:
         logger.error(f"[AdminChat] Error in get_active_channels: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 
+async def execute_get_daily_summaries(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Get daily summaries."""
+    from collections import defaultdict
+    from supabase import create_client as sc
+
+    days = params.get('days', 7)
+    channel_id = params.get('channel_id')
+
+    try:
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_SERVICE_KEY")
+        client = sc(url, key)
+        cutoff = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
+
+        q = client.table('daily_summaries').select('date, channel_id, short_summary') \
+            .gte('date', cutoff).order('date', desc=True)
+        if channel_id:
+            q = q.eq('channel_id', str(channel_id))
+        rows = q.execute().data
+
+        by_date = defaultdict(list)
+        for r in rows:
+            by_date[r['date']].append(r)
+
+        summary_lines = []
+        for date in sorted(by_date.keys(), reverse=True):
+            items = by_date[date]
+            summary_lines.append(f"\n**{date}** ({len(items)} channels)")
+            for item in items:
+                s = (item.get('short_summary') or '')[:300]
+                summary_lines.append(f"  [{item['channel_id']}] {s}")
+
+        return {
+            "success": True,
+            "days": days,
+            "summary": "\n".join(summary_lines),
+            "total_summaries": len(rows)
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in get_daily_summaries: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 async def execute_get_member_info(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
     """Get member information from the database."""
-    
+
     user_id = params.get('user_id')
     username = params.get('username')
-    
+
     if not user_id and not username:
         return {"success": False, "error": "Provide either user_id or username"}
-    
+
     try:
         if user_id:
             member = db_handler.get_member(int(user_id))
@@ -579,10 +883,10 @@ async def execute_get_member_info(db_handler, params: Dict[str, Any]) -> Dict[st
                 member = result.data[0]
             else:
                 member = None
-        
+
         if not member:
             return {"success": False, "error": f"No member found"}
-        
+
         return {
             "success": True,
             "member": {
@@ -596,7 +900,7 @@ async def execute_get_member_info(db_handler, params: Dict[str, Any]) -> Dict[st
                 "reddit_handle": member.get('reddit_handle'),
             }
         }
-        
+
     except Exception as e:
         logger.error(f"[AdminChat] Error in get_member_info: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
@@ -605,12 +909,12 @@ async def execute_get_member_info(db_handler, params: Dict[str, Any]) -> Dict[st
 async def execute_get_bot_status(bot: discord.Client) -> Dict[str, Any]:
     """Get bot status information."""
     import time
-    
+
     try:
         uptime_seconds = None
         if hasattr(bot, 'start_time'):
             uptime_seconds = int(time.time() - bot.start_time)
-        
+
         return {
             "success": True,
             "status": {
@@ -621,64 +925,144 @@ async def execute_get_bot_status(bot: discord.Client) -> Dict[str, Any]:
                 "guilds": len(bot.guilds),
             }
         }
-        
+
     except Exception as e:
         logger.error(f"[AdminChat] Error in get_bot_status: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 
-async def execute_refresh_media(bot: discord.Client, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Refresh media URLs for a message using Discord API."""
-    from src.common.discord_utils import refresh_media_url
-    from scripts.weekly_digest import get_message_by_id
-    
-    message_id = params.get('message_id', '')
-    
-    if not message_id:
-        return {"success": False, "error": "message_id is required"}
-    
+async def execute_send_message(bot: discord.Client, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Send a message to a channel, optionally as a reply."""
+    channel_id = params.get('channel_id', '')
+    content = params.get('content', '')
+    reply_to = params.get('reply_to')
+
+    if not channel_id or not content:
+        return {"success": False, "error": "channel_id and content are required"}
+
     try:
-        # First get message from DB to find channel
-        msg_data = get_message_by_id(int(message_id))
-        if not msg_data:
-            return {"success": False, "error": f"Message {message_id} not found in database"}
-        
-        channel_id = msg_data.get('channel_id')
-        if not channel_id:
-            return {"success": False, "error": "Could not determine channel ID"}
-        
-        # Use discord_utils to refresh
-        result = await refresh_media_url(bot, channel_id, int(message_id), logger)
-        
-        if not result or not result.get('success'):
-            return {"success": False, "error": "Could not refresh media URLs (message may be deleted)"}
-        
-        attachments = result.get('attachments', [])
-        
-        # Format for LLM - just the URLs
-        media_urls = []
-        for att in attachments:
-            url = att.get('url', '')
-            filename = att.get('filename', 'unknown')
-            content_type = att.get('content_type', '')
-            media_urls.append({
-                "filename": filename,
-                "url": url,
-                "type": content_type
-            })
-        
+        channel = bot.get_channel(int(channel_id))
+        if not channel:
+            channel = await bot.fetch_channel(int(channel_id))
+
+        kwargs = {}
+        if reply_to:
+            try:
+                ref_msg = await channel.fetch_message(int(reply_to))
+                kwargs['reference'] = ref_msg
+            except Exception:
+                pass  # Send without reply if message not found
+
+        msg = await channel.send(content, **kwargs)
         return {
             "success": True,
-            "message_id": message_id,
-            "author": msg_data.get('author_name', 'Unknown'),
-            "content": (msg_data.get('content', '') or '')[:200],
-            "media_count": len(media_urls),
-            "media": media_urls,
-            "link": f"https://discord.com/channels/{GUILD_ID}/{channel_id}/{message_id}"
+            "message_id": str(msg.id),
+            "jump_url": msg.jump_url
         }
-        
     except Exception as e:
-        logger.error(f"[AdminChat] Error in refresh_media: {e}", exc_info=True)
+        logger.error(f"[AdminChat] Error in send_message: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_edit_message(bot: discord.Client, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Edit a bot message."""
+    channel_id = params.get('channel_id', '')
+    message_id = params.get('message_id', '')
+    content = params.get('content', '')
+
+    if not all([channel_id, message_id, content]):
+        return {"success": False, "error": "channel_id, message_id, and content are required"}
+
+    try:
+        channel = bot.get_channel(int(channel_id))
+        if not channel:
+            channel = await bot.fetch_channel(int(channel_id))
+        msg = await channel.fetch_message(int(message_id))
+        if msg.author.id != bot.user.id:
+            return {"success": False, "error": "Can only edit bot's own messages"}
+        await msg.edit(content=content)
+        return {"success": True, "message_id": str(msg.id)}
+    except discord.NotFound:
+        return {"success": False, "error": "Message not found"}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in edit_message: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_delete_message(bot: discord.Client, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Delete a bot message."""
+    channel_id = params.get('channel_id', '')
+    message_id = params.get('message_id', '')
+
+    if not channel_id or not message_id:
+        return {"success": False, "error": "channel_id and message_id are required"}
+
+    try:
+        channel = bot.get_channel(int(channel_id))
+        if not channel:
+            channel = await bot.fetch_channel(int(channel_id))
+        msg = await channel.fetch_message(int(message_id))
+        if msg.author.id != bot.user.id:
+            return {"success": False, "error": "Can only delete bot's own messages"}
+        await msg.delete()
+        return {"success": True}
+    except discord.NotFound:
+        return {"success": False, "error": "Message not found"}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in delete_message: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_upload_file(bot: discord.Client, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Upload a file to a channel."""
+    channel_id = params.get('channel_id', '')
+    file_path = params.get('file_path', '')
+    content = params.get('content', '')
+
+    if not channel_id or not file_path:
+        return {"success": False, "error": "channel_id and file_path are required"}
+
+    if not os.path.exists(file_path):
+        return {"success": False, "error": f"File not found: {file_path}"}
+
+    try:
+        channel = bot.get_channel(int(channel_id))
+        if not channel:
+            channel = await bot.fetch_channel(int(channel_id))
+        file = discord.File(file_path)
+        msg = await channel.send(content=content or None, file=file)
+        urls = [a.url for a in msg.attachments]
+        return {
+            "success": True,
+            "message_id": str(msg.id),
+            "attachment_urls": urls
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in upload_file: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_resolve_user(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve a username to a Discord user ID."""
+    from scripts.weekly_digest import get_user_by_name
+
+    username = params.get('username', '')
+    if not username:
+        return {"success": False, "error": "username is required"}
+
+    try:
+        user_data = get_user_by_name(username)
+        if not user_data:
+            return {"success": False, "error": f"User '{username}' not found"}
+        return {
+            "success": True,
+            "user_id": str(user_data['member_id']),
+            "username": user_data.get('username'),
+            "display_name": user_data.get('global_name') or user_data.get('server_nick'),
+            "mention": f"<@{user_data['member_id']}>"
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in resolve_user: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 
@@ -692,28 +1076,36 @@ async def execute_tool(
     sharer
 ) -> Dict[str, Any]:
     """Execute a tool by name and return the result as a dict."""
-    
+
     logger.info(f"[AdminChat] Executing tool: {tool_name}")
-    
+
     if tool_name == "reply":
         return execute_reply(tool_input)
     elif tool_name == "end_turn":
         return execute_end_turn(tool_input)
+    elif tool_name == "find_messages":
+        return await execute_find_messages(tool_input, bot)
+    elif tool_name == "inspect_message":
+        return await execute_inspect_message(tool_input, bot)
     elif tool_name == "share_to_social":
         return await execute_share_to_social(bot, sharer, tool_input)
-    elif tool_name == "get_top_messages":
-        return await execute_get_top_messages(tool_input, bot)
-    elif tool_name == "search_content":
-        return await execute_search_content(tool_input)
-    elif tool_name == "get_message_context":
-        return await execute_get_message_context(tool_input)
     elif tool_name == "get_active_channels":
         return await execute_get_active_channels(tool_input)
+    elif tool_name == "get_daily_summaries":
+        return await execute_get_daily_summaries(tool_input)
     elif tool_name == "get_member_info":
         return await execute_get_member_info(db_handler, tool_input)
     elif tool_name == "get_bot_status":
         return await execute_get_bot_status(bot)
-    elif tool_name == "refresh_media":
-        return await execute_refresh_media(bot, tool_input)
+    elif tool_name == "send_message":
+        return await execute_send_message(bot, tool_input)
+    elif tool_name == "edit_message":
+        return await execute_edit_message(bot, tool_input)
+    elif tool_name == "delete_message":
+        return await execute_delete_message(bot, tool_input)
+    elif tool_name == "upload_file":
+        return await execute_upload_file(bot, tool_input)
+    elif tool_name == "resolve_user":
+        return await execute_resolve_user(tool_input)
     else:
         return {"success": False, "error": f"Unknown tool: {tool_name}"}
