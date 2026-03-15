@@ -23,7 +23,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.common.base_bot import BaseDiscordBot
-from src.common.db_handler import DatabaseHandler
+from src.common.db_handler import DatabaseHandler, _emoji_to_str
 
 logger = logging.getLogger('ReactionBackfill')
 
@@ -84,6 +84,9 @@ class ReactionBackfiller(BaseDiscordBot):
 
             if not self.refresh_all:
                 query = query.or_('reactors.is.null,reactors.eq.[]')
+            else:
+                # Skip messages with no reactors — nothing to backfill
+                query = query.not_.is_('reactors', 'null').neq('reactors', '[]')
 
             query = query.order('created_at', desc=True) \
                 .range(offset, offset + batch_size - 1)
@@ -127,6 +130,11 @@ class ReactionBackfiller(BaseDiscordBot):
             skipped = 0
             errors = 0
 
+            # Accumulate reaction rows across messages for bulk DB writes
+            pending_reaction_rows = []
+            pending_message_ids = []
+            FLUSH_EVERY = 50
+
             for i, row in enumerate(results, 1):
                 try:
                     message_id = row['message_id']
@@ -153,19 +161,41 @@ class ReactionBackfiller(BaseDiscordBot):
                         skipped += 1
                         continue
 
-                    # Collect unique reactors (excluding the bot itself)
+                    # Collect unique reactors and per-emoji data (excluding the bot)
                     reactors = []
                     reaction_count = 0
+                    reaction_rows = []
 
                     if message.reactions:
                         for reaction in message.reactions:
+                            emoji_str = _emoji_to_str(reaction.emoji)
                             reaction_count += reaction.count
                             async for user in reaction.users():
-                                if user.id not in reactors and user.id != self.user.id:
-                                    reactors.append(user.id)
+                                if user.id != self.user.id:
+                                    if user.id not in reactors:
+                                        reactors.append(user.id)
+                                    reaction_rows.append({
+                                        'message_id': message_id,
+                                        'user_id': user.id,
+                                        'emoji': emoji_str,
+                                    })
 
                     self.db.update_reactions(message_id, reaction_count, reactors)
+
+                    # Accumulate for bulk flush
+                    if reaction_rows:
+                        pending_reaction_rows.extend(reaction_rows)
+                        pending_message_ids.append(message_id)
+
                     updated += 1
+
+                    # Flush accumulated reactions in bulk
+                    if len(pending_message_ids) >= FLUSH_EVERY:
+                        self.db.bulk_upsert_reactions(pending_message_ids, pending_reaction_rows)
+                        logger.info(f"[{i}/{len(results)}] Flushed {len(pending_reaction_rows)} "
+                                    f"reaction rows for {len(pending_message_ids)} messages")
+                        pending_reaction_rows = []
+                        pending_message_ids = []
 
                     if updated % 50 == 0 or len(reactors) >= 5:
                         logger.info(f"[{i}/{len(results)}] msg={message_id} "
@@ -183,6 +213,12 @@ class ReactionBackfiller(BaseDiscordBot):
                     logger.error(f"Error processing message {row['message_id']}: {e}")
                     errors += 1
                     continue
+
+            # Flush any remaining accumulated reactions
+            if pending_message_ids:
+                self.db.bulk_upsert_reactions(pending_message_ids, pending_reaction_rows)
+                logger.info(f"Final flush: {len(pending_reaction_rows)} reaction rows "
+                            f"for {len(pending_message_ids)} messages")
 
             logger.info(f"Reaction backfill complete: "
                         f"{updated} updated, {skipped} skipped, {errors} errors")

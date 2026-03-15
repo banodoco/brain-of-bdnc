@@ -5,6 +5,17 @@ import asyncio
 
 logger = logging.getLogger('DiscordBot')
 
+
+def _emoji_to_str(emoji) -> str:
+    """Convert a discord emoji to a string representation.
+
+    Unicode emoji → char string, custom emoji → 'name:id'.
+    """
+    if hasattr(emoji, 'id') and emoji.id:
+        return f"{emoji.name}:{emoji.id}"
+    return str(emoji)
+
+
 def to_aware_utc(dt_str: str) -> Optional[datetime]:
     """Convert an ISO format string to a timezone-aware datetime object in UTC."""
     if not dt_str:
@@ -434,6 +445,100 @@ class DatabaseHandler:
             return bool(result.data)
         except Exception as e:
             logger.error(f"Error updating reactions for message {message_id}: {e}")
+            return False
+
+    def add_reaction(self, message_id: int, user_id: int, emoji_str: str) -> bool:
+        """Upsert a single row into discord_reactions."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for add_reaction")
+            return False
+
+        try:
+            self.storage_handler.supabase_client.table('discord_reactions').upsert({
+                'message_id': message_id,
+                'user_id': user_id,
+                'emoji': emoji_str,
+            }).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error adding reaction for message {message_id}: {e}")
+            return False
+
+    def remove_reaction(self, message_id: int, user_id: int, emoji_str: str) -> bool:
+        """Delete a single row from discord_reactions."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for remove_reaction")
+            return False
+
+        try:
+            self.storage_handler.supabase_client.table('discord_reactions') \
+                .delete() \
+                .eq('message_id', message_id) \
+                .eq('user_id', user_id) \
+                .eq('emoji', emoji_str) \
+                .execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error removing reaction for message {message_id}: {e}")
+            return False
+
+    def upsert_reactions_batch(self, message_id: int, rows: list) -> bool:
+        """Full-replace granular reactions for a message.
+
+        Deletes all existing rows for the message, then inserts the new rows
+        in batches of 100.
+        """
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for upsert_reactions_batch")
+            return False
+
+        sb = self.storage_handler.supabase_client
+        try:
+            # Delete existing rows for this message
+            sb.table('discord_reactions') \
+                .delete() \
+                .eq('message_id', message_id) \
+                .execute()
+
+            # Insert new rows in batches
+            for i in range(0, len(rows), 100):
+                batch = rows[i:i + 100]
+                sb.table('discord_reactions').insert(batch).execute()
+
+            return True
+        except Exception as e:
+            logger.error(f"Error upserting reaction batch for message {message_id}: {e}")
+            return False
+
+    def bulk_upsert_reactions(self, message_ids: list, rows: list) -> bool:
+        """Bulk-replace reactions for multiple messages at once.
+
+        Deletes all existing rows for the given message_ids, then inserts all
+        new rows in batches. Much more efficient than per-message upsert for
+        backfill scenarios.
+        """
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for bulk_upsert_reactions")
+            return False
+
+        sb = self.storage_handler.supabase_client
+        try:
+            # Delete existing rows for all message_ids (in_ has a practical limit)
+            for i in range(0, len(message_ids), 100):
+                batch_ids = message_ids[i:i + 100]
+                sb.table('discord_reactions') \
+                    .delete() \
+                    .in_('message_id', batch_ids) \
+                    .execute()
+
+            # Insert all new rows in batches
+            for i in range(0, len(rows), 500):
+                batch = rows[i:i + 500]
+                sb.table('discord_reactions').insert(batch).execute()
+
+            return True
+        except Exception as e:
+            logger.error(f"Error in bulk_upsert_reactions: {e}")
             return False
 
     # ========== Message Content / Edit History ==========

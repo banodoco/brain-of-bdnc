@@ -2,7 +2,7 @@
 
 import json
 from discord.ext import commands
-from src.common.db_handler import DatabaseHandler
+from src.common.db_handler import DatabaseHandler, _emoji_to_str
 import discord
 import os
 
@@ -94,7 +94,17 @@ class LoggerCog(commands.Cog):
             if changed:
                 new_count = len(current_reactors)
                 self.db.update_reactions(reaction.message.id, new_count, current_reactors)
-                
+
+                # Dual-write to granular reactions table
+                try:
+                    emoji_str = _emoji_to_str(reaction.emoji)
+                    if action == 'add':
+                        self.db.add_reaction(reaction.message.id, user.id, emoji_str)
+                    elif action == 'remove':
+                        self.db.remove_reaction(reaction.message.id, user.id, emoji_str)
+                except Exception as e:
+                    self.logger.error(f"Error writing to discord_reactions: {e}")
+
                 # Only log in dev mode
                 if self.dev_mode:
                     self.logger.debug(f"[LoggerCog] Updated reaction {action} for message {reaction.message.id}")
@@ -159,7 +169,10 @@ class LoggerCog(commands.Cog):
                 return
 
             message_data = await self._prepare_message_data(message)
+            reaction_rows = message_data.pop('_reaction_rows', [])
             await self.db.store_messages([message_data])
+            if reaction_rows:
+                self.db.upsert_reactions_batch(message.id, reaction_rows)
 
         except Exception as e:
             self.logger.error(f"[LoggerCog] Error storing message {message.id}: {e}", exc_info=True)
@@ -170,13 +183,21 @@ class LoggerCog(commands.Cog):
             # Calculate total reaction count
             reaction_count = sum(reaction.count for reaction in message.reactions) if message.reactions else 0
             
-            # Get list of unique reactors
+            # Get list of unique reactors and per-emoji reaction data
             reactors = []
+            reaction_rows = []
             if message.reactions:
                 for reaction in message.reactions:
+                    emoji_str = _emoji_to_str(reaction.emoji)
                     async for user in reaction.users():
-                        if user.id not in reactors and user.id != self.bot_user_id:
-                            reactors.append(user.id)
+                        if user.id != self.bot_user_id:
+                            if user.id not in reactors:
+                                reactors.append(user.id)
+                            reaction_rows.append({
+                                'message_id': message.id,
+                                'user_id': user.id,
+                                'emoji': emoji_str,
+                            })
             
             # Resolve channel_id and thread_id to match the archive script:
             # - Regular threads → channel_id = parent, thread_id = thread
@@ -236,7 +257,8 @@ class LoggerCog(commands.Cog):
                 'is_deleted': False,
                 'display_name': display_name,
                 'global_name': global_name,
-                'category_id': category_id
+                'category_id': category_id,
+                '_reaction_rows': reaction_rows,
             }
         except Exception as e:
             self.logger.error(f"Error preparing message data: {e}")

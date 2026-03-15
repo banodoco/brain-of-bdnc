@@ -11,7 +11,7 @@ import logging
 from dotenv import load_dotenv
 from typing import List, Union
 import json
-from src.common.db_handler import DatabaseHandler
+from src.common.db_handler import DatabaseHandler, _emoji_to_str
 from src.common.base_bot import BaseDiscordBot
 from src.common.rate_limiter import RateLimiter
 import threading
@@ -258,13 +258,28 @@ class MessageArchiver(BaseDiscordBot):
             logger.error(f"Failed to initialize database: {e}")
             raise
 
+    async def _store_messages_and_reactions(self, processed_messages):
+        """Store messages and their granular reaction data."""
+        await self._db_operation(
+            lambda db: db.store_messages(processed_messages)
+        )
+        # Extract and upsert per-emoji reaction rows
+        for msg in processed_messages:
+            rows = msg.pop('_reaction_rows', [])
+            if rows:
+                msg_id = msg['message_id']
+                await self._db_operation(
+                    lambda db, mid=msg_id, r=rows: db.upsert_reactions_batch(mid, r)
+                )
+
     async def _process_message(self, message, channel_id):
         """Process a single message and store it in the database."""
         try:
             # Calculate total reaction count and get reactors
             reaction_count = sum(reaction.count for reaction in message.reactions) if message.reactions else 0
             reactors = []
-            
+            reaction_rows = []
+
             # In fast-fill mode, skip reaction fetching entirely (we already have reactions from first pass)
             if self.fast_fill:
                 # Skip reaction and member processing - just get the message data
@@ -277,14 +292,20 @@ class MessageArchiver(BaseDiscordBot):
                     )
                     if self.in_depth or self.fetch_reactions or not message_exists:
                         logger.debug(f"Processing reactions for message {message.id}: {len(message.reactions)} types, {reaction_count} total reactions")
-                        
+
                         guild = self.get_guild(self.guild_id)
-                        
+
                         for reaction in message.reactions:
                             try:
+                                emoji_str = _emoji_to_str(reaction.emoji)
                                 async def fetch_users():
                                     async for user in reaction.users(limit=50):
                                         reactor_ids.add(user.id)
+                                        reaction_rows.append({
+                                            'message_id': message.id,
+                                            'user_id': user.id,
+                                            'emoji': emoji_str,
+                                        })
                                         # Check if we've recently updated this member
                                         cache_key = f"{user.id}_{user.name}"
                                         cache_time = self.member_update_cache.get(cache_key, 0)
@@ -404,9 +425,10 @@ class MessageArchiver(BaseDiscordBot):
                 'is_pinned': message.pinned,
                 'thread_id': thread_id,
                 'message_type': str(message.type),
-                'flags': message.flags.value
+                'flags': message.flags.value,
+                '_reaction_rows': reaction_rows,
             }
-            
+
             return processed_message
             
         except Exception as e:
@@ -772,9 +794,7 @@ class MessageArchiver(BaseDiscordBot):
                                     processed_messages.append(processed_msg)
                             if processed_messages:
                                 new_message_count += len(processed_messages)
-                                await self._db_operation(
-                                    lambda db: db.store_messages(processed_messages)
-                                )
+                                await self._store_messages_and_reactions(processed_messages)
                     else:
                         # Normal mode: process all messages in batch
                         processed_messages = []
@@ -791,9 +811,7 @@ class MessageArchiver(BaseDiscordBot):
                                 pre_existing_ids = {msg['message_id'] for msg in existing_in_db}
                             new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing_ids]
                             new_message_count += len(new_messages)
-                            await self._db_operation(
-                                lambda db: db.store_messages(processed_messages)
-                            )
+                            await self._store_messages_and_reactions(processed_messages)
                     current_batch = []
                     await asyncio.sleep(0.1)
                 except Exception as e:
@@ -829,9 +847,7 @@ class MessageArchiver(BaseDiscordBot):
                                 processed_messages.append(processed_msg)
                         if processed_messages:
                             new_message_count += len(processed_messages)
-                            await self._db_operation(
-                                lambda db: db.store_messages(processed_messages)
-                            )
+                            await self._store_messages_and_reactions(processed_messages)
                 else:
                     processed_messages = []
                     for msg in current_batch:
@@ -847,9 +863,7 @@ class MessageArchiver(BaseDiscordBot):
                             pre_existing_ids = {msg['message_id'] for msg in existing_in_db}
                         new_messages = [msg for msg in processed_messages if msg['message_id'] not in pre_existing_ids]
                         new_message_count += len(new_messages)
-                        await self._db_operation(
-                            lambda db: db.store_messages(processed_messages)
-                        )
+                        await self._store_messages_and_reactions(processed_messages)
             except Exception as e:
                 logger.error(f"Failed to store final date range batch: {e}")
 
@@ -955,9 +969,7 @@ class MessageArchiver(BaseDiscordBot):
                                             new_message_count += len(new_messages)
 
                                             logger.info(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new, {len(pre_existing)} existing)")
-                                            await self._db_operation(
-                                                lambda db: db.store_messages(processed_messages)
-                                            )
+                                            await self._store_messages_and_reactions(processed_messages)
 
                                         current_batch = []
                                         await asyncio.sleep(0.1)
@@ -995,9 +1007,7 @@ class MessageArchiver(BaseDiscordBot):
                                 new_message_count += len(new_messages)
 
                                 logger.debug(f"Storing final batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
-                                await self._db_operation(
-                                    lambda db: db.store_messages(processed_messages)
-                                )
+                                await self._store_messages_and_reactions(processed_messages)
                         except Exception as e:
                             logger.error(f"Failed to store final batch: {e}")
                             logger.error(f"Error details: {str(e)}")
@@ -1053,9 +1063,7 @@ class MessageArchiver(BaseDiscordBot):
                             new_message_count += len(new_messages)
 
                             logger.info(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new, {len(pre_existing)} existing)")
-                            await self._db_operation(
-                                lambda db: db.store_messages(processed_messages)
-                            )
+                            await self._store_messages_and_reactions(processed_messages)
                         current_batch = []
                         await asyncio.sleep(0.1)
                     except Exception as e:
@@ -1080,9 +1088,7 @@ class MessageArchiver(BaseDiscordBot):
                         new_message_count += len(new_messages)
 
                         logger.info(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new, {len(pre_existing)} existing)")
-                        await self._db_operation(
-                            lambda db: db.store_messages(processed_messages)
-                        )
+                        await self._store_messages_and_reactions(processed_messages)
                 except Exception as e:
                     logger.error(f"Failed to store batch: {e}")
                     logger.error(f"Error details: {str(e)}")
@@ -1124,9 +1130,7 @@ class MessageArchiver(BaseDiscordBot):
                             new_message_count += len(new_messages)
 
                             logger.info(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new, {len(pre_existing)} existing)")
-                            await self._db_operation(
-                                lambda db: db.store_messages(processed_messages)
-                            )
+                            await self._store_messages_and_reactions(processed_messages)
                         current_batch = []
                         await asyncio.sleep(0.1)
                     except Exception as e:
@@ -1151,9 +1155,7 @@ class MessageArchiver(BaseDiscordBot):
                         new_message_count += len(new_messages)
 
                         logger.debug(f"Storing batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
-                        await self._db_operation(
-                            lambda db: db.store_messages(processed_messages)
-                        )
+                        await self._store_messages_and_reactions(processed_messages)
                 except Exception as e:
                     logger.error(f"Failed to store batch: {e}")
                     logger.error(f"Error details: {str(e)}")
@@ -1213,9 +1215,7 @@ class MessageArchiver(BaseDiscordBot):
                                     new_message_count += len(new_messages)
 
                                     logger.debug(f"Storing batch of {len(processed_messages)} messages from gap in #{channel.name} ({len(new_messages)} new)")
-                                    await self._db_operation(
-                                        lambda db: db.store_messages(processed_messages)
-                                    )
+                                    await self._store_messages_and_reactions(processed_messages)
                                     if gap_message_count % 100 == 0:
                                         logger.debug(f"Found {gap_message_count} messages in current gap for #{channel.name}")
 
@@ -1243,9 +1243,7 @@ class MessageArchiver(BaseDiscordBot):
                                 new_message_count += len(new_messages)
 
                                 logger.debug(f"Storing final gap batch of {len(processed_messages)} messages from #{channel.name} ({len(new_messages)} new)")
-                                await self._db_operation(
-                                    lambda db: db.store_messages(processed_messages)
-                                )
+                                await self._store_messages_and_reactions(processed_messages)
                         except Exception as e:
                             logger.error(f"Failed to store batch: {e}")
                             logger.error(f"Error details: {str(e)}")
