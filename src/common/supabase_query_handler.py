@@ -295,8 +295,12 @@ class SupabaseQueryHandler:
                         .select('*')
                         .gte('created_at', start_date.isoformat())
                         .lte('created_at', end_date.isoformat())
-                        .eq('is_deleted', False)
-                        .eq('is_system', False))
+                        .eq('is_deleted', False))
+
+                # Exclude bot authors
+                bot_user_id = os.getenv('BOT_USER_ID')
+                if bot_user_id:
+                    query = query.neq('author_id', int(bot_user_id))
 
                 if channel_id:
                     query = query.eq('channel_id', channel_id)

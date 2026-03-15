@@ -188,9 +188,6 @@ class LoggerCog(commands.Cog):
                 return
 
             message_data = await self._prepare_message_data(message)
-            # Mark our own bot's messages as system (excluded from summaries)
-            if message.author.id == self.bot_user_id:
-                message_data['is_system'] = True
             reaction_rows = message_data.pop('_reaction_rows', [])
             await self.db.store_messages([message_data])
             if reaction_rows:
@@ -277,7 +274,6 @@ class LoggerCog(commands.Cog):
                 'message_type': str(message.type),
                 'flags': message.flags.value,
                 'is_deleted': False,
-                'is_bot': message.author.bot,
                 'display_name': display_name,
                 'global_name': global_name,
                 'category_id': category_id,
