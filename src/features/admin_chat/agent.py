@@ -164,25 +164,29 @@ class AdminChatAgent:
                 logger.debug(f"[AdminChat] Iteration {iteration + 1}")
                 
                 # Call Claude
-                # Show typing before each API call; stops naturally when bot sends messages
-                if channel:
-                    try:
-                        await channel.trigger_typing()
-                    except Exception:
-                        pass
-
                 # Inject runtime values into system prompt
                 bot_user_id = self.bot.user.id if self.bot and self.bot.user else "unknown"
                 guild_id = os.getenv('GUILD_ID', os.getenv('DEV_GUILD_ID', 'unknown'))
                 system = SYSTEM_PROMPT.format(bot_user_id=bot_user_id, guild_id=guild_id)
 
-                response = await self.client.messages.create(
-                    model=self.model,
-                    max_tokens=4096,
-                    system=system,
-                    tools=TOOLS,
-                    messages=messages
-                )
+                # Show "is typing..." during API call, stops when call completes
+                if channel:
+                    async with channel.typing():
+                        response = await self.client.messages.create(
+                            model=self.model,
+                            max_tokens=4096,
+                            system=system,
+                            tools=TOOLS,
+                            messages=messages
+                        )
+                else:
+                    response = await self.client.messages.create(
+                        model=self.model,
+                        max_tokens=4096,
+                        system=system,
+                        tools=TOOLS,
+                        messages=messages
+                    )
                 
                 logger.debug(f"[AdminChat] Response stop_reason: {response.stop_reason}")
                 
