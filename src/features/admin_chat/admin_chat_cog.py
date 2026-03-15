@@ -3,6 +3,7 @@
 Listens for DMs from the admin and @mentions of the bot by the admin in
 public channels, then processes them through the Claude agent.
 """
+import asyncio
 import os
 import logging
 import discord
@@ -15,13 +16,18 @@ logger = logging.getLogger('DiscordBot')
 
 class AdminChatCog(commands.Cog):
     """Cog that handles admin DM conversations with Claude."""
-    
+
     def __init__(self, bot: commands.Bot, db_handler, sharer):
         self.bot = bot
         self.db_handler = db_handler
         self.sharer = sharer
         self.agent: AdminChatAgent = None
-        
+
+        # Track whether the agent is busy processing a request per user
+        self._busy: dict[int, bool] = {}
+        # Queue follow-up messages that arrive while agent is busy
+        self._pending_messages: dict[int, discord.Message] = {}
+
         # Get admin user ID
         admin_id_str = os.getenv('ADMIN_USER_ID')
         if admin_id_str:
@@ -82,6 +88,13 @@ class AdminChatCog(commands.Cog):
             content = content.replace(f'<@{self.bot.user.id}>', '').replace(f'<@!{self.bot.user.id}>', '')
         return content.strip()
 
+    _ABORT_PHRASES = {'stop', 'abort', 'cancel', 'halt', 'nevermind', 'never mind', 'quit', 'enough'}
+
+    def _is_abort(self, content: str) -> bool:
+        """Check if the message is an abort request."""
+        normalised = content.strip().lower().rstrip('!.')
+        return normalised in self._ABORT_PHRASES
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Listen for DMs and @mentions from the admin user."""
@@ -99,8 +112,22 @@ class AdminChatCog(commands.Cog):
         if not content:
             return
 
+        user_id = message.author.id
         source = "DM" if is_dm else f"#{getattr(message.channel, 'name', 'unknown')}"
         logger.info(f"[AdminChat] Received from admin in {source}: {content[:50]}...")
+
+        # If agent is busy, check if this is an abort or queue it
+        if self._busy.get(user_id):
+            if self._is_abort(content):
+                if self.agent:
+                    self.agent.request_abort(user_id)
+                    logger.info(f"[AdminChat] Abort requested by user {user_id}")
+                await message.add_reaction("\u23f9\ufe0f")  # stop button emoji
+                return
+            else:
+                # Queue the message to process after current run finishes
+                self._pending_messages[user_id] = message
+                return
 
         try:
             # Initialize agent if needed
@@ -142,13 +169,17 @@ class AdminChatCog(commands.Cog):
                 except Exception:
                     pass
 
-            # Pass channel so agent can trigger typing before each API call
-            responses = await self.agent.chat(
-                user_id=message.author.id,
-                user_message=content,
-                channel_context=channel_context,
-                channel=message.channel
-            )
+            # Mark busy and run agent
+            self._busy[user_id] = True
+            try:
+                responses = await self.agent.chat(
+                    user_id=user_id,
+                    user_message=content,
+                    channel_context=channel_context,
+                    channel=message.channel
+                )
+            finally:
+                self._busy[user_id] = False
 
             # responses is a list of messages, or None if ended without reply
             if responses is None:
@@ -194,10 +225,16 @@ class AdminChatCog(commands.Cog):
                     reply_ref = None
 
             logger.info(f"[AdminChat] Sent {messages_sent} message(s) ({total_chars} chars total)")
-            
+
         except Exception as e:
             logger.error(f"[AdminChat] Error processing message: {e}", exc_info=True)
             await message.channel.send(f"Sorry, I encountered an error: {str(e)}")
+
+        # Process any message that arrived while we were busy
+        pending = self._pending_messages.pop(user_id, None)
+        if pending:
+            logger.info(f"[AdminChat] Processing queued message from {user_id}")
+            await self.on_message(pending)
     
     @commands.command(name='adminchat_clear')
     @commands.is_owner()

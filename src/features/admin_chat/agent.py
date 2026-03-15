@@ -68,18 +68,23 @@ MAX_CONVERSATION_LENGTH = 20
 
 class AdminChatAgent:
     """Handles Claude conversations with tool use for admin chat."""
-    
+
     def __init__(self, bot, db_handler, sharer):
         self.bot = bot
         self.db_handler = db_handler
         self.sharer = sharer
-        
+        self._abort_requested: dict[int, bool] = {}
+
         api_key = os.getenv('ANTHROPIC_API_KEY')
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY not found in environment")
-        
+
         self.client = anthropic.AsyncAnthropic(api_key=api_key)
         self.model = "claude-opus-4-6"
+
+    def request_abort(self, user_id: int):
+        """Signal the agent loop to stop for this user."""
+        self._abort_requested[user_id] = True
     
     def get_conversation(self, user_id: int) -> List[Dict[str, Any]]:
         """Get or create conversation history for a user."""
@@ -158,9 +163,17 @@ class AdminChatAgent:
         final_replies: List[str] = []  # Can have multiple messages
         
         max_iterations = 100
-        
+        self._abort_requested[user_id] = False
+
         try:
             for iteration in range(max_iterations):
+                # Check for abort between iterations
+                if self._abort_requested.get(user_id):
+                    logger.info(f"[AdminChat] Aborted by user {user_id} after {len(actions)} actions")
+                    self._abort_requested[user_id] = False
+                    final_replies.append(f"Aborted. Completed {len(actions)} action(s) before stopping.")
+                    break
+
                 logger.debug(f"[AdminChat] Iteration {iteration + 1}")
                 
                 # Call Claude
@@ -202,12 +215,25 @@ class AdminChatAgent:
                 
                 # Process each tool call
                 tool_results = []
+                aborted = False
                 for tool_use in tool_uses:
                     tool_name = tool_use.name
                     tool_input = tool_use.input
-                    
+
+                    # Check for abort between tool calls
+                    if self._abort_requested.get(user_id) and tool_name not in ("reply", "end_turn"):
+                        logger.info(f"[AdminChat] Abort: skipping {tool_name}")
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_use.id,
+                            "content": json.dumps({"success": False, "error": "Aborted by user"}),
+                            "is_error": True
+                        })
+                        aborted = True
+                        continue
+
                     logger.info(f"[AdminChat] Tool call: {tool_name}")
-                    
+
                     # Execute the tool
                     result = await execute_tool(
                         tool_name=tool_name,
@@ -240,7 +266,13 @@ class AdminChatAgent:
                 # Add assistant message and tool results to conversation
                 messages.append({"role": "assistant", "content": response.content})
                 messages.append({"role": "user", "content": tool_results})
-                
+
+                # If aborted, break out of the loop
+                if aborted:
+                    self._abort_requested[user_id] = False
+                    final_replies.append(f"Aborted. Completed {len(actions)} action(s) before stopping.")
+                    break
+
                 # If the reply or end_turn tool was called, we're done
                 if any(t.name in ("reply", "end_turn") for t in tool_uses):
                     break
