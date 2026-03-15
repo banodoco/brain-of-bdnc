@@ -23,7 +23,8 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.common.base_bot import BaseDiscordBot
-from src.common.db_handler import DatabaseHandler, _emoji_to_str
+from src.common.db_handler import DatabaseHandler
+from src.common.discord_utils import emoji_to_str
 
 logger = logging.getLogger('ReactionBackfill')
 
@@ -167,13 +168,31 @@ class ReactionBackfiller(BaseDiscordBot):
                     reaction_rows = []
 
                     if message.reactions:
+                        guild = self.guilds[0] if self.guilds else None
                         for reaction in message.reactions:
-                            emoji_str = _emoji_to_str(reaction.emoji)
+                            emoji_str = emoji_to_str(reaction.emoji)
                             reaction_count += reaction.count
                             async for user in reaction.users():
                                 if user.id != self.user.id:
                                     if user.id not in reactors:
                                         reactors.append(user.id)
+                                        # Ensure reactor exists in discord_members
+                                        member = guild.get_member(user.id) if guild else None
+                                        self.db.create_or_update_member(
+                                            user.id,
+                                            user.name,
+                                            getattr(user, 'display_name', None),
+                                            getattr(user, 'global_name', None),
+                                            str(user.avatar.url) if user.avatar else None,
+                                            getattr(user, 'discriminator', None),
+                                            getattr(user, 'bot', False),
+                                            getattr(user, 'system', False),
+                                            None,  # accent_color
+                                            None,  # banner_url
+                                            user.created_at.isoformat() if hasattr(user, 'created_at') else None,
+                                            member.joined_at.isoformat() if member and member.joined_at else None,
+                                            None,  # role_ids
+                                        )
                                     reaction_rows.append({
                                         'message_id': message_id,
                                         'user_id': user.id,

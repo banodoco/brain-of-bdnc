@@ -11,7 +11,8 @@ import logging
 from dotenv import load_dotenv
 from typing import List, Union
 import json
-from src.common.db_handler import DatabaseHandler, _emoji_to_str
+from src.common.db_handler import DatabaseHandler
+from src.common.discord_utils import emoji_to_str
 from src.common.base_bot import BaseDiscordBot
 from src.common.rate_limiter import RateLimiter
 import threading
@@ -297,7 +298,7 @@ class MessageArchiver(BaseDiscordBot):
 
                         for reaction in message.reactions:
                             try:
-                                emoji_str = _emoji_to_str(reaction.emoji)
+                                emoji_str = emoji_to_str(reaction.emoji)
                                 async def fetch_users():
                                     async for user in reaction.users(limit=50):
                                         reactor_ids.add(user.id)

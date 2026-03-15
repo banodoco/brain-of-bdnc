@@ -6,16 +6,6 @@ import asyncio
 logger = logging.getLogger('DiscordBot')
 
 
-def _emoji_to_str(emoji) -> str:
-    """Convert a discord emoji to a string representation.
-
-    Unicode emoji → char string, custom emoji → 'name:id'.
-    """
-    if hasattr(emoji, 'id') and emoji.id:
-        return f"{emoji.name}:{emoji.id}"
-    return str(emoji)
-
-
 def to_aware_utc(dt_str: str) -> Optional[datetime]:
     """Convert an ISO format string to a timezone-aware datetime object in UTC."""
     if not dt_str:
@@ -426,6 +416,27 @@ class DatabaseHandler:
 
     # ========== Reaction Updates ==========
 
+    def soft_delete_message(self, message_id: int) -> bool:
+        """Soft-delete a message by setting is_deleted and deleted_at."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for soft_delete_message")
+            return False
+
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('discord_messages')
+                .update({
+                    'is_deleted': True,
+                    'deleted_at': datetime.now(timezone.utc).isoformat(),
+                })
+                .eq('message_id', message_id)
+                .execute()
+            )
+            return bool(result.data)
+        except Exception as e:
+            logger.error(f"Error soft-deleting message {message_id}: {e}")
+            return False
+
     def update_reactions(self, message_id: int, reaction_count: int, reactors: list) -> bool:
         """Update reaction data for a message via Supabase REST API.
 
@@ -458,6 +469,7 @@ class DatabaseHandler:
                 'message_id': message_id,
                 'user_id': user_id,
                 'emoji': emoji_str,
+                'removed_at': None,
             }).execute()
             return True
         except Exception as e:
@@ -465,14 +477,14 @@ class DatabaseHandler:
             return False
 
     def remove_reaction(self, message_id: int, user_id: int, emoji_str: str) -> bool:
-        """Delete a single row from discord_reactions."""
+        """Soft-delete a reaction by setting removed_at."""
         if not self.storage_handler or not self.storage_handler.supabase_client:
             logger.error("Supabase client not initialized for remove_reaction")
             return False
 
         try:
             self.storage_handler.supabase_client.table('discord_reactions') \
-                .delete() \
+                .update({'removed_at': datetime.now(timezone.utc).isoformat()}) \
                 .eq('message_id', message_id) \
                 .eq('user_id', user_id) \
                 .eq('emoji', emoji_str) \
@@ -483,10 +495,10 @@ class DatabaseHandler:
             return False
 
     def upsert_reactions_batch(self, message_id: int, rows: list) -> bool:
-        """Full-replace granular reactions for a message.
+        """Sync granular reactions for a message.
 
-        Deletes all existing rows for the message, then inserts the new rows
-        in batches of 100.
+        Upserts current rows (clearing removed_at), then soft-deletes any
+        existing active rows that are no longer present.
         """
         if not self.storage_handler or not self.storage_handler.supabase_client:
             logger.error("Supabase client not initialized for upsert_reactions_batch")
@@ -494,16 +506,28 @@ class DatabaseHandler:
 
         sb = self.storage_handler.supabase_client
         try:
-            # Delete existing rows for this message
-            sb.table('discord_reactions') \
-                .delete() \
+            # Upsert current reactions (mark as active)
+            for i in range(0, len(rows), 100):
+                batch = [dict(r, removed_at=None) for r in rows[i:i + 100]]
+                sb.table('discord_reactions').upsert(batch).execute()
+
+            # Soft-delete any active rows for this message not in the current set
+            current_keys = {(r['user_id'], r['emoji']) for r in rows}
+            existing = sb.table('discord_reactions') \
+                .select('user_id, emoji') \
                 .eq('message_id', message_id) \
+                .is_('removed_at', 'null') \
                 .execute()
 
-            # Insert new rows in batches
-            for i in range(0, len(rows), 100):
-                batch = rows[i:i + 100]
-                sb.table('discord_reactions').insert(batch).execute()
+            now = datetime.now(timezone.utc).isoformat()
+            for row in (existing.data or []):
+                if (row['user_id'], row['emoji']) not in current_keys:
+                    sb.table('discord_reactions') \
+                        .update({'removed_at': now}) \
+                        .eq('message_id', message_id) \
+                        .eq('user_id', row['user_id']) \
+                        .eq('emoji', row['emoji']) \
+                        .execute()
 
             return True
         except Exception as e:
@@ -511,11 +535,11 @@ class DatabaseHandler:
             return False
 
     def bulk_upsert_reactions(self, message_ids: list, rows: list) -> bool:
-        """Bulk-replace reactions for multiple messages at once.
+        """Bulk-sync reactions for multiple messages at once.
 
-        Deletes all existing rows for the given message_ids, then inserts all
-        new rows in batches. Much more efficient than per-message upsert for
-        backfill scenarios.
+        Upserts all current rows (clearing removed_at), then soft-deletes
+        any active rows for those messages that are no longer present.
+        More efficient than per-message upsert for backfill scenarios.
         """
         if not self.storage_handler or not self.storage_handler.supabase_client:
             logger.error("Supabase client not initialized for bulk_upsert_reactions")
@@ -523,18 +547,33 @@ class DatabaseHandler:
 
         sb = self.storage_handler.supabase_client
         try:
-            # Delete existing rows for all message_ids (in_ has a practical limit)
+            # Upsert all current reactions (mark as active)
+            for i in range(0, len(rows), 500):
+                batch = [dict(r, removed_at=None) for r in rows[i:i + 500]]
+                sb.table('discord_reactions').upsert(batch).execute()
+
+            # Soft-delete stale rows: fetch active rows for these messages,
+            # then mark any not in the current set
+            current_keys = {(r['message_id'], r['user_id'], r['emoji']) for r in rows}
+            now = datetime.now(timezone.utc).isoformat()
+
             for i in range(0, len(message_ids), 100):
                 batch_ids = message_ids[i:i + 100]
-                sb.table('discord_reactions') \
-                    .delete() \
+                existing = sb.table('discord_reactions') \
+                    .select('message_id, user_id, emoji') \
                     .in_('message_id', batch_ids) \
+                    .is_('removed_at', 'null') \
                     .execute()
 
-            # Insert all new rows in batches
-            for i in range(0, len(rows), 500):
-                batch = rows[i:i + 500]
-                sb.table('discord_reactions').insert(batch).execute()
+                for row in (existing.data or []):
+                    key = (row['message_id'], row['user_id'], row['emoji'])
+                    if key not in current_keys:
+                        sb.table('discord_reactions') \
+                            .update({'removed_at': now}) \
+                            .eq('message_id', row['message_id']) \
+                            .eq('user_id', row['user_id']) \
+                            .eq('emoji', row['emoji']) \
+                            .execute()
 
             return True
         except Exception as e:

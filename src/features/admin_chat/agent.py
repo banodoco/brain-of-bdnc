@@ -43,10 +43,19 @@ Info:
 - get_bot_status: Check bot health
 - search_logs: Search bot system logs — see errors, recent tool calls, what happened. Use to diagnose issues or review your own recent actions.
 
+Data:
+- query_table: Query any database table directly with filters. Use for competitions, entries, reactions, events, grants, etc.
+  Examples:
+    query_table(table="competition_entries", filters={"competition_slug": "ltx-living-dead"})
+    query_table(table="discord_reactions", filters={"message_id": "123"}, order="-created_at")
+    query_table(table="events", filters={"status": "active"})
+    query_table(table="discord_messages", filters={"channel_id": "123", "reaction_count": "gte.5"}, order="-created_at", limit=10)
+  Filter operators: gt., gte., lt., lte., neq., like., ilike., in., is.null, not.null (e.g. {"reaction_count": "gte.5"})
+
 Actions:
-- send_message: Send a message to any channel/thread (can reply to a specific message)
+- send_message: Send a message to any channel/thread (can reply to a specific message). Discord CDN URLs are auto-refreshed.
 - edit_message: Edit a bot message
-- delete_message: Delete a bot message
+- delete_message: Delete bot message(s). Pass channel_id + message_id for a specific message, OR use last_n to delete the last N messages you sent this session.
 - upload_file: Upload a file to a channel
 - share_to_social: Share a message to Twitter/Instagram/TikTok/YouTube (needs message_id or link)
 - resolve_user: Look up a username to get their Discord ID and mention tag
@@ -103,7 +112,10 @@ You're writing Discord messages, not markdown docs. Follow these conventions:
 
 IMPORTANT:
 - share_to_social requires messages with attachments (has_media=true)
-- Always show message_id so user can reference specific messages"""
+- Always show message_id so user can reference specific messages
+- send_message auto-refreshes expired Discord CDN URLs — you don't need to refresh manually before sending
+- You CAN delete messages you sent — use delete_message(last_n=N) to delete your recent messages without needing specific IDs
+- Use query_table for any data that isn't covered by the search tools (competitions, reactions, events, grants, etc.)"""
 
 MAX_CONVERSATION_LENGTH = 20
 

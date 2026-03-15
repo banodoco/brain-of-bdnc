@@ -161,9 +161,7 @@ class GatingCog(commands.Cog):
         if payload.message_id not in self._pending_message_ids:
             return
 
-        # Check emoji
-        if str(payload.emoji) != self.approval_emoji:
-            return
+        logger.info(f"GatingCog: reaction {payload.emoji} on pending intro {payload.message_id} by user {payload.user_id}")
 
         guild = self.bot.get_guild(payload.guild_id)
         if not guild:
@@ -178,6 +176,7 @@ class GatingCog(commands.Cog):
         is_approver = self.approver_role_id in reactor_role_ids
         is_super = self.super_approver_role_id in reactor_role_ids
         if not is_approver and not is_super:
+            logger.info(f"GatingCog: reactor {reactor} lacks approver role, ignoring")
             return
 
         # Verify intro is still pending in DB

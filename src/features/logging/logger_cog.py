@@ -2,7 +2,8 @@
 
 import json
 from discord.ext import commands
-from src.common.db_handler import DatabaseHandler, _emoji_to_str
+from src.common.db_handler import DatabaseHandler
+from src.common.discord_utils import emoji_to_str
 import discord
 import os
 
@@ -97,7 +98,7 @@ class LoggerCog(commands.Cog):
 
                 # Dual-write to granular reactions table
                 try:
-                    emoji_str = _emoji_to_str(reaction.emoji)
+                    emoji_str = emoji_to_str(reaction.emoji)
                     if action == 'add':
                         self.db.add_reaction(reaction.message.id, user.id, emoji_str)
                     elif action == 'remove':
@@ -160,6 +161,23 @@ class LoggerCog(commands.Cog):
             self.logger.error(f"[LoggerCog] Error in on_raw_message_edit: {e}", exc_info=True)
 
     @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
+        """Soft-delete a message when it's deleted in Discord."""
+        try:
+            if not payload.guild_id:
+                return
+
+            deleted = self.db.soft_delete_message(payload.message_id)
+
+            if deleted and self.dev_mode:
+                self.logger.debug(
+                    f"[LoggerCog] Soft-deleted message {payload.message_id} "
+                    f"in channel {payload.channel_id}"
+                )
+        except Exception as e:
+            self.logger.error(f"[LoggerCog] Error in on_raw_message_delete: {e}", exc_info=True)
+
+    @commands.Cog.listener()
     async def on_message(self, message):
         """Store every new message to Supabase in real-time."""
         try:
@@ -188,7 +206,7 @@ class LoggerCog(commands.Cog):
             reaction_rows = []
             if message.reactions:
                 for reaction in message.reactions:
-                    emoji_str = _emoji_to_str(reaction.emoji)
+                    emoji_str = emoji_to_str(reaction.emoji)
                     async for user in reaction.users():
                         if user.id != self.bot_user_id:
                             if user.id not in reactors:

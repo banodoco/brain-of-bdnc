@@ -5,6 +5,16 @@ import os
 from typing import Union, Optional, List, Dict, Any
 
 from src.common.rate_limiter import RateLimiter
+
+
+def emoji_to_str(emoji) -> str:
+    """Convert a discord emoji to a string representation.
+
+    Unicode emoji → char string, custom emoji → 'name:id'.
+    """
+    if hasattr(emoji, 'id') and emoji.id:
+        return f"{emoji.name}:{emoji.id}"
+    return str(emoji)
 from src.common.error_handler import handle_errors
 
 @handle_errors("safe_send_message")

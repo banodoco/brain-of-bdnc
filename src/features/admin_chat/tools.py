@@ -25,6 +25,33 @@ if str(project_root) not in sys.path:
 # Server ID for Discord links
 GUILD_ID = int(os.getenv('GUILD_ID', os.getenv('DEV_GUILD_ID', '0')))
 
+# Track messages sent by the bot this session (for delete_message last_n)
+# List of (channel_id, message_id) tuples, most recent last
+_sent_messages: List[tuple] = []
+
+# Cached Supabase client
+_supabase_client = None
+
+
+def _get_supabase():
+    """Get or create a cached Supabase client."""
+    global _supabase_client
+    if _supabase_client is None:
+        from supabase import create_client
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_SERVICE_KEY")
+        _supabase_client = create_client(url, key)
+    return _supabase_client
+
+# Tables the agent is allowed to query
+QUERYABLE_TABLES = {
+    'competitions', 'competition_entries', 'discord_reactions',
+    'discord_messages', 'discord_members', 'discord_channels',
+    'events', 'invite_codes', 'grant_applications',
+    'daily_summaries', 'channel_summary', 'shared_posts',
+    'pending_intros', 'intro_votes', 'timed_mutes',
+}
+
 
 # ========== Tool Definitions (Anthropic format) ==========
 
@@ -281,20 +308,24 @@ TOOLS = [
     },
     {
         "name": "delete_message",
-        "description": "Delete a bot message from a Discord channel. Can only delete messages sent by the bot.",
+        "description": "Delete bot message(s). Pass a specific channel_id + message_id, OR use last_n to delete the last N messages the bot sent this session (from any channel).",
         "input_schema": {
             "type": "object",
             "properties": {
                 "channel_id": {
                     "type": "string",
-                    "description": "Discord channel ID"
+                    "description": "Discord channel ID (required with message_id)"
                 },
                 "message_id": {
                     "type": "string",
-                    "description": "Message ID to delete"
+                    "description": "Specific message ID to delete"
+                },
+                "last_n": {
+                    "type": "integer",
+                    "description": "Delete the last N messages the bot sent this session. Use this when asked to 'delete what you just sent' or similar."
                 }
             },
-            "required": ["channel_id", "message_id"]
+            "required": []
         }
     },
     {
@@ -332,7 +363,37 @@ TOOLS = [
             },
             "required": ["username"]
         }
-    }
+    },
+    {
+        "name": "query_table",
+        "description": "Query any database table directly. Use for data that isn't covered by other tools (e.g. competition_entries, discord_reactions, events, grant_applications). Returns up to `limit` rows matching the filters.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "table": {
+                    "type": "string",
+                    "description": "Table name (e.g. competition_entries, competitions, discord_reactions, events, invite_codes, grant_applications, discord_members, discord_messages, discord_channels)"
+                },
+                "select": {
+                    "type": "string",
+                    "description": "Comma-separated columns to return (default: *)"
+                },
+                "filters": {
+                    "type": "object",
+                    "description": "Equality filters as {column: value}. Use special prefixes for other operators: 'gt.', 'gte.', 'lt.', 'lte.', 'neq.', 'like.', 'ilike.' (e.g. {\"reaction_count\": \"gte.5\", \"author_name\": \"ilike.%john%\"})"
+                },
+                "order": {
+                    "type": "string",
+                    "description": "Column to order by (prefix with '-' for descending, e.g. '-created_at')"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows to return (default: 25, max: 100)"
+                }
+            },
+            "required": ["table"]
+        }
+    },
 ]
 
 
@@ -1024,8 +1085,48 @@ async def execute_search_logs(params: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+async def _refresh_cdn_urls(bot: discord.Client, content: str) -> str:
+    """Replace expired Discord CDN URLs in content with fresh ones.
+
+    Finds Discord CDN attachment URLs, extracts channel_id/message_id,
+    fetches fresh URLs from the Discord API, and substitutes them.
+    """
+    from src.common.discord_utils import refresh_media_url
+
+    cdn_pattern = re.compile(
+        r'https://cdn\.discordapp\.com/attachments/(\d+)/(\d+)/([^\s\)]+)'
+    )
+    matches = list(cdn_pattern.finditer(content))
+    if not matches:
+        return content
+
+    # Deduplicate by (channel_id, attachment_id) to avoid redundant API calls
+    seen = {}
+    for match in matches:
+        ch_id, att_id = int(match.group(1)), int(match.group(2))
+        if (ch_id, att_id) not in seen:
+            seen[(ch_id, att_id)] = match
+
+    # For each unique attachment, find the source message and refresh
+    # The channel_id in a CDN URL is the channel where the file was uploaded
+    # We need to find the message that contains this attachment
+    for (ch_id, att_id), match in seen.items():
+        try:
+            result = await refresh_media_url(bot, ch_id, att_id, logger)
+            if result and result.get('attachments'):
+                old_filename = match.group(3).split('?')[0]  # Strip query params
+                for att in result['attachments']:
+                    if att.get('filename') == old_filename or old_filename in att.get('url', ''):
+                        content = content.replace(match.group(0), att['url'])
+                        break
+        except Exception as e:
+            logger.debug(f"[AdminChat] Could not refresh CDN URL: {e}")
+
+    return content
+
+
 async def execute_send_message(bot: discord.Client, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Send a message to a channel, optionally as a reply."""
+    """Send a message to a channel, optionally as a reply. Auto-refreshes Discord CDN URLs."""
     channel_id = params.get('channel_id', '')
     content = params.get('content', '')
     reply_to = params.get('reply_to')
@@ -1038,6 +1139,9 @@ async def execute_send_message(bot: discord.Client, params: Dict[str, Any]) -> D
         if not channel:
             channel = await bot.fetch_channel(int(channel_id))
 
+        # Auto-refresh any Discord CDN URLs before sending
+        content = await _refresh_cdn_urls(bot, content)
+
         kwargs = {}
         if reply_to:
             try:
@@ -1047,6 +1151,10 @@ async def execute_send_message(bot: discord.Client, params: Dict[str, Any]) -> D
                 pass  # Send without reply if message not found
 
         msg = await channel.send(content, **kwargs)
+
+        # Track for later deletion
+        _sent_messages.append((int(channel_id), msg.id))
+
         return {
             "success": True,
             "message_id": str(msg.id),
@@ -1083,12 +1191,43 @@ async def execute_edit_message(bot: discord.Client, params: Dict[str, Any]) -> D
 
 
 async def execute_delete_message(bot: discord.Client, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Delete a bot message."""
+    """Delete bot message(s). Supports specific ID or last_n from session."""
     channel_id = params.get('channel_id', '')
     message_id = params.get('message_id', '')
+    last_n = params.get('last_n')
 
+    # Mode 1: delete last N sent messages
+    if last_n:
+        if not _sent_messages:
+            return {"success": False, "error": "No messages sent this session to delete"}
+
+        to_delete = _sent_messages[-last_n:]
+        deleted = 0
+        errors = []
+        for ch_id, msg_id in reversed(to_delete):
+            try:
+                channel = bot.get_channel(ch_id)
+                if not channel:
+                    channel = await bot.fetch_channel(ch_id)
+                msg = await channel.fetch_message(msg_id)
+                if msg.author.id == bot.user.id:
+                    await msg.delete()
+                    deleted += 1
+                    _sent_messages.remove((ch_id, msg_id))
+            except discord.NotFound:
+                _sent_messages.remove((ch_id, msg_id))
+                deleted += 1  # Already gone
+            except Exception as e:
+                errors.append(f"{msg_id}: {e}")
+
+        result = {"success": True, "deleted": deleted}
+        if errors:
+            result["errors"] = errors
+        return result
+
+    # Mode 2: delete specific message
     if not channel_id or not message_id:
-        return {"success": False, "error": "channel_id and message_id are required"}
+        return {"success": False, "error": "Provide channel_id + message_id, or last_n"}
 
     try:
         channel = bot.get_channel(int(channel_id))
@@ -1098,6 +1237,10 @@ async def execute_delete_message(bot: discord.Client, params: Dict[str, Any]) ->
         if msg.author.id != bot.user.id:
             return {"success": False, "error": "Can only delete bot's own messages"}
         await msg.delete()
+        # Remove from tracking if present
+        pair = (int(channel_id), int(message_id))
+        if pair in _sent_messages:
+            _sent_messages.remove(pair)
         return {"success": True}
     except discord.NotFound:
         return {"success": False, "error": "Message not found"}
@@ -1159,6 +1302,70 @@ async def execute_resolve_user(params: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+async def execute_query_table(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Query any allowed database table with filters."""
+    table = params.get('table', '')
+    select_cols = params.get('select', '*')
+    filters = params.get('filters', {})
+    order = params.get('order', '')
+    limit = min(params.get('limit', 25), 100)
+
+    if not table:
+        return {"success": False, "error": "table is required"}
+    if table not in QUERYABLE_TABLES:
+        return {"success": False, "error": f"Table '{table}' not allowed. Available: {', '.join(sorted(QUERYABLE_TABLES))}"}
+
+    try:
+        sb = _get_supabase()
+        query = sb.table(table).select(select_cols)
+
+        # Apply filters with operator support
+        for col, val in filters.items():
+            val_str = str(val)
+            if val_str.startswith('gt.'):
+                query = query.gt(col, val_str[3:])
+            elif val_str.startswith('gte.'):
+                query = query.gte(col, val_str[4:])
+            elif val_str.startswith('lt.'):
+                query = query.lt(col, val_str[3:])
+            elif val_str.startswith('lte.'):
+                query = query.lte(col, val_str[4:])
+            elif val_str.startswith('neq.'):
+                query = query.neq(col, val_str[4:])
+            elif val_str.startswith('like.'):
+                query = query.like(col, val_str[5:])
+            elif val_str.startswith('ilike.'):
+                query = query.ilike(col, val_str[6:])
+            elif val_str.startswith('in.'):
+                # Comma-separated list: "in.a,b,c"
+                values = val_str[3:].split(',')
+                query = query.in_(col, values)
+            elif val_str == 'is.null':
+                query = query.is_(col, 'null')
+            elif val_str == 'not.null':
+                query = query.not_.is_(col, 'null')
+            else:
+                query = query.eq(col, val)
+
+        # Apply ordering
+        if order:
+            desc = order.startswith('-')
+            col_name = order.lstrip('-')
+            query = query.order(col_name, desc=desc)
+
+        query = query.limit(limit)
+        result = query.execute()
+
+        return {
+            "success": True,
+            "count": len(result.data),
+            "data": result.data,
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in query_table: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 # ========== Tool Executor Dispatcher ==========
 
 async def execute_tool(
@@ -1206,5 +1413,7 @@ async def execute_tool(
         return await execute_upload_file(bot, tool_input)
     elif tool_name == "resolve_user":
         return await execute_resolve_user(tool_input)
+    elif tool_name == "query_table":
+        return await execute_query_table(tool_input)
     else:
         return {"success": False, "error": f"Unknown tool: {tool_name}"}
