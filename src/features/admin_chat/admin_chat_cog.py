@@ -49,11 +49,9 @@ class AdminChatCog(commands.Cog):
                 logger.error(f"[AdminChat] Failed to initialize agent: {e}", exc_info=True)
                 raise
     
-    def _is_admin_message(self, message: discord.Message) -> bool:
-        """Check if a message is from the admin and directed at the bot."""
+    def _is_directed_at_bot(self, message: discord.Message) -> bool:
+        """Check if a message is directed at the bot (mention, reply, or DM)."""
         if message.author.bot:
-            return False
-        if self.admin_user_id is None or message.author.id != self.admin_user_id:
             return False
         if not message.content.strip():
             return False
@@ -74,6 +72,10 @@ class AdminChatCog(commands.Cog):
 
         return False
 
+    def _is_admin(self, user_id: int) -> bool:
+        """Check if a user is the admin."""
+        return self.admin_user_id is not None and user_id == self.admin_user_id
+
     def _strip_mention(self, content: str) -> str:
         """Remove the bot @mention from message content."""
         if self.bot.user:
@@ -84,7 +86,11 @@ class AdminChatCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         """Listen for DMs and @mentions from the admin user."""
 
-        if not self._is_admin_message(message):
+        if not self._is_directed_at_bot(message):
+            return
+
+        if not self._is_admin(message.author.id):
+            await message.reply("I can only respond to admins for now!")
             return
 
         is_dm = isinstance(message.channel, discord.DMChannel)
