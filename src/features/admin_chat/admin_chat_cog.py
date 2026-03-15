@@ -142,13 +142,13 @@ class AdminChatCog(commands.Cog):
                 except Exception:
                     pass
 
-            # Show typing indicator while processing
-            async with message.channel.typing():
-                responses = await self.agent.chat(
-                    user_id=message.author.id,
-                    user_message=content,
-                    channel_context=channel_context
-                )
+            # Pass channel so agent can trigger typing before each API call
+            responses = await self.agent.chat(
+                user_id=message.author.id,
+                user_message=content,
+                channel_context=channel_context,
+                channel=message.channel
+            )
 
             # responses is a list of messages, or None if ended without reply
             if responses is None:

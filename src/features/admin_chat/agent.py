@@ -99,7 +99,7 @@ class AdminChatAgent:
         if len(conv) > MAX_CONVERSATION_LENGTH * 2:
             _conversations[user_id] = conv[-(MAX_CONVERSATION_LENGTH * 2):]
     
-    async def chat(self, user_id: int, user_message: str, channel_context: dict = None) -> Optional[List[str]]:
+    async def chat(self, user_id: int, user_message: str, channel_context: dict = None, channel=None) -> Optional[List[str]]:
         """Process a chat message and return the response.
 
         Follows the Arnold pattern:
@@ -110,6 +110,7 @@ class AdminChatAgent:
         Args:
             channel_context: If the message came from a public channel, contains
                 channel_id, channel_name, and thread info.
+            channel: Discord channel for typing indicator control.
         """
 
         # Handle special commands
@@ -163,6 +164,13 @@ class AdminChatAgent:
                 logger.debug(f"[AdminChat] Iteration {iteration + 1}")
                 
                 # Call Claude
+                # Show typing before each API call; stops naturally when bot sends messages
+                if channel:
+                    try:
+                        await channel.trigger_typing()
+                    except Exception:
+                        pass
+
                 # Inject runtime values into system prompt
                 bot_user_id = self.bot.user.id if self.bot and self.bot.user else "unknown"
                 guild_id = os.getenv('GUILD_ID', os.getenv('DEV_GUILD_ID', 'unknown'))
