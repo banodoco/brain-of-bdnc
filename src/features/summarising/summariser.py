@@ -582,7 +582,9 @@ class ChannelSummarizer:
                 members mb ON m.author_id = mb.member_id
             WHERE
                 m.channel_id = ? AND
-                m.created_at >= ?
+                m.created_at >= ? AND
+                (mb.bot IS NULL OR mb.bot = FALSE) AND
+                m.is_deleted = FALSE
             ORDER BY
                 m.created_at ASC
         """
