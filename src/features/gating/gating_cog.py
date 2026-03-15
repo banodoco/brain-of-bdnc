@@ -38,6 +38,8 @@ class GatingCog(commands.Cog):
         # In-memory set of pending intro message IDs for fast reaction filtering
         self._pending_message_ids: set[int] = set()
 
+        # Temp welcome messages pending deletion: {message_id: (channel_id, sent_at)}
+        self._temp_welcomes: dict[int, tuple[int, datetime]] = {}
 
     @staticmethod
     def _env_int(key: str) -> int | None:
@@ -60,9 +62,11 @@ class GatingCog(commands.Cog):
         except Exception as e:
             logger.error(f"GatingCog: failed to load pending intros: {e}", exc_info=True)
         self.cleanup_expired_intros.start()
+        self.cleanup_temp_welcomes.start()
 
     async def cog_unload(self):
         self.cleanup_expired_intros.cancel()
+        self.cleanup_temp_welcomes.cancel()
 
     # ========== Listeners ==========
 
@@ -86,10 +90,11 @@ class GatingCog(commands.Cog):
                     reference = hist_msg
                     break
 
-            await channel.send(
+            msg = await channel.send(
                 f"Hi {member.mention}, welcome! If you'd like to speak, see the message above 👆",
                 reference=reference,
             )
+            self._temp_welcomes[msg.id] = (channel.id, msg.created_at)
         except Exception as e:
             logger.error(f"GatingCog: failed to send gate welcome for {member.id}: {e}", exc_info=True)
 
@@ -240,11 +245,12 @@ class GatingCog(commands.Cog):
                     reference = hist_msg
                     break
 
-            await channel.send(
+            msg = await channel.send(
                 f"Welcome {member.mention}! You now have Speaker access. "
                 f"Check out the message above to get started \U0001f446",
                 reference=reference,
             )
+            self._temp_welcomes[msg.id] = (channel.id, msg.created_at)
         except Exception as e:
             logger.error(f"GatingCog: failed to send speaker welcome for {member.id}: {e}", exc_info=True)
 
@@ -268,3 +274,72 @@ class GatingCog(commands.Cog):
     @cleanup_expired_intros.before_loop
     async def before_cleanup(self):
         await self.bot.wait_until_ready()
+
+    # ---- Temp welcome cleanup ----
+
+    _TEMP_WELCOME_PATTERNS = (
+        "welcome! If you'd like to speak",
+        "You now have Speaker access",
+    )
+    TEMP_WELCOME_TTL = timedelta(minutes=5)
+
+    @tasks.loop(minutes=1)
+    async def cleanup_temp_welcomes(self):
+        """Delete temporary welcome pings older than 5 minutes."""
+        now = datetime.now(timezone.utc)
+
+        # Delete tracked messages that have expired
+        expired_ids = [
+            mid for mid, (_, sent_at) in self._temp_welcomes.items()
+            if now - sent_at >= self.TEMP_WELCOME_TTL
+        ]
+        for mid in expired_ids:
+            channel_id, _ = self._temp_welcomes.pop(mid)
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                continue
+            try:
+                msg = await channel.fetch_message(mid)
+                await msg.delete()
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                logger.error(f"GatingCog: failed to delete temp welcome {mid}: {e}")
+
+        # On first run, scan for orphaned welcome pings left by restarts
+        if not self._startup_scan_done:
+            self._startup_scan_done = True
+            await self._scan_orphaned_welcomes()
+
+    async def _scan_orphaned_welcomes(self):
+        """Scan gate and welcome channels for bot welcome pings left behind by restarts."""
+        now = datetime.now(timezone.utc)
+        channel_ids = [cid for cid in (self.gate_channel_id, self.welcome_channel_id) if cid]
+        deleted = 0
+        for cid in channel_ids:
+            channel = self.bot.get_channel(cid)
+            if not channel:
+                continue
+            try:
+                async for msg in channel.history(limit=50):
+                    if msg.author.id != self.bot.user.id:
+                        continue
+                    if not any(p in msg.content for p in self._TEMP_WELCOME_PATTERNS):
+                        continue
+                    if now - msg.created_at >= self.TEMP_WELCOME_TTL:
+                        try:
+                            await msg.delete()
+                            deleted += 1
+                        except discord.NotFound:
+                            pass
+                        except Exception as e:
+                            logger.error(f"GatingCog: failed to delete orphaned welcome {msg.id}: {e}")
+            except Exception as e:
+                logger.error(f"GatingCog: failed to scan channel {cid} for orphaned welcomes: {e}")
+        if deleted:
+            logger.info(f"GatingCog: cleaned up {deleted} orphaned welcome message(s)")
+
+    @cleanup_temp_welcomes.before_loop
+    async def before_cleanup_temp_welcomes(self):
+        await self.bot.wait_until_ready()
+        self._startup_scan_done = False
