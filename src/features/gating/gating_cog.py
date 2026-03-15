@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -22,8 +23,6 @@ class GatingCog(commands.Cog):
         self.speaker_role_id = self._env_int('SPEAKER_ROLE_ID')
         self.approver_role_id = self._env_int('APPROVER_ROLE_ID')
         self.super_approver_role_id = self._env_int('SUPER_APPROVER_ROLE_ID')
-        self.approval_emoji = os.getenv('APPROVAL_EMOJI', '\u2705')
-
         self.welcome_channel_id = self._env_int('WELCOME_CHANNEL_ID')
 
         self.configured = all([
@@ -39,8 +38,6 @@ class GatingCog(commands.Cog):
         # In-memory set of pending intro message IDs for fast reaction filtering
         self._pending_message_ids: set[int] = set()
 
-        # Temp welcome messages pending deletion: {message_id: (channel_id, sent_at)}
-        self._temp_welcomes: dict[int, tuple[int, datetime]] = {}
 
     @staticmethod
     def _env_int(key: str) -> int | None:
@@ -63,11 +60,9 @@ class GatingCog(commands.Cog):
         except Exception as e:
             logger.error(f"GatingCog: failed to load pending intros: {e}", exc_info=True)
         self.cleanup_expired_intros.start()
-        self.cleanup_temp_welcomes.start()
 
     async def cog_unload(self):
         self.cleanup_expired_intros.cancel()
-        self.cleanup_temp_welcomes.cancel()
 
     # ========== Listeners ==========
 
@@ -91,11 +86,10 @@ class GatingCog(commands.Cog):
                     reference = hist_msg
                     break
 
-            msg = await channel.send(
+            await channel.send(
                 f"Hi {member.mention}, welcome! If you'd like to speak, see the message above 👆",
                 reference=reference,
             )
-            self._temp_welcomes[msg.id] = (channel.id, msg.created_at)
         except Exception as e:
             logger.error(f"GatingCog: failed to send gate welcome for {member.id}: {e}", exc_info=True)
 
@@ -150,6 +144,23 @@ class GatingCog(commands.Cog):
         if self.db.create_pending_intro(message.author.id, message.id, message.channel.id):
             self._pending_message_ids.add(message.id)
             logger.info(f"GatingCog: tracked intro from {message.author} (msg {message.id})")
+
+            # Nudge if no URL, image, or video attached
+            has_url = bool(re.search(r'https?://\S+', message.content))
+            has_media = any(
+                a.content_type and (a.content_type.startswith('image/') or a.content_type.startswith('video/'))
+                for a in message.attachments
+            )
+            if not has_url and not has_media:
+                try:
+                    await message.reply(
+                        "Thanks for introducing yourself! Consider editing your intro or replying "
+                        "with a link to your work or an image/video of something you've made "
+                        "\u2014 it helps approvers get to know you faster.",
+                        mention_author=True,
+                    )
+                except Exception as e:
+                    logger.error(f"GatingCog: failed to send media nudge: {e}")
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -215,7 +226,7 @@ class GatingCog(commands.Cog):
             logger.error(f"GatingCog: failed to approve {member}: {e}", exc_info=True)
 
     async def _send_speaker_welcome(self, guild: discord.Guild, member: discord.Member):
-        """Post a temporary welcome in the getting-started channel, auto-deletes after 5 minutes."""
+        """Post a welcome in the getting-started channel."""
         if not self.welcome_channel_id:
             return
         channel = guild.get_channel(self.welcome_channel_id)
@@ -229,89 +240,15 @@ class GatingCog(commands.Cog):
                     reference = hist_msg
                     break
 
-            msg = await channel.send(
+            await channel.send(
                 f"Welcome {member.mention}! You now have Speaker access. "
                 f"Check out the message above to get started \U0001f446",
                 reference=reference,
             )
-            self._temp_welcomes[msg.id] = (channel.id, msg.created_at)
         except Exception as e:
             logger.error(f"GatingCog: failed to send speaker welcome for {member.id}: {e}", exc_info=True)
 
     # ========== Task Loops ==========
-
-    # Patterns that identify temporary welcome pings (not the pinned welcome post)
-    _TEMP_WELCOME_PATTERNS = (
-        "welcome! If you'd like to speak",
-        "You now have Speaker access",
-    )
-
-    TEMP_WELCOME_TTL = timedelta(minutes=5)
-
-    @tasks.loop(minutes=1)
-    async def cleanup_temp_welcomes(self):
-        """Delete temporary welcome messages older than 5 minutes.
-
-        Handles both in-memory tracked messages and orphaned messages
-        left behind by bot restarts (scanned on first run).
-        """
-        now = datetime.now(timezone.utc)
-
-        # --- Delete tracked messages that have expired ---
-        expired_ids = [
-            mid for mid, (_, sent_at) in self._temp_welcomes.items()
-            if now - sent_at >= self.TEMP_WELCOME_TTL
-        ]
-        for mid in expired_ids:
-            channel_id, _ = self._temp_welcomes.pop(mid)
-            channel = self.bot.get_channel(channel_id)
-            if not channel:
-                continue
-            try:
-                msg = await channel.fetch_message(mid)
-                await msg.delete()
-            except discord.NotFound:
-                pass
-            except Exception as e:
-                logger.error(f"GatingCog: failed to delete temp welcome {mid}: {e}")
-
-        # --- On first run, scan channels for orphaned welcome messages ---
-        if not self._startup_scan_done:
-            self._startup_scan_done = True
-            await self._scan_orphaned_welcomes()
-
-    async def _scan_orphaned_welcomes(self):
-        """Scan gate and welcome channels for bot welcome pings left behind by restarts."""
-        now = datetime.now(timezone.utc)
-        channel_ids = [cid for cid in (self.gate_channel_id, self.welcome_channel_id) if cid]
-        deleted = 0
-        for cid in channel_ids:
-            channel = self.bot.get_channel(cid)
-            if not channel:
-                continue
-            try:
-                async for msg in channel.history(limit=50):
-                    if msg.author.id != self.bot.user.id:
-                        continue
-                    if not any(p in msg.content for p in self._TEMP_WELCOME_PATTERNS):
-                        continue
-                    if now - msg.created_at >= self.TEMP_WELCOME_TTL:
-                        try:
-                            await msg.delete()
-                            deleted += 1
-                        except discord.NotFound:
-                            pass
-                        except Exception as e:
-                            logger.error(f"GatingCog: failed to delete orphaned welcome {msg.id}: {e}")
-            except Exception as e:
-                logger.error(f"GatingCog: failed to scan channel {cid} for orphaned welcomes: {e}")
-        if deleted:
-            logger.info(f"GatingCog: cleaned up {deleted} orphaned welcome message(s)")
-
-    @cleanup_temp_welcomes.before_loop
-    async def before_cleanup_temp_welcomes(self):
-        await self.bot.wait_until_ready()
-        self._startup_scan_done = False
 
     @tasks.loop(hours=1)
     async def cleanup_expired_intros(self):
@@ -325,17 +262,6 @@ class GatingCog(commands.Cog):
 
         logger.info(f"GatingCog: expiring {len(expired)} intro(s)")
         for intro in expired:
-            # Try to delete the Discord message
-            channel = self.bot.get_channel(intro['channel_id'])
-            if channel:
-                try:
-                    msg = await channel.fetch_message(intro['message_id'])
-                    await msg.delete()
-                except discord.NotFound:
-                    pass
-                except Exception as e:
-                    logger.error(f"GatingCog: failed to delete expired msg {intro['message_id']}: {e}")
-
             self.db.expire_pending_intro(intro['message_id'])
             self._pending_message_ids.discard(intro['message_id'])
 
