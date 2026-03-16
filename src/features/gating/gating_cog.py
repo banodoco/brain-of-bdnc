@@ -163,6 +163,7 @@ class GatingCog(commands.Cog):
                         "with a link to your work or an image/video of something you've made "
                         "\u2014 it helps approvers get to know you faster.",
                         mention_author=True,
+                        delete_after=120,
                     )
                 except Exception as e:
                     logger.error(f"GatingCog: failed to send media nudge: {e}")
