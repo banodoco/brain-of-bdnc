@@ -66,8 +66,8 @@ class AdminChatCog(commands.Cog):
         if isinstance(message.channel, discord.DMChannel):
             return True
 
-        # In public channels, respond if the bot is @mentioned
-        if self.bot.user and self.bot.user.mentioned_in(message):
+        # In public channels, respond if the bot is directly @mentioned (not @everyone/@here)
+        if self.bot.user and self.bot.user.mentioned_in(message) and not message.mention_everyone:
             return True
 
         # Also respond if replying to one of the bot's messages
