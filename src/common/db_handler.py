@@ -494,6 +494,22 @@ class DatabaseHandler:
             logger.error(f"Error removing reaction for message {message_id}: {e}")
             return False
 
+    def log_reaction_event(self, message_id: int, user_id: int, emoji_str: str, action: str) -> bool:
+        """Append an event to the discord_reaction_log table (pure history)."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            self.storage_handler.supabase_client.table('discord_reaction_log').insert({
+                'message_id': message_id,
+                'user_id': user_id,
+                'emoji': emoji_str,
+                'action': action,
+            }).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error logging reaction event for message {message_id}: {e}")
+            return False
+
     def upsert_reactions_batch(self, message_id: int, rows: list) -> bool:
         """Sync granular reactions for a message.
 

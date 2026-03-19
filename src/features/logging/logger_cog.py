@@ -53,6 +53,9 @@ class LoggerCog(commands.Cog):
             elif action == 'remove':
                 self.db.remove_reaction(reaction.message.id, user.id, emoji_str)
 
+            # Append to reaction log (tracks every add/remove event)
+            self.db.log_reaction_event(reaction.message.id, user.id, emoji_str, action)
+
             if self.dev_mode:
                 self.logger.debug(f"[LoggerCog] Reaction {action}: msg={reaction.message.id} user={user.id} emoji={emoji_str}")
 
