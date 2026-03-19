@@ -1,0 +1,2 @@
+-- Already applied remotely (initial trigger with bigint[] type)
+-- Superseded by 20260319100000_fix_sync_reactors_trigger.sql

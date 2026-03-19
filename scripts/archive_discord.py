@@ -5,6 +5,7 @@ import argparse
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import discord
+from discord.ext import commands  # needed before discord.ext is used in type annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
@@ -89,7 +90,10 @@ class MessageArchiver(BaseDiscordBot):
         
         # Get bot user ID from env
         self.bot_user_id = int(os.getenv('BOT_USER_ID'))
-        
+
+        # Cache of channel IDs that are summary threads (to avoid re-checking)
+        self._summary_thread_ids: set[int] = set()
+
         # Get guild ID based on mode
         self.guild_id = int(os.getenv('DEV_GUILD_ID' if dev_mode else 'GUILD_ID'))
         
@@ -234,6 +238,19 @@ class MessageArchiver(BaseDiscordBot):
                 continue
         
         loop.close()
+
+    def _is_bot_summary_message(self, message, channel) -> bool:
+        """Return True only for bot messages posted inside a summary thread."""
+        if message.author.id != self.bot_user_id:
+            return False
+        # Check cache first
+        if channel.id in self._summary_thread_ids:
+            return True
+        # Only skip bot messages in summary threads
+        if isinstance(channel, discord.Thread) and "Summary" in (channel.name or ""):
+            self._summary_thread_ids.add(channel.id)
+            return True
+        return False
 
     async def _db_operation(self, func, *args, **kwargs):
         """Execute a database operation in the worker thread."""
@@ -695,8 +712,8 @@ class MessageArchiver(BaseDiscordBot):
         messages_processed_this_day = 0 # Initialize daily counter
 
         async for message in channel.history(limit=None, after=self.start_date, before=self.end_date, oldest_first=self.oldest_first):
-            # Skip messages from the bot
-            if message.author.id == self.bot_user_id:
+            # Skip bot summary messages (but archive other bot messages)
+            if self._is_bot_summary_message(message, channel):
                 continue
 
             message_counter += 1
@@ -940,8 +957,8 @@ class MessageArchiver(BaseDiscordBot):
                                 logger.debug(f"Fetched {message_counter} messages so far from #{channel.name}, last message from {message.created_at}")
 
                             try:
-                                # Skip messages from the bot
-                                if message.author.id == self.bot_user_id:
+                                # Skip bot summary messages (but archive other bot messages)
+                                if self._is_bot_summary_message(message, channel):
                                     continue
 
                                 # In in-depth mode, always process the message
@@ -1039,8 +1056,8 @@ class MessageArchiver(BaseDiscordBot):
                     logger.debug(f"Reached cutoff date {cutoff_date}, stopping newer message search")
                     break
 
-                # Skip messages from the bot
-                if message.author.id == self.bot_user_id:
+                # Skip bot summary messages (but archive other bot messages)
+                if self._is_bot_summary_message(message, channel):
                     continue
 
                 current_batch.append(message)
@@ -1106,8 +1123,8 @@ class MessageArchiver(BaseDiscordBot):
                 if cutoff_date and message.created_at < cutoff_date:
                     continue
 
-                # Skip messages from the bot
-                if message.author.id == self.bot_user_id:
+                # Skip bot summary messages (but archive other bot messages)
+                if self._is_bot_summary_message(message, channel):
                     continue
 
                 current_batch.append(message)
@@ -1191,8 +1208,8 @@ class MessageArchiver(BaseDiscordBot):
                     current_batch = []
                     logger.info(f"Searching for messages in #{channel.name} between {start} and {end} (gap of {abs((end - start).days)} days)")
                     async for message in channel.history(limit=None, after=start, before=end, oldest_first=self.oldest_first):
-                        # Skip messages from the bot
-                        if message.author.id == self.bot_user_id:
+                        # Skip bot summary messages (but archive other bot messages)
+                        if self._is_bot_summary_message(message, channel):
                             continue
 
                         current_batch.append(message)

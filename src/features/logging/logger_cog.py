@@ -1,6 +1,5 @@
 # src/features/logging/logger_cog.py
 
-import json
 from discord.ext import commands
 from src.common.db_handler import DatabaseHandler
 from src.common.discord_utils import emoji_to_str
@@ -39,76 +38,23 @@ class LoggerCog(commands.Cog):
             self.logger.debug(f"Guild reaction events enabled: {self.bot.intents.guild_reactions}")
 
     async def _update_reaction(self, reaction, user, action: str):
-        """Helper method to add or remove a reaction from the database."""
+        """Write reaction add/remove to discord_reactions table.
+
+        A Postgres trigger (sync_message_reactors) automatically keeps
+        discord_messages.reactors and reaction_count in sync.
+        """
         if user.bot:
             return
 
         try:
-            results = self.db.execute_query(
-                "SELECT reaction_count, reactors FROM messages WHERE message_id = ?",
-                (reaction.message.id,)
-            )
-
-            if not results:
-                if self.dev_mode:
-                    self.logger.warning(f"Message {reaction.message.id} not found in database for reaction update")
-                return
-
-            message_data = results[0]
-            _current_count = message_data.get('reaction_count', 0) or 0
-            
-            # Robustly load reactors, handling double-encoded JSON for old data
-            reactors_raw = message_data.get('reactors')
-            current_reactors = []
-            if isinstance(reactors_raw, str):
-                try:
-                    loaded_reactors = json.loads(reactors_raw)
-                    if isinstance(loaded_reactors, str):
-                        # Handle double encoding
-                        current_reactors = json.loads(loaded_reactors)
-                    else:
-                        current_reactors = loaded_reactors
-                except json.JSONDecodeError:
-                    self.logger.warning(f"Could not decode reactors JSON for message {reaction.message.id}: {reactors_raw}")
-                    current_reactors = []
-            elif isinstance(reactors_raw, list):
-                current_reactors = reactors_raw
-
-            if not isinstance(current_reactors, list):
-                self.logger.warning(f"Reactors for message {reaction.message.id} is not a list, resetting.")
-                current_reactors = []
-
-            # Perform the requested action - only update if there's an actual change
-            changed = False
+            emoji_str = emoji_to_str(reaction.emoji)
             if action == 'add':
-                if user.id not in current_reactors:
-                    current_reactors.append(user.id)
-                    changed = True
+                self.db.add_reaction(reaction.message.id, user.id, emoji_str)
             elif action == 'remove':
-                if user.id in current_reactors:
-                    current_reactors.remove(user.id)
-                    changed = True
-            else:
-                return # Invalid action
+                self.db.remove_reaction(reaction.message.id, user.id, emoji_str)
 
-            # Only update database if there was an actual change
-            if changed:
-                new_count = len(current_reactors)
-                self.db.update_reactions(reaction.message.id, new_count, current_reactors)
-
-                # Dual-write to granular reactions table
-                try:
-                    emoji_str = emoji_to_str(reaction.emoji)
-                    if action == 'add':
-                        self.db.add_reaction(reaction.message.id, user.id, emoji_str)
-                    elif action == 'remove':
-                        self.db.remove_reaction(reaction.message.id, user.id, emoji_str)
-                except Exception as e:
-                    self.logger.error(f"Error writing to discord_reactions: {e}")
-
-                # Only log in dev mode
-                if self.dev_mode:
-                    self.logger.debug(f"[LoggerCog] Updated reaction {action} for message {reaction.message.id}")
+            if self.dev_mode:
+                self.logger.debug(f"[LoggerCog] Reaction {action}: msg={reaction.message.id} user={user.id} emoji={emoji_str}")
 
         except Exception as e:
             self.logger.error(f"[LoggerCog] Error in _update_reaction (action: {action}): {e}", exc_info=True)
