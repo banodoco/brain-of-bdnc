@@ -36,8 +36,6 @@ from .subfeatures.workflow_uploader import process_workflow_upload_request # UPD
 #   {"trigger_type": "text", "text_pattern": "(?i)urgent", "action": "log_urgent_message", "channel_id": "*", "user_id": "*"},
 #   {"trigger_type": "attachment", "attachment_type": "image/png", "action": "process_image_attachment", "user_id": "*"}
 # ]
-WATCHLIST_JSON = os.getenv('REACTION_WATCHLIST', '[]')
-
 MAX_UPLOAD_ATTEMPTS = 3
 BASE_RETRY_DELAY_SECONDS = 2
 
@@ -51,114 +49,143 @@ class Reactor:
         self.openmuse_interactor = openmuse_interactor # <<< Store OpenMuse Interactor instance
         self.bot = bot_instance # <<< ADDED to store bot_instance
         self.llm_client = llm_client # Store LLM client instance
-        self.watchlist = []
+        self.watchlist_by_guild = {}
+        self._watchlist_refresh_marker = None
         self._load_watchlist()
 
     def _load_watchlist(self):
-        """Loads and parses the reaction watchlist from environment variables."""
-        # --- BEGIN ADDED LOG ---
-        # Log the raw value obtained from the environment variable BEFORE parsing
-        raw_watchlist_env = os.getenv('REACTION_WATCHLIST')
-        self.logger.debug(f"[Reactor] Raw REACTION_WATCHLIST from env: {raw_watchlist_env}")
-        # Use the same value for parsing attempt
-        watchlist_to_parse = raw_watchlist_env if raw_watchlist_env is not None else '[]' # Use default if None
-        # --- END ADDED LOG ---
+        """Load and parse per-guild reactor rules from server_config."""
+        sc = getattr(self.db_handler, 'server_config', None) if self.db_handler else None
+        watchlist_by_guild = {}
+        valid_rules = 0
         try:
-            # --- MODIFIED LINE --- Use the variable logged above
-            parsed_watchlist = json.loads(watchlist_to_parse)
-            # --- END MODIFIED LINE ---
-            if not isinstance(parsed_watchlist, list):
-                raise ValueError("REACTION_WATCHLIST is not a valid JSON list.")
-            
-            self.watchlist = []
-            valid_rules = 0
-            for i, rule in enumerate(parsed_watchlist):
-                if not isinstance(rule, dict) or 'action' not in rule:
-                    self.logger.warning(f"[Reactor] Skipping invalid rule #{i+1} (missing 'action'): {rule}")
+            servers = sc.get_enabled_servers(require_write=True) if sc else []
+            if not servers:
+                # Fall back to env var for backward compatibility
+                self._watchlist_refresh_marker = None
+                env_watchlist = os.getenv('REACTION_WATCHLIST')
+                if env_watchlist:
+                    try:
+                        parsed = json.loads(env_watchlist)
+                        if isinstance(parsed, list):
+                            env_prefix = 'DEV_' if self.dev_mode else ''
+                            env_guild_id = int(os.getenv(f'{env_prefix}GUILD_ID', '0')) or 0
+                            if env_guild_id:
+                                guild_rules = []
+                                for i, rule in enumerate(parsed):
+                                    normalized = self._normalize_rule(rule, env_guild_id, i + 1)
+                                    if normalized:
+                                        guild_rules.append(normalized)
+                                if guild_rules:
+                                    watchlist_by_guild[env_guild_id] = guild_rules
+                                    self.logger.info(f"[Reactor] Loaded {len(guild_rules)} rules from env REACTION_WATCHLIST for guild {env_guild_id}")
+                    except (json.JSONDecodeError, ValueError) as e:
+                        self.logger.error(f"[Reactor] Failed to parse env REACTION_WATCHLIST: {e}")
+                self.watchlist_by_guild = watchlist_by_guild
+                return
+
+            self._watchlist_refresh_marker = getattr(sc, '_last_refresh_monotonic', None)
+            for server in servers:
+                guild_id = server['guild_id']
+                parsed_watchlist = server.get('reaction_watchlist') or []
+                if not isinstance(parsed_watchlist, list):
+                    self.logger.warning(f"[Reactor] reaction_watchlist for guild {guild_id} is not a list; skipping")
                     continue
 
-                # Determine trigger type, default to 'reaction' for backward compatibility
-                trigger_type = rule.get('trigger_type', 'reaction').lower()
-                rule['trigger_type'] = trigger_type # Ensure type is stored in lowercase
+                guild_rules = []
+                for i, rule in enumerate(parsed_watchlist):
+                    normalized = self._normalize_rule(rule, guild_id, i + 1)
+                    if normalized:
+                        guild_rules.append(normalized)
+                        valid_rules += 1
 
-                valid = False
-                if trigger_type == 'reaction':
-                    if 'user_id' in rule and 'emoji' in rule:
-                        # Ensure user_id is a list or '*'
-                        if isinstance(rule['user_id'], str) and rule['user_id'] != '*':
-                            rule['user_id'] = [rule['user_id']]
-                        elif not isinstance(rule['user_id'], list) and rule['user_id'] != '*':
-                            self.logger.warning(f"[Reactor] Skipping invalid 'reaction' rule #{i+1} ('user_id' must be a string, a list of strings, or '*'): {rule}")
-                            continue # Skip to next rule
-                        valid = True
-                    else:
-                        self.logger.warning(f"[Reactor] Skipping invalid 'reaction' rule #{i+1} (missing 'user_id' or 'emoji'): {rule}")
-                elif trigger_type == 'text':
-                    # Accept either a full regex pattern *or* a simple substring to search for.
-                    if 'text_pattern' in rule:
-                        # Ensure channel_id and user_id default to '*' if not present
-                        rule.setdefault('channel_id', '*')
-                        rule.setdefault('user_id', '*')
-                        try:
-                            re.compile(rule['text_pattern'])  # Validate regex
-                            valid = True
-                        except re.error as e:
-                            self.logger.warning(f"[Reactor] Skipping invalid 'text' rule #{i+1} (invalid regex '{rule['text_pattern']}'): {e}")
-                    elif 'text_contains' in rule:
-                        # Simple, case-insensitive substring match – no regex validation required
-                        if not isinstance(rule['text_contains'], str):
-                            self.logger.warning(f"[Reactor] Skipping invalid 'text' rule #{i+1} ('text_contains' is not a string): {rule}")
-                        else:
-                            rule.setdefault('channel_id', '*')
-                            rule.setdefault('user_id', '*')
-                            valid = True
-                    else:
-                        self.logger.warning(f"[Reactor] Skipping invalid 'text' rule #{i+1} (missing 'text_pattern' or 'text_contains'): {rule}")
-                elif trigger_type == 'attachment':
-                    if 'attachment_type' in rule:
-                         # Ensure channel_id and user_id default to '*' if not present
-                        rule.setdefault('channel_id', '*')
-                        rule.setdefault('user_id', '*')
-                        valid = True
-                    else:
-                        self.logger.warning(f"[Reactor] Skipping invalid 'attachment' rule #{i+1} (missing 'attachment_type'): {rule}")
-                else:
-                     self.logger.warning(f"[Reactor] Skipping rule #{i+1} with unknown trigger_type: '{trigger_type}'")
+                if guild_rules:
+                    watchlist_by_guild[guild_id] = guild_rules
 
-                if valid:
-                    self.watchlist.append(rule)
-                    valid_rules += 1
-                
-            self.logger.info(f"[Reactor] Loaded {valid_rules} valid rules ({len(self.watchlist)}) from REACTION_WATCHLIST.")
-            if self.dev_mode:
-                 for i, rule in enumerate(self.watchlist):
-                     # Log based on type
-                     log_str = f"[Reactor] Rule {i+1}: Type='{rule['trigger_type']}', Action='{rule['action']}'"
-                     if rule['trigger_type'] == 'reaction':
-                         log_str += f", User='{rule.get('user_id')}', Emoji='{rule.get('emoji')}'"
-                     elif rule['trigger_type'] == 'text':
-                          pattern_repr = rule.get('text_pattern', rule.get('text_contains'))
-                          log_str += f", Pattern='{pattern_repr}', Channel='{rule.get('channel_id', '*')}', User='{rule.get('user_id', '*')}'"
-                     elif rule['trigger_type'] == 'attachment':
-                          log_str += f", Type='{rule.get('attachment_type')}', Channel='{rule.get('channel_id', '*')}', User='{rule.get('user_id', '*')}'"
-                     self.logger.debug(log_str)
-
-        except json.JSONDecodeError as e: # --- MODIFIED LINE --- Added exception details
-            self.logger.error(f"[Reactor] Failed to parse REACTION_WATCHLIST JSON. Value was: {watchlist_to_parse}. Error: {e}")
-            self.watchlist = []
-        except ValueError as e:
-            self.logger.error(f"[Reactor] Error loading REACTION_WATCHLIST: {e}")
-            self.watchlist = []
+            self.watchlist_by_guild = watchlist_by_guild
+            total_guilds = len(self.watchlist_by_guild)
+            self.logger.info(f"[Reactor] Loaded {valid_rules} valid rules across {total_guilds} guild(s) from server_config.reaction_watchlist.")
         except Exception as e:
-             self.logger.error(f"[Reactor] Unexpected error loading watchlist: {e}")
-             self.logger.error(traceback.format_exc())
-             self.watchlist = []
+            self.logger.error(f"[Reactor] Unexpected error loading watchlist: {e}")
+            self.logger.error(traceback.format_exc())
+            self.watchlist_by_guild = {}
+
+    def _normalize_rule(self, rule, guild_id: int, rule_index: int):
+        if not isinstance(rule, dict) or 'action' not in rule:
+            self.logger.warning(f"[Reactor] Skipping invalid rule #{rule_index} for guild {guild_id} (missing 'action'): {rule}")
+            return None
+
+        rule = dict(rule)
+        trigger_type = str(rule.get('trigger_type', 'reaction')).lower()
+        rule['trigger_type'] = trigger_type
+
+        if trigger_type == 'reaction':
+            if 'user_id' not in rule or 'emoji' not in rule:
+                self.logger.warning(f"[Reactor] Skipping invalid reaction rule #{rule_index} for guild {guild_id}: {rule}")
+                return None
+            if isinstance(rule['user_id'], str) and rule['user_id'] != '*':
+                rule['user_id'] = [rule['user_id']]
+            elif not isinstance(rule['user_id'], list) and rule['user_id'] != '*':
+                self.logger.warning(f"[Reactor] Skipping invalid reaction rule #{rule_index} for guild {guild_id}: {rule}")
+                return None
+            if isinstance(rule['user_id'], list):
+                rule['user_id'] = [str(user_id) for user_id in rule['user_id']]
+            rule['emoji'] = str(rule['emoji'])
+            return rule
+
+        if trigger_type == 'text':
+            rule.setdefault('channel_id', '*')
+            rule.setdefault('user_id', '*')
+            if rule['channel_id'] != '*':
+                rule['channel_id'] = str(rule['channel_id'])
+            if rule['user_id'] != '*':
+                rule['user_id'] = str(rule['user_id'])
+            if 'text_pattern' in rule:
+                try:
+                    re.compile(rule['text_pattern'])
+                    return rule
+                except re.error as e:
+                    self.logger.warning(f"[Reactor] Skipping invalid text regex for guild {guild_id}: {e}")
+                    return None
+            if isinstance(rule.get('text_contains'), str):
+                return rule
+            self.logger.warning(f"[Reactor] Skipping invalid text rule #{rule_index} for guild {guild_id}: {rule}")
+            return None
+
+        if trigger_type == 'attachment':
+            if 'attachment_type' not in rule:
+                self.logger.warning(f"[Reactor] Skipping invalid attachment rule #{rule_index} for guild {guild_id}: {rule}")
+                return None
+            rule.setdefault('channel_id', '*')
+            rule.setdefault('user_id', '*')
+            if rule['channel_id'] != '*':
+                rule['channel_id'] = str(rule['channel_id'])
+            if rule['user_id'] != '*':
+                rule['user_id'] = str(rule['user_id'])
+            return rule
+
+        self.logger.warning(f"[Reactor] Skipping rule #{rule_index} for guild {guild_id} with unknown trigger_type '{trigger_type}'")
+        return None
+
+    def _get_watchlist_for_guild(self, guild_id: int | None):
+        sc = getattr(self.db_handler, 'server_config', None) if self.db_handler else None
+        if sc:
+            sc._maybe_refresh()
+            refresh_marker = getattr(sc, '_last_refresh_monotonic', None)
+            if refresh_marker != self._watchlist_refresh_marker:
+                self._load_watchlist()
+        if guild_id is None:
+            return []
+        return self.watchlist_by_guild.get(guild_id, [])
 
     def check_reaction(self, reaction, user):
         """Checks if a reaction matches any 'reaction' rule in the watchlist and returns the action name if matched."""
-        reaction_rules = [rule for rule in self.watchlist if rule.get('trigger_type', 'reaction') == 'reaction']
+        guild_id = getattr(getattr(reaction, 'message', None), 'guild', None)
+        guild_id = getattr(guild_id, 'id', None)
+        guild_watchlist = self._get_watchlist_for_guild(guild_id)
+        reaction_rules = [rule for rule in guild_watchlist if rule.get('trigger_type', 'reaction') == 'reaction']
         if not reaction_rules:
-            self.logger.debug("[Reactor] check_reaction called, but no reaction rules are loaded.")
+            self.logger.debug(f"[Reactor] check_reaction called for guild {guild_id}, but no reaction rules are loaded.")
             return None
         if user.bot:
             # This check is redundant if ReactorCog already filters bots, but safe to keep.
@@ -190,9 +217,11 @@ class Reactor:
 
     def check_message(self, message: discord.Message):
         """Checks if a message matches any 'text' or 'attachment' rule in the watchlist."""
-        message_rules = [rule for rule in self.watchlist if rule.get('trigger_type') in ['text', 'attachment']]
+        guild_id = getattr(getattr(message, 'guild', None), 'id', None)
+        guild_watchlist = self._get_watchlist_for_guild(guild_id)
+        message_rules = [rule for rule in guild_watchlist if rule.get('trigger_type') in ['text', 'attachment']]
         if not message_rules:
-            self.logger.debug("[Reactor] check_message called, but no text/attachment rules are loaded.")
+            self.logger.debug(f"[Reactor] check_message called for guild {guild_id}, but no text/attachment rules are loaded.")
             return None
         if message.author.bot:
             self.logger.debug("[Reactor] check_message called for a bot message, ignoring.")

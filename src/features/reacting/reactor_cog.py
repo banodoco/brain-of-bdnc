@@ -4,7 +4,6 @@ import discord
 from discord.ext import commands
 import os
 import traceback
-import json
 import asyncio
 import logging
 import time
@@ -26,62 +25,64 @@ class ReactorCog(commands.Cog):
         self.bot = bot
         self.logger = logger
         self.dev_mode = dev_mode
-        # self.reactor = Reactor(logger=logger, dev_mode=dev_mode) # REMOVED - Reactor instance is created in main.py
         if dev_mode:
             self.logger.info(f"Initializing ReactorCog in development mode (Reactor instance expected on bot object)")
         self.message_linker_channel_ids = [] # Initialize attribute
         self._rate_limit_until = 0  # monotonic timestamp; skip reaction handling while active
 
+    def _is_feature_enabled(self, guild_id, channel_id, feature):
+        """Check if a feature is enabled via server_config, defaulting to True."""
+        sc = getattr(getattr(self.bot, 'db_handler', None), 'server_config', None)
+        if sc is None:
+            return True
+        return sc.is_feature_enabled(guild_id, channel_id, feature)
+
     def _load_message_linker_config(self):
-        """Loads message_linker channel configurations from the environment watchlist."""
-        watchlist_json = os.getenv('REACTION_WATCHLIST', '[]')
+        """Load message_linker channel configuration from server_config."""
         try:
-            watchlist = json.loads(watchlist_json)
             self.message_linker_channel_ids = [] # Reset before loading
-            for item in watchlist:
-                if item.get("feature") == "message_linker" and "channel_id" in item:
-                    try:
-                        channel_id_str = item["channel_id"]
-                        if channel_id_str == "*": # Wildcard for all channels
-                            self.logger.info("[ReactorCog] MessageLinker configured for all channels ('*').")
-                            # Represent "all channels" with a special value, e.g., None or an empty list
-                            # For now, if "*" is found, we'll make it process all channels by not restricting.
-                            # However, the current MessageLinker logic requires specific IDs or it does nothing.
-                            # For true wildcard, MessageLinker.process_message_links would need adjustment.
-                            # Let's assume for now "*" means no specific channel filtering by the cog, 
-                            # and MessageLinker would need to be initialized with an empty list or special flag.
-                            # For this implementation, we will treat '*' as an invalid specific ID and log a warning.
-                            # Or, better, let MessageLinker handle it if we pass None.
-                            # Let's stick to specific IDs and ignore '*' for now, or treat it as "enabled everywhere".
-                            # For now, if '*' is set, let's enable it everywhere by setting allowed_channel_ids to None in MessageLinker's init.
-                            # This means message_linker.py needs to be robust if allowed_channel_ids is None.
-                            # Let's adjust: if "*", we pass an empty list, and MessageLinker must be updated to treat empty list as "all channels".
-                            # Revising: Current MessageLinker treats empty list as "no channels".
-                            # So, for "*", we should perhaps pass a special sentinel or not filter in the cog.
-                            # For now, let's assume channel_id will always be a specific ID for message_linker feature.
-                            # We will simply log if '*' is used for 'message_linker' and not add it.
-                            self.logger.warning("[ReactorCog] MessageLinker channel_id='*' is ambiguous. Please specify channel IDs or update MessageLinker to handle wildcard.")
-                            # To enable for all channels, the MessageLinker itself should not have channel restrictions.
-                            # The MessageLinker class currently allows an empty list, meaning no channels.
-                            # If we want '*' to mean all, we would pass None to MessageLinker's allowed_channel_ids and it would skip the check.
-                            # Let's keep current MessageLinker behavior: an empty list = disabled. Non-empty list = only those channels.
-                            # So, '*' in watchlist for message_linker won't enable it unless MessageLinker changes.
-                            # For current request, we only care about specific ID 1376260046945648720.
-                            continue # Skip '*' for now for message_linker feature
-                        
-                        channel_id = int(channel_id_str)
+            sc = getattr(getattr(self.bot, 'db_handler', None), 'server_config', None)
+            if sc:
+                for server in sc.get_enabled_servers():
+                    guild_id = server['guild_id']
+                    channels = server.get('message_linker_channels') or []
+                    if not isinstance(channels, list):
+                        self.logger.warning(f"[ReactorCog] message_linker_channels for guild {guild_id} is not a list; skipping")
+                        continue
+                    for raw_channel_id in channels:
+                        try:
+                            channel_id = int(raw_channel_id)
+                        except (TypeError, ValueError):
+                            self.logger.error(f"[ReactorCog] Invalid message_linker channel ID '{raw_channel_id}' for guild {guild_id}")
+                            continue
                         if channel_id not in self.message_linker_channel_ids:
                             self.message_linker_channel_ids.append(channel_id)
-                    except ValueError:
-                        self.logger.error(f"[ReactorCog] Invalid channel_id '{item['channel_id']}' for message_linker in REACTION_WATCHLIST. Must be an integer.")
-            
+
+            # Env fallback if server_config yielded nothing
+            if not self.message_linker_channel_ids:
+                import json as _json
+                env_val = os.getenv('REACTION_WATCHLIST', '[]')
+                try:
+                    parsed = _json.loads(env_val)
+                    if isinstance(parsed, list):
+                        for rule in parsed:
+                            if isinstance(rule, dict) and rule.get('trigger_type') == 'message_link':
+                                for ch in (rule.get('channels') or []):
+                                    try:
+                                        cid = int(ch)
+                                        if cid not in self.message_linker_channel_ids:
+                                            self.message_linker_channel_ids.append(cid)
+                                    except (TypeError, ValueError):
+                                        pass
+                except (_json.JSONDecodeError, ValueError):
+                    pass
+
             if self.message_linker_channel_ids:
                 self.logger.info(f"[ReactorCog] Loaded MessageLinker config. Allowed channel IDs: {self.message_linker_channel_ids}")
             else:
-                self.logger.info("[ReactorCog] No specific channel IDs found for MessageLinker in REACTION_WATCHLIST. It will be disabled or follow its default behavior.")
-
-        except json.JSONDecodeError:
-            self.logger.error(f"Error decoding REACTION_WATCHLIST JSON: {watchlist_json}")
+                self.logger.info("[ReactorCog] No message_linker channels configured.")
+        except Exception as e:
+            self.logger.error(f"[ReactorCog] Error loading message_linker config: {e}", exc_info=True)
             self.message_linker_channel_ids = [] # Ensure it's empty on error
 
     async def cog_load(self):
@@ -119,7 +120,10 @@ class ReactorCog(commands.Cog):
         # Ignore messages from bots or messages without content/attachments in non-DM channels
         if message.author.bot or not message.guild:
             return
-        
+
+        if not self._is_feature_enabled(message.guild.id, message.channel.id, 'reactions'):
+            return
+
         # --- Message Linker Processing ---
         # Check for message links first, independently of other reactor logic
         # Get the MessageLinker instance
@@ -203,8 +207,10 @@ class ReactorCog(commands.Cog):
             if user.bot:
                 self.logger.debug(f"[ReactorCog] Ignoring raw reaction from bot: {user.name}")
                 return
-        
-            # --- END STEP 1 ---
+
+            # Feature guard: reactions_enabled
+            if not self._is_feature_enabled(payload.guild_id, payload.channel_id, 'reactions'):
+                return
 
             # --- STEP 2: Restore Reactor instance check and object fetching ---
             # Get the shared Reactor instance
@@ -283,14 +289,18 @@ class ReactorCog(commands.Cog):
                     # Use asyncio.create_task to prevent blocking the main event flow
                     asyncio.create_task(logger_cog.log_reaction_add(simulated_reaction, user))
                 
-                # --- Call Reactor --- 
+                # --- Call Reactor (only if sharing_enabled for this channel) ---
                 try:
-                    action_name = reactor_instance.check_reaction(simulated_reaction, user) # Pass simulated object
+                    # Skip reactor actions if sharing is disabled for this channel
+                    # (reactions are still logged by LoggerCog above)
+                    if not self._is_feature_enabled(payload.guild_id, payload.channel_id, 'sharing'):
+                        self.logger.debug(f"[ReactorCog] sharing_enabled=False for channel {payload.channel_id}, skipping reactor actions")
+                    else:
+                        action_name = reactor_instance.check_reaction(simulated_reaction, user)
 
-                    if action_name:
-                        self.logger.info(f"[ReactorCog] Executing reactor action '{action_name}' for User: {user.id}, Emoji: {emoji}")
-                        # Execute action needs the reaction object as well for context
-                        asyncio.create_task(reactor_instance.execute_reaction_action(action_name, simulated_reaction, user))
+                        if action_name:
+                            self.logger.info(f"[ReactorCog] Executing reactor action '{action_name}' for User: {user.id}, Emoji: {emoji}")
+                            asyncio.create_task(reactor_instance.execute_reaction_action(action_name, simulated_reaction, user))
                     
                 except Exception as e:
                     self.logger.error(f"[ReactorCog] Error in ReactorCog check_reaction/execute_action block: {e}")
@@ -339,6 +349,10 @@ class ReactorCog(commands.Cog):
         
         if user.bot:
             self.logger.debug(f"[ReactorCog] Ignoring raw reaction remove from bot: {user.name} ({user.id})")
+            return
+
+        # Feature guard: reactions_enabled
+        if not self._is_feature_enabled(payload.guild_id, payload.channel_id, 'reactions'):
             return
 
         # Fetch necessary objects

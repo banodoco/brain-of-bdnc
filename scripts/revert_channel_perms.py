@@ -2,9 +2,16 @@
 import asyncio
 import os
 import logging
+import sys
+from pathlib import Path
 
 import discord
 from dotenv import load_dotenv
+
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from src.common.db_handler import DatabaseHandler
 
 load_dotenv()
 
@@ -15,8 +22,7 @@ handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)
 logger.addHandler(handler)
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-GUILD_ID = int(os.getenv("GUILD_ID"))
-SPEAKER_ROLE_ID = int(os.getenv("SPEAKER_ROLE_ID"))
+TARGET_GUILD_ID = int(os.getenv("TARGET_GUILD_ID", os.getenv("GUILD_ID", "0"))) or None
 EXEMPT_CHANNELS = {int(x.strip()) for x in os.getenv("SPEAKER_EXEMPT_CHANNELS", "").split(",") if x.strip()}
 
 intents = discord.Intents.default()
@@ -24,18 +30,37 @@ intents.guilds = True
 client = discord.Client(intents=intents)
 
 
+def get_speaker_role_id(db: DatabaseHandler, guild_id: int | None) -> int | None:
+    if guild_id is None:
+        return None
+    sc = getattr(db, 'server_config', None)
+    if sc:
+        role_id = sc.get_server_field(guild_id, 'speaker_role_id', cast=int)
+        if role_id:
+            return role_id
+    env_value = os.getenv("SPEAKER_ROLE_ID")
+    return int(env_value) if env_value else None
+
+
 @client.event
 async def on_ready():
     logger.info(f"Logged in as {client.user}")
-    guild = client.get_guild(GUILD_ID)
-    if not guild:
-        logger.error(f"Guild {GUILD_ID} not found")
+    if not TARGET_GUILD_ID:
+        logger.error("TARGET_GUILD_ID or GUILD_ID must be configured")
         await client.close()
         return
 
-    role = guild.get_role(SPEAKER_ROLE_ID)
+    db = DatabaseHandler()
+    speaker_role_id = get_speaker_role_id(db, TARGET_GUILD_ID)
+    guild = client.get_guild(TARGET_GUILD_ID)
+    if not guild:
+        logger.error(f"Guild {TARGET_GUILD_ID} not found")
+        await client.close()
+        return
+
+    role = guild.get_role(speaker_role_id) if speaker_role_id else None
     if not role:
-        logger.error(f"Speaker role {SPEAKER_ROLE_ID} not found")
+        logger.error(f"Speaker role {speaker_role_id} not found")
         await client.close()
         return
 

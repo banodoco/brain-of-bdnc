@@ -22,9 +22,6 @@ project_root = Path(__file__).parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-# Server ID for Discord links
-GUILD_ID = int(os.getenv('GUILD_ID', os.getenv('DEV_GUILD_ID', '0')))
-
 # Cached Supabase client
 _supabase_client = None
 
@@ -38,6 +35,30 @@ def _get_supabase():
         key = os.getenv("SUPABASE_SERVICE_KEY")
         _supabase_client = create_client(url, key)
     return _supabase_client
+
+
+_server_config = None
+
+
+def _get_server_config():
+    global _server_config
+    if _server_config is None:
+        from src.common.server_config import ServerConfig
+        _server_config = ServerConfig(_get_supabase())
+    return _server_config
+
+
+def _resolve_guild_id(params: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """Prefer explicit tool input, then fall back to the configured default guild."""
+    explicit = None
+    if params:
+        raw = params.get('guild_id')
+        if raw not in (None, '', 0, '0'):
+            try:
+                explicit = int(raw)
+            except (TypeError, ValueError):
+                pass
+    return _get_server_config().resolve_guild_id(explicit, require_write=True)
 
 # Tables the agent is allowed to query
 QUERYABLE_TABLES = {
@@ -426,7 +447,8 @@ def format_message_for_llm(msg: Dict, include_link: bool = True) -> Dict:
     if msg.get('media_urls'):
         result["media_urls"] = msg['media_urls']
     if include_link:
-        result["link"] = f"https://discord.com/channels/{GUILD_ID}/{msg.get('channel_id')}/{msg.get('message_id')}"
+        link_guild_id = msg.get('guild_id') or _get_server_config().resolve_guild_id(require_write=True)
+        result["link"] = f"https://discord.com/channels/{link_guild_id}/{msg.get('channel_id')}/{msg.get('message_id')}"
     return result
 
 
@@ -532,6 +554,7 @@ async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = No
         resolved_username = user_data.get('username', username)
 
     try:
+        resolved_guild_id = _resolve_guild_id(params)
         # ---- Live path: use Discord API directly ----
         if live:
             if not channel_id:
@@ -586,12 +609,17 @@ async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = No
             cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
             # Get channel names for enrichment + NSFW filtering
-            channels_result = client.table('discord_channels').select('channel_id, channel_name, nsfw').execute()
+            ch_query = client.table('discord_channels').select('channel_id, channel_name, nsfw')
+            if resolved_guild_id:
+                ch_query = ch_query.eq('guild_id', resolved_guild_id)
+            channels_result = ch_query.execute()
             safe_channels = {ch['channel_id']: ch['channel_name'] for ch in channels_result.data if not ch.get('nsfw')}
 
             # Build query — chain all applicable filters
-            MSG_SELECT = 'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
+            MSG_SELECT = 'message_id, guild_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
             q = client.table('discord_messages').select(MSG_SELECT).gte('created_at', cutoff).eq('is_deleted', False)
+            if resolved_guild_id:
+                q = q.eq('guild_id', resolved_guild_id)
 
             # Only search in safe (non-NSFW) channels
             if channel_id:
@@ -919,6 +947,7 @@ async def execute_get_daily_summaries(params: Dict[str, Any]) -> Dict[str, Any]:
     channel_id = params.get('channel_id')
 
     try:
+        resolved_guild_id = _resolve_guild_id(params)
         url = os.getenv("SUPABASE_URL")
         key = os.getenv("SUPABASE_SERVICE_KEY")
         client = sc(url, key)
@@ -926,6 +955,8 @@ async def execute_get_daily_summaries(params: Dict[str, Any]) -> Dict[str, Any]:
 
         q = client.table('daily_summaries').select('date, channel_id, short_summary') \
             .gte('date', cutoff).order('date', desc=True)
+        if resolved_guild_id:
+            q = q.eq('guild_id', resolved_guild_id)
         if channel_id:
             q = q.eq('channel_id', str(channel_id))
         rows = q.execute().data
@@ -1293,8 +1324,17 @@ async def execute_query_table(params: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": f"Table '{table}' not allowed. Available: {', '.join(sorted(QUERYABLE_TABLES))}"}
 
     try:
+        resolved_guild_id = _resolve_guild_id(params)
         sb = _get_supabase()
         query = sb.table(table).select(select_cols)
+
+        # Auto-scope guild_id for tables that have it
+        GUILD_SCOPED_TABLES = {'discord_messages', 'discord_channels', 'daily_summaries',
+                               'shared_posts', 'pending_intros', 'discord_reactions',
+                               'discord_reaction_log', 'competitions', 'competition_entries'}
+        if table in GUILD_SCOPED_TABLES and 'guild_id' not in filters:
+            if resolved_guild_id:
+                query = query.eq('guild_id', resolved_guild_id)
 
         # Apply filters with operator support
         for col, val in filters.items():

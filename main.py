@@ -55,18 +55,20 @@ def setup_logging(dev_mode=False):
     
     return logger
 
-async def run_archive_script(days, dev_mode=False, logger=None, in_depth=False):
+async def run_archive_script(days, dev_mode=False, logger=None, in_depth=False,
+                             guild_id=None, channels=None):
     """Run the archive_discord.py script with the specified number of days"""
     if logger is None:
         logger = logging.getLogger(__name__)
 
     from src.common.archive_runner import ArchiveRunner
 
-    logger.info(f"Starting archive process for {days} days (in_depth={in_depth})")
+    logger.info(f"Starting archive process for {days} days (in_depth={in_depth})"
+                + (f" guild={guild_id}" if guild_id else ""))
 
-    # Use the centralized ArchiveRunner
     archive_runner = ArchiveRunner()
-    success = await archive_runner.run_archive(days, dev_mode, in_depth=in_depth)
+    success = await archive_runner.run_archive(days, dev_mode, in_depth=in_depth,
+                                                guild_id=guild_id, channels=channels)
 
     if not success:
         raise RuntimeError("Archive script failed")
@@ -121,8 +123,9 @@ async def main_async(args):
         # ---- Initialize Core Components ----
         logger.info("Initializing core components (DB, Sharer, Reactor)...")
 
-        # 1. Database Handler
+        # 1. Database Handler (also creates ServerConfig)
         bot.db_handler = DatabaseHandler(dev_mode=args.dev)
+        bot.server_config = bot.db_handler.server_config
         logger.info("DatabaseHandler initialized and attached to bot.")
 
         # 2. Claude Client
@@ -207,17 +210,34 @@ async def main_async(args):
             logger.info("CompetitionCog loaded.")
         except Exception as e:
             logger.error(f"Failed to load CompetitionCog: {e}", exc_info=True)
+        try:
+            from src.features.content.content_cog import ContentCog
+            await bot.add_cog(ContentCog(bot))
+        except Exception as e:
+            logger.warning(f"Failed to load ContentCog (skipping): {e}")
 
         logger.info(f"All cogs loaded.")
 
         # ---- SETUP HOURLY MESSAGE FETCHING ----
         @tasks.loop(hours=1)
         async def hourly_message_fetch():
-            """Fetch new messages every hour. Uses --days 1 as a floor
-            but the archive script only fetches messages newer than what's in DB."""
+            """Fetch new messages every hour for all configured guilds."""
             try:
                 logger.info("Starting hourly message fetch...")
-                await run_archive_script(days=1, dev_mode=args.dev, logger=logger)
+                sc = getattr(bot, 'server_config', None)
+                if sc:
+                    sc.refresh()
+                    for guild_cfg in sc.get_guilds_to_archive():
+                        gid = guild_cfg['guild_id']
+                        try:
+                            logger.info(f"Archiving guild {gid} ({guild_cfg.get('guild_name', '?')})...")
+                            await run_archive_script(days=1, dev_mode=args.dev, logger=logger,
+                                                     guild_id=gid)
+                        except Exception as e:
+                            logger.error(f"Error archiving guild {gid}: {e}", exc_info=True)
+                else:
+                    logger.warning("Skipping hourly archive: server_config unavailable")
+
                 logger.info("Hourly message fetch completed successfully")
             except Exception as e:
                 logger.error(f"Error in hourly message fetch: {e}", exc_info=True)

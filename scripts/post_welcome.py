@@ -18,14 +18,36 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import discord
+from supabase import create_client
+from src.common.server_config import ServerConfig
 
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 GATE_CHANNEL_ID = int(os.getenv("GATE_CHANNEL_ID", "0"))
 
 WELCOME_FILE = os.path.join(os.path.dirname(__file__), "..", "posts", "welcome.md")
 
 
+def _get_supabase():
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_SERVICE_KEY")
+    if not url or not key:
+        return None
+    return create_client(url, key)
+
+
+def _get_server_config():
+    client = _get_supabase()
+    return ServerConfig(client) if client else None
+
+
 def load_welcome_message():
+    if GUILD_ID:
+        sc = _get_server_config()
+        if sc:
+            content = sc.get_content(GUILD_ID, 'post_welcome')
+            if content:
+                return content.strip()
     with open(WELCOME_FILE) as f:
         return f.read().strip()
 
@@ -38,9 +60,11 @@ async def main(send: bool, repost: bool):
     @client.event
     async def on_ready():
         try:
-            channel = client.get_channel(GATE_CHANNEL_ID)
+            sc = _get_server_config()
+            gate_channel_id = (sc.get_server_field(GUILD_ID, 'gate_channel_id', cast=int) if sc else None) or GATE_CHANNEL_ID
+            channel = client.get_channel(gate_channel_id)
             if channel is None:
-                channel = await client.fetch_channel(GATE_CHANNEL_ID)
+                channel = await client.fetch_channel(gate_channel_id)
 
             print(f"Found channel: #{channel.name}")
 

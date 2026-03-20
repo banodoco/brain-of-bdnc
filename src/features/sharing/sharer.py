@@ -29,16 +29,12 @@ from src.common import discord_utils # Ensure this is imported
 
 logger = logging.getLogger('DiscordBot')
 
-ANNOUNCEMENT_CHANNEL_ID = 1246615722164224141 # User provided ID
 
 class Sharer:
-    # Remove claude_client from init
     def __init__(self, bot: discord.Client, db_handler: DatabaseHandler, logger_instance: logging.Logger):
         self.bot = bot
         self.db_handler = db_handler
         self.logger = logger_instance
-        # Remove client storage
-        # self.claude_client = claude_client 
         self.temp_dir = Path("./temp_media_sharing")
         self.temp_dir.mkdir(exist_ok=True)
         self._processing_lock = asyncio.Lock()
@@ -139,7 +135,8 @@ class Sharer:
         user_id: int,      # Original Discord user ID for fetching details
         author_display_name: str, # NEW parameter for display name
         original_message_content: Optional[str] = None, # Original Discord message text
-        original_message_jump_url: Optional[str] = None
+        original_message_jump_url: Optional[str] = None,
+        guild_id: Optional[int] = None
     ) -> Tuple[bool, Optional[str]]:
         """Prepares data and posts a tweet using the social_poster.post_tweet function."""
         self.logger.info(f"Sharer.send_tweet called for message_id {message_id} by user_id {user_id} with content: '{content[:50]}...'")
@@ -203,13 +200,14 @@ class Sharer:
                 platform='twitter',
                 platform_post_id=tweet_id,
                 platform_post_url=tweet_url,
-                delete_eligible_hours=6
+                delete_eligible_hours=6,
+                guild_id=guild_id
             )
             
             # Mark first share (for tracking) but don't send notification here
             # tweet_sharer_bridge has its own consent flow
-            self.db_handler.mark_member_first_shared(user_id)
-            
+            self.db_handler.mark_member_first_shared(user_id, guild_id=guild_id)
+
             return True, tweet_url
         else:
             self.logger.error(f"Sharer.send_tweet: Failed to post tweet for message_id {message_id} (post_tweet returned None).")
@@ -367,7 +365,7 @@ class Sharer:
                         tweet_url = tweet_result.get('url')
                         tweet_id = tweet_result.get('id')
                         self.logger.info(f"Successfully posted message {message_id} to Twitter: {tweet_url}")
-                        await self._announce_tweet_url(tweet_url, message.author.display_name, message.jump_url, str(message_id))
+                        await self._announce_tweet_url(tweet_url, message.author.display_name, message.jump_url, str(message_id), guild_id=getattr(message.guild, 'id', None))
                         
                         # Record the shared post in the database
                         self.db_handler.record_shared_post(
@@ -376,11 +374,12 @@ class Sharer:
                             platform='twitter',
                             platform_post_id=tweet_id,
                             platform_post_url=tweet_url,
-                            delete_eligible_hours=6
+                            delete_eligible_hours=6,
+                            guild_id=getattr(message.guild, 'id', None)
                         )
                         
                         # Check if this is the user's first share and send notification
-                        is_first_share = self.db_handler.mark_member_first_shared(user_id)
+                        is_first_share = self.db_handler.mark_member_first_shared(user_id, guild_id=getattr(message.guild, 'id', None))
                         if is_first_share:
                             self.logger.info(f"First share for user {user_id}. Sending post-share notification.")
                             await send_post_share_notification(
@@ -488,47 +487,50 @@ class Sharer:
             self.logger.error(f"Unexpected error fetching message {message_id} from channel {channel_id}: {e}", exc_info=True)
             return None 
 
-    async def _announce_tweet_url(self, tweet_url: str, author_display_name: str, original_message_jump_url: Optional[str] = None, context_message_id: Optional[str] = None):
-        if not ANNOUNCEMENT_CHANNEL_ID:
-            self.logger.info("[Sharer] Tweet announcement channel ID not configured. Skipping announcement.")
+    def _get_announcement_channel_id(self, guild_id: Optional[int]) -> Optional[int]:
+        """Resolve announcement_channel_id from server_config."""
+        sc = getattr(self.db_handler, 'server_config', None)
+        if sc and guild_id:
+            val = sc.get_server_field(guild_id, 'announcement_channel_id', cast=int)
+            if val:
+                return val
+        return None
+
+    async def _announce_tweet_url(self, tweet_url: str, author_display_name: str, original_message_jump_url: Optional[str] = None, context_message_id: Optional[str] = None, guild_id: Optional[int] = None):
+        channel_id = self._get_announcement_channel_id(guild_id)
+        if not channel_id:
+            self.logger.info("[Sharer] Tweet announcement channel not configured. Skipping.")
             return
 
         try:
-            channel = self.bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+            channel = self.bot.get_channel(channel_id)
             if not channel:
-                self.logger.info(f"[Sharer] Announcement channel {ANNOUNCEMENT_CHANNEL_ID} not in cache, fetching.")
-                channel = await self.bot.fetch_channel(ANNOUNCEMENT_CHANNEL_ID)
-            
+                channel = await self.bot.fetch_channel(channel_id)
+
             if not isinstance(channel, discord.TextChannel):
-                self.logger.error(f"[Sharer] Announcement channel {ANNOUNCEMENT_CHANNEL_ID} is not a text channel or could not be fetched.")
+                self.logger.error(f"[Sharer] Announcement channel {channel_id} is not a text channel.")
                 return
 
             message_content = f"Tweet: {tweet_url}"
             if original_message_jump_url:
                 message_content += f"\n\nBased on this post by {author_display_name}: {original_message_jump_url}"
-            elif context_message_id: # Fallback for context if jump_url somehow not available
+            elif context_message_id:
                 message_content += f"\n\nBased on this post by {author_display_name} (Original Discord Message ID for context: {context_message_id})"
-            else: # Absolute fallback
+            else:
                 message_content += f"\n\n(Shared content by {author_display_name})"
-            
+
             if hasattr(self.bot, 'rate_limiter') and self.bot.rate_limiter is not None:
                 await discord_utils.safe_send_message(
-                    self.bot,
-                    channel,
-                    self.bot.rate_limiter,
-                    self.logger,
+                    self.bot, channel, self.bot.rate_limiter, self.logger,
                     content=message_content
                 )
-                self.logger.info(f"[Sharer] Announced tweet {tweet_url} to channel {ANNOUNCEMENT_CHANNEL_ID} via safe_send_message.")
             else:
-                # Fallback to direct send if rate_limiter is not available
-                self.logger.warning(f"[Sharer] Bot instance does not have a rate_limiter or it's None. Sending announcement for {tweet_url} directly to {ANNOUNCEMENT_CHANNEL_ID}.")
                 await channel.send(content=message_content)
-                self.logger.info(f"[Sharer] Announced tweet {tweet_url} to channel {ANNOUNCEMENT_CHANNEL_ID} (direct send).")
+            self.logger.info(f"[Sharer] Announced tweet {tweet_url} to channel {channel_id}.")
 
         except discord.NotFound:
-            self.logger.error(f"[Sharer] Could not find announcement channel {ANNOUNCEMENT_CHANNEL_ID} via get_channel or fetch_channel.")
+            self.logger.error(f"[Sharer] Announcement channel {channel_id} not found.")
         except discord.Forbidden:
-            self.logger.error(f"[Sharer] Bot lacks permissions to send message to announcement channel {ANNOUNCEMENT_CHANNEL_ID} or to fetch it.")
+            self.logger.error(f"[Sharer] No permission to send to announcement channel {channel_id}.")
         except Exception as e:
-            self.logger.error(f"[Sharer] Error announcing tweet to channel {ANNOUNCEMENT_CHANNEL_ID}: {e}", exc_info=True) 
+            self.logger.error(f"[Sharer] Error announcing tweet to channel {channel_id}: {e}", exc_info=True) 

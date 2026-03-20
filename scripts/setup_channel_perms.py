@@ -28,8 +28,7 @@ handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)
 logger.addHandler(handler)
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-GUILD_ID = int(os.getenv("GUILD_ID"))
-SPEAKER_ROLE_ID = int(os.getenv("SPEAKER_ROLE_ID"))
+TARGET_GUILD_ID = int(os.getenv("TARGET_GUILD_ID", os.getenv("GUILD_ID", "0"))) or None
 EXEMPT_CHANNELS = {int(x.strip()) for x in os.getenv("SPEAKER_EXEMPT_CHANNELS", "").split(",") if x.strip()}
 
 intents = discord.Intents.default()
@@ -40,22 +39,35 @@ client = discord.Client(intents=intents)
 @client.event
 async def on_ready():
     logger.info(f"Logged in as {client.user}")
-    guild = client.get_guild(GUILD_ID)
-    if not guild:
-        logger.error(f"Guild {GUILD_ID} not found")
+    if not TARGET_GUILD_ID:
+        logger.error("TARGET_GUILD_ID or GUILD_ID must be configured")
         await client.close()
         return
 
-    role = guild.get_role(SPEAKER_ROLE_ID)
+    db = DatabaseHandler()
+    speaker_role_id = None
+    sc = getattr(db, 'server_config', None)
+    if sc:
+        speaker_role_id = sc.get_server_field(TARGET_GUILD_ID, 'speaker_role_id', cast=int)
+    if speaker_role_id is None:
+        env_value = os.getenv("SPEAKER_ROLE_ID")
+        speaker_role_id = int(env_value) if env_value else None
+
+    guild = client.get_guild(TARGET_GUILD_ID)
+    if not guild:
+        logger.error(f"Guild {TARGET_GUILD_ID} not found")
+        await client.close()
+        return
+
+    role = guild.get_role(speaker_role_id) if speaker_role_id else None
     if not role:
-        logger.error(f"Speaker role {SPEAKER_ROLE_ID} not found")
+        logger.error(f"Speaker role {speaker_role_id} not found")
         await client.close()
         return
 
     # Load channel modes from DB
     modes = {}
     try:
-        db = DatabaseHandler()
         modes = db.get_all_channel_speaker_modes()
         logger.info(f"Loaded {len(modes)} channel modes from DB")
     except Exception as e:

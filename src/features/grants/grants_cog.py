@@ -23,14 +23,20 @@ class GrantsCog(commands.Cog):
         self.claude_client = getattr(bot, 'claude_client', None)
         self.storage = getattr(self.db, 'storage_handler', None) if self.db else None
 
-        channel_id = os.getenv('GRANTS_CHANNEL_ID')
-        self.grants_channel_id = int(channel_id) if channel_id else None
+        # Grants channel: resolve from server_config
+        sc = getattr(self.db, 'server_config', None) if self.db else None
+        _server = sc.get_first_server_with_field('grants_channel_id', require_write=True) if sc else None
+        _guild_id = int(_server['guild_id']) if _server else None
+        grants_ch = _server.get('grants_channel_id') if _server else None
+        self.grants_channel_id = int(grants_ch) if grants_ch else None
 
         self.solana_client = None
         try:
             self.solana_client = SolanaClient()
         except Exception as e:
             logger.warning(f"GrantsCog: Solana client init failed (payments disabled): {e}")
+
+        self.guild_id = _guild_id
 
         admin_id = os.getenv('ADMIN_USER_ID')
         self.admin_id = int(admin_id) if admin_id else None
@@ -89,11 +95,15 @@ class GrantsCog(commands.Cog):
             tx_sig = grant.get('tx_signature')
             payment_status = grant.get('payment_status')
             wallet = grant.get('wallet_address')
+            grant_guild_id = grant.get('guild_id')
 
             # Resolve the thread for messaging
             thread = None
             try:
-                for guild in self.bot.guilds:
+                candidate_guilds = self.bot.guilds
+                if grant_guild_id:
+                    candidate_guilds = [g for g in self.bot.guilds if g.id == grant_guild_id]
+                for guild in candidate_guilds:
                     forum = guild.get_channel(self.grants_channel_id)
                     if forum:
                         thread = forum.get_thread(thread_id)
@@ -117,7 +127,7 @@ class GrantsCog(commands.Cog):
                     # Re-fetch grant from DB every attempt — previous attempt may have
                     # updated payment_status/tx_signature, and _process_payment uses
                     # these to check for in-flight transactions
-                    fresh_grant = self.db.get_grant_by_thread(thread_id)
+                    fresh_grant = self.db.get_grant_by_thread(thread_id, guild_id=grant_guild_id)
                     if not fresh_grant or fresh_grant.get('payment_status') == 'confirmed':
                         succeeded = True
                         break
@@ -143,9 +153,9 @@ class GrantsCog(commands.Cog):
                 # Was 'sending' but never got a tx — mark for retry
                 logger.warning(f"GrantsCog: grant {thread_id} stuck in '{payment_status}' with no tx")
                 if wallet:
-                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='retry')
+                    self.db.update_grant_status(thread_id, guild_id=grant_guild_id, status='awaiting_wallet', payment_status='retry')
                 else:
-                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='none')
+                    self.db.update_grant_status(thread_id, guild_id=grant_guild_id, status='awaiting_wallet', payment_status='none')
                 continue
 
             # Has a tx signature — check on-chain
@@ -158,7 +168,7 @@ class GrantsCog(commands.Cog):
             if status == 'confirmed':
                 sol_amount = float(grant.get('sol_amount') or 0)
                 sol_price = float(grant.get('sol_price_usd') or 0)
-                self.db.record_grant_payment(thread_id, tx_sig, sol_amount, sol_price)
+                self.db.record_grant_payment(thread_id, tx_sig, sol_amount, sol_price, guild_id=grant_guild_id)
                 logger.info(f"GrantsCog: recovered confirmed payment {tx_sig} for thread {thread_id}")
                 if thread:
                     try:
@@ -172,10 +182,10 @@ class GrantsCog(commands.Cog):
             elif status == 'failed':
                 logger.warning(f"GrantsCog: tx {tx_sig} for thread {thread_id} failed on-chain")
                 if wallet:
-                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='retry',
+                    self.db.update_grant_status(thread_id, guild_id=grant_guild_id, status='awaiting_wallet', payment_status='retry',
                                                 tx_signature=None)
                 else:
-                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='none',
+                    self.db.update_grant_status(thread_id, guild_id=grant_guild_id, status='awaiting_wallet', payment_status='none',
                                                 tx_signature=None)
             else:
                 # not_found — could be expired or still propagating, leave as-is for next restart
@@ -212,7 +222,7 @@ class GrantsCog(commands.Cog):
                 continue
 
             # If already in DB, backfill missing attachments/avatar then skip
-            existing = self.db.get_grant_by_thread(thread.id)
+            existing = self.db.get_grant_by_thread(thread.id, guild_id=guild.id)
             if existing:
                 await self._backfill_media(thread, existing)
                 continue
@@ -260,6 +270,8 @@ class GrantsCog(commands.Cog):
         assessment = await interpret_admin_decision(
             self.claude_client, thread_content, admin_message,
             llm_recommendation=llm_recommendation,
+            guild_id=getattr(thread.guild, 'id', None),
+            server_config=getattr(self.db, 'server_config', None),
         )
 
         # interpret_admin_decision returns needs_review if admin intent was unclear —
@@ -316,7 +328,7 @@ class GrantsCog(commands.Cog):
             return
 
         thread_id = channel.id
-        grant = self.db.get_grant_by_thread(thread_id)
+        grant = self.db.get_grant_by_thread(thread_id, guild_id=message.guild.id)
         if not grant:
             return
 
@@ -372,7 +384,7 @@ class GrantsCog(commands.Cog):
                 # Only mark failed for definitive pre-send errors (bad address, insufficient
                 # balance). Transient errors (429, timeout, network) leave payment_status
                 # as-is so startup recovery can verify on-chain.
-                current = self.db.get_grant_by_thread(thread_id)
+                current = self.db.get_grant_by_thread(thread_id, guild_id=message.guild.id)
                 ps = current.get('payment_status', 'none') if current else 'none'
                 if ps in ('sent', 'confirmed'):
                     # Money may be on-chain — don't touch, recovery will handle it
@@ -382,7 +394,7 @@ class GrantsCog(commands.Cog):
                     )
                 else:
                     # Payment never landed — mark for auto-retry on next startup
-                    self.db.update_grant_status(thread_id, 'awaiting_wallet', payment_status='retry')
+                    self.db.update_grant_status(thread_id, guild_id=message.guild.id, status='awaiting_wallet', payment_status='retry')
                     await channel.send(
                         f"Payment encountered an error: {e}\n\n"
                         f"It will be retried automatically shortly."
@@ -401,7 +413,7 @@ class GrantsCog(commands.Cog):
         await thread.join()
 
         # Check for existing active grants
-        active = self.db.get_active_grants_for_applicant(applicant_id)
+        active = self.db.get_active_grants_for_applicant(applicant_id, guild_id=thread.guild.id)
         if active:
             await thread.send(
                 "You already have an active grant application. "
@@ -434,13 +446,13 @@ class GrantsCog(commands.Cog):
         await self._upload_avatar(thread)
 
         # Record in DB
-        self.db.create_grant_application(thread_id, applicant_id, thread_content, attachment_urls=attachment_urls)
+        self.db.create_grant_application(thread_id, applicant_id, thread_content, attachment_urls=attachment_urls, guild_id=thread.guild.id)
 
         # Fetch grant history and engagement data for this applicant
-        grant_history = self.db.get_grant_history_for_applicant(applicant_id)
+        grant_history = self.db.get_grant_history_for_applicant(applicant_id, guild_id=thread.guild.id)
         # Exclude the current application we just created
         grant_history = [g for g in grant_history if g.get('status') != 'reviewing' or g.get('thread_id') != thread_id]
-        engagement = self.db.get_member_engagement(applicant_id)
+        engagement = self.db.get_member_engagement(applicant_id, guild_id=thread.guild.id)
 
         # Assess with LLM
         try:
@@ -448,6 +460,8 @@ class GrantsCog(commands.Cog):
                 self.claude_client, thread_content,
                 grant_history=grant_history or None,
                 engagement=engagement,
+                guild_id=getattr(thread.guild, 'id', None),
+                server_config=getattr(self.db, 'server_config', None),
             )
         except RuntimeError as e:
             logger.error(f"GrantsCog: assessment failed for thread {thread_id}: {e}")
@@ -472,23 +486,25 @@ class GrantsCog(commands.Cog):
         thread_content = f"**{thread.name}**\n\n" + "\n\n".join(messages)
 
         # Update stored content
-        self.db.update_grant_status(thread_id, 'reviewing', thread_content=thread_content)
+        self.db.update_grant_status(thread_id, guild_id=thread.guild.id, status='reviewing', thread_content=thread_content)
 
         # Fetch grant history and engagement
-        grant_history = self.db.get_grant_history_for_applicant(applicant_id)
+        grant_history = self.db.get_grant_history_for_applicant(applicant_id, guild_id=thread.guild.id)
         grant_history = [g for g in grant_history if g.get('status') not in ('reviewing', 'needs_info')]
-        engagement = self.db.get_member_engagement(applicant_id)
+        engagement = self.db.get_member_engagement(applicant_id, guild_id=thread.guild.id)
 
         try:
             assessment = await assess_application(
                 self.claude_client, thread_content,
                 grant_history=grant_history or None,
                 engagement=engagement,
+                guild_id=getattr(thread.guild, 'id', None),
+                server_config=getattr(self.db, 'server_config', None),
             )
         except RuntimeError as e:
             logger.error(f"GrantsCog: re-assessment failed for thread {thread_id}: {e}")
             await thread.send(f"Unable to re-review right now. {self._admin_mention} will follow up.")
-            self.db.update_grant_status(thread_id, 'needs_info')
+            self.db.update_grant_status(thread_id, guild_id=thread.guild.id, status='needs_info')
             return
 
         await self._handle_assessment(thread, assessment)
@@ -511,7 +527,7 @@ class GrantsCog(commands.Cog):
                 if starter_message.attachments:
                     urls = await self._upload_attachments(thread.id, starter_message)
                     if urls:
-                        self.db.update_grant_status(thread.id, grant['status'], attachment_urls=urls)
+                        self.db.update_grant_status(thread.id, grant['status'], guild_id=thread.guild.id, attachment_urls=urls)
                         logger.info(f"GrantsCog: backfilled {len(urls)} attachment(s) for thread {thread.id}")
         except Exception as e:
             logger.warning(f"GrantsCog: backfill failed for thread {thread.id}: {e}")
@@ -548,7 +564,7 @@ class GrantsCog(commands.Cog):
             storage_path = f"avatars/{member.id}.png"
             stored_url = await self.storage.download_and_upload_url(avatar_url, storage_path)
             if stored_url:
-                self.db.update_member_stored_avatar(member.id, stored_url)
+                self.db.update_member_stored_avatar(member.id, stored_url, guild_id=thread.guild.id)
                 logger.info(f"GrantsCog: uploaded avatar for member {member.id}")
         except Exception as e:
             logger.warning(f"GrantsCog: failed to upload avatar for thread owner {thread.owner_id}: {e}")
@@ -565,6 +581,7 @@ class GrantsCog(commands.Cog):
     async def _handle_assessment(self, thread: discord.Thread, assessment: dict):
         """Handle an LLM assessment result — update DB and reply."""
         thread_id = thread.id
+        guild_id = thread.guild.id
         decision = assessment['decision']
         response = assessment['response']
         reasoning = assessment['reasoning']
@@ -572,7 +589,7 @@ class GrantsCog(commands.Cog):
         llm_assessment = json.dumps({'reasoning': reasoning, 'response': response})
 
         if decision == 'spam':
-            self.db.update_grant_status(thread_id, 'rejected', llm_assessment=llm_assessment,
+            self.db.update_grant_status(thread_id, guild_id=guild_id, status='rejected', llm_assessment=llm_assessment,
                                         rejected_at='now()')
             logger.info(f"GrantsCog: deleting spam thread {thread_id}: {reasoning[:100]}")
             try:
@@ -582,14 +599,14 @@ class GrantsCog(commands.Cog):
             return
 
         if decision == 'needs_info':
-            self.db.update_grant_status(thread_id, 'needs_info', llm_assessment=llm_assessment)
+            self.db.update_grant_status(thread_id, guild_id=guild_id, status='needs_info', llm_assessment=llm_assessment)
             await thread.send(
                 f"**More information needed**\n\n{response}\n\n"
                 f"Please reply here with the requested details and I'll re-review your application."
             )
 
         elif decision == 'needs_review':
-            self.db.update_grant_status(thread_id, 'needs_review', llm_assessment=llm_assessment)
+            self.db.update_grant_status(thread_id, guild_id=guild_id, status='needs_review', llm_assessment=llm_assessment)
             # Include LLM's recommended GPU/hours if provided
             details = ""
             if assessment.get('gpu_type') and assessment.get('recommended_hours'):
@@ -609,7 +626,7 @@ class GrantsCog(commands.Cog):
             )
 
         elif decision == 'rejected':
-            self.db.update_grant_status(thread_id, 'rejected', llm_assessment=llm_assessment,
+            self.db.update_grant_status(thread_id, guild_id=guild_id, status='rejected', llm_assessment=llm_assessment,
                                         rejected_at='now()')
             await thread.send(f"**Application not approved**\n\n{response}")
             try:
@@ -625,6 +642,7 @@ class GrantsCog(commands.Cog):
 
             self.db.update_grant_status(
                 thread_id, 'awaiting_wallet',
+                guild_id=guild_id,
                 llm_assessment=llm_assessment,
                 gpu_type=gpu_type,
                 recommended_hours=hours,
@@ -675,7 +693,7 @@ class GrantsCog(commands.Cog):
                 # Already paid — record and notify
                 sol_amount = float(grant.get('sol_amount', 0))
                 sol_price = float(grant.get('sol_price_usd', 0))
-                self.db.record_grant_payment(thread_id, existing_tx, sol_amount, sol_price)
+                self.db.record_grant_payment(thread_id, existing_tx, sol_amount, sol_price, guild_id=thread.guild.id)
                 await thread.send(
                     f"**Payment confirmed!** (recovered from previous attempt)\n\n"
                     f"- Transaction: [View on Explorer]({self._explorer_url(existing_tx)})"
@@ -705,6 +723,7 @@ class GrantsCog(commands.Cog):
         # Mark as sending with wallet + amounts BEFORE sending money
         self.db.update_grant_status(
             thread_id, 'awaiting_wallet',
+            guild_id=thread.guild.id,
             payment_status='sending',
             wallet_address=wallet,
             sol_amount=sol_amount,
@@ -722,6 +741,7 @@ class GrantsCog(commands.Cog):
         # Record signature immediately so we can recover if confirmation fails
         self.db.update_grant_status(
             thread_id, 'awaiting_wallet',
+            guild_id=thread.guild.id,
             payment_status='sent',
             tx_signature=tx_sig,
         )
@@ -739,7 +759,7 @@ class GrantsCog(commands.Cog):
             return
 
         # Fully confirmed — finalize
-        self.db.record_grant_payment(thread_id, tx_sig, sol_amount, sol_price)
+        self.db.record_grant_payment(thread_id, tx_sig, sol_amount, sol_price, guild_id=thread.guild.id)
 
         await thread.send(
             f"**Payment sent!**\n\n"

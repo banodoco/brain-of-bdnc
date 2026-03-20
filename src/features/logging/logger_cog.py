@@ -6,6 +6,7 @@ from src.common.discord_utils import emoji_to_str
 import discord
 import os
 
+
 class LoggerCog(commands.Cog):
     def __init__(self, bot, logger, dev_mode=False):
         self.bot = bot
@@ -14,7 +15,8 @@ class LoggerCog(commands.Cog):
         if dev_mode:
             self.logger.info(f"Initializing LoggerCog in development mode")
             self.logger.debug(f"Bot intents enabled: {bot.intents}")
-        self.db = DatabaseHandler(dev_mode=dev_mode)
+        # Use bot's shared db_handler if available, else create own
+        self.db = getattr(bot, 'db_handler', None) or DatabaseHandler(dev_mode=dev_mode)
         if dev_mode:
             self.logger.debug("Database handler initialized")
         try:
@@ -23,6 +25,17 @@ class LoggerCog(commands.Cog):
         except Exception as e:
             self.logger.error(f"Error retrieving BOT_USER_ID: {e}")
             self.bot_user_id = None
+
+    @property
+    def server_config(self):
+        return getattr(self.db, 'server_config', None)
+
+    def _is_feature_enabled(self, guild_id, channel_id, feature):
+        """Check if a feature is enabled via server_config, defaulting to True."""
+        sc = self.server_config
+        if sc is None:
+            return True
+        return sc.is_feature_enabled(guild_id, channel_id, feature)
 
     async def cog_load(self):
         if self.dev_mode:
@@ -47,14 +60,21 @@ class LoggerCog(commands.Cog):
             return
 
         try:
+            guild_id = getattr(reaction.message.guild, 'id', None)
+            channel_id = reaction.message.channel.id
+
+            # Feature guard: reactions_enabled
+            if not self._is_feature_enabled(guild_id, channel_id, 'reactions'):
+                return
+
             emoji_str = emoji_to_str(reaction.emoji)
             if action == 'add':
-                self.db.add_reaction(reaction.message.id, user.id, emoji_str)
+                self.db.add_reaction(reaction.message.id, user.id, emoji_str, guild_id=guild_id)
             elif action == 'remove':
-                self.db.remove_reaction(reaction.message.id, user.id, emoji_str)
+                self.db.remove_reaction(reaction.message.id, user.id, emoji_str, guild_id=guild_id)
 
             # Append to reaction log (tracks every add/remove event)
-            self.db.log_reaction_event(reaction.message.id, user.id, emoji_str, action)
+            self.db.log_reaction_event(reaction.message.id, user.id, emoji_str, action, guild_id=guild_id)
 
             if self.dev_mode:
                 self.logger.debug(f"[LoggerCog] Reaction {action}: msg={reaction.message.id} user={user.id} emoji={emoji_str}")
@@ -62,7 +82,7 @@ class LoggerCog(commands.Cog):
         except Exception as e:
             self.logger.error(f"[LoggerCog] Error in _update_reaction (action: {action}): {e}", exc_info=True)
 
-    # --- Public methods for ReactorCog to call --- 
+    # --- Public methods for ReactorCog to call ---
     async def log_reaction_add(self, reaction, user):
         """Public method to be called by ReactorCog to log reaction additions."""
         await self._update_reaction(reaction, user, 'add')
@@ -86,13 +106,18 @@ class LoggerCog(commands.Cog):
             if not payload.guild_id:
                 return
 
+            # Feature guard: logging_enabled
+            if not self._is_feature_enabled(payload.guild_id, payload.channel_id, 'logging'):
+                return
+
             new_content = data.get('content')
             new_edited_at = data.get('edited_timestamp')  # ISO string or None
 
             updated = self.db.update_message_content(
                 message_id=payload.message_id,
                 new_content=new_content,
-                new_edited_at=new_edited_at
+                new_edited_at=new_edited_at,
+                guild_id=payload.guild_id,
             )
 
             if updated and self.dev_mode:
@@ -116,7 +141,11 @@ class LoggerCog(commands.Cog):
             if not payload.guild_id:
                 return
 
-            deleted = self.db.soft_delete_message(payload.message_id)
+            # Feature guard: logging_enabled
+            if not self._is_feature_enabled(payload.guild_id, payload.channel_id, 'logging'):
+                return
+
+            deleted = self.db.soft_delete_message(payload.message_id, guild_id=payload.guild_id)
 
             if deleted and self.dev_mode:
                 self.logger.debug(
@@ -136,11 +165,16 @@ class LoggerCog(commands.Cog):
             if message.author.bot and message.author.id != self.bot_user_id:
                 return
 
+            # Feature guard: logging_enabled
+            if not self._is_feature_enabled(message.guild.id, message.channel.id, 'logging'):
+                return
+
             message_data = await self._prepare_message_data(message)
             reaction_rows = message_data.pop('_reaction_rows', [])
             await self.db.store_messages([message_data])
             if reaction_rows:
-                self.db.upsert_reactions_batch(message.id, reaction_rows)
+                self.db.upsert_reactions_batch(message.id, reaction_rows,
+                                                guild_id=message_data.get('guild_id'))
 
         except Exception as e:
             self.logger.error(f"[LoggerCog] Error storing message {message.id}: {e}", exc_info=True)
@@ -150,7 +184,7 @@ class LoggerCog(commands.Cog):
         try:
             # Calculate total reaction count
             reaction_count = sum(reaction.count for reaction in message.reactions) if message.reactions else 0
-            
+
             # Get list of unique reactors and per-emoji reaction data
             reactors = []
             reaction_rows = []
@@ -166,7 +200,7 @@ class LoggerCog(commands.Cog):
                                 'user_id': user.id,
                                 'emoji': emoji_str,
                             })
-            
+
             # Resolve channel_id and thread_id to match the archive script:
             # - Regular threads → channel_id = parent, thread_id = thread
             # - Forum threads   → channel_id = thread itself, thread_id = None
@@ -179,7 +213,7 @@ class LoggerCog(commands.Cog):
                     thread_id = message.channel.id
                 elif hasattr(message.channel, 'thread_type'):
                     actual_channel = message.channel
-            
+
             # Get guild display name (nickname) if available
             display_name = None
             global_name = message.author.global_name
@@ -190,17 +224,18 @@ class LoggerCog(commands.Cog):
                         display_name = member.nick
             except Exception as e:
                 self.logger.debug(f"Error getting display name for user {message.author.id}: {e}")
-            
+
             # Get category ID if available
             category_id = None
             if hasattr(message.channel, 'category') and message.channel.category:
                 category_id = message.channel.category.id
-            
+
             return {
                 'id': message.id,
                 'message_id': message.id,
                 'channel_id': actual_channel.id,
                 'channel_name': actual_channel.name,
+                'guild_id': message.guild.id if message.guild else None,
                 'author_id': message.author.id,
                 'author_name': message.author.name,
                 'author_discriminator': message.author.discriminator,
@@ -245,6 +280,6 @@ async def setup(bot: commands.Bot):
     # Retrieve logger and dev_mode from the bot instance
     logger = bot.logger
     dev_mode = bot.dev_mode
-    
+
     await bot.add_cog(LoggerCog(bot, logger, dev_mode=dev_mode))
     logger.info("LoggerCog added to bot.")

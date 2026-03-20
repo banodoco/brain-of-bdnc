@@ -16,8 +16,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import discord
+from supabase import create_client
+from src.common.server_config import ServerConfig
 
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 GRANTS_CHANNEL_ID = int(os.getenv("GRANTS_CHANNEL_ID", "1479173703441846404"))
 
 GRANTS_FILE = os.path.join(os.path.dirname(__file__), "..", "posts", "grants.md")
@@ -25,10 +28,29 @@ GUIDE_THREAD_NAME = "How Micro-Grants Work"
 QUESTIONS_THREAD_NAME = "Questions & Discussion"
 
 
+def _get_supabase():
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_SERVICE_KEY")
+    if not url or not key:
+        return None
+    return create_client(url, key)
+
+
+def _get_server_config():
+    client = _get_supabase()
+    return ServerConfig(client) if client else None
+
+
 def load_grants_messages():
     """Load grants guide from grants.md, split into messages by ### headers."""
-    with open(GRANTS_FILE) as f:
-        content = f.read()
+    content = None
+    if GUILD_ID:
+        sc = _get_server_config()
+        if sc:
+            content = sc.get_content(GUILD_ID, 'post_grants')
+    if not content:
+        with open(GRANTS_FILE) as f:
+            content = f.read()
 
     messages = []
     parts = re.split(r'\n\n(?=###\s)', content)
@@ -117,9 +139,11 @@ async def main(send: bool):
     @client.event
     async def on_ready():
         try:
-            channel = client.get_channel(GRANTS_CHANNEL_ID)
+            sc = _get_server_config()
+            grants_channel_id = (sc.get_server_field(GUILD_ID, 'grants_channel_id', cast=int) if sc else None) or GRANTS_CHANNEL_ID
+            channel = client.get_channel(grants_channel_id)
             if channel is None:
-                channel = await client.fetch_channel(GRANTS_CHANNEL_ID)
+                channel = await client.fetch_channel(grants_channel_id)
 
             if not isinstance(channel, discord.ForumChannel):
                 print(f"Error: #{channel.name} is not a forum channel")

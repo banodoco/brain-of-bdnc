@@ -129,6 +129,9 @@ class StorageHandler:
                     'indexed_at': msg.get('indexed_at') or datetime.utcnow().isoformat(),
                     'synced_at': datetime.utcnow().isoformat()
                 }
+                # Include guild_id when available
+                if msg.get('guild_id') is not None:
+                    supabase_msg['guild_id'] = msg['guild_id']
                 supabase_messages.append(supabase_msg)
             
             # Write in batches
@@ -273,6 +276,13 @@ class StorageHandler:
                     'enriched': bool(channel.get('enriched', False)),
                     'synced_at': datetime.utcnow().isoformat()
                 }
+                # Include guild_id when available
+                if channel.get('guild_id') is not None:
+                    supabase_channel['guild_id'] = channel['guild_id']
+                if channel.get('channel_type') is not None:
+                    supabase_channel['channel_type'] = channel['channel_type']
+                if channel.get('parent_id') is not None:
+                    supabase_channel['parent_id'] = channel['parent_id']
                 supabase_channels.append(supabase_channel)
             
             # Write in batches
@@ -380,13 +390,14 @@ class StorageHandler:
             return False
 
     async def store_daily_summary_to_supabase(
-        self, 
-        channel_id: int, 
-        full_summary: Optional[str], 
-        short_summary: Optional[str], 
+        self,
+        channel_id: int,
+        full_summary: Optional[str],
+        short_summary: Optional[str],
         date: Optional[datetime] = None,
         included_in_main_summary: bool = False,
-        dev_mode: bool = False
+        dev_mode: bool = False,
+        guild_id: Optional[int] = None
     ) -> bool:
         """
         Store a daily summary to Supabase.
@@ -418,6 +429,8 @@ class StorageHandler:
                 'included_in_main_summary': included_in_main_summary,
                 'dev_mode': dev_mode
             }
+            if guild_id is not None:
+                summary_data['guild_id'] = guild_id
             
             await asyncio.to_thread(
                 self.supabase_client.table('daily_summaries').upsert(

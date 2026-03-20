@@ -19,18 +19,39 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import discord
+from supabase import create_client
+from src.common.server_config import ServerConfig
 
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-RULES_CHANNEL_ID = 1138515622582562947
+GUILD_ID = int(os.getenv("GUILD_ID", "0"))
+RULES_CHANNEL_ID = int(os.getenv("RULES_CHANNEL_ID", "1138515622582562947"))
 
 RULES_FILE = os.path.join(os.path.dirname(__file__), "..", "posts", "rules.md")
 
 
+def _get_supabase():
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_SERVICE_KEY")
+    if not url or not key:
+        return None
+    return create_client(url, key)
+
+
+def _get_server_config():
+    client = _get_supabase()
+    return ServerConfig(client) if client else None
+
+
 def load_rules_messages():
-    """Load rules from rules.md. The header (## line) becomes the first message.
-    Each quote block section becomes a separate message."""
-    with open(RULES_FILE) as f:
-        content = f.read()
+    """Load rules from rules.md or server_content, split by quote blocks."""
+    content = None
+    if GUILD_ID:
+        sc = _get_server_config()
+        if sc:
+            content = sc.get_content(GUILD_ID, 'post_rules')
+    if not content:
+        with open(RULES_FILE) as f:
+            content = f.read()
 
     messages = []
     parts = re.split(r'\n\n(?=>)', content)
@@ -102,9 +123,11 @@ async def main(send: bool, repost: bool):
     @client.event
     async def on_ready():
         try:
-            channel = client.get_channel(RULES_CHANNEL_ID)
+            sc = _get_server_config()
+            rules_channel_id = (sc.get_server_field(GUILD_ID, 'rules_channel_id', cast=int) if sc else None) or RULES_CHANNEL_ID
+            channel = client.get_channel(rules_channel_id)
             if channel is None:
-                channel = await client.fetch_channel(RULES_CHANNEL_ID)
+                channel = await client.fetch_channel(rules_channel_id)
 
             print(f"Found channel: #{channel.name}")
 

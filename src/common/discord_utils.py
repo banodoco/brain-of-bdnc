@@ -250,7 +250,8 @@ async def update_no_sharing_role(
     bot: Union[discord.Client, discord.ext.commands.Bot],
     member_id: int,
     allow_sharing: bool,
-    logger: Optional[logging.Logger] = None
+    logger: Optional[logging.Logger] = None,
+    guild_id: Optional[int] = None,
 ) -> bool:
     """
     Add or remove the "no sharing" role based on user's content sharing preference.
@@ -269,57 +270,41 @@ async def update_no_sharing_role(
     """
     log = logger or logging.getLogger('DiscordBot')
     
-    # Get the role ID from environment
-    role_id_str = os.getenv('NO_SHARING_ROLE_ID')
-    if not role_id_str:
-        log.debug("NO_SHARING_ROLE_ID not configured, skipping role update")
-        return True  # Not an error, just not configured
-    
     try:
-        role_id = int(role_id_str)
-    except ValueError:
-        log.error(f"Invalid NO_SHARING_ROLE_ID format: '{role_id_str}'")
-        return False
-    
-    # Get guild ID
-    guild_id_str = os.getenv('GUILD_ID') or os.getenv('DEV_GUILD_ID')
-    if not guild_id_str:
-        log.error("GUILD_ID or DEV_GUILD_ID not set, cannot update role")
-        return False
-    
-    try:
-        guild_id = int(guild_id_str)
-    except ValueError:
-        log.error(f"Invalid GUILD_ID format: '{guild_id_str}'")
-        return False
-    
-    try:
-        # Get guild
-        guild = bot.get_guild(guild_id)
-        if not guild:
-            log.debug(f"Guild {guild_id} not in cache, fetching...")
-            try:
-                guild = await bot.fetch_guild(guild_id)
-            except discord.NotFound:
-                log.error(f"Guild {guild_id} not found")
-                return False
-            except discord.Forbidden:
-                log.error(f"No permission to access guild {guild_id}")
-                return False
-        
-        # Get member
-        member = guild.get_member(member_id)
-        if not member:
-            log.debug(f"Member {member_id} not in cache, fetching...")
-            try:
-                member = await guild.fetch_member(member_id)
-            except discord.NotFound:
-                log.warning(f"Member {member_id} not found in guild {guild_id}")
-                return False
-            except discord.Forbidden:
-                log.error(f"No permission to fetch member {member_id}")
-                return False
-        
+        sc = getattr(getattr(bot, 'db_handler', None), 'server_config', None)
+
+        def _resolve_role_id(for_guild_id: int) -> Optional[int]:
+            if sc:
+                role_id = sc.get_server_field(for_guild_id, 'no_sharing_role_id', cast=int)
+                if role_id is not None:
+                    return role_id
+            role_id_str = os.getenv('NO_SHARING_ROLE_ID')
+            return int(role_id_str) if role_id_str else None
+
+        guild: Optional[discord.Guild] = None
+        role_id: Optional[int] = None
+        candidate_guilds = [bot.get_guild(guild_id)] if guild_id else list(getattr(bot, 'guilds', []))
+        candidate_guilds = [g for g in candidate_guilds if g is not None]
+
+        for candidate in candidate_guilds:
+            candidate_role_id = _resolve_role_id(candidate.id)
+            if not candidate_role_id:
+                continue
+            member = candidate.get_member(member_id)
+            if member is None:
+                try:
+                    member = await candidate.fetch_member(member_id)
+                except (discord.NotFound, discord.Forbidden):
+                    member = None
+            if member is not None:
+                guild = candidate
+                role_id = candidate_role_id
+                break
+
+        if not guild or not member or not role_id:
+            log.debug(f"No configured no-sharing role found for member {member_id}")
+            return True
+
         # Get the role
         role = guild.get_role(role_id)
         if not role:

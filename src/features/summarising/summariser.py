@@ -340,7 +340,11 @@ class ChannelSummarizer:
 
         # Initialize sub-features correctly (pass dependencies, NOT bot=self)
         try:
-            self.news_summarizer = NewsSummarizer(self.logger, self.dev_mode)
+            self.news_summarizer = NewsSummarizer(
+                self.logger,
+                self.dev_mode,
+                server_config=getattr(self.db_handler, 'server_config', None),
+            )
             self.logger.info("NewsSummarizer initialized.")
 
             self.top_generations = TopGenerations(self)
@@ -407,23 +411,39 @@ class ChannelSummarizer:
         try:
              load_dotenv(override=True) # Ensure .env is loaded
              env_prefix = "DEV_" if self.dev_mode else ""
-             self.guild_id = int(os.getenv(f'{env_prefix}GUILD_ID'))
-             self.summary_channel_id = int(os.getenv(f'{env_prefix}SUMMARY_CHANNEL_ID'))
-             monitor_key = f'{env_prefix}CHANNELS_TO_MONITOR'
-             channels_str = os.getenv(monitor_key)
-             if not channels_str:
-                  raise ConfigurationError(f"{monitor_key} not found in environment")
-             self.channels_to_monitor = [int(c.strip()) for c in channels_str.split(',') if c.strip()]
-             # Load Art Channel ID based on mode
-             art_channel_key = f'{env_prefix}ART_CHANNEL_ID'
-             self.art_channel_id = int(os.getenv(art_channel_key))
-             
-             # Load Top Gens Channel ID based on mode (optional, defaults to summary channel)
-             top_gens_key = f'{env_prefix}TOP_GENS_ID'
-             top_gens_env = os.getenv(top_gens_key)
-             self.top_gens_channel_id = int(top_gens_env) if top_gens_env else self.summary_channel_id
-             
-             self.logger.info(f"Loaded {'DEV' if self.dev_mode else 'PROD'} config: Guild={self.guild_id}, Summary={self.summary_channel_id}, TopGens={self.top_gens_channel_id}, Monitor={self.channels_to_monitor}, Art={self.art_channel_id}")
+
+             # server_config is authoritative for guild settings
+             sc = getattr(getattr(self.bot, 'db_handler', None), 'server_config', None) if self.bot else None
+
+             self.guild_id = None
+             if sc:
+                 guilds = [
+                     s for s in sc.get_enabled_servers(require_write=True)
+                     if s.get('default_summarising')
+                 ]
+                 if guilds:
+                     self.guild_id = guilds[0]['guild_id']
+             server = sc.get_server(self.guild_id) if sc and self.guild_id else None
+
+             def _field(name, cast=int):
+                 return sc.get_server_field(self.guild_id, name, cast=cast) if sc and self.guild_id else None
+
+             self.summary_channel_id = _field('summary_channel_id')
+             server_monitor_all = bool(server.get('monitor_all_channels')) if server and server.get('monitor_all_channels') is not None else False
+             server_monitored_ids = server.get('monitored_channel_ids') if server else None
+             self.monitor_all_channels = False
+             if server_monitor_all:
+                 self.monitor_all_channels = True
+                 self.channels_to_monitor = []
+             elif isinstance(server_monitored_ids, list):
+                 self.channels_to_monitor = [int(c) for c in server_monitored_ids]
+             else:
+                 self.channels_to_monitor = []
+             self.art_channel_id = _field('art_channel_id') or int(os.getenv(f'{env_prefix}ART_CHANNEL_ID'))
+             self.top_gens_channel_id = _field('top_gens_channel_id') or self.summary_channel_id
+
+             monitor_desc = 'ALL' if self.monitor_all_channels else self.channels_to_monitor
+             self.logger.info(f"Loaded {'DEV' if self.dev_mode else 'PROD'} config: Guild={self.guild_id}, Summary={self.summary_channel_id}, TopGens={self.top_gens_channel_id}, Monitor={monitor_desc}, Art={self.art_channel_id}")
 
         except (ValueError, TypeError) as e:
              self.logger.error(f"Invalid ID format in environment variables: {e}", exc_info=True)
@@ -855,7 +875,8 @@ class ChannelSummarizer:
                 short_summary,
                 current_date,
                 False,  # included_in_main_summary - will be updated later if needed
-                dev_mode
+                dev_mode,
+                guild_id=self.guild_id
             )
             
             if success:
@@ -1681,26 +1702,40 @@ class ChannelSummarizer:
     async def _get_production_channels(self, db_handler):
         """Get active channels for production mode"""
         try:
-            self.logger.info(f"[PRODUCTION MODE] self.channels_to_monitor has {len(self.channels_to_monitor)} channels")
-            channel_ids = ",".join(str(cid) for cid in self.channels_to_monitor)
-            if not channel_ids:
-                 self.logger.error("[PRODUCTION MODE] ❌ No production channels configured!")
-                 return []
-            
-            self.logger.info(f"[PRODUCTION MODE] Querying {len(self.channels_to_monitor)} channels...")
-                 
-            channel_query = (
-                "SELECT c.channel_id, c.channel_name, COALESCE(c2.channel_name, 'Unknown') as source, "
-                "COUNT(m.message_id) as msg_count "
-                "FROM channels c "
-                "LEFT JOIN channels c2 ON c.category_id = c2.channel_id "
-                "LEFT JOIN messages m ON c.channel_id = m.channel_id "
-                "AND m.created_at > datetime('now', '-24 hours') "
-                f"WHERE c.channel_id IN ({channel_ids}) OR c.category_id IN ({channel_ids}) "
-                "GROUP BY c.channel_id, c.channel_name, source "
-                "HAVING COUNT(m.message_id) >= 25 "
-                "ORDER BY msg_count DESC"
-            )
+            if self.monitor_all_channels:
+                self.logger.info("[PRODUCTION MODE] Querying all channels enabled for summaries in this guild...")
+                channel_query = (
+                    "SELECT c.channel_id, c.channel_name, COALESCE(c2.channel_name, 'Unknown') as source, "
+                    "COUNT(m.message_id) as msg_count "
+                    "FROM channels c "
+                    "LEFT JOIN channels c2 ON c.category_id = c2.channel_id "
+                    "LEFT JOIN messages m ON c.channel_id = m.channel_id "
+                    "AND m.created_at > datetime('now', '-24 hours') "
+                    "WHERE c.guild_id = ? "
+                    "GROUP BY c.channel_id, c.channel_name, source "
+                    "HAVING COUNT(m.message_id) >= 25 "
+                    "ORDER BY msg_count DESC"
+                )
+            else:
+                self.logger.info(f"[PRODUCTION MODE] self.channels_to_monitor has {len(self.channels_to_monitor)} channels")
+                channel_ids = ",".join(str(cid) for cid in self.channels_to_monitor)
+                if not channel_ids:
+                     self.logger.error("[PRODUCTION MODE] ❌ No production channels configured!")
+                     return []
+
+                self.logger.info(f"[PRODUCTION MODE] Querying {len(self.channels_to_monitor)} configured channels...")
+                channel_query = (
+                    "SELECT c.channel_id, c.channel_name, COALESCE(c2.channel_name, 'Unknown') as source, "
+                    "COUNT(m.message_id) as msg_count "
+                    "FROM channels c "
+                    "LEFT JOIN channels c2 ON c.category_id = c2.channel_id "
+                    "LEFT JOIN messages m ON c.channel_id = m.channel_id "
+                    "AND m.created_at > datetime('now', '-24 hours') "
+                    f"WHERE c.guild_id = ? AND (c.channel_id IN ({channel_ids}) OR c.category_id IN ({channel_ids})) "
+                    "GROUP BY c.channel_id, c.channel_name, source "
+                    "HAVING COUNT(m.message_id) >= 25 "
+                    "ORDER BY msg_count DESC"
+                )
             
             self.logger.info(f"Executing query: {channel_query}")
             
@@ -1708,7 +1743,7 @@ class ChannelSummarizer:
             def db_operation():
                 try:
                     self.logger.info("Starting database query execution...")
-                    results = db_handler.execute_query(channel_query)
+                    results = db_handler.execute_query(channel_query, (self.guild_id,))
                     self.logger.info(f"Database query returned {len(results) if results else 0} results: {results}")
                     return results if results else []
                 except sqlite3.OperationalError as e:
@@ -2078,7 +2113,8 @@ class ChannelSummarizer:
                                 short_summary,
                                 current_date,
                                 False,  # included_in_main_summary (N/A for main summary itself)
-                                self.dev_mode  # dev_mode flag
+                                self.dev_mode,  # dev_mode flag
+                                guild_id=self.guild_id
                             )
                             
                             if main_summary_saved:

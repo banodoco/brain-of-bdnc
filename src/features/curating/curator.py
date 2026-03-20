@@ -10,13 +10,20 @@ from src.common.error_handler import handle_errors
 from src.common import discord_utils
 
 class ArtCurator(BaseDiscordBot):
-    def __init__(self, logger=None, dev_mode=False):
+    def __init__(self, logger=None, dev_mode=False, bot_ref=None):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
         intents.messages = True
         intents.members = True
         intents.reactions = True
+
+        # Set before super().__init__ which triggers the dev_mode setter
+        self._bot_ref = bot_ref
+        self._dev_mode = None
+        self.guild_id = None
+        self.art_channel_id = None
+        self.curator_ids = []
 
         super().__init__(
             command_prefix="!",
@@ -26,18 +33,11 @@ class ArtCurator(BaseDiscordBot):
             gateway_queue_size=512,
             logger=logger
         )
-        
-        # Setup logger
+
         self.logger = logger or logging.getLogger('ArtCurator')
-        self.logger.setLevel(logging.DEBUG)  # Set debug logging
-        
-        # Initialize variables that will be set by dev_mode setter
-        self._dev_mode = None
-        self.art_channel_id = None
-        self.curator_ids = []
-        
-        # Set initial dev mode (this will trigger the setter to load correct IDs)
-        self.dev_mode = True  # Always use dev mode for now
+        self.logger.setLevel(logging.DEBUG)
+
+        self.dev_mode = dev_mode
         
         # Add a set to track curators currently in rejection flow
         self._active_rejections = set()
@@ -87,17 +87,26 @@ class ArtCurator(BaseDiscordBot):
     @dev_mode.setter
     def dev_mode(self, value):
         self._dev_mode = value
-        # Update channel ID based on dev mode
-        if value:
-            self.art_channel_id = int(os.getenv('DEV_ART_CHANNEL_ID', 0))
-            self.curator_ids = [int(id) for id in os.getenv('DEV_CURATOR_IDS', '').split(',') if id]
-            self.logger.info(f"Using development art channel: {self.art_channel_id}")
-            self.logger.info(f"Using development curator IDs: {self.curator_ids}")
+        # Update channel ID based on server_config
+        sc = getattr(self._bot_ref, 'server_config', None)
+        guild_id = None
+        server = None
+        if sc:
+            server = sc.get_first_server_with_field('art_channel_id', require_write=True)
+            if server:
+                guild_id = int(server['guild_id'])
+        self.guild_id = guild_id
+
+        self.art_channel_id = int(server['art_channel_id']) if server and server.get('art_channel_id') else None
+
+        curator_from_db = server.get('curator_ids') if server else None
+        if curator_from_db:
+            self.curator_ids = [int(c) for c in curator_from_db]
         else:
-            self.art_channel_id = int(os.getenv('ART_CHANNEL_ID', 0))
-            self.curator_ids = [int(id) for id in os.getenv('CURATOR_IDS', '').split(',') if id]
-            self.logger.info(f"Using production art channel: {self.art_channel_id}")
-            self.logger.info(f"Using production curator IDs: {self.curator_ids}")
+            self.curator_ids = []
+
+        self.logger.info(f"Using {'dev' if value else 'prod'} art channel: {self.art_channel_id}")
+        self.logger.info(f"Using {'dev' if value else 'prod'} curator IDs: {self.curator_ids}")
         
     def setup_events(self):
         @self.event
@@ -208,7 +217,8 @@ class ArtCurator(BaseDiscordBot):
                                         str(member.banner.url) if getattr(member, 'banner', None) else None,
                                         member.created_at.isoformat() if member.created_at else None,
                                         guild_join_date,
-                                        role_ids
+                                        role_ids,
+                                        guild_id=member.guild.id if member.guild else None,
                                     )
                                     member_data = db.get_member(member.id)
                                 

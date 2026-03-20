@@ -103,10 +103,17 @@ class AdminUpdateSocialsModal(discord.ui.Modal):
                 'allow_content_sharing': final_allow_content_sharing,
             }
             
+            # Resolve guild_id: prefer interaction context, fall back to BNDC for DMs
+            _guild_id = interaction.guild_id
+            if _guild_id is None:
+                sc = getattr(self.db_handler, 'server_config', None) if self.db_handler else None
+                _guild_id = sc.bndc_guild_id if sc else None
+
             success = self.db_handler.create_or_update_member(
                 member_id=interaction.user.id,
-                username=interaction.user.name, 
+                username=interaction.user.name,
                 global_name=interaction.user.global_name,
+                guild_id=_guild_id,
                 **updated_data
             )
 
@@ -114,7 +121,7 @@ class AdminUpdateSocialsModal(discord.ui.Modal):
                 # Update the "no sharing" role based on the new allow_content_sharing value
                 if self.bot:
                     await discord_utils.update_no_sharing_role(
-                        self.bot, interaction.user.id, final_allow_content_sharing, logger
+                        self.bot, interaction.user.id, final_allow_content_sharing, logger, guild_id=interaction.guild_id
                     )
                 
                 await interaction.response.send_message("Your preferences have been updated successfully!", ephemeral=True)
@@ -155,6 +162,7 @@ class AdminCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db_handler = bot.db_handler if hasattr(bot, 'db_handler') else None
+        self.server_config = getattr(self.db_handler, 'server_config', None) if self.db_handler else None
         # Initialize Supabase sync handler
         self.supabase_sync = SupabaseSyncHandler(
             self.db_handler,
@@ -169,6 +177,33 @@ class AdminCog(commands.Cog):
     def cog_unload(self):
         self.check_expired_mutes.cancel()
         self.enforce_channel_permissions.cancel()
+
+    def _get_server_field(self, guild_id: Optional[int], field: str, env_var: str) -> Optional[int]:
+        if guild_id and self.server_config:
+            value = self.server_config.get_server_field(guild_id, field, cast=int)
+            if value is not None:
+                return value
+        env_value = os.getenv(env_var)
+        return int(env_value) if env_value else None
+
+    def _get_speaker_role_id(self, guild_id: Optional[int]) -> Optional[int]:
+        return self._get_server_field(guild_id, 'speaker_role_id', 'SPEAKER_ROLE_ID')
+
+    def _is_speaker_management_enabled(self, guild_id: Optional[int]) -> bool:
+        """Speaker mute / permission enforcement is only live for opted-in guilds.
+
+        Until additional guilds are explicitly enabled, BNDC remains the only
+        active guild even though the stored state is guild-scoped.
+        """
+        if guild_id is None:
+            return False
+        if self.server_config:
+            server = self.server_config.get_server(guild_id)
+            if server and server.get('speaker_management_enabled') is not None:
+                return bool(server.get('speaker_management_enabled'))
+            if guild_id == self.server_config.bndc_guild_id:
+                return True
+        return False
 
     async def cog_load(self):
         """Called when the cog is loaded."""
@@ -295,11 +330,13 @@ class AdminCog(commands.Cog):
         """Auto-apply Speaker role permissions to newly created channels."""
         if not isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.VoiceChannel, discord.StageChannel)):
             return
-        role_id_str = os.getenv('SPEAKER_ROLE_ID')
-        if not role_id_str:
+        if not self._is_speaker_management_enabled(channel.guild.id):
+            return
+        role_id = self._get_speaker_role_id(channel.guild.id)
+        if not role_id:
             return
 
-        role = channel.guild.get_role(int(role_id_str))
+        role = channel.guild.get_role(role_id)
         if not role:
             return
 
@@ -307,7 +344,8 @@ class AdminCog(commands.Cog):
         if self.db_handler:
             category_id = channel.category_id if hasattr(channel, 'category_id') else None
             nsfw = getattr(channel, 'nsfw', False)
-            self.db_handler.ensure_channel_exists(channel.id, channel.name, category_id, nsfw)
+            self.db_handler.ensure_channel_exists(channel.id, channel.name, category_id, nsfw,
+                                                   guild_id=channel.guild.id)
 
         # Determine mode — new channels default to 'normal'
         mode = 'normal'
@@ -331,17 +369,18 @@ class AdminCog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Re-add Speaker role if it was removed but the member should still have it."""
-        role_id_str = os.getenv('SPEAKER_ROLE_ID')
-        if not role_id_str or not self.db_handler:
+        if not self._is_speaker_management_enabled(after.guild.id):
+            return
+        role_id = self._get_speaker_role_id(after.guild.id)
+        if not role_id or not self.db_handler:
             return
 
-        role_id = int(role_id_str)
         had_role = any(r.id == role_id for r in before.roles)
         has_role = any(r.id == role_id for r in after.roles)
 
         if had_role and not has_role:
             # Speaker role was just removed — check if they should still have it
-            if self.db_handler.get_is_speaker(after.id):
+            if self.db_handler.get_is_speaker(after.id, guild_id=after.guild.id):
                 role = after.guild.get_role(role_id)
                 if role:
                     try:
@@ -357,13 +396,16 @@ class AdminCog(commands.Cog):
         if not await self.bot.is_owner(interaction.user):
             await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
             return
+        if not self._is_speaker_management_enabled(interaction.guild_id):
+            await interaction.response.send_message("Speaker mute controls are not enabled in this server.", ephemeral=True)
+            return
 
-        role_id_str = os.getenv('SPEAKER_ROLE_ID')
-        if not role_id_str:
+        role_id = self._get_speaker_role_id(interaction.guild_id)
+        if not role_id:
             await interaction.response.send_message("SPEAKER_ROLE_ID is not configured.", ephemeral=True)
             return
 
-        role = interaction.guild.get_role(int(role_id_str))
+        role = interaction.guild.get_role(role_id)
         if not role:
             await interaction.response.send_message("Speaker role not found in this server.", ephemeral=True)
             return
@@ -386,7 +428,7 @@ class AdminCog(commands.Cog):
         try:
             # Mark as not-speaker in DB first so on_member_update won't re-add the role
             if self.db_handler:
-                self.db_handler.set_is_speaker(user.id, False)
+                self.db_handler.set_is_speaker(user.id, False, guild_id=interaction.guild_id)
 
             await user.remove_roles(role, reason=f"Muted by {interaction.user.name}" + (f" for {duration}" if duration else ""))
 
@@ -427,13 +469,16 @@ class AdminCog(commands.Cog):
         if not await self.bot.is_owner(interaction.user):
             await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
             return
+        if not self._is_speaker_management_enabled(interaction.guild_id):
+            await interaction.response.send_message("Speaker mute controls are not enabled in this server.", ephemeral=True)
+            return
 
-        role_id_str = os.getenv('SPEAKER_ROLE_ID')
-        if not role_id_str:
+        role_id = self._get_speaker_role_id(interaction.guild_id)
+        if not role_id:
             await interaction.response.send_message("SPEAKER_ROLE_ID is not configured.", ephemeral=True)
             return
 
-        role = interaction.guild.get_role(int(role_id_str))
+        role = interaction.guild.get_role(role_id)
         if not role:
             await interaction.response.send_message("Speaker role not found in this server.", ephemeral=True)
             return
@@ -445,7 +490,7 @@ class AdminCog(commands.Cog):
         try:
             # Mark as speaker in DB first
             if self.db_handler:
-                self.db_handler.set_is_speaker(user.id, True)
+                self.db_handler.set_is_speaker(user.id, True, guild_id=interaction.guild_id)
 
             await user.add_roles(role, reason=f"Unmuted by {interaction.user.name}")
             # Clear any timed mute record
@@ -470,19 +515,19 @@ class AdminCog(commands.Cog):
         if not self.db_handler:
             return
 
-        role_id_str = os.getenv('SPEAKER_ROLE_ID')
-        if not role_id_str:
-            return
-        role_id = int(role_id_str)
-
         # --- Phase 1: Expire timed mutes ---
         expired = self.db_handler.get_expired_mutes()
         for mute in expired:
             member_id = mute['member_id']
             guild_id = mute['guild_id']
             try:
+                if not self._is_speaker_management_enabled(guild_id):
+                    continue
                 guild = self.bot.get_guild(guild_id)
                 if not guild:
+                    continue
+                role_id = self._get_speaker_role_id(guild.id)
+                if not role_id:
                     continue
                 role = guild.get_role(role_id)
                 if not role:
@@ -493,11 +538,11 @@ class AdminCog(commands.Cog):
                         member = await guild.fetch_member(member_id)
                     except discord.NotFound:
                         self.db_handler.delete_timed_mute(member_id, guild_id)
-                        self.db_handler.set_is_speaker(member_id, True)
+                        self.db_handler.set_is_speaker(member_id, True, guild_id=guild_id)
                         logger.info(f"Cleaned up expired mute for absent member {member_id}")
                         continue
 
-                self.db_handler.set_is_speaker(member_id, True)
+                self.db_handler.set_is_speaker(member_id, True, guild_id=guild_id)
                 if role not in member.roles:
                     await member.add_roles(role, reason="Timed mute expired")
                     logger.info(f"Restored Speaker role for member {member_id} (timed mute expired)")
@@ -507,14 +552,16 @@ class AdminCog(commands.Cog):
                 logger.error(f"Error restoring Speaker role for member {member_id}: {e}", exc_info=True)
 
         # --- Phase 2: Enforce is_speaker=False (remove role from muted members) ---
-        muted_ids = set(self.db_handler.get_muted_member_ids())
-        if not muted_ids:
-            return
-
         for guild in self.bot.guilds:
+            if not self._is_speaker_management_enabled(guild.id):
+                continue
+            role_id = self._get_speaker_role_id(guild.id)
+            if not role_id:
+                continue
             role = guild.get_role(role_id)
             if not role:
                 continue
+            muted_ids = set(self.db_handler.get_muted_member_ids(guild_id=guild.id))
             for member_id in muted_ids:
                 member = guild.get_member(member_id)
                 if member and role in member.roles:
@@ -540,16 +587,17 @@ class AdminCog(commands.Cog):
         if not self.db_handler:
             return
 
-        role_id_str = os.getenv('SPEAKER_ROLE_ID')
-        if not role_id_str:
-            return
-
         # Env var fallback for exempt channels
         exempt_str = os.getenv('SPEAKER_EXEMPT_CHANNELS', '')
         env_exempt_ids = {int(x.strip()) for x in exempt_str.split(',') if x.strip()}
 
         for guild in self.bot.guilds:
-            role = guild.get_role(int(role_id_str))
+            if not self._is_speaker_management_enabled(guild.id):
+                continue
+            role_id = self._get_speaker_role_id(guild.id)
+            if not role_id:
+                continue
+            role = guild.get_role(role_id)
             if not role:
                 continue
 
@@ -557,18 +605,19 @@ class AdminCog(commands.Cog):
             synced = 0
             for channel in guild.channels:
                 if isinstance(channel, discord.CategoryChannel):
-                    self.db_handler.ensure_channel_exists(channel.id, channel.name)
+                    self.db_handler.ensure_channel_exists(channel.id, channel.name, guild_id=guild.id)
                     synced += 1
                 elif isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.VoiceChannel, discord.StageChannel)):
                     category_id = channel.category_id if hasattr(channel, 'category_id') else None
                     nsfw = getattr(channel, 'nsfw', False)
-                    self.db_handler.ensure_channel_exists(channel.id, channel.name, category_id, nsfw)
+                    self.db_handler.ensure_channel_exists(channel.id, channel.name, category_id, nsfw,
+                                                           guild_id=guild.id)
                     synced += 1
 
             logger.info(f"[PermEnforce] Synced {synced} channels to DB")
 
             # Phase 2: Enforce Speaker role permissions
-            modes = self.db_handler.get_all_channel_speaker_modes()
+            modes = self.db_handler.get_all_channel_speaker_modes(guild_id=guild.id)
 
             checked = 0
             fixed = 0
@@ -605,7 +654,7 @@ class AdminCog(commands.Cog):
             return
 
         try:
-            db_default_ids = self.db_handler.get_onboarding_default_ids()
+            db_default_ids = self.db_handler.get_onboarding_default_ids(guild_id=guild.id)
             if not db_default_ids:
                 return
 

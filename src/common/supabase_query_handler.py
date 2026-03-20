@@ -55,6 +55,49 @@ class SupabaseQueryHandler:
             logger.error(f"Failed to initialize Supabase client for queries: {e}", exc_info=True)
             raise
     
+    async def _fetch_author_names(self, author_ids: List[int], guild_id: Optional[int] = None) -> Dict[int, str]:
+        """Fetch display names for a list of author IDs.
+
+        When guild_id is provided, uses guild_members (guild-specific nicks) with
+        discord_members fallback. Without guild_id, uses discord_members directly.
+        """
+        members_map: Dict[int, str] = {}
+        if not author_ids:
+            return members_map
+
+        for i in range(0, len(author_ids), 100):
+            batch_ids = author_ids[i:i + 100]
+
+            if guild_id:
+                # Try guild_members first (guild-specific nick)
+                gm_result = await asyncio.to_thread(
+                    self.supabase.table('guild_members')
+                    .select('member_id, server_nick')
+                    .eq('guild_id', guild_id)
+                    .in_('member_id', batch_ids)
+                    .execute
+                )
+                for row in (gm_result.data or []):
+                    if row.get('server_nick'):
+                        members_map[row['member_id']] = row['server_nick']
+
+            # Fill gaps from discord_members
+            missing = [mid for mid in batch_ids if mid not in members_map]
+            if missing:
+                dm_result = await asyncio.to_thread(
+                    self.supabase.table('discord_members')
+                    .select('member_id, username, global_name, server_nick')
+                    .in_('member_id', missing)
+                    .execute
+                )
+                for row in (dm_result.data or []):
+                    if row['member_id'] not in members_map:
+                        members_map[row['member_id']] = (
+                            row.get('server_nick') or row.get('global_name') or row.get('username') or 'Unknown'
+                        )
+
+        return members_map
+
     def _parse_timestamp(self, timestamp_str: str) -> datetime:
         """
         Parse a timestamp string from Supabase, handling variable decimal places.
@@ -245,50 +288,55 @@ class SupabaseQueryHandler:
             logger.error(f"Error getting message date range from Supabase: {e}", exc_info=True)
             raise
     
-    async def get_messages_after(self, date: datetime) -> List[Dict]:
+    async def get_messages_after(self, date: datetime, guild_id: Optional[int] = None) -> List[Dict]:
         """Get messages after a specific date with member info."""
         try:
             all_messages = []
             offset = 0
             batch_size = 1000
-            
+
             while True:
+                query = (self.supabase.table('discord_messages')
+                    .select('*')
+                    .gt('created_at', date.isoformat()))
+                if guild_id:
+                    query = query.eq('guild_id', guild_id)
                 result = await asyncio.to_thread(
-                    self.supabase.table('discord_messages')
-                    .select('*, discord_members(username, global_name, server_nick)')
-                    .gt('created_at', date.isoformat())
-                    .range(offset, offset + batch_size - 1)
+                    query.range(offset, offset + batch_size - 1)
                     .execute
                 )
-                
+
                 if not result.data:
                     break
-                
-                # Flatten the member data
-                for msg in result.data:
-                    if msg.get('discord_members'):
-                        member = msg['discord_members']
-                        msg['author_name'] = member.get('server_nick') or member.get('global_name') or member.get('username')
-                        del msg['discord_members']
-                    all_messages.append(msg)
-                
+
+                all_messages.extend(result.data)
+
                 if len(result.data) < batch_size:
                     break
-                    
+
                 offset += batch_size
-            
+
+            # Fetch member info for all unique authors (guild-aware)
+            if all_messages:
+                unique_author_ids = list(set(msg['author_id'] for msg in all_messages))
+                members_map = await self._fetch_author_names(unique_author_ids, guild_id=guild_id)
+                for msg in all_messages:
+                    msg['author_name'] = members_map.get(msg['author_id'])
+
             return all_messages
         except Exception as e:
             logger.error(f"Error getting messages after date from Supabase: {e}", exc_info=True)
             raise
     
-    async def get_messages_in_range(self, start_date: datetime, end_date: datetime, channel_id: Optional[int] = None) -> List[Dict]:
+    async def get_messages_in_range(self, start_date: datetime, end_date: datetime,
+                                   channel_id: Optional[int] = None,
+                                   guild_id: Optional[int] = None) -> List[Dict]:
         """Get messages within a date range with member info."""
         try:
             all_messages = []
             offset = 0
             batch_size = 1000
-            
+
             # Fetch messages
             while True:
                 query = (self.supabase.table('discord_messages')
@@ -301,6 +349,9 @@ class SupabaseQueryHandler:
                 bot_user_id = os.getenv('BOT_USER_ID')
                 if bot_user_id:
                     query = query.neq('author_id', int(bot_user_id))
+
+                if guild_id:
+                    query = query.eq('guild_id', guild_id)
 
                 if channel_id:
                     query = query.eq('channel_id', channel_id)
@@ -319,53 +370,38 @@ class SupabaseQueryHandler:
                     
                 offset += batch_size
             
-            # Fetch member info for all unique authors
+            # Fetch member info for all unique authors (guild-aware)
             if all_messages:
                 unique_author_ids = list(set(msg['author_id'] for msg in all_messages))
-                members_map = {}
-                
-                # Fetch members in batches
-                for i in range(0, len(unique_author_ids), 100):
-                    batch_ids = unique_author_ids[i:i + 100]
-                    members_result = await asyncio.to_thread(
-                        self.supabase.table('discord_members')
-                        .select('member_id, username, global_name, server_nick')
-                        .in_('member_id', batch_ids)
-                        .execute
-                    )
-                    
-                    for member in members_result.data:
-                        members_map[member['member_id']] = member
-                
-                # Add author_name to messages
+                members_map = await self._fetch_author_names(unique_author_ids, guild_id=guild_id)
+
                 for msg in all_messages:
-                    member = members_map.get(msg['author_id'])
-                    if member:
-                        msg['author_name'] = member.get('server_nick') or member.get('global_name') or member.get('username')
-                    else:
-                        msg['author_name'] = None
-            
+                    msg['author_name'] = members_map.get(msg['author_id'])
+
             return all_messages
         except Exception as e:
             logger.error(f"Error getting messages in range from Supabase: {e}", exc_info=True)
             raise
     
-    async def get_messages_by_authors_in_range(self, author_ids: List[int], start_date: datetime, end_date: datetime) -> List[Dict]:
+    async def get_messages_by_authors_in_range(self, author_ids: List[int], start_date: datetime,
+                                              end_date: datetime, guild_id: Optional[int] = None) -> List[Dict]:
         """Get messages by specific authors within a date range."""
         try:
             all_messages = []
             offset = 0
             batch_size = 1000
-            
+
             # Fetch messages
             while True:
-                result = await asyncio.to_thread(
-                    self.supabase.table('discord_messages')
+                query = (self.supabase.table('discord_messages')
                     .select('*')
                     .in_('author_id', author_ids)
                     .gte('created_at', start_date.isoformat())
-                    .lte('created_at', end_date.isoformat())
-                    .range(offset, offset + batch_size - 1)
+                    .lte('created_at', end_date.isoformat()))
+                if guild_id:
+                    query = query.eq('guild_id', guild_id)
+                result = await asyncio.to_thread(
+                    query.range(offset, offset + batch_size - 1)
                     .execute
                 )
                 
@@ -379,31 +415,12 @@ class SupabaseQueryHandler:
                     
                 offset += batch_size
             
-            # Fetch member info for all authors
+            # Fetch member info for all authors (guild-aware)
             if all_messages and author_ids:
-                members_map = {}
-                
-                # Fetch members in batches
-                for i in range(0, len(author_ids), 100):
-                    batch_ids = author_ids[i:i + 100]
-                    members_result = await asyncio.to_thread(
-                        self.supabase.table('discord_members')
-                        .select('member_id, username, global_name, server_nick')
-                        .in_('member_id', batch_ids)
-                        .execute
-                    )
-                    
-                    for member in members_result.data:
-                        members_map[member['member_id']] = member
-                
-                # Add author_name to messages
+                members_map = await self._fetch_author_names(author_ids, guild_id=guild_id)
                 for msg in all_messages:
-                    member = members_map.get(msg['author_id'])
-                    if member:
-                        msg['author_name'] = member.get('server_nick') or member.get('global_name') or member.get('username')
-                    else:
-                        msg['author_name'] = None
-            
+                    msg['author_name'] = members_map.get(msg['author_id'])
+
             return all_messages
         except Exception as e:
             logger.error(f"Error getting messages by authors from Supabase: {e}", exc_info=True)
@@ -495,43 +512,45 @@ class SupabaseQueryHandler:
             logger.error(f"Error getting message dates from Supabase: {e}", exc_info=True)
             raise
     
-    async def search_messages(self, query: str, channel_id: Optional[int] = None) -> List[Dict]:
+    async def search_messages(self, query: str, channel_id: Optional[int] = None,
+                             guild_id: Optional[int] = None) -> List[Dict]:
         """Search messages using PostgreSQL full-text search."""
         try:
-            # Use textSearch for full-text search on content
-            # Note: This requires a tsvector column or uses to_tsvector on the fly
             all_messages = []
             offset = 0
             batch_size = 1000
-            
+
             while True:
                 query_builder = (self.supabase.table('discord_messages')
-                               .select('*, discord_members(username, global_name, server_nick)')
+                               .select('*')
                                .text_search('content', query))
-                
+
                 if channel_id:
                     query_builder = query_builder.eq('channel_id', channel_id)
-                
+                if guild_id:
+                    query_builder = query_builder.eq('guild_id', guild_id)
+
                 result = await asyncio.to_thread(
                     query_builder.range(offset, offset + batch_size - 1).execute
                 )
-                
+
                 if not result.data:
                     break
-                
-                # Flatten the member data
-                for msg in result.data:
-                    if msg.get('discord_members'):
-                        member = msg['discord_members']
-                        msg['author_name'] = member.get('server_nick') or member.get('global_name') or member.get('username')
-                        del msg['discord_members']
-                    all_messages.append(msg)
-                
+
+                all_messages.extend(result.data)
+
                 if len(result.data) < batch_size:
                     break
-                    
+
                 offset += batch_size
-            
+
+            # Fetch member info for all unique authors (guild-aware)
+            if all_messages:
+                unique_author_ids = list(set(msg['author_id'] for msg in all_messages))
+                members_map = await self._fetch_author_names(unique_author_ids, guild_id=guild_id)
+                for msg in all_messages:
+                    msg['author_name'] = members_map.get(msg['author_id'])
+
             return all_messages
         except Exception as e:
             logger.error(f"Error searching messages in Supabase: {e}", exc_info=True)
@@ -738,6 +757,7 @@ class SupabaseQueryHandler:
             channel_id_from_params = None
             message_id_from_params = None
             channel_ids_from_params = []  # Initialize before params parsing
+            guild_id_from_params = None
             
             if params:
                 for p in params:
@@ -748,7 +768,9 @@ class SupabaseQueryHandler:
                     elif isinstance(p, (int, str)) and len(str(p)) >= 15:
                         try:
                             # Determine if it's message_id or channel_id based on SQL
-                            if 'message_id' in sql_lower and 'where message_id' in sql_lower:
+                            if 'guild_id = ?' in sql_lower and guild_id_from_params is None:
+                                guild_id_from_params = int(p)
+                            elif 'message_id' in sql_lower and 'where message_id' in sql_lower:
                                 message_id_from_params = int(p)
                             else:
                                 channel_id_from_params = int(p)
@@ -790,12 +812,24 @@ class SupabaseQueryHandler:
                         logger.info(f"🔍 Extracted message_id from SQL: {message_id_from_params}")
                     except (ValueError, TypeError):
                         pass
+
+                guild_match = re.search(r'guild_id\s*=\s*(\d+)', sql_lower)
+                if guild_match and guild_id_from_params is None:
+                    try:
+                        guild_id_from_params = int(guild_match.group(1))
+                        logger.info(f"🔍 Extracted guild_id from SQL: {guild_id_from_params}")
+                    except (ValueError, TypeError):
+                        pass
                 
                 if not channel_ids_from_params and not message_id_from_params:
                     logger.warning(f"⚠️ No channel_id or message_id found in SQL WHERE clause!")
             
             # Start with base query
             query = self.supabase.table('discord_messages').select('*')
+
+            if guild_id_from_params is not None:
+                query = query.eq('guild_id', str(guild_id_from_params))
+                logger.debug(f"✅ Applying guild filter: guild_id = {guild_id_from_params}")
             
             # Handle message_id filter (takes priority)
             if message_id_from_params:
@@ -1135,11 +1169,15 @@ class SupabaseQueryHandler:
             return []
     
     async def _execute_generic_query(self, sql: str, params: Tuple = None) -> List[Dict]:
-        """
-        Fallback for complex queries - attempts basic parsing.
-        For unsupported queries, returns empty list.
-        """
-        # Silently return empty - these warnings are too noisy
+        """Fallback for unroutable queries. Raises on UPDATE/DELETE to prevent silent data loss."""
+        import re
+        first_keyword = re.sub(r'\s+', ' ', sql.strip()).split(' ', 1)[0].upper()
+        if first_keyword in ('UPDATE', 'DELETE', 'INSERT'):
+            raise NotImplementedError(
+                f"{first_keyword} queries are not supported via execute_raw_sql. "
+                f"Use the Supabase REST client directly. SQL: {sql[:200]}"
+            )
+        logger.warning(f"Unroutable query fell through to generic handler: {sql[:200]}")
         return []
     
     async def _enrich_with_channel_names(self, messages: List[Dict]) -> List[Dict]:
@@ -1180,23 +1218,14 @@ class SupabaseQueryHandler:
         if not author_ids:
             return messages
         
-        # Fetch member names (Supabase uses member_id, not user_id)
-        member_query = self.supabase.table('discord_members').select('member_id,username,global_name,server_nick').in_('member_id', author_ids)
-        member_response = member_query.execute()
-        members = member_response.data if member_response.data else []
-        
-        # Create lookup dict with proper name priority
-        member_lookup = {}
-        for m in members:
-            # Use server_nick > global_name > username (same as SQL COALESCE)
-            name = m.get('server_nick') or m.get('global_name') or m.get('username') or 'Unknown'
-            member_lookup[m['member_id']] = name
-        
+        guild_ids = {msg.get('guild_id') for msg in messages if msg.get('guild_id') is not None}
+        guild_id = next(iter(guild_ids)) if len(guild_ids) == 1 else None
+        member_lookup = await self._fetch_author_names(author_ids, guild_id=guild_id)
+
         # Enrich messages
         for msg in messages:
             author_id = msg.get('author_id')
             if author_id:
                 msg['author_name'] = member_lookup.get(author_id, 'Unknown')
-        
-        return messages
 
+        return messages
