@@ -60,7 +60,9 @@ class SummarizerCog(commands.Cog):
                         
                         dev_mode = getattr(self.bot, 'dev_mode', False)
                         archive_runner = ArchiveRunner()
-                        success = await archive_runner.run_archive(archive_days, dev_mode, in_depth=True)
+                        sc = getattr(self.bot, 'server_config', None)
+                        _guild_id = sc.bndc_guild_id if sc else None
+                        success = await archive_runner.run_archive(archive_days, dev_mode, in_depth=True, guild_id=_guild_id)
                         
                         if success:
                             logger.info("Archive process completed successfully. Now starting summary.")

@@ -17,6 +17,7 @@ import discord
 import logging
 import random
 import asyncio
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -57,12 +58,86 @@ class CompetitionCog(commands.Cog):
         self.bot = bot
         self.db = bot.db_handler if hasattr(bot, 'db_handler') else None
 
-        # Active voting state — restored from DB on ready
-        self._active_slug: Optional[str] = None
-        self._active_channel_id: Optional[int] = None
-        self._voting_end: Optional[datetime] = None
-        self._questions_thread_id: Optional[int] = None
-        self._next_entry_number: int = 0
+        # Active voting state, keyed by the voting channel or questions thread.
+        self._active_by_voting_channel_id: dict[int, dict] = {}
+        self._active_by_questions_thread_id: dict[int, dict] = {}
+
+    def _default_guild_id(self) -> Optional[int]:
+        sc = getattr(self.db, 'server_config', None) if self.db else None
+        return sc.get_default_guild_id(require_write=True) if sc else None
+
+    def _resolve_guild_id(
+        self,
+        *,
+        comp: Optional[dict] = None,
+        channel_id: Optional[int] = None,
+        message: Optional[discord.Message] = None,
+    ) -> Optional[int]:
+        """Resolve the guild that owns a competition from live context or channel metadata."""
+        if message and getattr(message, 'guild', None):
+            return message.guild.id
+
+        candidate_channel_ids = []
+        if channel_id:
+            candidate_channel_ids.append(channel_id)
+        if comp:
+            for key in ('voting_channel_id', 'channel_id'):
+                value = comp.get(key)
+                if value and value not in candidate_channel_ids:
+                    candidate_channel_ids.append(value)
+
+        for candidate_id in candidate_channel_ids:
+            channel = self.db.get_channel(candidate_id) if self.db else None
+            guild_id = channel.get('guild_id') if channel else None
+            if guild_id:
+                return int(guild_id)
+
+        return self._default_guild_id()
+
+    def _register_active_competition(
+        self,
+        *,
+        guild_id: int,
+        slug: str,
+        voting_channel_id: int,
+        voting_end: datetime,
+        questions_thread_id: Optional[int],
+        next_entry_number: int,
+    ) -> dict:
+        state = {
+            'guild_id': guild_id,
+            'slug': slug,
+            'voting_channel_id': voting_channel_id,
+            'voting_end': voting_end,
+            'questions_thread_id': questions_thread_id,
+            'next_entry_number': next_entry_number,
+        }
+        self._active_by_voting_channel_id[voting_channel_id] = state
+        if questions_thread_id:
+            self._active_by_questions_thread_id[questions_thread_id] = state
+        return state
+
+    def _clear_active_competition(self, state: dict):
+        self._active_by_voting_channel_id.pop(state['voting_channel_id'], None)
+        if state.get('questions_thread_id'):
+            self._active_by_questions_thread_id.pop(state['questions_thread_id'], None)
+
+    def _get_active_state_for_channel(self, channel_id: int) -> Optional[dict]:
+        return (
+            self._active_by_questions_thread_id.get(channel_id)
+            or self._active_by_voting_channel_id.get(channel_id)
+        )
+
+    async def _close_competition(self, state: dict):
+        slug = state['slug']
+        logger.info(f"Voting expired for {slug}")
+        if self.db and slug:
+            self.db.update_competition(
+                slug,
+                {'status': 'closed'},
+                guild_id=state['guild_id'],
+            )
+        self._clear_active_competition(state)
 
     def cog_unload(self):
         if self._check_voting_expiry.is_running():
@@ -87,29 +162,35 @@ class CompetitionCog(commands.Cog):
             if not ends_at:
                 continue
 
+            guild_id = self._resolve_guild_id(comp=comp)
             if datetime.now(timezone.utc) >= ends_at:
-                self.db.update_competition(comp['slug'], {'status': 'closed'})
+                self.db.update_competition(comp['slug'], {'status': 'closed'}, guild_id=guild_id)
                 logger.info(f"Competition {comp['slug']} expired during downtime — closed")
                 continue
 
-            self._active_slug = comp['slug']
-            self._active_channel_id = comp.get('voting_channel_id') or comp.get('channel_id')
-            self._voting_end = ends_at
-            self._questions_thread_id = comp.get('questions_thread_id')
+            voting_channel_id = comp.get('voting_channel_id') or comp.get('channel_id')
+            questions_thread_id = comp.get('questions_thread_id')
 
             # Restore next entry number from max existing entry
-            entries = await asyncio.to_thread(self.db.get_competition_entries, comp['slug'])
+            entries = await asyncio.to_thread(self.db.get_competition_entries, comp['slug'], guild_id)
             max_num = max((e.get('entry_number', 0) or 0 for e in entries), default=0)
-            self._next_entry_number = max_num + 1
+            next_entry_number = max_num + 1
+            self._register_active_competition(
+                guild_id=guild_id,
+                slug=comp['slug'],
+                voting_channel_id=voting_channel_id,
+                voting_end=ends_at,
+                questions_thread_id=questions_thread_id,
+                next_entry_number=next_entry_number,
+            )
 
             if not self._check_voting_expiry.is_running():
                 self._check_voting_expiry.start()
 
             logger.info(
                 f"CompetitionCog restored voting for {comp['slug']} "
-                f"(ends {ends_at.isoformat()}, next_entry={self._next_entry_number})"
+                f"(ends {ends_at.isoformat()}, next_entry={next_entry_number})"
             )
-            break  # One active competition at a time
 
         # Start the scheduler
         if not self._check_scheduled_starts.is_running():
@@ -123,34 +204,33 @@ class CompetitionCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if not self._active_channel_id:
-            return
         if message.author.bot:
             return
 
-        if self._voting_end and datetime.now(timezone.utc) >= self._voting_end:
-            logger.info("Voting period expired — disabling moderation")
-            self._clear_voting_state()
+        state = self._get_active_state_for_channel(message.channel.id)
+        if not state:
+            return
+
+        if datetime.now(timezone.utc) >= state['voting_end']:
+            await self._close_competition(state)
             return
 
         # Questions thread: if someone posts with "late entry", add their attachment as an entry
-        if self._questions_thread_id and message.channel.id == self._questions_thread_id:
+        if state.get('questions_thread_id') and message.channel.id == state['questions_thread_id']:
             if 'late entry' in message.content.lower():
-                await self._handle_late_entry(message)
+                await self._handle_late_entry(message, state)
             return
 
-        if message.channel.id != self._active_channel_id:
+        if message.channel.id != state['voting_channel_id']:
             return
 
         try:
-            await self._delete_with_notice(message)
+            await self._delete_with_notice(message, state)
         except Exception as e:
             logger.error(f"CompetitionCog on_message error: {e}", exc_info=True)
 
-    async def _handle_late_entry(self, message: discord.Message):
+    async def _handle_late_entry(self, message: discord.Message, state: dict):
         """Someone tagged the bot in the questions thread with an attachment — add as late entry."""
-        if not self._active_slug or not self._active_channel_id:
-            return
         att = best_attachment(message)
         if not att:
             await message.reply(
@@ -159,13 +239,13 @@ class CompetitionCog(commands.Cog):
             return
 
         try:
-            voting_channel = self.bot.get_channel(self._active_channel_id)
+            voting_channel = self.bot.get_channel(state['voting_channel_id'])
             if not voting_channel:
-                voting_channel = await self.bot.fetch_channel(self._active_channel_id)
+                voting_channel = await self.bot.fetch_channel(state['voting_channel_id'])
 
             author_name = get_display_name(message.author)
-            entry_num = self._next_entry_number
-            self._next_entry_number += 1
+            entry_num = state['next_entry_number']
+            state['next_entry_number'] += 1
 
             # Find a random "—" separator message to edit inline
             separators = []
@@ -184,15 +264,15 @@ class CompetitionCog(commands.Cog):
                 entry_msg = await voting_channel.send(f"—\n## By {author_name}\n{att.url}")
 
             # Record in DB
-            if self.db and self._active_slug:
+            if self.db:
                 await asyncio.to_thread(self.db.upsert_competition_entry, {
-                    'competition_slug': self._active_slug,
+                    'competition_slug': state['slug'],
                     'message_id': message.id,
                     'channel_id': message.channel.id,
                     'author_id': message.author.id,
                     'author_name': author_name,
                     'entry_number': entry_num,
-                })
+                }, state['guild_id'])
 
             await message.reply(f"Added! {entry_msg.jump_url}")
             logger.info(f"Added late entry #{entry_num} from {author_name}")
@@ -201,7 +281,7 @@ class CompetitionCog(commands.Cog):
             logger.error(f"Error adding late entry: {e}", exc_info=True)
             await message.reply("Something went wrong adding your entry — please try again.")
 
-    async def _delete_with_notice(self, message: discord.Message):
+    async def _delete_with_notice(self, message: discord.Message, state: dict):
         try:
             await message.delete()
         except discord.Forbidden:
@@ -211,10 +291,10 @@ class CompetitionCog(commands.Cog):
             return
 
         thread_url = ""
-        if self._questions_thread_id:
+        if state.get('questions_thread_id'):
             thread_url = (
                 f" https://discord.com/channels/{message.guild.id}"
-                f"/{message.channel.id}/{self._questions_thread_id}"
+                f"/{message.channel.id}/{state['questions_thread_id']}"
             )
         notice = await message.channel.send(
             f"{message.author.mention} Voting is in progress — "
@@ -233,7 +313,7 @@ class CompetitionCog(commands.Cog):
     @tasks.loop(minutes=1)
     async def _check_scheduled_starts(self):
         """Check for competitions scheduled to start voting now."""
-        if not self.db or self._active_channel_id:
+        if not self.db:
             return
 
         try:
@@ -245,7 +325,6 @@ class CompetitionCog(commands.Cog):
                 if datetime.now(timezone.utc) >= starts_at:
                     logger.info(f"Scheduled voting start for {comp['slug']}")
                     await self._trigger_voting(comp)
-                    break  # One at a time
         except Exception as e:
             logger.error(f"Error checking scheduled starts: {e}", exc_info=True)
 
@@ -255,16 +334,13 @@ class CompetitionCog(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def _check_voting_expiry(self):
-        if not self._active_channel_id or not self._voting_end:
-            self._check_voting_expiry.cancel()
-            return
-        if datetime.now(timezone.utc) >= self._voting_end:
-            slug = self._active_slug
-            logger.info(f"Voting expired for {slug}")
-            if self.db and slug:
-                self.db.update_competition(slug, {'status': 'closed'})
-            self._clear_voting_state()
-            self._check_voting_expiry.cancel()
+        expired = [
+            state
+            for state in list(self._active_by_voting_channel_id.values())
+            if datetime.now(timezone.utc) >= state['voting_end']
+        ]
+        for state in expired:
+            await self._close_competition(state)
 
     @_check_voting_expiry.before_loop
     async def _before_expiry_check(self):
@@ -277,8 +353,9 @@ class CompetitionCog(commands.Cog):
     async def _trigger_voting(self, comp: dict):
         """Start voting for a competition — fetch entries, post, activate moderation."""
         slug = comp['slug']
+        guild_id = self._resolve_guild_id(comp=comp)
         try:
-            entry_rows = await asyncio.to_thread(self.db.get_competition_entries, slug)
+            entry_rows = await asyncio.to_thread(self.db.get_competition_entries, slug, guild_id)
             if not entry_rows:
                 logger.warning(f"Scheduled voting for {slug} but no entries — skipping")
                 return
@@ -306,31 +383,31 @@ class CompetitionCog(commands.Cog):
 
             voting_hours = comp.get('voting_hours', 24)
             voting_end = datetime.now(timezone.utc) + timedelta(hours=voting_hours)
-
-            # Set active state before posting so late entries work immediately
-            self._active_slug = slug
-            self._active_channel_id = voting_ch_id
-            self._voting_end = voting_end
-
-            entry_count = await self._post_voting(
+            entry_count, questions_thread_id = await self._post_voting(
                 voting_channel, refreshed, comp['name'],
                 voting_hours, comp.get('min_join_weeks', 4),
                 comp.get('voting_header'),
             )
-
-            self._next_entry_number = entry_count + 1
+            self._register_active_competition(
+                guild_id=guild_id,
+                slug=slug,
+                voting_channel_id=voting_ch_id,
+                voting_end=voting_end,
+                questions_thread_id=questions_thread_id,
+                next_entry_number=entry_count + 1,
+            )
 
             # Persist entry numbers
             for e in refreshed:
                 if e.get('entry_number'):
-                    await asyncio.to_thread(self.db.upsert_competition_entry, e)
+                    await asyncio.to_thread(self.db.upsert_competition_entry, e, guild_id=guild_id)
 
             await asyncio.to_thread(self.db.update_competition, slug, {
                 'status': 'voting',
                 'voting_started_at': datetime.now(timezone.utc).isoformat(),
                 'voting_ends_at': voting_end.isoformat(),
-                'questions_thread_id': self._questions_thread_id,
-            })
+                'questions_thread_id': questions_thread_id,
+            }, guild_id=guild_id)
 
             if not self._check_voting_expiry.is_running():
                 self._check_voting_expiry.start()
@@ -344,8 +421,8 @@ class CompetitionCog(commands.Cog):
             logger.error(f"Error triggering voting for {slug}: {e}", exc_info=True)
 
     async def _post_voting(self, channel, entries, comp_name,
-                           voting_hours, min_join_weeks, custom_header) -> int:
-        """Post voting header, all entries in random order, and a Q&A thread. Returns count."""
+                           voting_hours, min_join_weeks, custom_header) -> tuple[int, int]:
+        """Post voting header, all entries in random order, and a Q&A thread."""
         random.shuffle(entries)
 
         if custom_header:
@@ -395,24 +472,16 @@ class CompetitionCog(commands.Cog):
             "containing the words \"late entry\" with your video attached and I'll add it!"
         )
         thread = await questions_msg.create_thread(name="Discussions, Questions & Late Entries")
-        self._questions_thread_id = thread.id
         logger.info(f"Created Discussions, Questions & Late Entries thread ({thread.id})")
 
         # Jump to top link as the final message
         await channel.send(f"[Jump to top]({header_msg.jump_url})")
 
-        return len(entries)
+        return len(entries), thread.id
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    def _clear_voting_state(self):
-        self._active_slug = None
-        self._active_channel_id = None
-        self._voting_end = None
-        self._questions_thread_id = None
-        self._next_entry_number = 0
 
     @staticmethod
     def _parse_dt(value) -> Optional[datetime]:
@@ -439,7 +508,8 @@ class CompetitionCog(commands.Cog):
         """Test-post voting to a specific channel without activating moderation."""
         if not await self.bot.is_owner(ctx.author):
             return
-        comp = await asyncio.to_thread(self.db.get_competition, slug)
+        guild_id = getattr(getattr(ctx, 'guild', None), 'id', None) or self._default_guild_id()
+        comp = await asyncio.to_thread(self.db.get_competition, slug, guild_id)
         if not comp:
             await ctx.send(f"No competition found with slug `{slug}`")
             return
@@ -450,7 +520,7 @@ class CompetitionCog(commands.Cog):
 
         await ctx.send(f"Posting test voting for `{slug}` to <#{channel_id}>...")
 
-        entry_rows = await asyncio.to_thread(self.db.get_competition_entries, slug)
+        entry_rows = await asyncio.to_thread(self.db.get_competition_entries, slug, guild_id)
         if not entry_rows:
             await ctx.send("No entries found.")
             return
@@ -469,16 +539,22 @@ class CompetitionCog(commands.Cog):
             return
 
         voting_hours = comp.get('voting_hours', 24)
-        entry_count = await self._post_voting(
+        entry_count, questions_thread_id = await self._post_voting(
             channel, refreshed, comp['name'],
             voting_hours, comp.get('min_join_weeks', 4),
             comp.get('voting_header'),
         )
 
         # Set active state so late entries via the questions thread work
-        self._active_slug = slug
-        self._active_channel_id = channel_id
-        self._next_entry_number = entry_count + 1
+        voting_end = datetime.now(timezone.utc) + timedelta(hours=voting_hours)
+        self._register_active_competition(
+            guild_id=guild_id,
+            slug=slug,
+            voting_channel_id=channel_id,
+            voting_end=voting_end,
+            questions_thread_id=questions_thread_id,
+            next_entry_number=entry_count + 1,
+        )
 
         await ctx.send(f"Done — posted {len(refreshed)} entries. Late entries enabled.")
 

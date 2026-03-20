@@ -32,6 +32,12 @@ from supabase import create_client
 
 load_dotenv()
 
+_DEFAULT_GUILD_ID = (
+    int(os.getenv('TARGET_GUILD_ID', os.getenv('GUILD_ID', os.getenv('DEV_GUILD_ID', '0'))))
+    or None
+)
+_active_guild_id = _DEFAULT_GUILD_ID
+
 # Add project root to path
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
@@ -59,10 +65,61 @@ def _get_member_name(member_data: Dict) -> str:
     return member_data.get('server_nick') or member_data.get('global_name') or member_data.get('username') or 'Unknown'
 
 
+def set_active_guild_id(guild_id: Optional[int]):
+    global _active_guild_id
+    _active_guild_id = guild_id
+
+
+def get_active_guild_id() -> Optional[int]:
+    return _active_guild_id
+
+
+def _apply_guild_filter(query, guild_override: Optional[int] = None):
+    active_guild_id = guild_override if guild_override is not None else get_active_guild_id()
+    if active_guild_id:
+        query = query.eq('guild_id', active_guild_id)
+    return query
+
+
+def _fetch_member_map(client, author_ids: List[int], guild_override: Optional[int] = None) -> Dict[int, str]:
+    if not author_ids:
+        return {}
+
+    member_map: Dict[int, str] = {}
+    active_guild_id = guild_override if guild_override is not None else get_active_guild_id()
+    if active_guild_id:
+        gm_result = (
+            client.table('guild_members')
+            .select('member_id, server_nick')
+            .eq('guild_id', active_guild_id)
+            .in_('member_id', author_ids)
+            .execute()
+        )
+        for row in (gm_result.data or []):
+            if row.get('server_nick'):
+                member_map[row['member_id']] = row['server_nick']
+
+    missing_ids = [author_id for author_id in author_ids if author_id not in member_map]
+    if missing_ids:
+        members_result = (
+            client.table('discord_members')
+            .select('member_id, username, global_name, server_nick, include_in_updates')
+            .in_('member_id', missing_ids)
+            .execute()
+        )
+        for row in (members_result.data or []):
+            member_map[row['member_id']] = _get_member_name(row)
+
+    return member_map
+
+
 def get_channels_in_category(category_id: int) -> List[Dict]:
     """Get all channels in a category."""
     client = get_client()
-    result = client.table('discord_channels').select('channel_id, channel_name').eq('category_id', category_id).execute()
+    q = client.table('discord_channels').select('channel_id, channel_name').eq('category_id', category_id)
+    if get_active_guild_id():
+        q = q.eq('guild_id', get_active_guild_id())
+    result = q.execute()
     return result.data
 
 
@@ -72,14 +129,20 @@ def get_active_channels(days: int = 7, exclude_nsfw: bool = True) -> List[Dict]:
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
     # Get all channels
-    channels = client.table('discord_channels').select('channel_id, channel_name, nsfw').execute()
+    ch_q = client.table('discord_channels').select('channel_id, channel_name, nsfw')
+    if get_active_guild_id():
+        ch_q = ch_q.eq('guild_id', get_active_guild_id())
+    channels = ch_q.execute()
     if exclude_nsfw:
         channel_map = {ch['channel_id']: ch['channel_name'] for ch in channels.data if not ch.get('nsfw')}
     else:
         channel_map = {ch['channel_id']: ch['channel_name'] for ch in channels.data}
 
     # Get messages from last N days
-    messages = client.table('discord_messages').select('channel_id').gte('created_at', cutoff).execute()
+    msg_q = client.table('discord_messages').select('channel_id').gte('created_at', cutoff)
+    if get_active_guild_id():
+        msg_q = msg_q.eq('guild_id', get_active_guild_id())
+    messages = msg_q.execute()
 
     # Count messages per channel
     channel_counts = {}
@@ -106,7 +169,10 @@ def get_top_messages_server_wide(days: int = 7, min_reactions: int = 3, limit: i
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
     # Get channel names and filter NSFW
-    channels = client.table('discord_channels').select('channel_id, channel_name, nsfw').execute()
+    ch_q = client.table('discord_channels').select('channel_id, channel_name, nsfw')
+    if get_active_guild_id():
+        ch_q = ch_q.eq('guild_id', get_active_guild_id())
+    channels = ch_q.execute()
     if exclude_nsfw:
         channel_map = {ch['channel_id']: ch['channel_name'] for ch in channels.data if not ch.get('nsfw')}
     else:
@@ -114,16 +180,18 @@ def get_top_messages_server_wide(days: int = 7, min_reactions: int = 3, limit: i
 
     channel_ids = list(channel_map.keys())
 
-    result = client.table('discord_messages').select(
+    q = client.table('discord_messages').select(
         'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
-    ).in_('channel_id', channel_ids).gte('created_at', cutoff).gte('reaction_count', min_reactions).order('reaction_count', desc=True).limit(limit).execute()
+    ).in_('channel_id', channel_ids).gte('created_at', cutoff).gte('reaction_count', min_reactions).order('reaction_count', desc=True).limit(limit)
+    if get_active_guild_id():
+        q = q.eq('guild_id', get_active_guild_id())
+    result = q.execute()
 
     # Enrich with author names and channel names
     messages = result.data
     if messages:
         author_ids = list(set(m['author_id'] for m in messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
+        member_map = _fetch_member_map(client, author_ids)
 
         for msg in messages:
             msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
@@ -146,8 +214,7 @@ def _enrich_messages(messages: List[Dict], channel_names: Dict = None, parse_rea
         return messages
     client = get_client()
     author_ids = list(set(m['author_id'] for m in messages))
-    members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
-    member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
+    member_map = _fetch_member_map(client, author_ids)
 
     for msg in messages:
         msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
@@ -164,7 +231,7 @@ def _enrich_messages(messages: List[Dict], channel_names: Dict = None, parse_rea
     return messages
 
 
-MSG_SELECT = 'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
+MSG_SELECT = 'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id, guild_id'
 
 
 def get_messages_in_range(channel_id: int, days: int = 7) -> List[Dict]:
@@ -172,9 +239,12 @@ def get_messages_in_range(channel_id: int, days: int = 7) -> List[Dict]:
     client = get_client()
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
-    result = client.table('discord_messages').select(MSG_SELECT) \
+    q = client.table('discord_messages').select(MSG_SELECT) \
         .eq('channel_id', channel_id).gte('created_at', cutoff) \
-        .order('created_at', desc=True).execute()
+        .order('created_at', desc=True)
+    if get_active_guild_id():
+        q = q.eq('guild_id', get_active_guild_id())
+    result = q.execute()
 
     return _enrich_messages(result.data)
 
@@ -184,10 +254,13 @@ def get_top_messages(channel_id: int, days: int = 7, min_reactions: int = 3, lim
     client = get_client()
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
-    result = client.table('discord_messages').select(MSG_SELECT) \
+    q = client.table('discord_messages').select(MSG_SELECT) \
         .eq('channel_id', channel_id).gte('created_at', cutoff) \
         .gte('reaction_count', min_reactions) \
-        .order('reaction_count', desc=True).limit(limit).execute()
+        .order('reaction_count', desc=True).limit(limit)
+    if get_active_guild_id():
+        q = q.eq('guild_id', get_active_guild_id())
+    result = q.execute()
 
     return _enrich_messages(result.data, parse_reactors=True)
 
@@ -201,10 +274,13 @@ def get_top_messages_in_category(category_id: int, days: int = 7, min_reactions:
     client = get_client()
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
-    result = client.table('discord_messages').select(MSG_SELECT) \
+    q = client.table('discord_messages').select(MSG_SELECT) \
         .in_('channel_id', channel_ids).gte('created_at', cutoff) \
         .gte('reaction_count', min_reactions) \
-        .order('reaction_count', desc=True).limit(limit).execute()
+        .order('reaction_count', desc=True).limit(limit)
+    if get_active_guild_id():
+        q = q.eq('guild_id', get_active_guild_id())
+    result = q.execute()
 
     return _enrich_messages(result.data, channel_names=channel_names, parse_reactors=True)
 
@@ -219,7 +295,9 @@ def get_message_context(message_id: int, surrounding: int = 5) -> Dict[str, Any]
     client = get_client()
     
     # Get the target message
-    result = client.table('discord_messages').select('*').eq('message_id', message_id).execute()
+    result = _apply_guild_filter(
+        client.table('discord_messages').select('*').eq('message_id', message_id)
+    ).execute()
     if not result.data:
         return {"error": f"Message {message_id} not found"}
     
@@ -228,23 +306,28 @@ def get_message_context(message_id: int, surrounding: int = 5) -> Dict[str, Any]
     created_at = target_msg['created_at']
     
     # Get replies (messages that reference this message)
-    replies_result = client.table('discord_messages').select('*').eq('reference_id', message_id).order('created_at').execute()
+    replies_result = _apply_guild_filter(
+        client.table('discord_messages').select('*').eq('reference_id', message_id).order('created_at')
+    ).execute()
     replies = replies_result.data
     
     # Get surrounding messages (before)
-    before_result = client.table('discord_messages').select('*').eq('channel_id', channel_id).lt('created_at', created_at).order('created_at', desc=True).limit(surrounding).execute()
+    before_result = _apply_guild_filter(
+        client.table('discord_messages').select('*').eq('channel_id', channel_id).lt('created_at', created_at).order('created_at', desc=True).limit(surrounding)
+    ).execute()
     before = list(reversed(before_result.data))
     
     # Get surrounding messages (after)
-    after_result = client.table('discord_messages').select('*').eq('channel_id', channel_id).gt('created_at', created_at).order('created_at').limit(surrounding).execute()
+    after_result = _apply_guild_filter(
+        client.table('discord_messages').select('*').eq('channel_id', channel_id).gt('created_at', created_at).order('created_at').limit(surrounding)
+    ).execute()
     after = after_result.data
     
     # Enrich all messages with author names
     all_messages = [target_msg] + replies + before + after
     if all_messages:
         author_ids = list(set(m['author_id'] for m in all_messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
+        member_map = _fetch_member_map(client, author_ids)
         
         for msg in all_messages:
             msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
@@ -261,7 +344,9 @@ def get_message_context(message_id: int, surrounding: int = 5) -> Dict[str, Any]
 def get_message_by_id(message_id: int) -> Optional[Dict]:
     """Get a single message by ID with author name."""
     client = get_client()
-    result = client.table('discord_messages').select('*').eq('message_id', message_id).execute()
+    result = _apply_guild_filter(
+        client.table('discord_messages').select('*').eq('message_id', message_id)
+    ).execute()
     
     if not result.data:
         return None
@@ -269,11 +354,7 @@ def get_message_by_id(message_id: int) -> Optional[Dict]:
     msg = result.data[0]
     
     # Get author name
-    member_result = client.table('discord_members').select('username, global_name, server_nick, include_in_updates').eq('member_id', msg['author_id']).execute()
-    if member_result.data:
-        msg['author_name'] = _get_member_name(member_result.data[0])
-    else:
-        msg['author_name'] = 'Unknown'
+    msg['author_name'] = _fetch_member_map(client, [msg['author_id']]).get(msg['author_id'], 'Unknown')
     
     return msg
 
@@ -312,23 +393,24 @@ def get_messages_by_user(user_id: int, channel_ids: List[int] = None, days: int 
     query = client.table('discord_messages').select(
         'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
     ).eq('author_id', user_id).gte('created_at', cutoff).order('created_at', desc=True).limit(limit)
-    
+
     if channel_ids:
         query = query.in_('channel_id', channel_ids)
-    
+    if get_active_guild_id():
+        query = query.eq('guild_id', get_active_guild_id())
+
     result = query.execute()
     messages = result.data
     
     # Get author name
-    member_result = client.table('discord_members').select('username, global_name, server_nick, include_in_updates').eq('member_id', user_id).execute()
-    author_name = 'Unknown'
-    if member_result.data:
-        author_name = _get_member_name(member_result.data[0])
+    author_name = _fetch_member_map(client, [user_id]).get(user_id, 'Unknown')
     
     # Get channel names
     if messages:
         channel_ids_found = list(set(m['channel_id'] for m in messages))
-        channels_result = client.table('discord_channels').select('channel_id, channel_name').in_('channel_id', channel_ids_found).execute()
+        channels_result = _apply_guild_filter(
+            client.table('discord_channels').select('channel_id, channel_name').in_('channel_id', channel_ids_found)
+        ).execute()
         channel_names = {ch['channel_id']: ch['channel_name'] for ch in channels_result.data}
         
         for msg in messages:
@@ -353,7 +435,9 @@ def get_messages_with_media(channel_id: int = None, category_id: int = None, day
         channel_names = {ch['channel_id']: ch['channel_name'] for ch in channels}
     elif channel_id:
         channel_ids = [channel_id]
-        ch_result = client.table('discord_channels').select('channel_name').eq('channel_id', channel_id).execute()
+        ch_result = _apply_guild_filter(
+            client.table('discord_channels').select('channel_name').eq('channel_id', channel_id)
+        ).execute()
         if ch_result.data:
             channel_names[channel_id] = ch_result.data[0]['channel_name']
     
@@ -361,21 +445,23 @@ def get_messages_with_media(channel_id: int = None, category_id: int = None, day
     query = client.table('discord_messages').select(
         'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors'
     ).gte('created_at', cutoff).neq('attachments', []).order('reaction_count', desc=True).limit(limit)
-    
+
     if channel_ids:
         query = query.in_('channel_id', channel_ids)
-    
+
     if min_reactions > 0:
         query = query.gte('reaction_count', min_reactions)
-    
+
+    if get_active_guild_id():
+        query = query.eq('guild_id', get_active_guild_id())
+
     result = query.execute()
     messages = result.data
     
     # Enrich with author names
     if messages:
         author_ids = list(set(m['author_id'] for m in messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
+        member_map = _fetch_member_map(client, author_ids)
         
         for msg in messages:
             msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
@@ -392,21 +478,24 @@ def search_messages_by_content(query_text: str, channel_ids: List[int] = None, d
     query = client.table('discord_messages').select(
         'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors'
     ).gte('created_at', cutoff).ilike('content', f'%{query_text}%').order('created_at', desc=True).limit(limit)
-    
+
     if channel_ids:
         query = query.in_('channel_id', channel_ids)
-    
+    if get_active_guild_id():
+        query = query.eq('guild_id', get_active_guild_id())
+
     result = query.execute()
     messages = result.data
     
     # Enrich with author and channel names
     if messages:
         author_ids = list(set(m['author_id'] for m in messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
+        member_map = _fetch_member_map(client, author_ids)
         
         channel_ids_found = list(set(m['channel_id'] for m in messages))
-        channels_result = client.table('discord_channels').select('channel_id, channel_name').in_('channel_id', channel_ids_found).execute()
+        channels_result = _apply_guild_filter(
+            client.table('discord_channels').select('channel_id, channel_name').in_('channel_id', channel_ids_found)
+        ).execute()
         channel_names = {ch['channel_id']: ch['channel_name'] for ch in channels_result.data}
         
         for msg in messages:
@@ -425,7 +514,9 @@ def get_thread_chain(message_id: int) -> Dict[str, Any]:
     client = get_client()
     
     # Get the starting message
-    result = client.table('discord_messages').select('*').eq('message_id', message_id).execute()
+    result = _apply_guild_filter(
+        client.table('discord_messages').select('*').eq('message_id', message_id)
+    ).execute()
     if not result.data:
         return {"error": f"Message {message_id} not found"}
     
@@ -441,7 +532,9 @@ def get_thread_chain(message_id: int) -> Dict[str, Any]:
             break
         visited.add(ref_id)
         
-        parent_result = client.table('discord_messages').select('*').eq('message_id', ref_id).execute()
+        parent_result = _apply_guild_filter(
+            client.table('discord_messages').select('*').eq('message_id', ref_id)
+        ).execute()
         if not parent_result.data:
             break
         root_msg = parent_result.data[0]
@@ -451,7 +544,9 @@ def get_thread_chain(message_id: int) -> Dict[str, Any]:
     queue = [root_msg['message_id']]
     while queue:
         current_id = queue.pop(0)
-        replies_result = client.table('discord_messages').select('*').eq('reference_id', current_id).order('created_at').execute()
+        replies_result = _apply_guild_filter(
+            client.table('discord_messages').select('*').eq('reference_id', current_id).order('created_at')
+        ).execute()
         
         for reply in replies_result.data:
             if reply['message_id'] not in visited:
@@ -465,8 +560,7 @@ def get_thread_chain(message_id: int) -> Dict[str, Any]:
     # Enrich with author names
     if thread_messages:
         author_ids = list(set(m['author_id'] for m in thread_messages))
-        members_result = client.table('discord_members').select('member_id, username, global_name, server_nick, include_in_updates').in_('member_id', author_ids).execute()
-        member_map = {m['member_id']: _get_member_name(m) for m in members_result.data}
+        member_map = _fetch_member_map(client, author_ids)
         
         for msg in thread_messages:
             msg['author_name'] = member_map.get(msg['author_id'], 'Unknown')
@@ -516,7 +610,9 @@ def refresh_message_media(message_id: int, dry_run: bool = False) -> Dict[str, A
     client = get_client()
     
     # Get message from DB
-    result = client.table('discord_messages').select('channel_id, attachments').eq('message_id', message_id).execute()
+    result = _apply_guild_filter(
+        client.table('discord_messages').select('channel_id, attachments').eq('message_id', message_id)
+    ).execute()
     if not result.data:
         return {"error": f"Message {message_id} not found in database"}
     
@@ -556,7 +652,9 @@ def refresh_message_media(message_id: int, dry_run: bool = False) -> Dict[str, A
                     
                     if not dry_run:
                         # Update DB
-                        client.table('discord_messages').update({'attachments': result['attachments']}).eq('message_id', message_id).execute()
+                        _apply_guild_filter(
+                            client.table('discord_messages').update({'attachments': result['attachments']}).eq('message_id', message_id)
+                        ).execute()
                         refresh_result["db_updated"] = True
                     else:
                         refresh_result["db_updated"] = False
@@ -606,7 +704,7 @@ def format_message_for_display(msg: Dict, include_attachments: bool = True) -> s
 def generate_jump_url(channel_id: int, message_id: int, guild_id: int = None) -> str:
     """Generate Discord jump URL for a message."""
     if guild_id is None:
-        guild_id = int(os.getenv('GUILD_ID', os.getenv('DEV_GUILD_ID', '0')))
+        guild_id = get_active_guild_id() or 0
     return f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
 
 
@@ -648,7 +746,7 @@ def cmd_server_top(args):
     for i, msg in enumerate(messages, 1):
         print(f"--- #{i} ({msg.get('channel_name', 'Unknown')}) ---")
         print(format_message_for_display(msg))
-        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'])}")
+        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
         print()
 
 
@@ -670,7 +768,7 @@ def _print_top_messages(messages: List[Dict], header: str):
         ch_label = f" ({msg.get('channel_name', 'Unknown')})" if 'channel_name' in msg else ""
         print(f"--- #{i}{ch_label} ---")
         print(format_message_for_display(msg))
-        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'])}")
+        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
         print()
 
 
@@ -703,7 +801,7 @@ def cmd_context(args):
     
     print("=== TARGET MESSAGE ===")
     print(format_message_for_display(context['target_message']))
-    print(f"   🔗 {generate_jump_url(context['target_message']['channel_id'], context['target_message']['message_id'])}")
+    print(f"   🔗 {generate_jump_url(context['target_message']['channel_id'], context['target_message']['message_id'], context['target_message'].get('guild_id'))}")
     print()
     
     print("=== AFTER ===")
@@ -772,7 +870,7 @@ def cmd_user(args):
     for msg in messages:
         print(f"[{msg.get('channel_name', 'Unknown')}]")
         print(format_message_for_display(msg))
-        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'])}")
+        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
         print()
 
 
@@ -797,7 +895,7 @@ def cmd_thread(args):
         
         print(f"{prefix}{'=== TARGET ===' if is_target else ''}")
         print(format_message_for_display(msg).replace('\n', f'\n{prefix}'))
-        print(f"{prefix}🔗 {generate_jump_url(msg['channel_id'], msg['message_id'])}")
+        print(f"{prefix}🔗 {generate_jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
         print()
 
 
@@ -818,7 +916,7 @@ def cmd_media(args):
     for i, msg in enumerate(messages, 1):
         print(f"--- #{i} ({msg.get('channel_name', 'Unknown')}) ---")
         print(format_message_for_display(msg))
-        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'])}")
+        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
         print()
 
 
@@ -839,7 +937,7 @@ def cmd_search(args):
     for i, msg in enumerate(messages, 1):
         print(f"--- #{i} ({msg.get('channel_name', 'Unknown')}) ---")
         print(format_message_for_display(msg))
-        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'])}")
+        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
         print()
 
 
@@ -875,6 +973,8 @@ def main():
         description="Weekly digest utilities for exploring Discord messages",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    parser.add_argument('--guild-id', type=int, default=None,
+                        help='Explicit guild scope for DB queries and jump URLs')
     subparsers = parser.add_subparsers(dest='command', help='Command to run')
     
     # channels command
@@ -955,6 +1055,7 @@ def main():
     p_batch.add_argument('--dry-run', action='store_true', help='Preview without updating DB')
     
     args = parser.parse_args()
+    set_active_guild_id(args.guild_id or _DEFAULT_GUILD_ID)
     
     if args.command == 'channels':
         cmd_channels(args)
@@ -988,4 +1089,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -17,43 +17,60 @@ class GatingCog(commands.Cog):
         self.bot = bot
         self.db = getattr(bot, 'db_handler', None)
 
-        # Config from env
-        self.gate_channel_id = self._env_int('GATE_CHANNEL_ID')
-        self.intro_channel_id = self._env_int('INTRO_CHANNEL_ID')
-        self.speaker_role_id = self._env_int('SPEAKER_ROLE_ID')
-        self.approver_role_id = self._env_int('APPROVER_ROLE_ID')
-        self.super_approver_role_id = self._env_int('SUPER_APPROVER_ROLE_ID')
-        self.welcome_channel_id = self._env_int('WELCOME_CHANNEL_ID')
+        sc = getattr(self.db, 'server_config', None) if self.db else None
+        configured_servers = sc.get_enabled_servers(require_write=True) if sc else []
+        self.any_configured = any(
+            all([
+                server.get('gate_channel_id'),
+                server.get('intro_channel_id'),
+                server.get('speaker_role_id'),
+                server.get('approver_role_id'),
+                server.get('super_approver_role_id'),
+            ])
+            for server in configured_servers
+        )
+        if not self.any_configured:
+            logger.warning("GatingCog: no fully configured writable guilds in server_config")
 
-        self.configured = all([
-            self.gate_channel_id,
-            self.intro_channel_id,
-            self.speaker_role_id,
-            self.approver_role_id,
-            self.super_approver_role_id,
-        ])
-        if not self.configured:
-            logger.warning("GatingCog: missing env vars, handlers will no-op")
-
-        # In-memory set of pending intro message IDs for fast reaction filtering
         self._pending_message_ids: set[int] = set()
 
         # Temp welcome messages pending deletion: {message_id: (channel_id, sent_at)}
         self._temp_welcomes: dict[int, tuple[int, datetime]] = {}
 
-    @staticmethod
-    def _env_int(key: str) -> int | None:
-        val = os.getenv(key)
-        if val:
-            try:
-                return int(val)
-            except ValueError:
-                logger.warning(f"GatingCog: {key}={val!r} is not a valid int")
-        return None
+    def _get_guild_config(self, guild_id: int) -> dict:
+        """Resolve gating config for a guild from server_config."""
+        sc = getattr(self.db, 'server_config', None) if self.db else None
+        server = sc.get_server(guild_id) if sc else None
+
+        # Build per-field with explicit DB key -> env key mapping
+        cfg = {}
+        field_names = [
+            'gate_channel_id',
+            'intro_channel_id',
+            'speaker_role_id',
+            'approver_role_id',
+            'super_approver_role_id',
+            'welcome_channel_id',
+        ]
+        for db_key in field_names:
+            val = server.get(db_key) if server else None
+            cfg[db_key] = int(val) if val is not None else None
+        return cfg
+
+    def _guild_has_gating(self, guild_id: int) -> bool:
+        """Check if this guild has gating configured (gate + intro + speaker + approver)."""
+        cfg = self._get_guild_config(guild_id)
+        return all([
+            cfg.get('gate_channel_id'),
+            cfg.get('intro_channel_id'),
+            cfg.get('speaker_role_id'),
+            cfg.get('approver_role_id'),
+            cfg.get('super_approver_role_id'),
+        ])
 
     async def cog_load(self):
         """Populate in-memory pending set from DB on startup."""
-        if not self.configured or not self.db:
+        if not self.db:
             return
         try:
             rows = self.db.get_all_pending_intros()
@@ -73,17 +90,19 @@ class GatingCog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         """Ping the new member in the gate channel, then delete after 5s."""
-        if not self.configured:
+        if not self.db:
+            return
+        cfg = self._get_guild_config(member.guild.id)
+        if not cfg.get('gate_channel_id') or not cfg.get('speaker_role_id'):
             return
         # Don't welcome members who already have Speaker role (e.g. rejoining)
-        speaker_role = member.guild.get_role(self.speaker_role_id)
+        speaker_role = member.guild.get_role(cfg['speaker_role_id'])
         if speaker_role and speaker_role in member.roles:
             return
-        channel = member.guild.get_channel(self.gate_channel_id)
+        channel = member.guild.get_channel(cfg['gate_channel_id'])
         if not channel:
             return
         try:
-            # Find the bot's welcome post to reply to
             reference = None
             async for hist_msg in channel.history(limit=50, oldest_first=True):
                 if hist_msg.author.id == self.bot.user.id:
@@ -101,11 +120,14 @@ class GatingCog(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Track intro messages from non-Speakers in the intro channel."""
-        if not self.configured or not self.db:
+        if not self.db or message.author.bot or not message.guild:
             return
-        if message.author.bot:
+        guild_id = message.guild.id
+        if not self._guild_has_gating(guild_id):
             return
-        if message.channel.id != self.intro_channel_id:
+        cfg = self._get_guild_config(guild_id)
+
+        if message.channel.id != cfg['intro_channel_id']:
             return
 
         # Delete short messages unless they're a reply to someone else
@@ -135,18 +157,17 @@ class GatingCog(commands.Cog):
                 return
 
         # Only track non-Speakers
-        speaker_role = message.guild.get_role(self.speaker_role_id)
+        speaker_role = message.guild.get_role(cfg['speaker_role_id'])
         if not speaker_role:
             return
         if speaker_role in message.author.roles:
             return
 
-        # Only first pending intro per member
-        existing = self.db.get_pending_intro_by_member(message.author.id)
+        # Only first pending intro per member (scoped to this guild)
+        existing = self.db.get_pending_intro_by_member(message.author.id, guild_id=guild_id)
         if existing:
             return
-
-        if self.db.create_pending_intro(message.author.id, message.id, message.channel.id):
+        if self.db.create_pending_intro(message.author.id, message.id, message.channel.id, guild_id=guild_id):
             self._pending_message_ids.add(message.id)
             logger.info(f"GatingCog: tracked intro from {message.author} (msg {message.id})")
 
@@ -171,7 +192,7 @@ class GatingCog(commands.Cog):
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         """Check if reaction on a pending intro meets the approval threshold."""
-        if not self.configured or not self.db:
+        if not self.db:
             return
 
         # Fast path: skip if not a pending intro message
@@ -184,14 +205,18 @@ class GatingCog(commands.Cog):
         if not guild:
             return
 
+        cfg = self._get_guild_config(payload.guild_id)
+        if not cfg.get('approver_role_id'):
+            return
+
         # Check reactor has Approver or Super Approver role
         reactor = guild.get_member(payload.user_id)
         if not reactor or reactor.bot:
             return
 
         reactor_role_ids = {r.id for r in reactor.roles}
-        is_approver = self.approver_role_id in reactor_role_ids
-        is_super = self.super_approver_role_id in reactor_role_ids
+        is_approver = cfg['approver_role_id'] in reactor_role_ids
+        is_super = cfg.get('super_approver_role_id') in reactor_role_ids if cfg.get('super_approver_role_id') else False
         if not is_approver and not is_super:
             logger.info(f"GatingCog: reactor {reactor} lacks approver role, ignoring")
             return
@@ -199,47 +224,45 @@ class GatingCog(commands.Cog):
         # Verify intro is still pending in DB
         intro = self.db.get_pending_intro_by_message(payload.message_id)
         if not intro:
-            # Already approved or expired — clean up in-memory set
             self._pending_message_ids.discard(payload.message_id)
             return
 
         # Record the vote
         voter_role = 'super_approver' if is_super else 'approver'
-        self.db.record_intro_vote(intro['id'], payload.message_id, payload.user_id, voter_role)
+        self.db.record_intro_vote(intro['id'], payload.message_id, payload.user_id, voter_role, guild_id=payload.guild_id)
 
         # 1 vote from either role is enough
-        await self._approve_member(guild, intro)
+        await self._approve_member(guild, intro, cfg)
 
-    async def _approve_member(self, guild: discord.Guild, intro: dict):
+    async def _approve_member(self, guild: discord.Guild, intro: dict, cfg: dict):
         """Grant Speaker role and update DB."""
         member = guild.get_member(intro['member_id'])
         if not member:
             return
 
-        speaker_role = guild.get_role(self.speaker_role_id)
+        speaker_role = guild.get_role(cfg['speaker_role_id'])
         if not speaker_role:
             return
 
         try:
             await member.add_roles(speaker_role, reason="Intro approved by community")
-            self.db.approve_pending_intro(intro['message_id'])
+            self.db.approve_pending_intro(intro['message_id'], guild_id=intro.get('guild_id'))
             self._pending_message_ids.discard(intro['message_id'])
             logger.info(f"GatingCog: approved {member} (msg {intro['message_id']})")
 
-            # Post a welcome message in the getting-started channel
-            await self._send_speaker_welcome(guild, member)
+            await self._send_speaker_welcome(guild, member, cfg)
         except Exception as e:
             logger.error(f"GatingCog: failed to approve {member}: {e}", exc_info=True)
 
-    async def _send_speaker_welcome(self, guild: discord.Guild, member: discord.Member):
+    async def _send_speaker_welcome(self, guild: discord.Guild, member: discord.Member, cfg: dict):
         """Post a welcome in the getting-started channel."""
-        if not self.welcome_channel_id:
+        welcome_channel_id = cfg.get('welcome_channel_id')
+        if not welcome_channel_id:
             return
-        channel = guild.get_channel(self.welcome_channel_id)
+        channel = guild.get_channel(welcome_channel_id)
         if not channel:
             return
         try:
-            # Find the bot's reference message (first bot message in the channel)
             reference = None
             async for hist_msg in channel.history(limit=50, oldest_first=True):
                 if hist_msg.author.id == self.bot.user.id:
@@ -259,8 +282,8 @@ class GatingCog(commands.Cog):
 
     @tasks.loop(hours=1)
     async def cleanup_expired_intros(self):
-        """Delete expired intro messages and mark them in DB."""
-        if not self.configured or not self.db:
+        """Expire stale pending intros in DB."""
+        if not self.db:
             return
 
         expired = self.db.get_expired_pending_intros(expiry_days=7)
@@ -269,7 +292,7 @@ class GatingCog(commands.Cog):
 
         logger.info(f"GatingCog: expiring {len(expired)} intro(s)")
         for intro in expired:
-            self.db.expire_pending_intro(intro['message_id'])
+            self.db.expire_pending_intro(intro['message_id'], guild_id=intro.get('guild_id'))
             self._pending_message_ids.discard(intro['message_id'])
 
     @cleanup_expired_intros.before_loop
@@ -289,7 +312,6 @@ class GatingCog(commands.Cog):
         """Delete temporary welcome pings older than 5 minutes."""
         now = datetime.now(timezone.utc)
 
-        # Delete tracked messages that have expired
         expired_ids = [
             mid for mid, (_, sent_at) in self._temp_welcomes.items()
             if now - sent_at >= self.TEMP_WELCOME_TTL
@@ -307,7 +329,6 @@ class GatingCog(commands.Cog):
             except Exception as e:
                 logger.error(f"GatingCog: failed to delete temp welcome {mid}: {e}")
 
-        # On first run, scan for orphaned welcome pings left by restarts
         if not self._startup_scan_done:
             self._startup_scan_done = True
             await self._scan_orphaned_welcomes()
@@ -315,9 +336,17 @@ class GatingCog(commands.Cog):
     async def _scan_orphaned_welcomes(self):
         """Scan gate and welcome channels for bot welcome pings left behind by restarts."""
         now = datetime.now(timezone.utc)
-        channel_ids = [cid for cid in (self.gate_channel_id, self.welcome_channel_id) if cid]
+        # Scan all guilds the bot is in that have gating configured
+        channel_ids_to_scan: list[int] = []
+        for guild in self.bot.guilds:
+            cfg = self._get_guild_config(guild.id)
+            for key in ('gate_channel_id', 'welcome_channel_id'):
+                cid = cfg.get(key)
+                if cid:
+                    channel_ids_to_scan.append(cid)
+
         deleted = 0
-        for cid in channel_ids:
+        for cid in channel_ids_to_scan:
             channel = self.bot.get_channel(cid)
             if not channel:
                 continue

@@ -51,9 +51,13 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-GUILD_ID = int(os.getenv('GUILD_ID', os.getenv('DEV_GUILD_ID', '0')))
+_DEFAULT_GUILD_ID = (
+    int(os.getenv('TARGET_GUILD_ID', os.getenv('GUILD_ID', os.getenv('DEV_GUILD_ID', '0'))))
+    or None
+)
+_active_guild_id = _DEFAULT_GUILD_ID
 MSG_SELECT = (
-    'message_id, channel_id, author_id, content, created_at, '
+    'message_id, guild_id, channel_id, author_id, content, created_at, '
     'attachments, reaction_count, reactors, reference_id'
 )
 
@@ -98,16 +102,58 @@ def _member_name(m: Dict) -> str:
     return m.get('server_nick') or m.get('global_name') or m.get('username') or 'Unknown'
 
 
+def _set_active_guild_id(guild_id: Optional[int]):
+    global _active_guild_id
+    _active_guild_id = guild_id
+
+
+def _get_active_guild_id() -> Optional[int]:
+    return _active_guild_id
+
+
+def _apply_guild_filter(query):
+    guild_id = _get_active_guild_id()
+    if guild_id:
+        query = query.eq('guild_id', guild_id)
+    return query
+
+
+def _member_map(db, member_ids: List[int]) -> Dict[int, str]:
+    if not member_ids:
+        return {}
+
+    member_map: Dict[int, str] = {}
+    active_guild_id = _get_active_guild_id()
+    if active_guild_id:
+        guild_rows = (
+            db.table('guild_members')
+            .select('member_id, server_nick')
+            .eq('guild_id', active_guild_id)
+            .in_('member_id', member_ids)
+            .execute()
+        )
+        for row in (guild_rows.data or []):
+            if row.get('server_nick'):
+                member_map[row['member_id']] = row['server_nick']
+
+    missing_ids = [member_id for member_id in member_ids if member_id not in member_map]
+    if missing_ids:
+        members = db.table('discord_members').select(
+            'member_id, username, global_name, server_nick, include_in_updates'
+        ).in_('member_id', missing_ids).execute()
+        for member in (members.data or []):
+            member_map[member['member_id']] = _member_name(member)
+
+    return member_map
+
+
 def _enrich(messages: List[Dict], channel_names: Dict = None) -> List[Dict]:
     """Add author_name (and optionally channel_name) to messages."""
     if not messages:
         return messages
     db = _supabase()
     ids = list({m['author_id'] for m in messages})
-    members = db.table('discord_members').select(
-        'member_id, username, global_name, server_nick, include_in_updates'
-    ).in_('member_id', ids).execute()
-    mmap = {m['member_id']: _member_name(m) for m in members.data}
+    mmap = _member_map(db, ids)
 
     for msg in messages:
         msg['author_name'] = mmap.get(msg['author_id'], 'Unknown')
@@ -126,14 +172,17 @@ def _enrich(messages: List[Dict], channel_names: Dict = None) -> List[Dict]:
 
 def _channel_map(exclude_nsfw: bool = True) -> Dict:
     db = _supabase()
-    rows = db.table('discord_channels').select('channel_id, channel_name, nsfw').execute()
+    q = db.table('discord_channels').select('channel_id, channel_name, nsfw')
+    q = _apply_guild_filter(q)
+    rows = q.execute()
     if exclude_nsfw:
         return {r['channel_id']: r['channel_name'] for r in rows.data if not r.get('nsfw')}
     return {r['channel_id']: r['channel_name'] for r in rows.data}
 
 
-def jump_url(channel_id, message_id) -> str:
-    return f"https://discord.com/channels/{GUILD_ID}/{channel_id}/{message_id}"
+def jump_url(channel_id, message_id, guild_id: Optional[int] = None) -> str:
+    active_guild_id = guild_id or _get_active_guild_id() or 0
+    return f"https://discord.com/channels/{active_guild_id}/{channel_id}/{message_id}"
 
 
 def _fmt(msg: Dict) -> str:
@@ -161,7 +210,7 @@ def _fmt(msg: Dict) -> str:
     if atts:
         for a in atts[:3]:
             lines.append(f"  Attachment: {a.get('filename', 'file')}")
-    lines.append(f"  {jump_url(msg['channel_id'], msg['message_id'])}")
+    lines.append(f"  {jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
     return '\n'.join(lines)
 
 
@@ -177,6 +226,8 @@ def search(query: str, days: int = 7, channel_id: int = None,
     q = db.table('discord_messages').select(MSG_SELECT) \
         .gte('created_at', cutoff).ilike('content', f'%{query}%') \
         .order('created_at', desc=True).limit(limit)
+    if _get_active_guild_id():
+        q = q.eq('guild_id', _get_active_guild_id())
     if channel_id:
         q = q.eq('channel_id', channel_id)
     elif exclude_nsfw:
@@ -195,6 +246,8 @@ def top(days: int = 7, min_reactions: int = 3, limit: int = 30,
     q = db.table('discord_messages').select(MSG_SELECT) \
         .gte('created_at', cutoff).gte('reaction_count', min_reactions) \
         .order('reaction_count', desc=True).limit(limit)
+    if _get_active_guild_id():
+        q = q.eq('guild_id', _get_active_guild_id())
     if channel_id:
         q = q.eq('channel_id', channel_id)
     elif exclude_nsfw:
@@ -209,16 +262,21 @@ def messages(channel_id: int, days: int = 7, limit: int = 50) -> List[Dict]:
     """Recent messages from a channel."""
     db = _supabase()
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    result = db.table('discord_messages').select(MSG_SELECT) \
+    q = db.table('discord_messages').select(MSG_SELECT) \
         .eq('channel_id', channel_id).gte('created_at', cutoff) \
-        .order('created_at', desc=True).limit(limit).execute()
+        .order('created_at', desc=True).limit(limit)
+    if _get_active_guild_id():
+        q = q.eq('guild_id', _get_active_guild_id())
+    result = q.execute()
     return _enrich(result.data)
 
 
 def context(message_id: int, surrounding: int = 5) -> Dict[str, Any]:
     """Get a message with surrounding context and replies."""
     db = _supabase()
-    result = db.table('discord_messages').select('*').eq('message_id', message_id).execute()
+    result = _apply_guild_filter(
+        db.table('discord_messages').select('*').eq('message_id', message_id)
+    ).execute()
     if not result.data:
         return {"error": f"Message {message_id} not found"}
     target = result.data[0]
@@ -226,21 +284,24 @@ def context(message_id: int, surrounding: int = 5) -> Dict[str, Any]:
     ts = target['created_at']
 
     before = list(reversed(
-        db.table('discord_messages').select('*').eq('channel_id', ch)
-        .lt('created_at', ts).order('created_at', desc=True)
-        .limit(surrounding).execute().data
+        _apply_guild_filter(
+            db.table('discord_messages').select('*').eq('channel_id', ch)
+            .lt('created_at', ts).order('created_at', desc=True)
+            .limit(surrounding)
+        ).execute().data
     ))
-    after = db.table('discord_messages').select('*').eq('channel_id', ch) \
-        .gt('created_at', ts).order('created_at').limit(surrounding).execute().data
-    replies = db.table('discord_messages').select('*') \
-        .eq('reference_id', message_id).order('created_at').execute().data
+    after = _apply_guild_filter(
+        db.table('discord_messages').select('*').eq('channel_id', ch)
+        .gt('created_at', ts).order('created_at').limit(surrounding)
+    ).execute().data
+    replies = _apply_guild_filter(
+        db.table('discord_messages').select('*')
+        .eq('reference_id', message_id).order('created_at')
+    ).execute().data
 
     all_msgs = [target] + before + after + replies
     ids = list({m['author_id'] for m in all_msgs})
-    members = db.table('discord_members').select(
-        'member_id, username, global_name, server_nick, include_in_updates'
-    ).in_('member_id', ids).execute()
-    mmap = {m['member_id']: _member_name(m) for m in members.data}
+    mmap = _member_map(db, ids)
     for m in all_msgs:
         m['author_name'] = mmap.get(m['author_id'], 'Unknown')
 
@@ -251,7 +312,9 @@ def context(message_id: int, surrounding: int = 5) -> Dict[str, Any]:
 def thread(message_id: int) -> Dict[str, Any]:
     """Follow a reply chain up to root, then down through all replies."""
     db = _supabase()
-    result = db.table('discord_messages').select('*').eq('message_id', message_id).execute()
+    result = _apply_guild_filter(
+        db.table('discord_messages').select('*').eq('message_id', message_id)
+    ).execute()
     if not result.data:
         return {"error": f"Message {message_id} not found"}
 
@@ -266,7 +329,9 @@ def thread(message_id: int) -> Dict[str, Any]:
         if ref in visited:
             break
         visited.add(ref)
-        parent = db.table('discord_messages').select('*').eq('message_id', ref).execute()
+        parent = _apply_guild_filter(
+            db.table('discord_messages').select('*').eq('message_id', ref)
+        ).execute()
         if not parent.data:
             break
         root = parent.data[0]
@@ -276,8 +341,10 @@ def thread(message_id: int) -> Dict[str, Any]:
     queue = [root['message_id']]
     while queue:
         cid = queue.pop(0)
-        replies = db.table('discord_messages').select('*') \
-            .eq('reference_id', cid).order('created_at').execute()
+        replies = _apply_guild_filter(
+            db.table('discord_messages').select('*')
+            .eq('reference_id', cid).order('created_at')
+        ).execute()
         for r in replies.data:
             if r['message_id'] not in visited:
                 visited.add(r['message_id'])
@@ -307,9 +374,12 @@ def user(username: str, days: int = 7, limit: int = 30) -> List[Dict]:
     member = r.data[0]
     uid = member['member_id']
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    msgs = db.table('discord_messages').select(MSG_SELECT) \
+    uq = db.table('discord_messages').select(MSG_SELECT) \
         .eq('author_id', uid).gte('created_at', cutoff) \
-        .order('created_at', desc=True).limit(limit).execute().data
+        .order('created_at', desc=True).limit(limit)
+    if _get_active_guild_id():
+        uq = uq.eq('guild_id', _get_active_guild_id())
+    msgs = uq.execute().data
     cmap = _channel_map(exclude_nsfw=False)
     name = _member_name(member)
     for m in msgs:
@@ -323,8 +393,11 @@ def channels(days: int = 7, exclude_nsfw: bool = True) -> List[Dict]:
     db = _supabase()
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
     cmap = _channel_map(exclude_nsfw)
-    rows = db.table('discord_messages').select('channel_id') \
-        .gte('created_at', cutoff).execute().data
+    mq = db.table('discord_messages').select('channel_id') \
+        .gte('created_at', cutoff)
+    if _get_active_guild_id():
+        mq = mq.eq('guild_id', _get_active_guild_id())
+    rows = mq.execute().data
     counts = {}
     for r in rows:
         cid = r['channel_id']
@@ -344,6 +417,8 @@ def summaries(days: int = 7, channel_id: int = None) -> List[Dict]:
         .gte('date', cutoff).order('date', desc=True)
     if channel_id:
         q = q.eq('channel_id', str(channel_id))
+    if _get_active_guild_id():
+        q = q.eq('guild_id', _get_active_guild_id())
     return q.execute().data
 
 
@@ -364,8 +439,10 @@ def get_member_id(username: str) -> Optional[str]:
 def get_author_id(message_id: int) -> Optional[str]:
     """Get the author_id for a message."""
     db = _supabase()
-    r = db.table('discord_messages').select('author_id') \
-        .eq('message_id', message_id).execute()
+    r = _apply_guild_filter(
+        db.table('discord_messages').select('author_id')
+        .eq('message_id', message_id)
+    ).execute()
     return r.data[0]['author_id'] if r.data else None
 
 
@@ -457,9 +534,12 @@ def api_threads(channel_id: int) -> List[Dict]:
     """List active threads in a channel."""
     import requests
     headers = _discord_headers()
+    active_guild_id = _get_active_guild_id()
+    if not active_guild_id:
+        raise ValueError("A guild ID is required for api-threads. Use --guild-id or TARGET_GUILD_ID.")
     # Active threads from guild
     resp = requests.get(
-        f"https://discord.com/api/v10/guilds/{GUILD_ID}/threads/active",
+        f"https://discord.com/api/v10/guilds/{active_guild_id}/threads/active",
         headers=headers
     )
     resp.raise_for_status()
@@ -492,8 +572,10 @@ def get_urls(message_ids: List[int]) -> Dict[int, List[Dict]]:
     db = _supabase()
     result = {}
     for mid in message_ids:
-        r = db.table('discord_messages').select('attachments') \
-            .eq('message_id', mid).execute()
+        r = _apply_guild_filter(
+            db.table('discord_messages').select('attachments')
+            .eq('message_id', mid)
+        ).execute()
         if r.data:
             atts = r.data[0].get('attachments') or []
             if isinstance(atts, str):
@@ -510,7 +592,8 @@ def get_urls(message_ids: List[int]) -> Dict[int, List[Dict]]:
 def refresh(message_ids: List[int]) -> Dict[str, Any]:
     """Refresh expired Discord CDN URLs by re-fetching from API."""
     # Import the weekly_digest refresh which handles the bot login
-    from scripts.weekly_digest import batch_refresh_media
+    from scripts.weekly_digest import batch_refresh_media, set_active_guild_id
+    set_active_guild_id(_get_active_guild_id())
     return batch_refresh_media(message_ids)
 
 
@@ -533,6 +616,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
+    parser.add_argument('--guild-id', type=int, default=None,
+                        help='Explicit guild scope for DB queries, jump URLs, and guild-scoped API calls')
     sub = parser.add_subparsers(dest='cmd')
 
     # -- DB queries --
@@ -624,6 +709,7 @@ def main():
     p.add_argument('message_id', type=int)
 
     args = parser.parse_args()
+    _set_active_guild_id(args.guild_id or _DEFAULT_GUILD_ID)
 
     if args.cmd == 'search':
         _print_messages(search(args.query, args.days, args.channel, args.limit),

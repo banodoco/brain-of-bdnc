@@ -34,7 +34,7 @@ class TopGenerations:
             self.summarizer.logger.info("Starting post_top_x_generations")
             yesterday = datetime.utcnow() - timedelta(hours=24)
 
-            art_channel_id = int(os.getenv('DEV_ART_CHANNEL_ID' if self.summarizer.dev_mode else 'ART_CHANNEL_ID', 0))
+            art_channel_id = getattr(self.summarizer, 'art_channel_id', 0) or 0
             
             channel_condition = ""
             query_params = []
@@ -102,6 +102,7 @@ class TopGenerations:
                     JOIN channels c ON m.channel_id = c.channel_id
                     JOIN members mem ON m.author_id = mem.member_id
                     WHERE {date_condition}
+                    AND m.guild_id = ?
                     {channel_condition}
                     {ignore_condition}
                     AND json_valid(m.attachments)
@@ -125,7 +126,7 @@ class TopGenerations:
             top_generations = await asyncio.to_thread(
                 self.summarizer.db_handler.execute_query,
                 query,
-                tuple(query_params)
+                tuple(([query_params[0], self.summarizer.guild_id] + query_params[1:]) if query_params else [self.summarizer.guild_id])
             )
             
             # Deduplicate by message_id (defensive - query should return unique, but CTE handling may cause dupes)
@@ -448,4 +449,3 @@ class TopGenerations:
             return id_to_name.get(user_id, match.group(0))
 
         return re.sub(r'<@!?(\d+)>', replace, text)
-

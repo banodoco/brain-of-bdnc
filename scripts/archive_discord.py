@@ -55,7 +55,7 @@ def get_db():
     return thread_local.db
 
 class MessageArchiver(BaseDiscordBot):
-    def __init__(self, dev_mode=False, order="newest", days=None, batch_size=500, in_depth=False, channel_id=None, channel_ids=None, fetch_reactions=False, start_date_str=None, end_date_str=None, fast_fill=False):
+    def __init__(self, dev_mode=False, order="newest", days=None, batch_size=500, in_depth=False, channel_id=None, channel_ids=None, fetch_reactions=False, start_date_str=None, end_date_str=None, fast_fill=False, guild_id_override=None):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
@@ -94,11 +94,14 @@ class MessageArchiver(BaseDiscordBot):
         # Cache of channel IDs that are summary threads (to avoid re-checking)
         self._summary_thread_ids: set[int] = set()
 
-        # Get guild ID based on mode
-        self.guild_id = int(os.getenv('DEV_GUILD_ID' if dev_mode else 'GUILD_ID'))
-        
-        # Channels to skip
-        self.skip_channels = {1076117621407223832}  # Welcome channel
+        # Get guild ID: explicit override > env var
+        if guild_id_override:
+            self.guild_id = guild_id_override
+        else:
+            self.guild_id = int(os.getenv('DEV_GUILD_ID' if dev_mode else 'GUILD_ID'))
+
+        # Channels to skip (empty for non-BNDC guilds)
+        self.skip_channels = set()
         
         # Default config for all channels
         self.default_config = {
@@ -188,6 +191,14 @@ class MessageArchiver(BaseDiscordBot):
             self.total_days_in_range = (self.end_date - self.start_date).days
             if self.total_days_in_range <= 0: # Should be caught by earlier check, but safety first
                 self.total_days_in_range = 1
+
+    def _is_archiving_enabled(self, channel_id: int) -> bool:
+        """Check if archiving is enabled for this channel via server_config. Defaults True."""
+        db = get_db()
+        sc = getattr(db, 'server_config', None)
+        if sc is None:
+            return True
+        return sc.is_feature_enabled(self.guild_id, channel_id, 'archiving')
 
     def _db_worker(self):
         """Worker thread for database operations."""
@@ -287,7 +298,7 @@ class MessageArchiver(BaseDiscordBot):
             if rows:
                 msg_id = msg['message_id']
                 await self._db_operation(
-                    lambda db, mid=msg_id, r=rows: db.upsert_reactions_batch(mid, r)
+                    lambda db, mid=msg_id, r=rows, gid=self.guild_id: db.upsert_reactions_batch(mid, r, guild_id=gid)
                 )
 
     async def _process_message(self, message, channel_id):
@@ -335,7 +346,7 @@ class MessageArchiver(BaseDiscordBot):
                                             guild_join_date = member.joined_at.isoformat() if member and member.joined_at else None
                                             
                                             await self._db_operation(
-                                                lambda db: db.create_or_update_member(
+                                                lambda db, gid=self.guild_id: db.create_or_update_member(
                                                     user.id,
                                                     user.name,
                                                     getattr(user, 'display_name', None),
@@ -348,7 +359,8 @@ class MessageArchiver(BaseDiscordBot):
                                                     str(user.banner.url) if getattr(user, 'banner', None) else None,
                                                     user.created_at.isoformat() if hasattr(user, 'created_at') else None,
                                                     guild_join_date,
-                                                    role_ids
+                                                    role_ids,
+                                                    guild_id=gid
                                                 )
                                             )
                                             # Update cache
@@ -378,7 +390,7 @@ class MessageArchiver(BaseDiscordBot):
                     guild_join_date = member.joined_at.isoformat() if member and member.joined_at else None
                     
                     await self._db_operation(
-                        lambda db: db.create_or_update_member(
+                        lambda db, gid=self.guild_id: db.create_or_update_member(
                             message.author.id,
                             message.author.name,
                             getattr(message.author, 'display_name', None),
@@ -391,7 +403,8 @@ class MessageArchiver(BaseDiscordBot):
                             str(message.author.banner.url) if getattr(message.author, 'banner', None) else None,
                             message.author.created_at.isoformat() if hasattr(message.author, 'created_at') else None,
                             guild_join_date,
-                            role_ids
+                            role_ids,
+                            guild_id=gid
                         )
                     )
                     # Update cache
@@ -414,18 +427,38 @@ class MessageArchiver(BaseDiscordBot):
                 if hasattr(actual_channel, 'category') and actual_channel.category:
                     category_id = actual_channel.category.id
 
+                # Determine channel_type and parent_id
+                ch_type = None
+                parent_id = None
+                if isinstance(actual_channel, discord.ForumChannel):
+                    ch_type = 'forum'
+                elif isinstance(actual_channel, discord.TextChannel):
+                    ch_type = 'text'
+                elif isinstance(actual_channel, discord.VoiceChannel):
+                    ch_type = 'voice'
+                elif isinstance(actual_channel, discord.StageChannel):
+                    ch_type = 'stage'
+                elif isinstance(actual_channel, discord.CategoryChannel):
+                    ch_type = 'category'
+                if hasattr(actual_channel, 'parent') and actual_channel.parent:
+                    parent_id = actual_channel.parent.id
+
                 await self._db_operation(
-                    lambda db: db.create_or_update_channel(
+                    lambda db, gid=self.guild_id, ct=ch_type, pid=parent_id: db.create_or_update_channel(
                         channel_id=actual_channel.id,
                         channel_name=actual_channel.name,
                         nsfw=getattr(actual_channel, 'nsfw', False),
-                        category_id=category_id
+                        category_id=category_id,
+                        guild_id=gid,
+                        channel_type=ct,
+                        parent_id=pid
                     )
                 )
             
             processed_message = {
                 'message_id': message.id,
                 'channel_id': actual_channel.id,
+                'guild_id': self.guild_id,
                 'author_id': message.author.id,
                 'content': message.content,
                 'created_at': message.created_at.isoformat(),
@@ -542,19 +575,23 @@ class MessageArchiver(BaseDiscordBot):
                     else:
                         logger.error(f"Could not find target channel with ID {target_cid}")
             else:
-                # Collect all text channels
+                # Collect all text channels, filtered by archiving feature config
                 all_text_channels = [c for c in guild.text_channels if c.id not in self.skip_channels]
                 for channel in all_text_channels:
+                    if not self._is_archiving_enabled(channel.id):
+                        continue
                     items_to_process.append(("channel", channel, None))
                     # Collect threads within text channels
                     archived_threads = await self._fetch_archived_threads(channel)
                     active_threads = channel.threads
                     for thread in archived_threads + active_threads:
                         items_to_process.append(("thread", thread, channel.name))
-                
-                # Collect all forum threads
+
+                # Collect all forum threads, filtered by archiving feature config
                 all_forums = [f for f in guild.channels if isinstance(f, discord.ForumChannel) and f.id not in self.skip_channels]
                 for forum in all_forums:
+                    if not self._is_archiving_enabled(forum.id):
+                        continue
                     archived_threads = await self._fetch_archived_threads(forum)
                     active_threads = forum.threads
                     for thread in archived_threads + active_threads:
@@ -1316,6 +1353,8 @@ def main():
                       help='Fetch reactions for all messages in range, not just new ones')
     parser.add_argument('--fast-fill', action='store_true',
                       help='Fast mode for filling gaps: batches DB checks, skips member updates and reactions')
+    parser.add_argument('--guild-id', type=int,
+                      help='Override guild ID (for multi-server archiving)')
     args = parser.parse_args()
     
     # Validate arguments
@@ -1354,7 +1393,8 @@ def main():
                             channel_id=args.channel, channel_ids=channel_ids_list,
                             fetch_reactions=args.fetch_reactions,
                             start_date_str=args.start_date, end_date_str=args.end_date,
-                            fast_fill=args.fast_fill)
+                            fast_fill=args.fast_fill,
+                            guild_id_override=args.guild_id)
         
         # Start the bot and keep it running until archiving is complete
         async def runner():

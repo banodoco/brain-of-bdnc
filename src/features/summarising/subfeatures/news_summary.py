@@ -14,12 +14,13 @@ from openai import AsyncOpenAI
 #  - chunking/formatting the prompt & returned JSON.
 
 class NewsSummarizer:
-    def __init__(self, logger: logging.Logger, dev_mode=False):
+    def __init__(self, logger: logging.Logger, dev_mode=False, server_config=None):
         self.logger = logger
         self.logger.info("Initializing NewsSummarizer...")
 
         load_dotenv()
         self.dev_mode = dev_mode
+        self.server_config = server_config
         
         # Initialize Anthropic client
         self.anthropic_client = anthropic.Anthropic(
@@ -35,14 +36,42 @@ class NewsSummarizer:
             self.openai_client = None
             self.logger.warning("OPENAI_API_KEY not set - summary verification with GPT-5 will be skipped.")
 
-        if self.dev_mode:
-            self.guild_id = int(os.getenv('DEV_GUILD_ID'))
-            self.top_gen_channel_id = int(os.getenv('DEV_TOP_GEN_CHANNEL')) if os.getenv('DEV_TOP_GEN_CHANNEL') else None
-        else:
-            self.guild_id = int(os.getenv('GUILD_ID'))
-            self.top_gen_channel_id = int(os.getenv('TOP_GEN_CHANNEL')) if os.getenv('TOP_GEN_CHANNEL') else None
+        self.guild_id = None
+        if self.server_config:
+            guilds = [
+                s for s in self.server_config.get_enabled_servers(require_write=True)
+                if s.get('default_summarising')
+            ]
+            if guilds:
+                self.guild_id = guilds[0]['guild_id']
+
+        self.top_gen_channel_id = None
+
+        self.community_name = "Banodoco"
+        self.community_demonym = "Banodocians"
+        if self.server_config and self.guild_id:
+            server = self.server_config.get_server(self.guild_id)
+            if server:
+                self.community_name = server.get('community_name') or self.community_name
+                self.community_demonym = server.get('community_demonym') or self.community_demonym
+                top_gens_channel_id = server.get('top_gens_channel_id')
+                if top_gens_channel_id is not None:
+                    self.top_gen_channel_id = int(top_gens_channel_id)
 
         self.logger.info("NewsSummarizer initialized.")
+
+    def _render_prompt_template(self, template: str) -> str:
+        return (
+            template
+            .replace("Banodoco", self.community_name)
+            .replace("Banodocians", self.community_demonym)
+        )
+
+    def _get_prompt(self, content_key: str, fallback: str) -> str:
+        prompt = None
+        if self.server_config and self.guild_id:
+            prompt = self.server_config.get_content(self.guild_id, content_key)
+        return self._render_prompt_template(prompt or fallback)
 
     async def _call_anthropic(
         self,
@@ -347,7 +376,10 @@ If all significant topics have already been covered, respond with "[NO SIGNIFICA
                 # Call Anthropic API with Claude Sonnet 4.5
                 self.logger.info(f"Calling LLM for chunk {chunk_num}/{total_chunks}...")
                 text = await self._call_anthropic(
-                    system_prompt=self._NEWS_GENERATION_SYSTEM_PROMPT,
+                    system_prompt=self._get_prompt(
+                        'prompt_news_generation_system',
+                        self._NEWS_GENERATION_SYSTEM_PROMPT,
+                    ),
                     user_content=user_prompt_content,
                     max_tokens=16000
                 )
@@ -487,7 +519,13 @@ Check each claim in the summary against the source messages. Identify any attrib
                     model="gpt-5.2",
                     reasoning={"effort": "high"},
                     input=[
-                        {"role": "system", "content": self._VERIFICATION_SYSTEM_PROMPT},
+                        {
+                            "role": "system",
+                            "content": self._get_prompt(
+                                'prompt_news_verification_system',
+                                self._VERIFICATION_SYSTEM_PROMPT,
+                            ),
+                        },
                         {"role": "user", "content": user_prompt}
                     ],
                     max_output_tokens=32000  # Allow plenty of room for reasoning + output
@@ -748,7 +786,10 @@ DO NOT introduce your response. Reply with ONLY the JSON array or [NO SIGNIFICAN
         for attempt in range(1, max_attempts + 1):
             try:
                 # Use stricter prompt on retry
-                current_system_prompt = system_prompt if attempt == 1 else retry_system_prompt
+                current_system_prompt = self._get_prompt(
+                    'prompt_news_combine_system' if attempt == 1 else 'prompt_news_combine_retry_system',
+                    system_prompt if attempt == 1 else retry_system_prompt,
+                )
                 current_user_prompt = user_prompt_content
                 
                 # On retry, add explicit instruction and include the previous parse/error signal.
@@ -926,7 +967,13 @@ Check each bullet point against the full summary. Identify any inaccuracies, inv
                     model="gpt-5.2",
                     reasoning={"effort": "high"},
                     input=[
-                        {"role": "system", "content": self._SHORT_SUMMARY_VERIFICATION_PROMPT},
+                        {
+                            "role": "system",
+                            "content": self._get_prompt(
+                                'prompt_news_short_verification_system',
+                                self._SHORT_SUMMARY_VERIFICATION_PROMPT,
+                            ),
+                        },
                         {"role": "user", "content": user_prompt}
                     ],
                     max_output_tokens=4000
@@ -994,7 +1041,10 @@ Check each bullet point against the full summary. Identify any inaccuracies, inv
         Now includes GPT-5.2 verification of the generated summary.
         """
         # Use the new system prompt defined above, formatting the message count in
-        system_prompt_formatted = self._SHORT_SUMMARY_SYSTEM_PROMPT.format(message_count=message_count)
+        system_prompt_formatted = self._get_prompt(
+            'prompt_news_short_summary_system',
+            self._SHORT_SUMMARY_SYSTEM_PROMPT,
+        ).replace('{message_count}', str(message_count))
 
         try:
             # Call Anthropic API with Claude Sonnet 4.5
@@ -1030,4 +1080,3 @@ Check each bullet point against the full summary. Identify any inaccuracies, inv
             self.logger.error(f"Error generating short summary via LLM dispatcher: {e}", exc_info=True)
             # Return a formatted error message
             return f"📨 __{message_count} messages sent__\n• Error generating summary due to API issue."
-

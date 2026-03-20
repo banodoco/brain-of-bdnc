@@ -42,19 +42,25 @@ def get_client():
     return create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_KEY'])
 
 
-def fetch_thread_messages(sb, thread_id: str, limit: int = 200) -> List[Dict]:
+def fetch_thread_messages(sb, thread_id: str, limit: int = 200, guild_id: Optional[int] = None) -> List[Dict]:
     """Fetch all messages from a thread, trying both channel_id and thread_id."""
     # Try as channel_id first (forum threads)
-    res = sb.table('discord_messages').select('*').eq('channel_id', thread_id).order('created_at').limit(limit).execute()
+    q = sb.table('discord_messages').select('*').eq('channel_id', thread_id)
+    if guild_id:
+        q = q.eq('guild_id', guild_id)
+    res = q.order('created_at').limit(limit).execute()
 
     if not res.data:
         # Try as thread_id (regular threads)
-        res = sb.table('discord_messages').select('*').eq('thread_id', thread_id).order('created_at').limit(limit).execute()
+        q = sb.table('discord_messages').select('*').eq('thread_id', thread_id)
+        if guild_id:
+            q = q.eq('guild_id', guild_id)
+        res = q.order('created_at').limit(limit).execute()
 
     return res.data or []
 
 
-def fetch_members(sb, member_ids: List[str]) -> Dict[str, str]:
+def fetch_members(sb, member_ids: List[str], guild_id: Optional[int] = None) -> Dict[str, str]:
     """Fetch member display names."""
     if not member_ids:
         return {}
@@ -62,9 +68,27 @@ def fetch_members(sb, member_ids: List[str]) -> Dict[str, str]:
     # Batch fetch
     for batch_start in range(0, len(member_ids), 50):
         batch = member_ids[batch_start:batch_start + 50]
-        res = sb.table('discord_members').select('member_id,username,global_name,server_nick').in_('member_id', batch).execute()
-        for m in (res.data or []):
-            names[str(m['member_id'])] = m.get('server_nick') or m.get('global_name') or m.get('username') or str(m['member_id'])
+        if guild_id:
+            res = (
+                sb.table('member_guild_profile')
+                .select('member_id,display_name')
+                .eq('guild_id', guild_id)
+                .in_('member_id', batch)
+                .execute()
+            )
+            for m in (res.data or []):
+                names[str(m['member_id'])] = m.get('display_name') or str(m['member_id'])
+
+        missing = [member_id for member_id in batch if member_id not in names]
+        if missing:
+            res = (
+                sb.table('discord_members')
+                .select('member_id,username,global_name,server_nick')
+                .in_('member_id', missing)
+                .execute()
+            )
+            for m in (res.data or []):
+                names[str(m['member_id'])] = m.get('server_nick') or m.get('global_name') or m.get('username') or str(m['member_id'])
     return names
 
 
@@ -178,18 +202,21 @@ def main():
     parser.add_argument('--show-urls', action='store_true', help='Show attachment URLs')
     parser.add_argument('--limit', type=int, default=200, help='Max messages to fetch')
     parser.add_argument('--videos-only', action='store_true', help='Show only messages with video attachments')
+    parser.add_argument('--guild-id', type=int, help='Scope queries to a specific guild')
     args = parser.parse_args()
 
     sb = get_client()
-    messages = fetch_thread_messages(sb, args.thread_id, args.limit)
+    messages = fetch_thread_messages(sb, args.thread_id, args.limit, guild_id=args.guild_id)
 
     if not messages:
         print(f"No messages found for thread {args.thread_id}")
         sys.exit(1)
 
+    guild_id = args.guild_id or messages[0].get('guild_id')
+
     # Collect unique author IDs
     author_ids = list(set(str(m.get('author_id', '')) for m in messages if m.get('author_id')))
-    names = fetch_members(sb, author_ids)
+    names = fetch_members(sb, author_ids, guild_id=guild_id)
 
     if args.videos_only:
         # Filter to only messages with video attachments

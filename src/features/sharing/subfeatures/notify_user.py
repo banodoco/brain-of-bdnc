@@ -22,13 +22,14 @@ class PostShareNotificationView(discord.ui.View):
     """
     
     def __init__(
-        self, 
-        db_handler: DatabaseHandler, 
+        self,
+        db_handler: DatabaseHandler,
         discord_message_id: int,
         discord_user_id: int,
         tweet_id: str,
         tweet_url: str,
         bot=None,
+        guild_id: Optional[int] = None,
         timeout: float = 21600  # 6 hours in seconds
     ):
         super().__init__(timeout=timeout)
@@ -38,6 +39,7 @@ class PostShareNotificationView(discord.ui.View):
         self.tweet_id = tweet_id
         self.tweet_url = tweet_url
         self.bot = bot
+        self.guild_id = guild_id
         self.message: Optional[discord.Message] = None
         self._delete_attempted = False
     
@@ -61,7 +63,7 @@ class PostShareNotificationView(discord.ui.View):
         
         if success:
             # Mark as deleted in DB
-            self.db_handler.mark_shared_post_deleted(self.discord_message_id, 'twitter')
+            self.db_handler.mark_shared_post_deleted(self.discord_message_id, 'twitter', guild_id=self.guild_id)
             
             # Update the message to show deletion was successful
             button.disabled = True
@@ -107,12 +109,18 @@ class PostShareNotificationView(discord.ui.View):
     @discord.ui.button(label="Opt-out of Sharing", style=discord.ButtonStyle.secondary, custom_id="opt_out", emoji="🚫", row=0)
     async def opt_out_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Opt out of future content sharing."""
-        success = self.db_handler.update_member_sharing_permission(interaction.user.id, False)
+        success = self.db_handler.update_member_sharing_permission(interaction.user.id, False, guild_id=self.guild_id)
         
         if success:
             # Update the role
             if self.bot:
-                await discord_utils.update_no_sharing_role(self.bot, interaction.user.id, False, logger)
+                await discord_utils.update_no_sharing_role(
+                    self.bot,
+                    interaction.user.id,
+                    False,
+                    logger,
+                    guild_id=interaction.guild_id,
+                )
             
             # Update button
             button.disabled = True
@@ -176,20 +184,35 @@ async def send_post_share_notification(
         db_handler: Database handler instance
     """
     logger.info(f"Sending post-share notification to user {user.id} for tweet {tweet_id}")
-    
-    # Build the DM message
-    dm_content = f"""Hi there!
 
-Your content has been shared by the Banodoco Twitter account:
+    guild_id = getattr(getattr(discord_message, 'guild', None), 'id', None)
+    sc = getattr(db_handler, 'server_config', None)
+    community_name = "Banodoco"
+    dm_template = None
+    if sc and guild_id:
+        server = sc.get_server(guild_id)
+        if server:
+            community_name = server.get('community_name') or community_name
+        dm_template = sc.get_content(guild_id, 'post_share_dm')
+
+    dm_content = dm_template or """Hi there!
+
+Your content has been shared by the {community_name} Twitter account:
 {tweet_url}
 
-**Original post:** {discord_message.jump_url}
+**Original post:** {original_post_url}
 
 If you'd like to opt-out of your content being shared in the future, or delete this specific post, use the buttons below.
 
 ⏰ **Note:** The delete option is only available for 6 hours.
 
 You can always update your preferences by using `/update_details`."""
+    dm_content = (
+        dm_content
+        .replace("{community_name}", community_name)
+        .replace("{tweet_url}", tweet_url)
+        .replace("{original_post_url}", discord_message.jump_url)
+    )
     
     # Handle dev mode redirect
     target_user = user
@@ -217,7 +240,8 @@ You can always update your preferences by using `/update_details`."""
             discord_user_id=user.id,
             tweet_id=tweet_id,
             tweet_url=tweet_url,
-            bot=bot
+            bot=bot,
+            guild_id=getattr(getattr(discord_message, 'guild', None), 'id', None),
         )
         
         # Send DM

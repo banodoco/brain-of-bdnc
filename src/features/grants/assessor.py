@@ -2,10 +2,36 @@
 
 import json
 import logging
+from typing import Optional
 
 from src.features.grants.pricing import GPU_RATES, MAX_GRANT_USD, calculate_grant_cost
 
 logger = logging.getLogger('DiscordBot')
+
+
+def _render_prompt_template(template: str, community_name: str) -> str:
+    return template.replace("our server", f"the {community_name} server")
+
+
+def _load_prompt(server_config, guild_id: Optional[int], content_key: str, fallback: str) -> str:
+    prompt = None
+    community_name = "community"
+    if server_config and guild_id:
+        server = server_config.get_server(guild_id)
+        if server:
+            community_name = server.get('community_name') or community_name
+        prompt = server_config.get_content(guild_id, content_key)
+    return _render_prompt_template(prompt or fallback, community_name)
+
+
+def _fill_prompt_template(prompt: str, gpu_info: str) -> str:
+    return (
+        prompt
+        .replace('{gpu_info}', gpu_info)
+        .replace('{max_grant_usd:.0f}', f'{MAX_GRANT_USD:.0f}')
+        .replace('{{', '{')
+        .replace('}}', '}')
+    )
 
 SYSTEM_PROMPT = """You are a grant reviewer for compute micro-grants (10-50 GPU hours) for open-source AI projects.
 
@@ -55,9 +81,10 @@ Use "needs_review" when you're unsure — e.g. borderline applications, unusual 
 Use "spam" for posts that are clearly not real applications — e.g. test posts, gibberish, jokes, off-topic messages, or obvious low-effort spam. These threads will be silently deleted."""
 
 
-def _build_system_prompt() -> str:
+def _build_system_prompt(server_config=None, guild_id: Optional[int] = None) -> str:
     gpu_info = '\n'.join(f'- {name}: ${rate:.2f}/hr' for name, rate in GPU_RATES.items())
-    return SYSTEM_PROMPT.format(gpu_info=gpu_info, max_grant_usd=MAX_GRANT_USD)
+    prompt = _load_prompt(server_config, guild_id, 'prompt_grants_assessor_system', SYSTEM_PROMPT)
+    return _fill_prompt_template(prompt, gpu_info)
 
 
 def _parse_json(text: str) -> dict:
@@ -122,13 +149,16 @@ Return ONLY valid JSON (no markdown, no code fences):
 {{"reasoning": "your interpretation of the admin's intent", "decision": "approved" | "rejected" | "needs_review", "response": "message to show the applicant", "gpu_type": "H100_80GB" | "H200" | "B200" | null, "recommended_hours": <number or null>}}"""
 
 
-def _build_admin_review_prompt() -> str:
+def _build_admin_review_prompt(server_config=None, guild_id: Optional[int] = None) -> str:
     gpu_info = '\n'.join(f'- {name}: ${rate:.2f}/hr' for name, rate in GPU_RATES.items())
-    return ADMIN_REVIEW_PROMPT.format(gpu_info=gpu_info, max_grant_usd=MAX_GRANT_USD)
+    prompt = _load_prompt(server_config, guild_id, 'prompt_grants_admin_review_system', ADMIN_REVIEW_PROMPT)
+    return _fill_prompt_template(prompt, gpu_info)
 
 
 async def interpret_admin_decision(claude_client, thread_content: str, admin_message: str,
-                                   llm_recommendation: dict | None = None) -> dict:
+                                   llm_recommendation: dict | None = None,
+                                   guild_id: Optional[int] = None,
+                                   server_config=None) -> dict:
     """Interpret an admin's natural-language reply on a needs_review grant.
 
     Returns:
@@ -137,7 +167,7 @@ async def interpret_admin_decision(claude_client, thread_content: str, admin_mes
     Raises:
         RuntimeError if all attempts fail
     """
-    system_prompt = _build_admin_review_prompt()
+    system_prompt = _build_admin_review_prompt(server_config=server_config, guild_id=guild_id)
 
     user_content = f"## Original Application\n\n{thread_content}"
 
@@ -191,7 +221,9 @@ async def interpret_admin_decision(claude_client, thread_content: str, admin_mes
 
 
 async def assess_application(claude_client, thread_content: str, grant_history: list | None = None,
-                             engagement: dict | None = None) -> dict:
+                             engagement: dict | None = None,
+                             guild_id: Optional[int] = None,
+                             server_config=None) -> dict:
     """Assess a grant application using Claude with structured output and retry.
 
     Returns:
@@ -200,7 +232,7 @@ async def assess_application(claude_client, thread_content: str, grant_history: 
     Raises:
         RuntimeError if all attempts fail
     """
-    system_prompt = _build_system_prompt()
+    system_prompt = _build_system_prompt(server_config=server_config, guild_id=guild_id)
 
     user_content = f'Please review this grant application:\n\n{thread_content}'
 

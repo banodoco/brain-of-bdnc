@@ -2,6 +2,7 @@ import discord
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 # Assuming get_llm_response and DatabaseHandler are passed or imported
 # from src.common.llm import get_llm_response
@@ -15,6 +16,17 @@ DISPUTE_RESOLUTION_LLM_CLIENT = "openai"
 DISPUTE_RESOLUTION_LLM_MODEL = "o3-mini"
 DISPUTE_RESOLUTION_LLM_MAX_TOKENS = 10024
 DISPUTE_RESOLUTION_TIMESPAN_HOURS = 12
+
+
+def _get_dispute_prompt(db_handler, guild_id: Optional[int]) -> str:
+    sc = getattr(db_handler, 'server_config', None) if db_handler else None
+    prompt = sc.get_content(guild_id, 'prompt_dispute_resolution') if sc and guild_id else None
+    community_name = "the community"
+    if sc and guild_id:
+        server = sc.get_server(guild_id)
+        if server:
+            community_name = server.get('community_name') or community_name
+    return (prompt or DISPUTE_RESOLUTION_LLM_SYSTEM_PROMPT).replace("the community", community_name)
 
 async def handle_initiate_dispute_resolution(
     message: discord.Message,
@@ -74,6 +86,7 @@ async def handle_initiate_dispute_resolution(
 
     end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(hours=DISPUTE_RESOLUTION_TIMESPAN_HOURS)
+    guild_id = getattr(message.guild, 'id', None)
     start_time_iso_for_log = start_time.isoformat()
     end_time_iso_for_log = end_time.isoformat()
     logger.debug(f"[Reactor][DisputeResolver] Database query time window: Start='{start_time_iso_for_log}', End='{end_time_iso_for_log}'")
@@ -88,7 +101,8 @@ async def handle_initiate_dispute_resolution(
             db_handler.get_messages_by_authors_in_range,
             author_ids_to_fetch,
             start_time,
-            end_time
+            end_time,
+            guild_id,
         )
         logger.debug(f"[Reactor][DisputeResolver] Database returned {len(recent_messages)} messages for authors {author_ids_to_fetch}.")
     except Exception as e:
@@ -152,7 +166,7 @@ async def handle_initiate_dispute_resolution(
         response_text = await get_llm_response_func(
             client_name=DISPUTE_RESOLUTION_LLM_CLIENT,
             model=DISPUTE_RESOLUTION_LLM_MODEL,
-            system_prompt=DISPUTE_RESOLUTION_LLM_SYSTEM_PROMPT,
+            system_prompt=_get_dispute_prompt(db_handler, guild_id),
             messages=llm_messages,
             max_completion_tokens=DISPUTE_RESOLUTION_LLM_MAX_TOKENS,
             reasoning_effort="high"

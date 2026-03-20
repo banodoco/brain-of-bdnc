@@ -21,7 +21,7 @@ load_dotenv()
 # Conversation history per user (in-memory, resets on bot restart)
 _conversations: Dict[int, List[Dict[str, Any]]] = {}
 
-SYSTEM_PROMPT = """You are the Banodoco Discord bot's admin assistant. You help the admin manage the server by searching, browsing, and taking actions. Be playfully cheeky in a dry way — you're a helpful bot with personality, not a corporate assistant.
+SYSTEM_PROMPT = """You are the {community_name} Discord bot's admin assistant. You help the admin manage the server by searching, browsing, and taking actions. Be playfully cheeky in a dry way — you're a helpful bot with personality, not a corporate assistant.
 
 You are bot user ID {bot_user_id} in guild {guild_id}.
 
@@ -132,6 +132,8 @@ class AdminChatAgent:
         # Add channel context for @mentions in public channels
         if channel_context:
             ctx_parts = [f"[Sent in #{channel_context.get('channel_name', 'unknown')} (channel_id: {channel_context.get('channel_id')}"]
+            if channel_context.get('guild_id'):
+                ctx_parts.append(f", guild_id: {channel_context.get('guild_id')}")
             if channel_context.get('is_thread'):
                 ctx_parts.append(f", thread in #{channel_context.get('parent_channel_name', 'unknown')}")
             ctx_parts.append(")]")
@@ -179,8 +181,24 @@ class AdminChatAgent:
                 # Call Claude
                 # Inject runtime values into system prompt
                 bot_user_id = self.bot.user.id if self.bot and self.bot.user else "unknown"
-                guild_id = os.getenv('GUILD_ID', os.getenv('DEV_GUILD_ID', 'unknown'))
-                system = SYSTEM_PROMPT.format(bot_user_id=bot_user_id, guild_id=guild_id)
+                sc = getattr(getattr(self.bot, 'db_handler', None), 'server_config', None) if self.bot else None
+                guild_id = (
+                    channel_context.get('guild_id')
+                    if channel_context and channel_context.get('guild_id')
+                    else (sc.get_default_guild_id(require_write=True) if sc else 'unknown')
+                )
+                # Use community_name from server_config if available
+                community_name = "Banodoco"
+                prompt_template = SYSTEM_PROMPT
+                if sc and guild_id != 'unknown':
+                    _server = sc.get_server(int(guild_id))
+                    community_name = (_server.get('community_name') if _server else None) or community_name
+                    prompt_template = sc.get_content(int(guild_id), 'prompt_admin_chat_system') or SYSTEM_PROMPT
+                system = prompt_template.format(
+                    bot_user_id=bot_user_id,
+                    guild_id=guild_id,
+                    community_name=community_name,
+                )
 
                 # Show "is typing..." during API call, stops when call completes
                 if channel:
@@ -233,6 +251,10 @@ class AdminChatAgent:
                         continue
 
                     logger.info(f"[AdminChat] Tool call: {tool_name}")
+
+                    if channel_context and channel_context.get('guild_id') and 'guild_id' not in tool_input:
+                        tool_input = dict(tool_input)
+                        tool_input['guild_id'] = int(channel_context['guild_id'])
 
                     # Execute the tool
                     result = await execute_tool(

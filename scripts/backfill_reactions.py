@@ -53,6 +53,7 @@ class ReactionBackfiller(BaseDiscordBot):
         self.refresh_all = refresh_all
         self.dry_run = dry_run
         self.post_top_gens = post_top_gens
+        self.guild_id = int(os.getenv('DEV_GUILD_ID' if dev_mode else 'GUILD_ID', 0)) or None
 
         logger.setLevel(logging.INFO)
         handler = logging.StreamHandler()
@@ -192,6 +193,7 @@ class ReactionBackfiller(BaseDiscordBot):
                                             user.created_at.isoformat() if hasattr(user, 'created_at') else None,
                                             member.joined_at.isoformat() if member and member.joined_at else None,
                                             None,  # role_ids
+                                            guild_id=self.guild_id,
                                         )
                                     reaction_rows.append({
                                         'message_id': message_id,
@@ -199,7 +201,7 @@ class ReactionBackfiller(BaseDiscordBot):
                                         'emoji': emoji_str,
                                     })
 
-                    self.db.update_reactions(message_id, reaction_count, reactors)
+                    self.db.update_reactions(message_id, reaction_count, reactors, guild_id=self.guild_id)
 
                     # Accumulate for bulk flush
                     if reaction_rows:
@@ -210,7 +212,7 @@ class ReactionBackfiller(BaseDiscordBot):
 
                     # Flush accumulated reactions in bulk
                     if len(pending_message_ids) >= FLUSH_EVERY:
-                        self.db.bulk_upsert_reactions(pending_message_ids, pending_reaction_rows)
+                        self.db.bulk_upsert_reactions(pending_message_ids, pending_reaction_rows, guild_id=self.guild_id)
                         logger.info(f"[{i}/{len(results)}] Flushed {len(pending_reaction_rows)} "
                                     f"reaction rows for {len(pending_message_ids)} messages")
                         pending_reaction_rows = []
@@ -235,7 +237,7 @@ class ReactionBackfiller(BaseDiscordBot):
 
             # Flush any remaining accumulated reactions
             if pending_message_ids:
-                self.db.bulk_upsert_reactions(pending_message_ids, pending_reaction_rows)
+                self.db.bulk_upsert_reactions(pending_message_ids, pending_reaction_rows, guild_id=self.guild_id)
                 logger.info(f"Final flush: {len(pending_reaction_rows)} reaction rows "
                             f"for {len(pending_message_ids)} messages")
 

@@ -82,7 +82,9 @@ class WorkflowUploadView(discord.ui.View):
         
         # Section 3: Decline handling - set allow_content_sharing to False
         try:
-            success = self.db_handler.update_member_sharing_permission(member_id=self.author.id, allow_content_sharing=False)
+            sc = getattr(self.bot, 'server_config', None)
+            _guild_id = sc.bndc_guild_id if sc else None
+            success = self.db_handler.update_member_sharing_permission(member_id=self.author.id, allow_content_sharing=False, guild_id=_guild_id)
             if success:
                 self.logger.info(f"[WorkflowUpload] Set allow_content_sharing=False for author {self.author.id}.")
                 # Add the "no sharing" role to make opt-out visible

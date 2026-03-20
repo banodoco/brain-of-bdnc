@@ -25,7 +25,7 @@ class TopArtSharing:
             self.summarizer.logger.info("Starting post_top_art_share")
 
             # Determine correct art channel ID based on mode
-            art_channel_id = int(os.getenv('DEV_ART_CHANNEL_ID' if self.summarizer.dev_mode else 'ART_CHANNEL_ID', 0))
+            art_channel_id = getattr(self.summarizer, 'art_channel_id', 0) or 0
             if not art_channel_id:
                 self.summarizer.logger.error("Art channel ID (ART_CHANNEL_ID or DEV_ART_CHANNEL_ID) not configured.")
                 return
@@ -117,4 +117,3 @@ class TopArtSharing:
             self.summarizer.logger.error(f"Error in post_top_art_share: {e}", exc_info=True)
 
     # Removed _replace_user_mentions as it's no longer needed here
-

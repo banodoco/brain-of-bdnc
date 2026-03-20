@@ -138,6 +138,7 @@ class AdminChatCog(commands.Cog):
             if not is_dm:
                 ch = message.channel
                 channel_context = {
+                    "guild_id": str(message.guild.id),
                     "channel_id": str(ch.id),
                     "channel_name": getattr(ch, 'name', 'unknown'),
                 }

@@ -198,14 +198,16 @@ Reply with that and nothing else"""
         except Exception as e:
             logger.error(f"[TweetSharerBridge] ({path_type}) Error creating DM with reactor {reactor.id}: {e}. Notifications may fail.")
             
+    _guild_id = getattr(message_to_share.guild, 'id', None)
     if actual_moderation_decision == "yes":
         if path_type == "Consent Path":
             db_handler.create_or_update_member(
                 member_id=original_poster.id,
-                username=original_poster.name, 
+                username=original_poster.name,
                 global_name=getattr(original_poster, 'global_name', None),
-                display_name=getattr(original_poster, 'nick', None), 
-                allow_content_sharing=True
+                display_name=getattr(original_poster, 'nick', None),
+                allow_content_sharing=True,
+                guild_id=_guild_id,
             )
             logger.info(f"[TweetSharerBridge] ({path_type}) Updated allow_content_sharing to True for user {original_poster.id} (LLM approved).")
             if interaction: # Should always be true for Consent Path
@@ -274,7 +276,8 @@ Reply with that and nothing else"""
                 user_id=original_poster.id, 
                 author_display_name=original_poster.display_name, # Added author's display name
                 original_message_content=message_to_share.content, 
-                original_message_jump_url=message_to_share.jump_url
+                original_message_jump_url=message_to_share.jump_url,
+                guild_id=getattr(message_to_share.guild, 'id', None)
             )
             if success:
                 reactor_dm_confirm_msg = f"Your comment on {message_to_share.jump_url} has been tweeted! View it here: {tweet_url}"
@@ -300,11 +303,12 @@ Reply with that and nothing else"""
         if path_type == "Consent Path":
             # Update sharing preference for OP (they said yes, but content flagged)
             db_handler.create_or_update_member(
-                member_id=original_poster.id, 
-                username=original_poster.name, 
+                member_id=original_poster.id,
+                username=original_poster.name,
                 global_name=getattr(original_poster, 'global_name', None),
                 display_name=getattr(original_poster, 'nick', None),
-                allow_content_sharing=True # Still record they consented, even if this instance is blocked
+                allow_content_sharing=True,  # Still record they consented, even if this instance is blocked
+                guild_id=_guild_id,
             )
             logger.info(f"[TweetSharerBridge] ({path_type}) User {original_poster.id} consented, but LLM flagged. allow_content_sharing still set to True.")
             if interaction: # Should always be true for Consent Path
@@ -458,11 +462,18 @@ class ConsentView(View):
                 username=self.original_poster.name,
                 global_name=getattr(self.original_poster, 'global_name', None),
                 display_name=getattr(self.original_poster, 'nick', None),
-                allow_content_sharing=False
+                allow_content_sharing=False,
+                guild_id=getattr(self.message_to_share.guild, 'id', None),
             )
             self.logger.info(f"[TweetSharerBridge] Updated allow_content_sharing to False for user {self.original_poster.id}")
             # Add the "no sharing" role to make opt-out visible
-            await discord_utils.update_no_sharing_role(self.bot, self.original_poster.id, False, self.logger)
+            await discord_utils.update_no_sharing_role(
+                self.bot,
+                self.original_poster.id,
+                False,
+                self.logger,
+                guild_id=getattr(self.message_to_share.guild, 'id', None),
+            )
             await discord_utils.safe_send_message(
                 self.bot, interaction.user, self.bot.rate_limiter, self.logger,
                 content="Your preference has been updated. This content will not be shared, and we won't ask for this message again. You can manage global preferences by DMing me /update_details."

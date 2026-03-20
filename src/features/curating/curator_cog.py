@@ -1,6 +1,5 @@
 # src/features/curating/curator_cog.py
 
-import os
 from discord.ext import commands
 from src.features.curating.curator import ArtCurator
 
@@ -10,19 +9,11 @@ class CuratorCog(commands.Cog):
         self.logger = logger
         self.dev_mode = dev_mode
         self.logger.info("Initializing CuratorCog...")
-
-        # Example: environment-based channel IDs
-        if self.dev_mode:
-            self.art_channel_id = int(os.getenv('DEV_ART_CHANNEL_ID', '1138865343314530324'))
-            self.curator_ids = [301463647895683072]  # example
-            self.logger.info(f"Using development art channel: {self.art_channel_id}")
-            self.logger.info(f"Using development curator IDs: {self.curator_ids}")
-        else:
-            self.art_channel_id = int(os.getenv('PROD_ART_CHANNEL_ID', '0'))
-            # ...
-            self.logger.info(f"Using production art channel: {self.art_channel_id}")
-            # etc.
-        self.art_curator = ArtCurator(logger=logger, dev_mode=dev_mode)
+        self.art_curator = ArtCurator(logger=logger, dev_mode=dev_mode, bot_ref=bot)
+        self.art_channel_id = self.art_curator.art_channel_id
+        self.curator_ids = self.art_curator.curator_ids
+        self.logger.info(f"CuratorCog resolved art channel: {self.art_channel_id}")
+        self.logger.info(f"CuratorCog resolved curator IDs: {self.curator_ids}")
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -34,6 +25,9 @@ class CuratorCog(commands.Cog):
     @commands.command(name='curate')
     async def manual_curate(self, ctx):
         """Forces a curation cycle manually, if appropriate."""
+        if not hasattr(self.art_curator, 'manual_curate'):
+            await ctx.send("Manual curation is not implemented for the current curator.")
+            return
         self.logger.info("Running manual curation using ArtCurator...")
         await self.art_curator.manual_curate()
         self.logger.info("Finished ArtCurator's manual curation.")

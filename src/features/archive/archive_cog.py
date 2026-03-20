@@ -40,9 +40,18 @@ class ArchiveCog(commands.Cog):
                     
                     dev_mode = getattr(self.bot, 'dev_mode', False)
                     archive_runner = ArchiveRunner()
-                    success = await archive_runner.run_archive(archive_days, dev_mode, in_depth=True)
-                    
-                    if success:
+                    sc = getattr(self.bot, 'server_config', None)
+                    guilds_to_archive = sc.get_guilds_to_archive() if sc else []
+                    success = True
+                    for guild_cfg in guilds_to_archive:
+                        guild_success = await archive_runner.run_archive(
+                            archive_days, dev_mode, in_depth=True, guild_id=guild_cfg['guild_id']
+                        )
+                        success = success and guild_success
+
+                    if not guilds_to_archive:
+                        logger.warning("No writable guilds with archiving enabled in server_config")
+                    elif success:
                         logger.info("Standalone archive process completed successfully")
                     else:
                         logger.error("Standalone archive process failed")
@@ -67,7 +76,9 @@ class ArchiveCog(commands.Cog):
             
             dev_mode = getattr(self.bot, 'dev_mode', False)
             archive_runner = ArchiveRunner()
-            success = await archive_runner.run_archive(days, dev_mode, in_depth=True)
+            sc = getattr(self.bot, 'server_config', None)
+            _guild_id = getattr(getattr(ctx, 'guild', None), 'id', None) or (sc.bndc_guild_id if sc else None)
+            success = await archive_runner.run_archive(days, dev_mode, in_depth=True, guild_id=_guild_id)
             
             if success:
                 await ctx.send("Archive process completed successfully.")
