@@ -7,11 +7,16 @@ post_welcome, and post_grants_guide scripts.
 
 Each content_key maps to a channel field in server_config and a split
 strategy for breaking content into multiple Discord messages.
+
+Supports file attachments via {{file:filename}} directives in content.
+Files are stored in the 'content-assets' Supabase Storage bucket.
 """
 
 import asyncio
+import io
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -20,11 +25,26 @@ from discord.ext import commands, tasks
 
 logger = logging.getLogger('DiscordBot')
 
+CONTENT_ASSETS_BUCKET = 'content-assets'
+ATTACHMENT_RE = re.compile(r'^\{\{file:(.+?)\}\}$', re.MULTILINE)
+
+
+@dataclass
+class ContentSegment:
+    """A single Discord message with optional file attachment."""
+    text: str
+    attachment: Optional[str] = None  # filename in content-assets bucket
+
+    def make_discord_file(self, file_bytes: bytes) -> discord.File:
+        """Create a discord.File from downloaded bytes."""
+        return discord.File(io.BytesIO(file_bytes), filename=self.attachment)
+
 # content_key -> (channel field, split pattern, forum thread name)
 CONTENT_REGISTRY: Dict[str, Tuple[str, Optional[str], Optional[str]]] = {
-    'post_rules':   ('rules_channel_id',  r'\n\n(?=>)',     None),
-    'post_welcome': ('gate_channel_id',   None,             None),
-    'post_grants':  ('grants_channel_id', r'\n\n(?=###\s)', 'How Micro-Grants Work'),
+    'post_rules':           ('rules_channel_id',   r'\n\n(?=>)',     None),
+    'post_welcome':         ('gate_channel_id',    None,             None),
+    'post_getting_started': ('welcome_channel_id', r'\n---\n',       None),
+    'post_grants':          ('grants_channel_id',  r'\n\n(?=###\s)', 'How Micro-Grants Work'),
 }
 
 # Forum companion threads — created once alongside the main thread
@@ -127,10 +147,10 @@ class ContentCog(commands.Cog):
 
         if isinstance(channel, discord.ForumChannel) and thread_name:
             message_ids, thread_id = await self._sync_forum(
-                channel, new_messages, thread_name, posted, content_key
+                channel, new_messages, thread_name, posted, content_key, sb, guild_id
             )
         else:
-            message_ids = await self._sync_text_channel(channel, new_messages, posted)
+            message_ids = await self._sync_text_channel(channel, new_messages, posted, sb, guild_id)
             thread_id = None
 
         if message_ids:
@@ -141,10 +161,11 @@ class ContentCog(commands.Cog):
     # Text channel sync (rules, welcome)
     # ------------------------------------------------------------------
 
-    async def _sync_text_channel(self, channel: discord.TextChannel, new_messages: List[str],
-                                  posted: Optional[dict]) -> List[int]:
+    async def _sync_text_channel(self, channel: discord.TextChannel, new_messages: List[ContentSegment],
+                                  posted: Optional[dict], sb=None, guild_id: int = 0) -> List[int]:
         """Edit existing messages or post new ones in a text channel."""
         old_ids = posted.get('message_ids', []) if posted else []
+        has_any_attachments = any(seg.attachment for seg in new_messages)
 
         existing = []
         for msg_id in old_ids:
@@ -155,13 +176,29 @@ class ContentCog(commands.Cog):
                 break
 
         if len(existing) == len(new_messages):
-            for msg, new_content in zip(existing, new_messages):
-                if msg.content != new_content:
-                    await msg.edit(content=new_content)
-                    await asyncio.sleep(0.5)
-            return [m.id for m in existing]
+            if has_any_attachments:
+                # Check if everything (text + attachments) is unchanged
+                all_same = all(
+                    (msg.content or '') == (seg.text or '')
+                    and not self._attachment_changed(msg, seg)
+                    for msg, seg in zip(existing, new_messages)
+                )
+                if all_same:
+                    return [m.id for m in existing]
+                # Attachments can't be edited — must repost
+            else:
+                # Text-only: edit in place
+                changed = False
+                for msg, seg in zip(existing, new_messages):
+                    if msg.content != seg.text:
+                        await msg.edit(content=seg.text)
+                        await asyncio.sleep(0.5)
+                        changed = True
+                if not changed:
+                    return [m.id for m in existing]
+                return [m.id for m in existing]
 
-        # Message count changed or no existing — delete old, post new
+        # Delete old, post new
         for msg in existing:
             try:
                 await msg.delete()
@@ -170,8 +207,9 @@ class ContentCog(commands.Cog):
                 pass
 
         sent_ids = []
-        for content in new_messages:
-            sent = await channel.send(content)
+        for seg in new_messages:
+            file = await self._download_attachment(sb, guild_id, seg) if seg.attachment else None
+            sent = await channel.send(content=seg.text, file=file or discord.utils.MISSING)
             sent_ids.append(sent.id)
             await asyncio.sleep(0.5)
         return sent_ids
@@ -180,24 +218,30 @@ class ContentCog(commands.Cog):
     # Forum channel sync (grants guide)
     # ------------------------------------------------------------------
 
-    async def _sync_forum(self, forum: discord.ForumChannel, new_messages: List[str],
+    async def _sync_forum(self, forum: discord.ForumChannel, new_messages: List[ContentSegment],
                            thread_name: str, posted: Optional[dict],
-                           content_key: str) -> Tuple[List[int], Optional[int]]:
+                           content_key: str, sb=None, guild_id: int = 0) -> Tuple[List[int], Optional[int]]:
         """Edit existing forum thread or create new one."""
         thread = await self._find_forum_thread(forum, thread_name, posted)
 
         if thread:
-            result_ids = await self._edit_forum_thread(thread, new_messages)
+            result_ids = await self._edit_forum_thread(thread, new_messages, sb, guild_id)
             await thread.edit(pinned=True, locked=True)
             return result_ids, thread.id
 
         # No existing thread — create fresh
-        result = await forum.create_thread(name=thread_name, content=new_messages[0])
+        first = new_messages[0]
+        file = await self._download_attachment(sb, guild_id, first) if first.attachment else None
+        result = await forum.create_thread(
+            name=thread_name, content=first.text,
+            file=file or discord.utils.MISSING
+        )
         thread = result.thread if hasattr(result, 'thread') else result
         result_ids = [result.message.id] if hasattr(result, 'message') else []
 
-        for msg_content in new_messages[1:]:
-            sent = await thread.send(msg_content)
+        for seg in new_messages[1:]:
+            file = await self._download_attachment(sb, guild_id, seg) if seg.attachment else None
+            sent = await thread.send(content=seg.text, file=file or discord.utils.MISSING)
             result_ids.append(sent.id)
             await asyncio.sleep(0.5)
 
@@ -229,7 +273,8 @@ class ContentCog(commands.Cog):
         return None
 
     async def _edit_forum_thread(self, thread: discord.Thread,
-                                  new_messages: List[str]) -> List[int]:
+                                  new_messages: List[ContentSegment],
+                                  sb=None, guild_id: int = 0) -> List[int]:
         """Edit messages in an existing forum thread."""
         if thread.archived or thread.locked:
             await thread.edit(archived=False, locked=False)
@@ -241,14 +286,27 @@ class ContentCog(commands.Cog):
                 existing_msgs.append(msg)
 
         result_ids = []
-        for i, new_content in enumerate(new_messages):
+        for i, seg in enumerate(new_messages):
             if i < len(existing_msgs):
-                if existing_msgs[i].content != new_content:
-                    await existing_msgs[i].edit(content=new_content)
+                text_changed = existing_msgs[i].content != seg.text
+                att_changed = self._attachment_changed(existing_msgs[i], seg)
+                if att_changed:
+                    # Can't edit attachments — delete and repost
+                    await existing_msgs[i].delete()
                     await asyncio.sleep(0.5)
-                result_ids.append(existing_msgs[i].id)
+                    file = await self._download_attachment(sb, guild_id, seg) if seg.attachment else None
+                    sent = await thread.send(content=seg.text, file=file or discord.utils.MISSING)
+                    result_ids.append(sent.id)
+                    await asyncio.sleep(0.5)
+                elif text_changed:
+                    await existing_msgs[i].edit(content=seg.text)
+                    await asyncio.sleep(0.5)
+                    result_ids.append(existing_msgs[i].id)
+                else:
+                    result_ids.append(existing_msgs[i].id)
             else:
-                sent = await thread.send(new_content)
+                file = await self._download_attachment(sb, guild_id, seg) if seg.attachment else None
+                sent = await thread.send(content=seg.text, file=file or discord.utils.MISSING)
                 result_ids.append(sent.id)
                 await asyncio.sleep(0.5)
 
@@ -282,16 +340,72 @@ class ContentCog(commands.Cog):
                 logger.info(f"[ContentCog] Created companion thread '{thread_name}'")
 
     # ------------------------------------------------------------------
+    # Attachment helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _attachment_changed(msg: discord.Message, seg: ContentSegment) -> bool:
+        """Check if a message's attachments differ from what the segment expects."""
+        if not seg.attachment:
+            return len(msg.attachments) > 0
+        if len(msg.attachments) != 1:
+            return True
+        return msg.attachments[0].filename != seg.attachment
+
+    @staticmethod
+    async def _download_attachment(sb, guild_id: int, seg: ContentSegment) -> Optional[discord.File]:
+        """Download an attachment from Supabase Storage and return a discord.File."""
+        if not seg.attachment or not sb:
+            return None
+        storage_path = f"{guild_id}/{seg.attachment}"
+        try:
+            data = await asyncio.to_thread(
+                sb.storage.from_(CONTENT_ASSETS_BUCKET).download,
+                storage_path
+            )
+            if data:
+                return seg.make_discord_file(data)
+        except Exception as e:
+            logger.warning(f"[ContentCog] Failed to download attachment {storage_path}: {e}")
+        return None
+
+    # ------------------------------------------------------------------
     # Content splitting
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _split_content(content: str, pattern: Optional[str]) -> List[str]:
-        """Split content into Discord messages using a regex pattern."""
+    def _split_content(content: str, pattern: Optional[str]) -> List[ContentSegment]:
+        """Split content into Discord messages, extracting {{file:...}} directives."""
         if not pattern:
-            return [content.strip()] if content.strip() else []
+            text = content.strip()
+            if not text:
+                return []
+            attachment = None
+            match = ATTACHMENT_RE.search(text)
+            if match:
+                attachment = match.group(1)
+                text = ATTACHMENT_RE.sub('', text).strip()
+            return [ContentSegment(text=text or None, attachment=attachment)]
+
         parts = re.split(pattern, content)
-        return [p.strip() for p in parts if p.strip()]
+        segments = []
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            # Check if this part is just a file directive (between quote blocks)
+            match = ATTACHMENT_RE.search(part)
+            if match:
+                filename = match.group(1)
+                remaining = ATTACHMENT_RE.sub('', part).strip()
+                if not remaining and segments:
+                    # Bare directive — attach to previous segment
+                    segments[-1].attachment = filename
+                else:
+                    segments.append(ContentSegment(text=remaining or None, attachment=filename))
+            else:
+                segments.append(ContentSegment(text=part))
+        return segments
 
     # ------------------------------------------------------------------
     # Database helpers
