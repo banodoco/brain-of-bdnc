@@ -32,7 +32,8 @@ class GatingCog(commands.Cog):
         if not self.any_configured:
             logger.warning("GatingCog: no fully configured writable guilds in server_config")
 
-        self._pending_message_ids: set[int] = set()
+        # message_id -> member_id for all intro messages from pending members
+        self._pending_messages: dict[int, int] = {}
 
         # Temp welcome messages pending deletion: {message_id: (channel_id, sent_at)}
         self._temp_welcomes: dict[int, tuple[int, datetime]] = {}
@@ -74,8 +75,8 @@ class GatingCog(commands.Cog):
             return
         try:
             rows = self.db.get_all_pending_intros()
-            self._pending_message_ids = {row['message_id'] for row in rows}
-            logger.info(f"GatingCog: loaded {len(self._pending_message_ids)} pending intros from DB")
+            self._pending_messages = {row['message_id']: row['member_id'] for row in rows}
+            logger.info(f"GatingCog: loaded {len(self._pending_messages)} pending intros from DB")
         except Exception as e:
             logger.error(f"GatingCog: failed to load pending intros: {e}", exc_info=True)
         self.cleanup_expired_intros.start()
@@ -163,15 +164,21 @@ class GatingCog(commands.Cog):
         if speaker_role in message.author.roles:
             return
 
-        # Only first pending intro per member (scoped to this guild)
+        # Track this message for reaction-based approval
         existing = self.db.get_pending_intro_by_member(message.author.id, guild_id=guild_id)
         if existing:
-            return
-        if self.db.create_pending_intro(message.author.id, message.id, message.channel.id, guild_id=guild_id):
-            self._pending_message_ids.add(message.id)
+            # Update DB record to point to the latest message
+            self.db.update_pending_intro_message(existing['id'], message.id, message.channel.id)
+            logger.info(f"GatingCog: updated pending intro for {message.author} -> msg {message.id}")
+        else:
+            if not self.db.create_pending_intro(message.author.id, message.id, message.channel.id, guild_id=guild_id):
+                return
             logger.info(f"GatingCog: tracked intro from {message.author} (msg {message.id})")
+        # Track all intro messages from this member so any can trigger approval
+        self._pending_messages[message.id] = message.author.id
 
-            # Nudge if no URL, image, or video attached
+        # Nudge if no URL, image, or video attached (only on first intro)
+        if not existing:
             has_url = bool(re.search(r'https?://\S+', message.content))
             has_media = any(
                 a.content_type and (a.content_type.startswith('image/') or a.content_type.startswith('video/'))
@@ -196,7 +203,8 @@ class GatingCog(commands.Cog):
             return
 
         # Fast path: skip if not a pending intro message
-        if payload.message_id not in self._pending_message_ids:
+        member_id = self._pending_messages.get(payload.message_id)
+        if member_id is None:
             return
 
         logger.info(f"GatingCog: reaction {payload.emoji} on pending intro {payload.message_id} by user {payload.user_id}")
@@ -221,10 +229,11 @@ class GatingCog(commands.Cog):
             logger.info(f"GatingCog: reactor {reactor} lacks approver role, ignoring")
             return
 
-        # Verify intro is still pending in DB
-        intro = self.db.get_pending_intro_by_message(payload.message_id)
+        # Look up pending intro by member (works regardless of which message was reacted to)
+        intro = self.db.get_pending_intro_by_member(member_id, guild_id=payload.guild_id)
         if not intro:
-            self._pending_message_ids.discard(payload.message_id)
+            # Clean up stale in-memory entries for this member
+            self._remove_member_messages(member_id)
             return
 
         # Record the vote
@@ -232,9 +241,33 @@ class GatingCog(commands.Cog):
         self.db.record_intro_vote(intro['id'], payload.message_id, payload.user_id, voter_role, guild_id=payload.guild_id)
 
         # 1 vote from either role is enough
-        await self._approve_member(guild, intro, cfg)
+        await self._approve_member(guild, intro, cfg, reacted_message_id=payload.message_id)
 
-    async def _approve_member(self, guild: discord.Guild, intro: dict, cfg: dict):
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
+        """Clean up pending intro tracking when a tracked message is deleted."""
+        member_id = self._pending_messages.pop(payload.message_id, None)
+        if member_id is None:
+            return
+
+        # If no other tracked messages remain for this member, remove the DB record too
+        has_other = any(mid for mid, mid_member in self._pending_messages.items() if mid_member == member_id)
+        if not has_other:
+            intro = self.db.get_pending_intro_by_member(member_id, guild_id=getattr(payload, 'guild_id', None))
+            if intro:
+                self.db.expire_pending_intro(intro['message_id'], guild_id=intro.get('guild_id'))
+                logger.info(f"GatingCog: expired pending intro for member {member_id} (all messages deleted)")
+        else:
+            logger.info(f"GatingCog: removed deleted message {payload.message_id} from tracking for member {member_id}")
+
+    def _remove_member_messages(self, member_id: int):
+        """Remove all in-memory tracked messages for a member."""
+        to_remove = [mid for mid, mid_member in self._pending_messages.items() if mid_member == member_id]
+        for mid in to_remove:
+            del self._pending_messages[mid]
+
+    async def _approve_member(self, guild: discord.Guild, intro: dict, cfg: dict,
+                              reacted_message_id: int | None = None):
         """Grant Speaker role and update DB."""
         member = guild.get_member(intro['member_id'])
         if not member:
@@ -247,8 +280,18 @@ class GatingCog(commands.Cog):
         try:
             await member.add_roles(speaker_role, reason="Intro approved by community")
             self.db.approve_pending_intro(intro['message_id'], guild_id=intro.get('guild_id'))
-            self._pending_message_ids.discard(intro['message_id'])
+            self._remove_member_messages(intro['member_id'])
             logger.info(f"GatingCog: approved {member} (msg {intro['message_id']})")
+
+            # Add green checkmark to the message that was reacted to
+            if reacted_message_id:
+                try:
+                    channel = guild.get_channel(intro['channel_id'])
+                    if channel:
+                        msg = await channel.fetch_message(reacted_message_id)
+                        await msg.add_reaction('\u2705')
+                except Exception as e:
+                    logger.error(f"GatingCog: failed to add checkmark to {reacted_message_id}: {e}")
 
             await self._send_speaker_welcome(guild, member, cfg)
         except Exception as e:
@@ -293,7 +336,7 @@ class GatingCog(commands.Cog):
         logger.info(f"GatingCog: expiring {len(expired)} intro(s)")
         for intro in expired:
             self.db.expire_pending_intro(intro['message_id'], guild_id=intro.get('guild_id'))
-            self._pending_message_ids.discard(intro['message_id'])
+            self._remove_member_messages(intro['member_id'])
 
     @cleanup_expired_intros.before_loop
     async def before_cleanup(self):

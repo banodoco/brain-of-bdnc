@@ -1356,6 +1356,20 @@ class DatabaseHandler:
             logger.error(f"Error creating pending intro for member {member_id}: {e}", exc_info=True)
             return False
 
+    def update_pending_intro_message(self, intro_id: int, message_id: int, channel_id: int) -> bool:
+        """Update the message_id on an existing pending intro (member reposted)."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            self.storage_handler.supabase_client.table('pending_intros').update({
+                'message_id': message_id,
+                'channel_id': channel_id,
+            }).eq('id', intro_id).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating pending intro {intro_id} to message {message_id}: {e}", exc_info=True)
+            return False
+
     def get_pending_intro_by_member(self, member_id: int, guild_id: Optional[int] = None) -> Optional[Dict]:
         """Return the latest pending intro for a member, or None."""
         if not self.storage_handler or not self.storage_handler.supabase_client:
