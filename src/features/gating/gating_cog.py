@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 import discord
 from discord.ext import commands, tasks
@@ -37,6 +37,9 @@ class GatingCog(commands.Cog):
 
         # Temp welcome messages pending deletion: {message_id: (channel_id, sent_at)}
         self._temp_welcomes: dict[int, tuple[int, datetime]] = {}
+
+        # Previous daily new speakers message per guild: {guild_id: (channel_id, message_id)}
+        self._last_daily_speakers_msg: dict[int, tuple[int, int]] = {}
 
     def _get_guild_config(self, guild_id: int) -> dict:
         """Resolve gating config for a guild from server_config."""
@@ -82,11 +85,13 @@ class GatingCog(commands.Cog):
         self.cleanup_expired_intros.start()
         self.cleanup_temp_welcomes.start()
         self.scan_intro_channels.start()
+        self.daily_new_speakers.start()
 
     async def cog_unload(self):
         self.cleanup_expired_intros.cancel()
         self.cleanup_temp_welcomes.cancel()
         self.scan_intro_channels.cancel()
+        self.daily_new_speakers.cancel()
 
     # ========== Listeners ==========
 
@@ -387,33 +392,18 @@ will review it soon. Be genuine, not generic."""
                 except Exception as e:
                     logger.error(f"GatingCog: failed to add checkmark to {reacted_message_id}: {e}")
 
-            await self._send_speaker_welcome(guild, member, cfg)
+            # DM the new speaker
+            try:
+                await member.send(
+                    f"Hey {member.display_name}! You've been approved to speak in **{guild.name}**. "
+                    f"Welcome aboard \U0001f389"
+                )
+            except discord.Forbidden:
+                logger.info(f"GatingCog: couldn't DM {member} (DMs disabled)")
+            except Exception as e:
+                logger.error(f"GatingCog: failed to DM {member}: {e}")
         except Exception as e:
             logger.error(f"GatingCog: failed to approve {member}: {e}", exc_info=True)
-
-    async def _send_speaker_welcome(self, guild: discord.Guild, member: discord.Member, cfg: dict):
-        """Post a welcome in the getting-started channel."""
-        welcome_channel_id = cfg.get('welcome_channel_id')
-        if not welcome_channel_id:
-            return
-        channel = guild.get_channel(welcome_channel_id)
-        if not channel:
-            return
-        try:
-            reference = None
-            async for hist_msg in channel.history(limit=50, oldest_first=True):
-                if hist_msg.author.id == self.bot.user.id:
-                    reference = hist_msg
-                    break
-
-            msg = await channel.send(
-                f"Welcome {member.mention}! You now have Speaker access. "
-                f"Check out the message above to get started \U0001f446",
-                reference=reference,
-            )
-            self._temp_welcomes[msg.id] = (channel.id, msg.created_at)
-        except Exception as e:
-            logger.error(f"GatingCog: failed to send speaker welcome for {member.id}: {e}", exc_info=True)
 
     # ========== Task Loops ==========
 
@@ -449,6 +439,23 @@ will review it soon. Be genuine, not generic."""
                 logger.info(f"GatingCog: found {found} additional messages from pending members in {guild.name}")
         logger.info(f"GatingCog: intro channel scan complete, tracking {len(self._pending_messages)} total messages")
 
+        # Find previous daily speakers message so we can delete it when the next one posts
+        for guild in self.bot.guilds:
+            cfg = self._get_guild_config(guild.id)
+            welcome_channel_id = cfg.get('welcome_channel_id')
+            if not welcome_channel_id:
+                continue
+            channel = guild.get_channel(welcome_channel_id)
+            if not channel:
+                continue
+            try:
+                async for msg in channel.history(limit=50):
+                    if msg.author.id == self.bot.user.id and self._NEW_SPEAKERS_PATTERN in msg.content:
+                        self._last_daily_speakers_msg[guild.id] = (channel.id, msg.id)
+                        break
+            except Exception as e:
+                logger.error(f"GatingCog: failed to scan for previous daily speakers msg: {e}")
+
     @scan_intro_channels.before_loop
     async def before_scan_intro_channels(self):
         await self.bot.wait_until_ready()
@@ -472,11 +479,68 @@ will review it soon. Be genuine, not generic."""
     async def before_cleanup(self):
         await self.bot.wait_until_ready()
 
+    # ---- Daily new speakers announcement ----
+
+    _NEW_SPEAKERS_PATTERN = "New speakers today"
+
+    @tasks.loop(time=time(hour=19, minute=30, tzinfo=timezone.utc))
+    async def daily_new_speakers(self):
+        """Post a daily announcement tagging all newly approved speakers."""
+        if not self.db:
+            return
+
+        for guild in self.bot.guilds:
+            cfg = self._get_guild_config(guild.id)
+            welcome_channel_id = cfg.get('welcome_channel_id')
+            if not welcome_channel_id:
+                continue
+            channel = guild.get_channel(welcome_channel_id)
+            if not channel:
+                continue
+
+            # Delete previous day's announcement
+            prev = self._last_daily_speakers_msg.get(guild.id)
+            if prev:
+                try:
+                    prev_channel = guild.get_channel(prev[0])
+                    if prev_channel:
+                        prev_msg = await prev_channel.fetch_message(prev[1])
+                        await prev_msg.delete()
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+                self._last_daily_speakers_msg.pop(guild.id, None)
+
+            approved = self.db.get_recently_approved_intros(hours=24, guild_id=guild.id)
+            if not approved:
+                continue
+
+            member_ids = {intro['member_id'] for intro in approved}
+            mentions = []
+            for mid in member_ids:
+                member = guild.get_member(mid)
+                if member:
+                    mentions.append(member.mention)
+            if not mentions:
+                continue
+
+            try:
+                msg = await channel.send(
+                    f"**New speakers today** — welcome {', '.join(mentions)}! "
+                    f"\U0001f389"
+                )
+                self._last_daily_speakers_msg[guild.id] = (channel.id, msg.id)
+                logger.info(f"GatingCog: posted daily new speakers ({len(mentions)}) in {guild.name}")
+            except Exception as e:
+                logger.error(f"GatingCog: failed to post daily new speakers in {guild.name}: {e}")
+
+    @daily_new_speakers.before_loop
+    async def before_daily_new_speakers(self):
+        await self.bot.wait_until_ready()
+
     # ---- Temp welcome cleanup ----
 
     _TEMP_WELCOME_PATTERNS = (
         "welcome! If you'd like to speak",
-        "You now have Speaker access",
     )
     TEMP_WELCOME_TTL = timedelta(minutes=5)
 

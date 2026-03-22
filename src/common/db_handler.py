@@ -1460,6 +1460,26 @@ class DatabaseHandler:
             logger.error(f"Error fetching expired pending intros: {e}", exc_info=True)
             return []
 
+    def get_recently_approved_intros(self, hours: int = 24, guild_id: Optional[int] = None) -> List[Dict]:
+        """Return intros approved within the last N hours."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+            query = (
+                self.storage_handler.supabase_client.table('pending_intros')
+                .select('*')
+                .eq('status', 'approved')
+                .gte('approved_at', cutoff)
+            )
+            if guild_id is not None:
+                query = query.eq('guild_id', guild_id)
+            result = query.execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error fetching recently approved intros: {e}", exc_info=True)
+            return []
+
     def get_all_pending_intros(self, guild_id: Optional[int] = None) -> List[Dict]:
         """Return all pending intros (for bot restart recovery)."""
         if not self.storage_handler or not self.storage_handler.supabase_client:
