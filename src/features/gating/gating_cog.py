@@ -70,49 +70,23 @@ class GatingCog(commands.Cog):
         ])
 
     async def cog_load(self):
-        """Populate in-memory pending set from DB on startup, then scan intro channels."""
+        """Populate in-memory pending set from DB on startup."""
         if not self.db:
             return
         try:
             rows = self.db.get_all_pending_intros()
-            # Seed with DB records first
             self._pending_messages = {row['message_id']: row['member_id'] for row in rows}
-            pending_member_ids = {row['member_id'] for row in rows}
             logger.info(f"GatingCog: loaded {len(self._pending_messages)} pending intros from DB")
-
-            # Scan intro channels to find all messages from pending members
-            for guild in self.bot.guilds:
-                cfg = self._get_guild_config(guild.id)
-                intro_channel_id = cfg.get('intro_channel_id')
-                speaker_role_id = cfg.get('speaker_role_id')
-                if not intro_channel_id or not speaker_role_id:
-                    continue
-                channel = guild.get_channel(intro_channel_id)
-                if not channel:
-                    continue
-                speaker_role = guild.get_role(speaker_role_id)
-                found = 0
-                try:
-                    async for msg in channel.history(limit=200):
-                        if msg.author.bot or msg.author.id not in pending_member_ids:
-                            continue
-                        if speaker_role and speaker_role in msg.author.roles:
-                            continue
-                        if msg.id not in self._pending_messages:
-                            self._pending_messages[msg.id] = msg.author.id
-                            found += 1
-                except Exception as e:
-                    logger.error(f"GatingCog: failed to scan intro channel {intro_channel_id}: {e}")
-                if found:
-                    logger.info(f"GatingCog: found {found} additional messages from pending members in {guild.name}")
         except Exception as e:
             logger.error(f"GatingCog: failed to load pending intros: {e}", exc_info=True)
         self.cleanup_expired_intros.start()
         self.cleanup_temp_welcomes.start()
+        self.scan_intro_channels.start()
 
     async def cog_unload(self):
         self.cleanup_expired_intros.cancel()
         self.cleanup_temp_welcomes.cancel()
+        self.scan_intro_channels.cancel()
 
     # ========== Listeners ==========
 
@@ -442,6 +416,42 @@ will review it soon. Be genuine, not generic."""
             logger.error(f"GatingCog: failed to send speaker welcome for {member.id}: {e}", exc_info=True)
 
     # ========== Task Loops ==========
+
+    @tasks.loop(count=1)
+    async def scan_intro_channels(self):
+        """Scan intro channels to backfill all messages from pending members."""
+        if not self.db or not self._pending_messages:
+            return
+        pending_member_ids = set(self._pending_messages.values())
+        for guild in self.bot.guilds:
+            cfg = self._get_guild_config(guild.id)
+            intro_channel_id = cfg.get('intro_channel_id')
+            speaker_role_id = cfg.get('speaker_role_id')
+            if not intro_channel_id or not speaker_role_id:
+                continue
+            channel = guild.get_channel(intro_channel_id)
+            if not channel:
+                continue
+            speaker_role = guild.get_role(speaker_role_id)
+            found = 0
+            try:
+                async for msg in channel.history(limit=200):
+                    if msg.author.bot or msg.author.id not in pending_member_ids:
+                        continue
+                    if speaker_role and speaker_role in msg.author.roles:
+                        continue
+                    if msg.id not in self._pending_messages:
+                        self._pending_messages[msg.id] = msg.author.id
+                        found += 1
+            except Exception as e:
+                logger.error(f"GatingCog: failed to scan intro channel {intro_channel_id}: {e}")
+            if found:
+                logger.info(f"GatingCog: found {found} additional messages from pending members in {guild.name}")
+        logger.info(f"GatingCog: intro channel scan complete, tracking {len(self._pending_messages)} total messages")
+
+    @scan_intro_channels.before_loop
+    async def before_scan_intro_channels(self):
+        await self.bot.wait_until_ready()
 
     @tasks.loop(hours=1)
     async def cleanup_expired_intros(self):
