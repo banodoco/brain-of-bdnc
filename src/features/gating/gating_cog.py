@@ -1,11 +1,11 @@
 import asyncio
 import logging
-import os
 import re
 from datetime import datetime, timedelta, timezone
 
 import discord
 from discord.ext import commands, tasks
+from src.common.llm import get_llm_response
 
 logger = logging.getLogger('DiscordBot')
 
@@ -70,13 +70,41 @@ class GatingCog(commands.Cog):
         ])
 
     async def cog_load(self):
-        """Populate in-memory pending set from DB on startup."""
+        """Populate in-memory pending set from DB on startup, then scan intro channels."""
         if not self.db:
             return
         try:
             rows = self.db.get_all_pending_intros()
+            # Seed with DB records first
             self._pending_messages = {row['message_id']: row['member_id'] for row in rows}
+            pending_member_ids = {row['member_id'] for row in rows}
             logger.info(f"GatingCog: loaded {len(self._pending_messages)} pending intros from DB")
+
+            # Scan intro channels to find all messages from pending members
+            for guild in self.bot.guilds:
+                cfg = self._get_guild_config(guild.id)
+                intro_channel_id = cfg.get('intro_channel_id')
+                speaker_role_id = cfg.get('speaker_role_id')
+                if not intro_channel_id or not speaker_role_id:
+                    continue
+                channel = guild.get_channel(intro_channel_id)
+                if not channel:
+                    continue
+                speaker_role = guild.get_role(speaker_role_id)
+                found = 0
+                try:
+                    async for msg in channel.history(limit=200):
+                        if msg.author.bot or msg.author.id not in pending_member_ids:
+                            continue
+                        if speaker_role and speaker_role in msg.author.roles:
+                            continue
+                        if msg.id not in self._pending_messages:
+                            self._pending_messages[msg.id] = msg.author.id
+                            found += 1
+                except Exception as e:
+                    logger.error(f"GatingCog: failed to scan intro channel {intro_channel_id}: {e}")
+                if found:
+                    logger.info(f"GatingCog: found {found} additional messages from pending members in {guild.name}")
         except Exception as e:
             logger.error(f"GatingCog: failed to load pending intros: {e}", exc_info=True)
         self.cleanup_expired_intros.start()
@@ -131,31 +159,16 @@ class GatingCog(commands.Cog):
         if message.channel.id != cfg['intro_channel_id']:
             return
 
-        # Delete short messages unless they're a reply to someone else
-        MIN_INTRO_LENGTH = 50
-        if len(message.content) < MIN_INTRO_LENGTH:
-            is_reply_to_other = (
-                message.reference
-                and message.reference.message_id
-                and message.reference.resolved
-                and getattr(message.reference.resolved, 'author', None)
-                and message.reference.resolved.author.id != message.author.id
-            )
-            if not is_reply_to_other:
-                try:
-                    await message.delete()
-                    hint = await message.channel.send(
-                        f"{message.author.mention} Proper introductions only! Try to mention:\n\n"
-                        f"• Things you've made or contributed to the space\n"
-                        f"• Why you're passionate about open-source AI art\n"
-                        f"• What you're working on or want to contribute"
-                    )
-                    await asyncio.sleep(10)
-                    await hint.delete()
-                    logger.info(f"GatingCog: deleted short message from {message.author} in intros ({len(message.content)} chars)")
-                except Exception as e:
-                    logger.error(f"GatingCog: failed to delete short message: {e}")
-                return
+        # Ignore replies to other people (conversations, not intros)
+        is_reply_to_other = (
+            message.reference
+            and message.reference.message_id
+            and message.reference.resolved
+            and getattr(message.reference.resolved, 'author', None)
+            and message.reference.resolved.author.id != message.author.id
+        )
+        if is_reply_to_other:
+            return
 
         # Only track non-Speakers
         speaker_role = message.guild.get_role(cfg['speaker_role_id'])
@@ -177,24 +190,9 @@ class GatingCog(commands.Cog):
         # Track all intro messages from this member so any can trigger approval
         self._pending_messages[message.id] = message.author.id
 
-        # Nudge if no URL, image, or video attached (only on first intro)
+        # Ask Haiku to review the intro (only on first message from this member)
         if not existing:
-            has_url = bool(re.search(r'https?://\S+', message.content))
-            has_media = any(
-                a.content_type and (a.content_type.startswith('image/') or a.content_type.startswith('video/'))
-                for a in message.attachments
-            )
-            if not has_url and not has_media:
-                try:
-                    await message.reply(
-                        "Thanks for introducing yourself! Consider editing your intro or replying "
-                        "with a link to your work or an image/video of something you've made "
-                        "\u2014 it helps approvers get to know you faster.",
-                        mention_author=True,
-                        delete_after=120,
-                    )
-                except Exception as e:
-                    logger.error(f"GatingCog: failed to send media nudge: {e}")
+            asyncio.create_task(self._review_intro(message))
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -265,6 +263,128 @@ class GatingCog(commands.Cog):
         to_remove = [mid for mid, mid_member in self._pending_messages.items() if mid_member == member_id]
         for mid in to_remove:
             del self._pending_messages[mid]
+
+    _INTRO_REVIEW_PROMPT = """\
+You are a greeter bot for Banodoco, an open-source AI art community on Discord. \
+A new member has posted a message in the introductions channel. Your job is to \
+decide what to do with it and optionally respond.
+
+## Community standards
+
+This community is for people actively contributing to open-source AI art:
+- Making art and pushing creative boundaries with AI tools
+- Contributing to open-source projects (code, models, workflows, nodes, etc.)
+- Sharing what they're learning publicly — notes, tutorials, breakdowns
+- Helping others learn and grow
+
+## What makes a good intro
+
+A good intro shows the person is relevant to the community. It should touch on \
+at least one or two of:
+- What they've made, built, or contributed (art, code, workflows, models, etc.)
+- What they're working on or want to work on
+- Why they care about open-source AI art
+- Links to their work, GitHub, portfolio, social media, etc.
+- Images or videos of things they've made
+
+It does NOT need to be long or formal. A few sentences showing genuine involvement is fine.
+
+## What to do
+
+Respond with exactly one of three actions on the first line, then your message (if any) after a blank line:
+
+DELETE
+(message to show the user briefly before their intro is removed)
+
+Use DELETE for: spam, completely off-topic messages, very low effort messages that aren't \
+introductions at all (e.g. "hi", "hello", single emoji, random questions). \
+Keep your message short — tell them what an intro should include.
+
+FEEDBACK
+(reply to post in the channel)
+
+Use FEEDBACK for: intros that show some effort but are vague or could be stronger. \
+Write a short (2-3 sentence), warm reply suggesting what they could add. \
+Don't be preachy — just the one or two most impactful improvements.
+
+KEEP
+(a short, warm, personal welcome thanking them for their intro)
+
+Use KEEP for: intros that are good enough — they show the person is relevant \
+and interested, even if not perfect. Err on the side of KEEP over FEEDBACK. \
+Don't be overly demanding — a genuine, brief intro from someone who clearly \
+does AI art is fine. Write a brief personal reply (1-2 sentences) that thanks them, \
+references something specific from their intro, and lets them know the community \
+will review it soon. Be genuine, not generic."""
+
+    async def _review_intro(self, message: discord.Message):
+        """Use Haiku to review an intro and decide: delete, give feedback, or keep."""
+        try:
+            has_url = bool(re.search(r'https?://\S+', message.content))
+            has_media = bool(message.attachments)
+
+            response = await get_llm_response(
+                client_name="claude",
+                model="claude-haiku-4-5-20251001",
+                system_prompt=self._INTRO_REVIEW_PROMPT,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Introduction from {message.author.display_name}:\n\n"
+                        f"{message.content}\n\n"
+                        f"Has links: {has_url}\n"
+                        f"Has media attachments: {has_media}"
+                    ),
+                }],
+                max_tokens=300,
+            )
+
+            response = response.strip()
+            action = response.split('\n')[0].strip().upper()
+            body = '\n'.join(response.split('\n')[1:]).strip()
+
+            # Check member wasn't already approved while Haiku was thinking
+            if message.id not in self._pending_messages:
+                logger.info(f"GatingCog: skipping Haiku action for {message.author} (already resolved)")
+                return
+
+            if action == 'KEEP':
+                if body:
+                    await message.reply(body, mention_author=True, delete_after=300)
+                logger.info(f"GatingCog: Haiku welcomed {message.author}")
+                return
+
+            if action == 'DELETE':
+                logger.info(f"GatingCog: Haiku deleted intro from {message.author}")
+                # Remove from tracking since we're deleting it
+                self._pending_messages.pop(message.id, None)
+                member_id = message.author.id
+                guild_id = message.guild.id
+                has_other = any(mid for mid, m in self._pending_messages.items() if m == member_id)
+                if not has_other:
+                    intro = self.db.get_pending_intro_by_member(member_id, guild_id=guild_id)
+                    if intro:
+                        self.db.expire_pending_intro(intro['message_id'], guild_id=guild_id)
+                try:
+                    await message.delete()
+                    if body:
+                        hint = await message.channel.send(f"{message.author.mention} {body}")
+                        await asyncio.sleep(15)
+                        await hint.delete()
+                except Exception as e:
+                    logger.error(f"GatingCog: failed to delete intro from {message.author}: {e}")
+                return
+
+            if action == 'FEEDBACK':
+                if body:
+                    await message.reply(body, mention_author=True, delete_after=300)
+                logger.info(f"GatingCog: Haiku sent feedback to {message.author}")
+                return
+
+            # Unexpected response — log and do nothing
+            logger.warning(f"GatingCog: unexpected Haiku response for {message.author}: {response[:100]}")
+        except Exception as e:
+            logger.error(f"GatingCog: failed to review intro from {message.author}: {e}", exc_info=True)
 
     async def _approve_member(self, guild: discord.Guild, intro: dict, cfg: dict,
                               reacted_message_id: int | None = None):
