@@ -17,21 +17,6 @@ class GatingCog(commands.Cog):
         self.bot = bot
         self.db = getattr(bot, 'db_handler', None)
 
-        sc = getattr(self.db, 'server_config', None) if self.db else None
-        configured_servers = sc.get_enabled_servers(require_write=True) if sc else []
-        self.any_configured = any(
-            all([
-                server.get('gate_channel_id'),
-                server.get('intro_channel_id'),
-                server.get('speaker_role_id'),
-                server.get('approver_role_id'),
-                server.get('super_approver_role_id'),
-            ])
-            for server in configured_servers
-        )
-        if not self.any_configured:
-            logger.warning("GatingCog: no fully configured writable guilds in server_config")
-
         # message_id -> member_id for all intro messages from pending members
         self._pending_messages: dict[int, int] = {}
 
@@ -61,16 +46,18 @@ class GatingCog(commands.Cog):
             cfg[db_key] = int(val) if val is not None else None
         return cfg
 
-    def _guild_has_gating(self, guild_id: int) -> bool:
-        """Check if this guild has gating configured (gate + intro + speaker + approver)."""
+    def _get_gating_config(self, guild_id: int) -> dict | None:
+        """Return guild config if gating is fully configured, else None."""
         cfg = self._get_guild_config(guild_id)
-        return all([
+        if all([
             cfg.get('gate_channel_id'),
             cfg.get('intro_channel_id'),
             cfg.get('speaker_role_id'),
             cfg.get('approver_role_id'),
             cfg.get('super_approver_role_id'),
-        ])
+        ]):
+            return cfg
+        return None
 
     async def cog_load(self):
         """Populate in-memory pending set from DB on startup."""
@@ -100,8 +87,8 @@ class GatingCog(commands.Cog):
         """Ping the new member in the gate channel, then delete after 5s."""
         if not self.db:
             return
-        cfg = self._get_guild_config(member.guild.id)
-        if not cfg.get('gate_channel_id') or not cfg.get('speaker_role_id'):
+        cfg = self._get_gating_config(member.guild.id)
+        if not cfg:
             return
         # Don't welcome members who already have Speaker role (e.g. rejoining)
         speaker_role = member.guild.get_role(cfg['speaker_role_id'])
@@ -131,9 +118,9 @@ class GatingCog(commands.Cog):
         if not self.db or message.author.bot or not message.guild:
             return
         guild_id = message.guild.id
-        if not self._guild_has_gating(guild_id):
+        cfg = self._get_gating_config(guild_id)
+        if not cfg:
             return
-        cfg = self._get_guild_config(guild_id)
 
         if message.channel.id != cfg['intro_channel_id']:
             return
@@ -439,23 +426,6 @@ will review it soon. Be genuine, not generic."""
                 logger.info(f"GatingCog: found {found} additional messages from pending members in {guild.name}")
         logger.info(f"GatingCog: intro channel scan complete, tracking {len(self._pending_messages)} total messages")
 
-        # Find previous daily speakers message so we can delete it when the next one posts
-        for guild in self.bot.guilds:
-            cfg = self._get_guild_config(guild.id)
-            welcome_channel_id = cfg.get('welcome_channel_id')
-            if not welcome_channel_id:
-                continue
-            channel = guild.get_channel(welcome_channel_id)
-            if not channel:
-                continue
-            try:
-                async for msg in channel.history(limit=50):
-                    if msg.author.id == self.bot.user.id and self._NEW_SPEAKERS_PATTERN in msg.content:
-                        self._last_daily_speakers_msg[guild.id] = (channel.id, msg.id)
-                        break
-            except Exception as e:
-                logger.error(f"GatingCog: failed to scan for previous daily speakers msg: {e}")
-
     @scan_intro_channels.before_loop
     async def before_scan_intro_channels(self):
         await self.bot.wait_until_ready()
@@ -536,6 +506,22 @@ will review it soon. Be genuine, not generic."""
     @daily_new_speakers.before_loop
     async def before_daily_new_speakers(self):
         await self.bot.wait_until_ready()
+        # Find previous daily speakers message so we can delete it when the next one posts
+        for guild in self.bot.guilds:
+            cfg = self._get_guild_config(guild.id)
+            welcome_channel_id = cfg.get('welcome_channel_id')
+            if not welcome_channel_id:
+                continue
+            channel = guild.get_channel(welcome_channel_id)
+            if not channel:
+                continue
+            try:
+                async for msg in channel.history(limit=50):
+                    if msg.author.id == self.bot.user.id and self._NEW_SPEAKERS_PATTERN in msg.content:
+                        self._last_daily_speakers_msg[guild.id] = (channel.id, msg.id)
+                        break
+            except Exception as e:
+                logger.error(f"GatingCog: failed to scan for previous daily speakers msg: {e}")
 
     # ---- Temp welcome cleanup ----
 
@@ -571,16 +557,14 @@ will review it soon. Be genuine, not generic."""
             await self._scan_orphaned_welcomes()
 
     async def _scan_orphaned_welcomes(self):
-        """Scan gate and welcome channels for bot welcome pings left behind by restarts."""
+        """Scan gate channels for bot welcome pings left behind by restarts."""
         now = datetime.now(timezone.utc)
-        # Scan all guilds the bot is in that have gating configured
         channel_ids_to_scan: list[int] = []
         for guild in self.bot.guilds:
             cfg = self._get_guild_config(guild.id)
-            for key in ('gate_channel_id', 'welcome_channel_id'):
-                cid = cfg.get(key)
-                if cid:
-                    channel_ids_to_scan.append(cid)
+            cid = cfg.get('gate_channel_id')
+            if cid:
+                channel_ids_to_scan.append(cid)
 
         deleted = 0
         for cid in channel_ids_to_scan:
