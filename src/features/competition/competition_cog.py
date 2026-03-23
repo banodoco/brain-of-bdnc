@@ -270,9 +270,10 @@ class CompetitionCog(commands.Cog):
             if self.db:
                 await asyncio.to_thread(self.db.upsert_competition_entry, {
                     'competition_id': state['competition_id'],
+                    'entry_type': 'community',
                     'message_id': message.id,
                     'channel_id': message.channel.id,
-                    'author_id': message.author.id,
+                    'member_id': message.author.id,
                     'author_name': author_name,
                     'entry_number': entry_num,
                 }, state['guild_id'])

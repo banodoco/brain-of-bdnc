@@ -1875,6 +1875,9 @@ class DatabaseHandler:
         if not competition_id:
             logger.error("upsert_competition_entry requires competition_id")
             return False
+        if 'author_id' in payload and 'member_id' not in payload:
+            payload['member_id'] = payload.pop('author_id')
+        payload['entry_type'] = 'community'
         if guild_id is not None and not self._gate_check(guild_id):
             return False
         if not self.storage_handler or not self.storage_handler.supabase_client:
@@ -1898,6 +1901,7 @@ class DatabaseHandler:
                 self.storage_handler.supabase_client.table('competition_entries')
                 .select('*')
                 .eq('competition_id', competition_id)
+                .eq('entry_type', 'community')
                 .order('created_at')
             )
             result = query.execute()
@@ -1917,6 +1921,7 @@ class DatabaseHandler:
                 .delete()
                 .eq('competition_id', competition_id)
                 .eq('message_id', message_id)
+                .eq('entry_type', 'community')
                 .execute()
             )
             return True
@@ -1934,6 +1939,7 @@ class DatabaseHandler:
                 self.storage_handler.supabase_client.table('competition_entries')
                 .delete()
                 .eq('competition_id', competition_id)
+                .eq('entry_type', 'community')
                 .execute()
             )
             return True
