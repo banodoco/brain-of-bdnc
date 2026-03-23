@@ -59,7 +59,7 @@ class SupabaseQueryHandler:
         """Fetch display names for a list of author IDs.
 
         When guild_id is provided, uses guild_members (guild-specific nicks) with
-        discord_members fallback. Without guild_id, uses discord_members directly.
+        members fallback. Without guild_id, uses members directly.
         """
         members_map: Dict[int, str] = {}
         if not author_ids:
@@ -81,11 +81,11 @@ class SupabaseQueryHandler:
                     if row.get('server_nick'):
                         members_map[row['member_id']] = row['server_nick']
 
-            # Fill gaps from discord_members
+            # Fill gaps from members
             missing = [mid for mid in batch_ids if mid not in members_map]
             if missing:
                 dm_result = await asyncio.to_thread(
-                    self.supabase.table('discord_members')
+                    self.supabase.table('members')
                     .select('member_id, username, global_name, server_nick')
                     .in_('member_id', missing)
                     .execute
@@ -164,7 +164,7 @@ class SupabaseQueryHandler:
         """Fetch a member from Supabase by their ID."""
         try:
             result = await asyncio.to_thread(
-                self.supabase.table('discord_members')
+                self.supabase.table('members')
                 .select('*')
                 .eq('member_id', member_id)
                 .limit(1)
@@ -454,7 +454,7 @@ class SupabaseQueryHandler:
                 for i in range(0, len(unique_author_ids), 100):
                     batch_ids = unique_author_ids[i:i + 100]
                     members_result = await asyncio.to_thread(
-                        self.supabase.table('discord_members')
+                        self.supabase.table('members')
                         .select('member_id, username, global_name, server_nick')
                         .in_('member_id', batch_ids)
                         .execute
@@ -603,8 +603,8 @@ class SupabaseQueryHandler:
                 logger.debug(f"🔀 Routing to _query_messages")
                 return await self._query_messages(sql, params)
             
-            # Handle member queries (supports both 'discord_members' and 'members')
-            if 'discord_members' in sql_lower or ('from members' in sql_lower or 'join members' in sql_lower):
+            # Handle member queries
+            if 'members' in sql_lower or ('from members' in sql_lower or 'join members' in sql_lower):
                 logger.info(f"🔀 Routing to _query_members (detected: FROM/JOIN members)")
                 return await self._query_members(sql, params)
             
@@ -1096,7 +1096,7 @@ class SupabaseQueryHandler:
     async def _query_members(self, sql: str, params: Tuple = None) -> List[Dict]:
         """Query members using REST API with pagination."""
         try:
-            query = self.supabase.table('discord_members').select('*')
+            query = self.supabase.table('members').select('*')
             
             # Handle member_id IN clause
             if 'member_id in' in sql.lower() and params:

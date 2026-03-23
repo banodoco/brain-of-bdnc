@@ -62,8 +62,8 @@ def _resolve_guild_id(params: Optional[Dict[str, Any]] = None) -> Optional[int]:
 
 # Tables the agent is allowed to query
 QUERYABLE_TABLES = {
-    'competitions', 'competition_entries', 'discord_reactions',
-    'discord_messages', 'discord_members', 'discord_channels',
+    'discord_competitions', 'competition_entries', 'discord_reactions',
+    'discord_messages', 'members', 'discord_channels',
     'events', 'invite_codes', 'grant_applications',
     'daily_summaries', 'channel_summary', 'shared_posts',
     'pending_intros', 'intro_votes', 'timed_mutes',
@@ -384,13 +384,13 @@ TOOLS = [
     },
     {
         "name": "query_table",
-        "description": "Query any database table directly. Use for data that isn't covered by other tools (e.g. competition_entries, discord_reactions, events, grant_applications). Returns up to `limit` rows matching the filters.",
+        "description": "Query any database table directly. Use for data that isn't covered by other tools (e.g. competition_entries, discord_competitions, discord_reactions, events, grant_applications). Returns up to `limit` rows matching the filters.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "table": {
                     "type": "string",
-                    "description": "Table name (e.g. competition_entries, competitions, discord_reactions, events, invite_codes, grant_applications, discord_members, discord_messages, discord_channels)"
+                    "description": "Table name (e.g. competition_entries, discord_competitions, discord_reactions, events, invite_codes, grant_applications, members, discord_messages, discord_channels)"
                 },
                 "select": {
                     "type": "string",
@@ -998,7 +998,7 @@ async def execute_get_member_info(db_handler, params: Dict[str, Any]) -> Dict[st
             member = db_handler.get_member(int(user_id))
         else:
             result = db_handler._run_async_in_thread(
-                db_handler.storage_handler.supabase_client.table('discord_members')
+                db_handler.storage_handler.supabase_client.table('members')
                 .select('*')
                 .ilike('username', f'%{username}%')
                 .limit(5)
@@ -1024,8 +1024,8 @@ async def execute_get_member_info(db_handler, params: Dict[str, Any]) -> Dict[st
                 "include_in_updates": member.get('include_in_updates'),
                 "allow_content_sharing": member.get('allow_content_sharing'),
                 "first_shared_at": member.get('first_shared_at'),
-                "twitter_handle": member.get('twitter_handle'),
-                "reddit_handle": member.get('reddit_handle'),
+                "twitter_url": member.get('twitter_url'),
+                "reddit_url": member.get('reddit_url'),
             }
         }
 
@@ -1331,7 +1331,7 @@ async def execute_query_table(params: Dict[str, Any]) -> Dict[str, Any]:
         # Auto-scope guild_id for tables that have it
         GUILD_SCOPED_TABLES = {'discord_messages', 'discord_channels', 'daily_summaries',
                                'shared_posts', 'pending_intros', 'discord_reactions',
-                               'discord_reaction_log', 'competitions', 'competition_entries'}
+                               'discord_reaction_log', 'discord_competitions', 'competition_entries'}
         if table in GUILD_SCOPED_TABLES and 'guild_id' not in filters:
             if resolved_guild_id:
                 query = query.eq('guild_id', resolved_guild_id)

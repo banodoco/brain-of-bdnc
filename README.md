@@ -33,8 +33,8 @@ You can run this bot either:
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/banodoco/brain-of-bdnc.git
-cd brain-of-bdnc
+git clone https://github.com/banodoco/brain-of-bndc.git
+cd brain-of-bndc
 
 ```
 

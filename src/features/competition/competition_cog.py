@@ -3,7 +3,7 @@
 Competition voting system — fully driven by database state.
 
 Setup: insert rows directly in Supabase:
-  1. Insert into `competitions` with slug, name, channel_id, voting_starts_at, etc.
+  1. Insert into `discord_competitions` with slug, name, channel_id, voting_starts_at, etc.
   2. Insert into `competition_entries` tagging message IDs as entries
   3. The bot picks it up automatically when voting_starts_at arrives
 

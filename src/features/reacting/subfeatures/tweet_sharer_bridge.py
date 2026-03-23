@@ -217,7 +217,7 @@ Reply with that and nothing else"""
                      logger.warning(f"[TweetSharerBridge] ({path_type}) Failed to send 'content being shared' followup to OP {original_poster.id}: {e}")
         
         member_data = db_handler.get_member(original_poster.id)
-        raw_twitter_handle = member_data.get('twitter_handle') if member_data else None
+        raw_twitter_handle = member_data.get('twitter_url') if member_data else None
         author_identifier = original_poster.display_name # Default to display name
 
         if raw_twitter_handle:

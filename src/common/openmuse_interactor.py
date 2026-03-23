@@ -52,26 +52,12 @@ def _get_truncated_data_for_logging(data_obj: Any, avatar_key: str = 'discord_av
     return data_obj
 
 # Define the structure based on provided schema (for reference)
-# ProfileTable = {
-#     'id': 'uuid',
-#     'username': 'text',
-#     'avatar_url': 'text',
-#     'created_at': 'timestamptz',
-#     'display_name': 'text',
-#     'description': 'text',
-#     'links': 'ARRAY[_text]',
-#     'real_name': 'text',
-#     'background_image_url': 'text',
-#     'discord_user_id': 'text',
-#     'discord_username': 'text',
-#     'discord_connected': 'boolean'
-# }
-
-PROFILES_TABLE = "profiles" # Define table name as a constant
-MEDIA_TABLE = "media" # Define table name as a constant
-VIDEO_BUCKET_NAME = "videos" # Define bucket name
-THUMBNAIL_BUCKET_NAME = "thumbnails" # Define bucket name
-WORKFLOWS_BUCKET_NAME = "workflows" # Added for workflow JSONs
+# All profile data lives in the members table.
+MEMBERS_TABLE = "members"
+MEDIA_TABLE = "media"
+VIDEO_BUCKET_NAME = "videos"
+THUMBNAIL_BUCKET_NAME = "thumbnails"
+WORKFLOWS_BUCKET_NAME = "workflows"
 
 # --- Added constants for upload logic ---
 MAX_UPLOAD_ATTEMPTS = 3
@@ -103,6 +89,8 @@ def _truncate_avatar_in_dict_for_logging(data_dict: Optional[Dict], avatar_key: 
 class OpenMuseInteractor:
     """Handles interactions with the OpenMuse Supabase backend."""
 
+    MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_BYTES
+
     def __init__(self, supabase_url: str, supabase_key: str, logger: logging.Logger):
         """
         Initializes the OpenMuseInteractor.
@@ -115,7 +103,125 @@ class OpenMuseInteractor:
         self.logger = logger
         self.supabase_url = supabase_url
         self.supabase_key = supabase_key
+        self.MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_BYTES
         self.supabase: Optional[Client] = self._init_supabase()
+
+    async def _select_single_row(
+        self,
+        table_name: str,
+        filters: Dict[str, Any],
+        columns: str = "*"
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch a single row matching all equality filters."""
+        if not self.supabase:
+            return None
+
+        def _execute():
+            query = self.supabase.table(table_name).select(columns)
+            for key, value in filters.items():
+                query = query.eq(key, value)
+            return query.limit(1).execute()
+
+        response = await asyncio.to_thread(_execute)
+        if response.data:
+            return response.data[0]
+        return None
+
+    async def _generate_openmuse_username(self, base_username: Optional[str], member_id: int) -> str:
+        """Pick a unique OpenMuse username for a member."""
+        cleaned_username = (base_username or "").strip() or f"discord-user-{member_id}"
+        candidates = [
+            cleaned_username,
+            f"{cleaned_username}-{member_id}",
+            f"{cleaned_username}_{member_id}",
+        ]
+
+        for candidate in candidates:
+            existing_row = await self._select_single_row(
+                MEMBERS_TABLE,
+                {"username": candidate},
+            )
+            if not existing_row or int(existing_row.get("member_id")) == member_id:
+                return candidate
+
+        return f"discord-user-{member_id}"
+
+    def _build_combined_profile(
+        self,
+        member_row: Dict[str, Any],
+        openmuse_row: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Normalize members + openmuse_profiles into the legacy profile shape."""
+        member_id = int(member_row["member_id"])
+        return {
+            "id": str(member_id),
+            "member_id": member_id,
+            "discord_user_id": str(member_id),
+            "username": openmuse_row.get("username"),
+            "discord_username": member_row.get("username"),
+            "display_name": member_row.get("global_name") or member_row.get("username"),
+            "avatar_url": member_row.get("stored_avatar_url") or member_row.get("avatar_url"),
+            "description": member_row.get("bio"),
+            "real_name": member_row.get("real_name"),
+            "links": openmuse_row.get("links") or [],
+            "background_image_url": openmuse_row.get("background_image_url"),
+            "discord_connected": bool(openmuse_row.get("discord_connected", False)),
+            "created_at": openmuse_row.get("created_at"),
+            "updated_at": openmuse_row.get("updated_at"),
+        }
+
+    async def _mark_profile_connected_and_send_welcome_dm(
+        self,
+        member_id: str,
+        author: discord.User | discord.Member,
+        profile_data: Dict[str, Any]
+    ) -> None:
+        """Send the first-upload DM and flip discord_connected once."""
+        initial_discord_connected = profile_data.get("discord_connected")
+        if initial_discord_connected is not False:
+            self.logger.info(
+                f"[OpenMuseInteractor] Skipping Welcome DM for member {member_id} "
+                f"(Initial Connected Status: {initial_discord_connected})."
+            )
+            return
+
+        try:
+            username_for_url = profile_data.get("username") or author.name
+            formatted_username = quote(username_for_url, safe="")
+            profile_url = f"https://openmuse.ai/profile/{formatted_username}"
+            dm_message_content = (
+                "Your first upload to OpenMuse via Discord has been successful!\n\n"
+                f"You can see your profile here: {profile_url}"
+            )
+
+            self.logger.info(f"[OpenMuseInteractor] --> Sending Welcome DM to user {author.id}.")
+            await author.send(dm_message_content)
+            self.logger.info(f"[OpenMuseInteractor] <-- Successfully sent Welcome DM to user {author.id}.")
+
+            self.logger.info(
+                f"[OpenMuseInteractor] --> Attempting to update discord_connected to True "
+                f"for member {member_id}."
+            )
+            await asyncio.to_thread(
+                self.supabase.table(MEMBERS_TABLE)
+                .update({"discord_connected": True})
+                .eq("member_id", int(member_id))
+                .execute
+            )
+            self.logger.info(
+                f"[OpenMuseInteractor] <-- discord_connected status updated for member {member_id}."
+            )
+            profile_data["discord_connected"] = True
+        except discord.Forbidden:
+            self.logger.warning(
+                f"[OpenMuseInteractor] Failed to send Welcome DM to user {author.id}. DMs disabled?"
+            )
+        except Exception as dm_update_ex:
+            self.logger.error(
+                f"[OpenMuseInteractor] Error sending Welcome DM or updating discord_connected "
+                f"for member {member_id}: {dm_update_ex}",
+                exc_info=True,
+            )
 
     def _init_supabase(self) -> Optional[Client]:
         """Initializes the Supabase client."""
@@ -139,160 +245,121 @@ class OpenMuseInteractor:
 
     async def find_or_create_profile(self, user: discord.User | discord.Member) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
-        Finds a profile by Discord user ID in Supabase. If not found, creates a new profile.
-        Optionally updates existing profile details like username, display name, avatar.
+        Finds or creates the canonical OpenMuse profile for a Discord member.
+        members is the shared user table; openmuse_profiles stores only
+        OpenMuse-specific extensions.
 
         Args:
             user: The discord.User or discord.Member object.
 
         Returns:
-            A tuple containing (profile_data_dict, profile_id_uuid) if successful, otherwise (None, None).
+            A tuple containing (profile_data_dict, member_id_str) if successful,
+            otherwise (None, None).
         """
         if not self.supabase:
             self.logger.error("[OpenMuseInteractor] Supabase client not initialized. Cannot find or create profile.")
             return None, None
 
-        discord_user_id_str = str(user.id)
-        self.logger.info(f"[OpenMuseInteractor] Finding or creating profile for Discord User ID: {discord_user_id_str} ({user.name})")
+        member_id = int(user.id)
+        member_id_str = str(member_id)
+        current_avatar_url = str(user.display_avatar.url) if user.display_avatar else None
+        current_display_name = getattr(user, "display_name", user.name)
+        self.logger.info(
+            f"[OpenMuseInteractor] Finding or creating profile for Discord member ID: "
+            f"{member_id_str} ({user.name})"
+        )
 
         try:
-            # --- 1. Try to find existing profile ---
-            self.logger.debug(f"[OpenMuseInteractor] Querying Supabase for profile with discord_user_id: {discord_user_id_str}")
-            select_response = await asyncio.to_thread(
-                self.supabase.table(PROFILES_TABLE)
-                .select('*') # Select all columns for potential update checks
-                .eq('discord_user_id', discord_user_id_str)
-                .limit(1)
-                .execute
+            member_row = await self._select_single_row(
+                MEMBERS_TABLE,
+                {"member_id": member_id},
             )
+            if member_row:
+                member_updates = {}
+                if user.name != member_row.get("username"):
+                    member_updates["username"] = user.name
+                if current_display_name != member_row.get("global_name"):
+                    member_updates["global_name"] = current_display_name
+                if current_avatar_url != member_row.get("avatar_url"):
+                    member_updates["avatar_url"] = current_avatar_url
 
-            self.logger.debug(f"[OpenMuseInteractor] Supabase select response: {_truncate_avatar_in_dict_for_logging(select_response)}")
-
-            if select_response.data:
-                # --- 2a. Profile Found - Check for updates ---
-                existing_profile = select_response.data[0]
-                profile_id_uuid = existing_profile['id']
-                self.logger.debug(f"[OpenMuseInteractor] Existing profile data (pre-update check): {_truncate_avatar_in_dict_for_logging(existing_profile)}")
-                self.logger.info(f"[OpenMuseInteractor] Found existing profile. UUID: {profile_id_uuid}, Supabase Username: {existing_profile.get('username')}")
-
-                update_data = {}
-                # Always update avatar? Or only if changed? Let's always update for simplicity.
-                current_avatar_url = str(user.display_avatar.url) if user.display_avatar else None
-                if current_avatar_url != existing_profile.get('avatar_url'):
-                     update_data['avatar_url'] = current_avatar_url
-                     self.logger.debug(f"[OpenMuseInteractor] Profile {profile_id_uuid}: Avatar URL changed/needs update.")
-
-                # Update Discord username if it changed
-                if user.name != existing_profile.get('discord_username'):
-                     update_data['discord_username'] = user.name
-                     self.logger.debug(f"[OpenMuseInteractor] Profile {profile_id_uuid}: Discord username changed.")
-
-                # Update display name only if it's currently NULL/empty in Supabase
-                # Or if the Discord display name differs from the Supabase one? Let's update if different.
-                current_display_name = getattr(user, 'display_name', user.name) # Use display_name, fallback to username
-                if current_display_name != existing_profile.get('display_name'):
-                     update_data['display_name'] = current_display_name
-                     self.logger.debug(f"[OpenMuseInteractor] Profile {profile_id_uuid}: Display name changed/needs update.")
-
-                # Update Supabase username *only if it's currently NULL*? This is tricky.
-                # Let's *not* update the main 'username' automatically from Discord. It should be user-set.
-                # if not existing_profile.get('username'):
-                #     update_data['username'] = user.name # Or display_name? Risky due to uniqueness.
-
-                if update_data:
-                    self.logger.info(f"[OpenMuseInteractor] Updating profile {profile_id_uuid} with data: {update_data}")
-                    try:
-                        await asyncio.to_thread(
-                            self.supabase.table(PROFILES_TABLE)
-                            .update(update_data)
-                            .eq('id', profile_id_uuid)
-                            .execute
-                        )
-                        self.logger.info(f"[OpenMuseInteractor] Successfully updated profile {profile_id_uuid}.")
-                        # Merge updates into existing_profile for return value consistency
-                        existing_profile.update(update_data)
-                    except APIError as update_err:
-                         self.logger.error(f"[OpenMuseInteractor] Supabase API error updating profile {profile_id_uuid}: {update_err}")
-                         # Decide whether to return the old data or None on update failure
-                         return _truncate_avatar_in_dict_for_logging(existing_profile), profile_id_uuid # Return potentially stale data but with ID
-                    except Exception as update_ex:
-                         self.logger.error(f"[OpenMuseInteractor] Unexpected error updating profile {profile_id_uuid}: {update_ex}", exc_info=True)
-                         return _truncate_avatar_in_dict_for_logging(existing_profile), profile_id_uuid # Return potentially stale data but with ID
-                else:
-                    self.logger.info(f"[OpenMuseInteractor] Profile {profile_id_uuid} data is up-to-date. No update needed.")
-
-                return _truncate_avatar_in_dict_for_logging(existing_profile), profile_id_uuid # Return existing profile and its ID
-
-            else:
-                # --- 2b. Profile Not Found - Create New One ---
-                self.logger.info(f"[OpenMuseInteractor] No existing profile found for Discord User ID: {discord_user_id_str}. Creating new profile.")
-
-                # Prepare data for the new profile
-                # Use Discord username as the initial Supabase username.
-                # WARN: This might conflict if usernames are not unique or change. Consider alternatives.
-                initial_username = user.name
-                # Check if username already exists (optional, requires another query)
-                # ... (add username check if needed) ...
-
-                new_profile_data = {
-                    'discord_user_id': discord_user_id_str,
-                    'username': initial_username, # Using Discord username initially
-                    'discord_username': user.name,
-                    'display_name': getattr(user, 'display_name', user.name), # Server display name or global name
-                    'avatar_url': str(user.display_avatar.url) if user.display_avatar else None,
-                    'discord_connected': False, # Start as not connected, let another process handle welcome/activation
-                    # Add defaults for other nullable fields if desired (e.g., empty arrays/strings)
-                    'links': [],
-                    'description': None,
-                    'real_name': None,
-                    'background_image_url': None
-                }
-
-                self.logger.debug(f"[OpenMuseInteractor] Attempting to insert new profile data: {_truncate_avatar_in_dict_for_logging(new_profile_data)}")
-
-                try:
-                    insert_response = await asyncio.to_thread(
-                        self.supabase.table(PROFILES_TABLE)
-                        .insert(new_profile_data)
+                if member_updates:
+                    self.logger.info(
+                        f"[OpenMuseInteractor] Updating members row for {member_id_str} "
+                        f"with data: {member_updates}"
+                    )
+                    await asyncio.to_thread(
+                        self.supabase.table(MEMBERS_TABLE)
+                        .update(member_updates)
+                        .eq("member_id", member_id)
                         .execute
                     )
-                    self.logger.debug(f"[OpenMuseInteractor] Supabase insert response: {_truncate_avatar_in_dict_for_logging(insert_response)}")
-
-                    if insert_response.data:
-                        created_profile = insert_response.data[0]
-                        profile_id_uuid = created_profile.get('id')
-                        self.logger.debug(f"[OpenMuseInteractor] Created profile data: {_truncate_avatar_in_dict_for_logging(created_profile)}")
-                        self.logger.info(f"[OpenMuseInteractor] Successfully created new profile. UUID: {profile_id_uuid}, Username: {created_profile.get('username')}")
-                        return _truncate_avatar_in_dict_for_logging(created_profile), profile_id_uuid # Return newly created profile and its ID
-                    else:
-                        # This case might indicate an error even without an exception (e.g., RLS preventing insert/return)
-                        self.logger.error("[OpenMuseInteractor] Supabase insert executed but returned no data. Profile creation might have failed silently.")
-                        # Log the response details if possible
-                        if hasattr(insert_response, 'status_code'):
-                             self.logger.error(f"[OpenMuseInteractor] Insert response status: {insert_response.status_code}")
-                        if hasattr(insert_response, 'error'):
-                             self.logger.error(f"[OpenMuseInteractor] Insert response error: {insert_response.error}")
-                        return None, None
-
-                except APIError as insert_err:
-                     # Specific handling for unique constraint violation on username (if applicable)
-                     if 'duplicate key value violates unique constraint' in str(insert_err) and 'profiles_username_key' in str(insert_err):
-                         self.logger.error(f"[OpenMuseInteractor] Username '{initial_username}' already exists. Cannot create profile automatically. User might need manual intervention or alternative username strategy.", exc_info=False) # Avoid full trace for expected errors
-                         # Consider attempting to find the profile by username *now*?
-                         # Or just fail here. Let's fail for now.
-                         return None, None
-                     else:
-                          self.logger.error(f"[OpenMuseInteractor] Supabase API error creating profile for {discord_user_id_str}: {insert_err}")
-                          return None, None
-                except Exception as insert_ex:
-                    self.logger.error(f"[OpenMuseInteractor] Unexpected error creating profile for {discord_user_id_str}: {insert_ex}", exc_info=True)
+                    member_row.update(member_updates)
+            else:
+                self.logger.info(
+                    f"[OpenMuseInteractor] No members row found for {member_id_str}. "
+                    "Creating one."
+                )
+                member_payload = {
+                    "member_id": member_id,
+                    "username": user.name,
+                    "global_name": current_display_name,
+                    "avatar_url": current_avatar_url,
+                }
+                insert_response = await asyncio.to_thread(
+                    self.supabase.table(MEMBERS_TABLE)
+                    .insert(member_payload)
+                    .execute
+                )
+                if not insert_response.data:
+                    self.logger.error(
+                        f"[OpenMuseInteractor] Supabase insert returned no members "
+                        f"row for {member_id_str}."
+                    )
                     return None, None
+                member_row = insert_response.data[0]
+
+            openmuse_row = await self._select_single_row(
+                MEMBERS_TABLE,
+                {"member_id": member_id},
+            )
+            if not openmuse_row:
+                self.logger.info(
+                    f"[OpenMuseInteractor] No openmuse_profiles row found for {member_id_str}. "
+                    "Creating one."
+                )
+                openmuse_payload = {
+                    "member_id": member_id,
+                    "username": await self._generate_openmuse_username(user.name, member_id),
+                    "discord_connected": False,
+                    "links": [],
+                    "background_image_url": None,
+                }
+                insert_response = await asyncio.to_thread(
+                    self.supabase.table(MEMBERS_TABLE)
+                    .insert(openmuse_payload)
+                    .execute
+                )
+                if not insert_response.data:
+                    self.logger.error(
+                        f"[OpenMuseInteractor] Supabase insert returned no openmuse_profiles "
+                        f"row for {member_id_str}."
+                    )
+                    return None, None
+                openmuse_row = insert_response.data[0]
+
+            combined_profile = self._build_combined_profile(member_row, openmuse_row)
+            self.logger.debug(
+                f"[OpenMuseInteractor] Resolved canonical profile: "
+                f"{_truncate_avatar_in_dict_for_logging(combined_profile)}"
+            )
+            return _truncate_avatar_in_dict_for_logging(combined_profile), member_id_str
 
         except APIError as select_err:
-             self.logger.error(f"[OpenMuseInteractor] Supabase API error finding profile for {discord_user_id_str}: {select_err}")
+             self.logger.error(f"[OpenMuseInteractor] Supabase API error finding profile for {member_id_str}: {select_err}")
              return None, None
         except Exception as e:
-            self.logger.error(f"[OpenMuseInteractor] Unexpected error during find_or_create_profile for {discord_user_id_str}: {e}", exc_info=True)
+            self.logger.error(f"[OpenMuseInteractor] Unexpected error during find_or_create_profile for {member_id_str}: {e}", exc_info=True)
             return None, None
 
     def _is_valid_url(self, url: str) -> bool:
@@ -470,21 +537,15 @@ class OpenMuseInteractor:
             return None, None
 
         # --- 1. Find or Create Author Profile --- Find MUST happen first
-        profile_data, profile_id_uuid = await self.find_or_create_profile(author)
+        profile_data, member_id = await self.find_or_create_profile(author)
 
-        if not profile_data or not profile_id_uuid:
+        if not profile_data or not member_id:
             self.logger.error(f"[OpenMuseInteractor] Failed to find or create profile for author {author.id}. Aborting upload for message {message.id}.")
-            # Profile find/create logs errors internally
-            return None, None # Cannot proceed without a profile ID
-
-        # Store initial discord_connected status for later check
-        initial_discord_connected = profile_data.get('discord_connected')
-        supabase_username = profile_data.get('username') # Needed for potential welcome DM URL
+            return None, None
 
         # --- 2. Check File Size --- Done after profile check
         if attachment.size > MAX_FILE_SIZE_BYTES:
             self.logger.warning(f"[OpenMuseInteractor] Attachment '{attachment.filename}' ({attachment.size} bytes) from message {message.id} exceeds max size ({MAX_FILE_SIZE_BYTES} bytes). Aborting upload.")
-            # Caller (Reactor) should handle informing the user
             return None, _truncate_avatar_in_dict_for_logging(profile_data) # Return profile data even if upload fails
 
         # --- 3. Download File Content --- Download only if size is okay
@@ -542,7 +603,7 @@ class OpenMuseInteractor:
                             self.logger.info(f"[OpenMuseInteractor] Encoded frame to {len(thumbnail_bytes)} bytes (JPEG).")
 
                             thumbnail_filename = f"{os.path.splitext(attachment.filename)[0]}_thumb.jpg"
-                            thumbnail_storage_path = f"user_media/{profile_id_uuid}/{message.id}_{thumbnail_filename}"
+                            thumbnail_storage_path = f"user_media/{member_id}/{message.id}_{thumbnail_filename}"
                             
                             placeholder_image_url = await self._upload_bytes_to_storage(
                                 file_bytes=thumbnail_bytes,
@@ -576,7 +637,7 @@ class OpenMuseInteractor:
             self.logger.info(f"[OpenMuseInteractor] Attachment '{attachment.filename}' is not video. Skipping thumbnail generation.")
 
         # --- 5. Upload Original File --- Always attempt this
-        storage_path = f"user_media/{profile_id_uuid}/{message.id}_{attachment.filename}"
+        storage_path = f"user_media/{member_id}/{message.id}_{attachment.filename}"
         self.logger.info(f"[OpenMuseInteractor] --> Attempting to upload original file '{attachment.filename}' to bucket '{VIDEO_BUCKET_NAME}' at path '{storage_path}'.")
         
         public_url = await self._upload_bytes_to_storage(
@@ -613,7 +674,7 @@ class OpenMuseInteractor:
         media_title = None if media_type == 'video' else attachment.filename
 
         media_data = {
-            'user_id': profile_id_uuid,
+            'member_id': int(member_id),
             'title': media_title,
             'url': public_url,
             'placeholder_image': placeholder_image_url,
@@ -647,46 +708,11 @@ class OpenMuseInteractor:
                 self.logger.info(f"[OpenMuseInteractor] <-- Successfully inserted media record into table '{MEDIA_TABLE}'. Media ID: {inserted_media_record.get('id')}")
 
                 # --- 8. Handle Welcome DM logic / discord_connected update ---
-                if initial_discord_connected == False:
-                    self.logger.info(f"[OpenMuseInteractor] Profile {profile_id_uuid} discord_connected is False. Attempting to update status and send Welcome DM.")
-                    try:
-                        # Use the username fetched/set earlier
-                        username_for_url = supabase_username
-                        if not username_for_url:
-                            self.logger.warning(f"[OpenMuseInteractor] Supabase username not available for profile {profile_id_uuid} in welcome DM, falling back.")
-                            username_for_url = author.name
-
-                        formatted_username = quote(username_for_url, safe='')
-                        profile_url = f"https://openmuse.ai/profile/{formatted_username}"
-                        dm_message_content = (
-                            f"Your first upload to OpenMuse via Discord has been successful!\n\n"
-                            f"You can see your profile here: {profile_url}"
-                        )
-
-                        # Send DM - Belongs in Reactor, but done here for now for ease of transition
-                        # TODO: Refactor DM sending back to Reactor based on a flag/data returned from here
-                        self.logger.info(f"[OpenMuseInteractor] --> Sending Welcome DM to user {author.id}.")
-                        await author.send(dm_message_content)
-                        self.logger.info(f"[OpenMuseInteractor] <-- Successfully sent Welcome DM to user {author.id}.")
-
-                        # Update discord_connected to True
-                        self.logger.info(f"[OpenMuseInteractor] --> Attempting to update discord_connected to True for profile {profile_id_uuid}.")
-                        _update_response = await asyncio.to_thread(
-                            self.supabase.table(PROFILES_TABLE)
-                            .update({'discord_connected': True})
-                            .eq('id', profile_id_uuid)
-                            .execute
-                        )
-                        self.logger.info(f"[OpenMuseInteractor] <-- discord_connected status updated for profile {profile_id_uuid}.")
-                        # Update profile_data dict to reflect change for return value
-                        profile_data['discord_connected'] = True
-
-                    except discord.Forbidden:
-                         self.logger.warning(f"[OpenMuseInteractor] Failed to send Welcome DM to user {author.id}. DMs disabled?")
-                    except Exception as dm_update_ex:
-                         self.logger.error(f"[OpenMuseInteractor] Error sending Welcome DM or updating discord_connected for profile {profile_id_uuid}: {dm_update_ex}", exc_info=True)
-                else:
-                    self.logger.info(f"[OpenMuseInteractor] Skipping Welcome DM for profile {profile_id_uuid} (Initial Connected Status: {initial_discord_connected}).")
+                await self._mark_profile_connected_and_send_welcome_dm(
+                    member_id=member_id,
+                    author=author,
+                    profile_data=profile_data,
+                )
 
                 # Return successful media record and the (potentially updated) profile data
                 return inserted_media_record, _truncate_avatar_in_dict_for_logging(profile_data)
@@ -704,7 +730,7 @@ class OpenMuseInteractor:
 
     async def create_media_record(
         self,
-        user_id_uuid: str,
+        member_id: str,
         media_url: str,
         filename: str, 
         content_type: str,
@@ -724,7 +750,7 @@ class OpenMuseInteractor:
         This is a more direct way to insert a media record when the file is already uploaded
         or when detailed processing like thumbnailing is handled externally or skipped.
         Args:
-            user_id_uuid: The UUID of the user's profile.
+            member_id: The Discord member ID string for the canonical user.
             media_url: The public URL of the uploaded media.
             filename: The filename of the media (e.g., original_filename or new .mp4 filename).
             content_type: The MIME type of the media.
@@ -754,7 +780,7 @@ class OpenMuseInteractor:
             title = filename
 
         media_data_payload = {
-            'user_id': user_id_uuid,
+            'member_id': int(member_id),
             'title': title,
             'url': media_url,
             'placeholder_image': placeholder_image_url,
@@ -788,42 +814,12 @@ class OpenMuseInteractor:
                 inserted_media_record = insert_response.data[0]
                 self.logger.info(f"[OpenMuseInteractor_CreateMedia] <-- Successfully inserted media record. Media ID: {inserted_media_record.get('id')}")
 
-                # --- Handle Welcome DM logic (similar to upload_discord_attachment) ---
-                initial_discord_connected = profile_data.get('discord_connected')
-                supabase_username = profile_data.get('username') # From the passed profile_data
+                await self._mark_profile_connected_and_send_welcome_dm(
+                    member_id=member_id,
+                    author=author_discord_user,
+                    profile_data=profile_data,
+                )
 
-                if initial_discord_connected == False:
-                    self.logger.info(f"[OpenMuseInteractor_CreateMedia] Profile {user_id_uuid} discord_connected is False. Attempting to update status and send Welcome DM.")
-                    try:
-                        username_for_url = supabase_username or author_discord_user.name # Fallback to discord username
-                        formatted_username = quote(username_for_url, safe='')
-                        profile_url = f"https://openmuse.ai/profile/{formatted_username}"
-                        dm_message_content = (
-                            f"Your first upload to OpenMuse via Discord has been successful!\\n\\n"
-                            f"You can see your profile here: {profile_url}"
-                        )
-                        
-                        self.logger.info(f"[OpenMuseInteractor_CreateMedia] --> Sending Welcome DM to user {author_discord_user.id}.")
-                        await author_discord_user.send(dm_message_content)
-                        self.logger.info(f"[OpenMuseInteractor_CreateMedia] <-- Successfully sent Welcome DM to user {author_discord_user.id}.")
-                        
-                        self.logger.info(f"[OpenMuseInteractor_CreateMedia] --> Attempting to update discord_connected to True for profile {user_id_uuid}.")
-                        await asyncio.to_thread(
-                            self.supabase.table(PROFILES_TABLE)
-                            .update({'discord_connected': True})
-                            .eq('id', user_id_uuid)
-                            .execute
-                        )
-                        self.logger.info(f"[OpenMuseInteractor_CreateMedia] <-- discord_connected status updated for profile {user_id_uuid}.")
-                        # Note: The profile_data dict passed in is not mutated here. If the caller needs the updated
-                        # profile_data (with discord_connected=True), it should be aware or refetch.
-                    except discord.Forbidden:
-                         self.logger.warning(f"[OpenMuseInteractor_CreateMedia] Failed to send Welcome DM to user {author_discord_user.id}. DMs disabled?")
-                    except Exception as dm_update_ex:
-                         self.logger.error(f"[OpenMuseInteractor_CreateMedia] Error sending Welcome DM or updating discord_connected for profile {user_id_uuid}: {dm_update_ex}", exc_info=True)
-                else:
-                    self.logger.info(f"[OpenMuseInteractor_CreateMedia] Skipping Welcome DM for profile {user_id_uuid} (Initial Connected Status: {initial_discord_connected}).")
-                
                 return inserted_media_record
             else:
                 self.logger.error(f"[OpenMuseInteractor_CreateMedia] Supabase media insert executed but returned no data. Insert failed? RLS?",
@@ -838,4 +834,4 @@ class OpenMuseInteractor:
 
     # --- Add other Supabase interaction methods here as needed ---
     # Example: async def get_media_by_id(self, media_id: str): ...
-    # Example: async def update_media_status(self, media_id: str, status: str): ... 
+    # Example: async def update_media_status(self, media_id: str, status: str): ...

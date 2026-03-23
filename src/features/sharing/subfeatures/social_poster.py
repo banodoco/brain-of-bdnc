@@ -53,7 +53,7 @@ def _build_tweet_caption(base_description: str, user_details: Dict, original_con
     
     user_global_name = user_details.get('global_name')
     user_discord_name = user_details.get('username')
-    raw_twitter_handle = user_details.get('twitter_handle')
+    raw_twitter_handle = user_details.get('twitter_url')
     artist_credit_text = None
 
     if raw_twitter_handle:

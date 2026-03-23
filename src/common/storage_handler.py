@@ -200,8 +200,8 @@ class StorageHandler:
                     'discord_created_at': member.get('discord_created_at'),
                     'guild_join_date': member.get('guild_join_date'),
                     'role_ids': role_ids,
-                    'twitter_handle': member.get('twitter_handle'),
-                    'reddit_handle': member.get('reddit_handle'),
+                    'twitter_url': member.get('twitter_url'),
+                    'reddit_url': member.get('reddit_url'),
                     'created_at': member.get('created_at') or datetime.utcnow().isoformat(),
                     'updated_at': member.get('updated_at') or datetime.utcnow().isoformat(),
                     'synced_at': datetime.utcnow().isoformat()
@@ -223,7 +223,7 @@ class StorageHandler:
                 
                 try:
                     await asyncio.to_thread(
-                        self.supabase_client.table('discord_members').upsert(batch).execute
+                        self.supabase_client.table('members').upsert(batch).execute
                     )
                     stored_count += len(batch)
                     logger.debug(f"Stored batch of {len(batch)} members to Supabase")

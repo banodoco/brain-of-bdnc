@@ -321,7 +321,7 @@ class DatabaseHandler:
                               system: bool = False, accent_color: Optional[int] = None,
                               banner_url: Optional[str] = None, discord_created_at: Optional[str] = None,
                               guild_join_date: Optional[str] = None, role_ids: Optional[str] = None,
-                              twitter_handle: Optional[str] = None, reddit_handle: Optional[str] = None,
+                              twitter_url: Optional[str] = None, reddit_url: Optional[str] = None,
                               include_in_updates: Optional[bool] = None,
                               allow_content_sharing: Optional[bool] = None,
                               guild_id: Optional[int] = None) -> bool:
@@ -349,8 +349,8 @@ class DatabaseHandler:
             'discord_created_at': discord_created_at,
             'guild_join_date': guild_join_date,
             'role_ids': role_ids,
-            'twitter_handle': twitter_handle,
-            'reddit_handle': reddit_handle,
+            'twitter_url': twitter_url,
+            'reddit_url': reddit_url,
             'updated_at': datetime.now().isoformat()
         }
 
@@ -474,7 +474,7 @@ class DatabaseHandler:
         if not self.storage_handler or not self.storage_handler.supabase_client:
             return False
         try:
-            self.storage_handler.supabase_client.table('discord_members').update({
+            self.storage_handler.supabase_client.table('members').update({
                 'stored_avatar_url': stored_avatar_url,
             }).eq('member_id', member_id).execute()
             return True
@@ -963,7 +963,7 @@ class DatabaseHandler:
         try:
             # Check if already shared
             result = (
-                self.storage_handler.supabase_client.table('discord_members')
+                self.storage_handler.supabase_client.table('members')
                 .select('first_shared_at')
                 .eq('member_id', member_id)
                 .execute()
@@ -975,7 +975,7 @@ class DatabaseHandler:
             
             # Set first_shared_at
             (
-                self.storage_handler.supabase_client.table('discord_members')
+                self.storage_handler.supabase_client.table('members')
                 .update({'first_shared_at': datetime.now().isoformat()})
                 .eq('member_id', member_id)
                 .execute()
@@ -1108,7 +1108,7 @@ class DatabaseHandler:
         """Check if a member should have the Speaker role in a guild.
 
         Defaults to True unless guild_members.speaker_muted is explicitly True.
-        Falls back to the legacy discord_members.is_speaker only when no guild_id
+        Falls back to the legacy members.is_speaker only when no guild_id
         is supplied.
         """
         if not self.storage_handler or not self.storage_handler.supabase_client:
@@ -1129,7 +1129,7 @@ class DatabaseHandler:
                 return True
 
             result = (
-                self.storage_handler.supabase_client.table('discord_members')
+                self.storage_handler.supabase_client.table('members')
                 .select('is_speaker')
                 .eq('member_id', member_id)
                 .limit(1)
@@ -1752,7 +1752,7 @@ class DatabaseHandler:
         if not self.storage_handler or not self.storage_handler.supabase_client:
             return False
         try:
-            self.storage_handler.supabase_client.table('competitions').upsert(
+            self.storage_handler.supabase_client.table('discord_competitions').upsert(
                 payload, on_conflict='guild_id,slug'
             ).execute()
             return True
@@ -1765,7 +1765,7 @@ class DatabaseHandler:
             return None
         try:
             query = (
-                self.storage_handler.supabase_client.table('competitions')
+                self.storage_handler.supabase_client.table('discord_competitions')
                 .select('*').eq('slug', slug)
             )
             if guild_id is not None:
@@ -1782,7 +1782,7 @@ class DatabaseHandler:
             return []
         try:
             query = (
-                self.storage_handler.supabase_client.table('competitions')
+                self.storage_handler.supabase_client.table('discord_competitions')
                 .select('*').eq('status', 'voting')
             )
             if guild_id is not None:
@@ -1799,7 +1799,7 @@ class DatabaseHandler:
             return []
         try:
             query = (
-                self.storage_handler.supabase_client.table('competitions')
+                self.storage_handler.supabase_client.table('discord_competitions')
                 .select('*')
                 .eq('status', 'setup')
                 .not_.is_('voting_starts_at', 'null')
@@ -1826,7 +1826,7 @@ class DatabaseHandler:
             return False
         try:
             (
-                self.storage_handler.supabase_client.table('competitions')
+                self.storage_handler.supabase_client.table('discord_competitions')
                 .update(payload).eq('slug', slug).eq('guild_id', effective_guild_id).execute()
             )
             return True

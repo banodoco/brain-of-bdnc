@@ -294,79 +294,36 @@ async def process_workflow_upload_request(
                 logger.info("[WorkflowUpload] Could not determine model/variant from Claude.")
 
             # Section 6.5: Ensure Author Profile Exists
-            author_profile_id_uuid = None
-            author_db_profile_data: Optional[Dict[str, Any]] = None # Added to store the profile dict
+            author_member_id = None
+            author_db_profile_data: Optional[Dict[str, Any]] = None
             if openmuse_interactor and hasattr(openmuse_interactor, 'find_or_create_profile'):
                 try:
                     logger.info(f"[WorkflowUpload] Ensuring OpenMuse profile exists for author {author.id}...")
-                    # The find_or_create_profile might return a dict or the UUID directly.
-                    # Assuming it returns the UUID or an object/dict from which UUID can be extracted.
-                    # Let's assume it returns the UUID string for `asset.user_id`
-                    # The spec says "returned profile_id_uuid is stored"
                     profile_info = await openmuse_interactor.find_or_create_profile(author)
-                    
-                    if profile_info: # Could be UUID string, a dict, or a tuple
-                        if isinstance(profile_info, str): # Direct UUID
-                            author_profile_id_uuid = profile_info
-                        elif isinstance(profile_info, dict) and 'id' in profile_info: # e.g. { 'id': 'uuid', ... }
-                            author_profile_id_uuid = profile_info['id']
-                        # Corrected tuple handling based on logs: (profile_dict, profile_uuid_str)
-                        elif isinstance(profile_info, tuple) and len(profile_info) == 2 and isinstance(profile_info[0], dict) and isinstance(profile_info[1], str):
-                            author_profile_id_uuid = profile_info[1] # UUID is the second element
-                            author_db_profile_data = profile_info[0] # Store the profile dictionary
-                            # Log profile_info[0] (the dict) with truncation for avatar
-                            profile_dict_for_log = profile_info[0].copy()
-                            if 'discord_avatar_base64' in profile_dict_for_log and isinstance(profile_dict_for_log['discord_avatar_base64'], str):
-                                original_avatar_data = profile_dict_for_log['discord_avatar_base64']
-                                if len(original_avatar_data) > 50: # More aggressive threshold
-                                    profile_dict_for_log['discord_avatar_base64'] = f"<base64 string, len {len(original_avatar_data)}, truncated>"
-                            if 'background_image_url' in profile_dict_for_log and isinstance(profile_dict_for_log['background_image_url'], str):
-                                original_background_data = profile_dict_for_log['background_image_url']
-                                if len(original_background_data) > 50: # More aggressive threshold
-                                    profile_dict_for_log['background_image_url'] = f"<base64 string, len {len(original_background_data)}, truncated>"
-                            logger.info(f"[WorkflowUpload] Extracted profile UUID from tuple: {author_profile_id_uuid}. Profile dict: {profile_dict_for_log}")
-                        else:
-                            # Log potentially large profile_info with truncation attempt
-                            logged_profile_info = profile_info
-                            if isinstance(profile_info, tuple) and len(profile_info) > 0 and isinstance(profile_info[0], dict):
-                                temp_profile_dict = profile_info[0].copy()
-                                if 'discord_avatar_base64' in temp_profile_dict and isinstance(temp_profile_dict['discord_avatar_base64'], str):
-                                    original_avatar_data = temp_profile_dict['discord_avatar_base64']
-                                    if len(original_avatar_data) > 50: # More aggressive threshold
-                                        temp_profile_dict['discord_avatar_base64'] = f"<base64 string, len {len(original_avatar_data)}, truncated>"
-                                if 'background_image_url' in temp_profile_dict and isinstance(temp_profile_dict['background_image_url'], str):
-                                    original_background_data = temp_profile_dict['background_image_url']
-                                    if len(original_background_data) > 50: # More aggressive threshold
-                                        temp_profile_dict['background_image_url'] = f"<base64 string, len {len(original_background_data)}, truncated>"
-                                # Reconstruct how logged_profile_info would look if it was a tuple
-                                if len(profile_info) == 2:
-                                     logged_profile_info = (temp_profile_dict, profile_info[1])
-                                elif len(profile_info) == 1:
-                                     logged_profile_info = (temp_profile_dict,)
-                                else: # Fallback for other tuple lengths, just log the modified dict part if it was the first
-                                     logged_profile_info = (temp_profile_dict,) + profile_info[1:]
-                            elif isinstance(profile_info, dict) : # If profile_info itself is a dict
-                                temp_profile_dict = profile_info.copy()
-                                if 'discord_avatar_base64' in temp_profile_dict and isinstance(temp_profile_dict['discord_avatar_base64'], str):
-                                     original_avatar_data = temp_profile_dict['discord_avatar_base64']
-                                     if len(original_avatar_data) > 50: # More aggressive threshold
-                                        temp_profile_dict['discord_avatar_base64'] = f"<base64 string, len {len(original_avatar_data)}, truncated>"
-                                if 'background_image_url' in temp_profile_dict and isinstance(temp_profile_dict['background_image_url'], str):
-                                    original_background_data = temp_profile_dict['background_image_url']
-                                    if len(original_background_data) > 50: # More aggressive threshold
-                                        temp_profile_dict['background_image_url'] = f"<base64 string, len {len(original_background_data)}, truncated>"
-                                logged_profile_info = temp_profile_dict
 
-                            logger.warning(f"[WorkflowUpload] find_or_create_profile returned unexpected data: {logged_profile_info} (type: {type(profile_info)}). Could not extract profile UUID.")
+                    if isinstance(profile_info, tuple) and len(profile_info) == 2:
+                        author_db_profile_data = profile_info[0]
+                        author_member_id = profile_info[1]
+                        logger.info(
+                            f"[WorkflowUpload] Author {author.id} OpenMuse member ID: "
+                            f"{author_member_id}"
+                        )
+                        logger.debug(
+                            f"[WorkflowUpload] Author profile payload: {author_db_profile_data}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[WorkflowUpload] find_or_create_profile returned unexpected data: "
+                            f"{profile_info} (type: {type(profile_info)})."
+                        )
 
-                        if author_profile_id_uuid:
-                            logger.info(f"[WorkflowUpload] Author {author.id} profile ID: {author_profile_id_uuid}")
-                        else:
-                            logger.error(f"[WorkflowUpload] Failed to find or create OpenMuse profile for author {author.id}, or UUID not found in response.")
-                            # This is critical for asset creation
-                            await safe_send_message(bot=bot, channel=curator_user, content=f"Critical error: Could not ensure OpenMuse profile for {author.mention}. Asset creation aborted.", logger=logger, rate_limiter=rate_limiter) # Added rate_limiter
-                            await safe_send_message(bot=bot, channel=author, content="Sorry, there was an issue setting up your OpenMuse profile. The workflow could not be uploaded.", logger=logger, rate_limiter=rate_limiter) # Added rate_limiter
-                            return # Abort
+                    if author_member_id:
+                        logger.info(f"[WorkflowUpload] Author {author.id} member ID: {author_member_id}")
+                    else:
+                        logger.error(f"[WorkflowUpload] Failed to find or create OpenMuse profile for author {author.id}, or member ID not found in response.")
+                        await safe_send_message(bot=bot, channel=curator_user, content=f"Critical error: Could not ensure OpenMuse profile for {author.mention}. Asset creation aborted.", logger=logger, rate_limiter=rate_limiter)
+                        await safe_send_message(bot=bot, channel=author, content="Sorry, there was an issue setting up your OpenMuse profile. The workflow could not be uploaded.", logger=logger, rate_limiter=rate_limiter)
+                        return
                 except Exception as e:
                     logger.error(f"[WorkflowUpload] Error calling find_or_create_profile for author {author.id}: {e}")
                     await safe_send_message(bot=bot, channel=curator_user, content=f"Error ensuring OpenMuse profile for {author.mention}: {e}. Asset creation aborted.", logger=logger, rate_limiter=rate_limiter) # Added rate_limiter
@@ -383,7 +340,7 @@ async def process_workflow_upload_request(
             if openmuse_interactor and hasattr(openmuse_interactor, 'upload_file_to_storage'): 
                 try:
                     logger.info(f"[WorkflowUpload] Uploading workflow '{final_workflow_filename}' to Supabase...")
-                    file_path_in_bucket = f"workflows/{author_profile_id_uuid}/{message.id}/{final_workflow_filename}"
+                    file_path_in_bucket = f"workflows/{author_member_id}/{message.id}/{final_workflow_filename}"
                     
                     # Prepare the actual source for upload_file_to_storage
                     actual_upload_source: Union[discord.Attachment, bytes]
@@ -434,7 +391,7 @@ async def process_workflow_upload_request(
                 asset_data = {
                     "type": "workflow",
                     "name": workflow_name, # From Section 5
-                    "user_id": author_profile_id_uuid, # From Section 6.5 (assuming this is the creator/FK)
+                    "member_id": int(author_member_id), # From Section 6.5
                     "description": description,
                     "download_link": workflow_json_url, # From JSON upload step
                     "admin_status": "Listed",
@@ -475,6 +432,33 @@ async def process_workflow_upload_request(
                     await safe_send_message(bot=bot, channel=author, content="Sorry, an unexpected error occurred while saving your workflow information. Please try again later.", logger=logger, rate_limiter=rate_limiter)
                     await safe_send_message(bot=bot, channel=curator_user, content=f"Error inserting asset record for {author.mention} (message {message.jump_url}): {e}. Upload aborted.", logger=logger, rate_limiter=rate_limiter)
                     return # Abort
+
+                if created_asset_uuid and asset_lora_base_model:
+                    try:
+                        model_response = await asyncio.to_thread(
+                            openmuse_interactor.supabase.table('models')
+                            .select('id')
+                            .eq('display_name', asset_lora_base_model)
+                            .limit(1)
+                            .execute
+                        )
+                        if model_response.data:
+                            model_id = model_response.data[0]['id']
+                            await asyncio.to_thread(
+                                openmuse_interactor.supabase.table('asset_models')
+                                .insert({
+                                    'asset_id': created_asset_uuid,
+                                    'model_id': model_id,
+                                    'compatibility_note': 'inferred from workflow context',
+                                })
+                                .execute
+                            )
+                            logger.info(
+                                f"[WorkflowUpload] Linked asset {created_asset_uuid} to model "
+                                f"{model_id} ({asset_lora_base_model})"
+                            )
+                    except Exception as link_error:
+                        logger.warning(f"[WorkflowUpload] Failed to create asset_models link: {link_error}")
             else:
                 logger.error("[WorkflowUpload] OpenMuseInteractor or Supabase client not available for asset insert.")
                 await safe_send_message(bot=bot, channel=author, content="Sorry, the system is currently unable to save workflow information.", logger=logger, rate_limiter=rate_limiter)
@@ -545,12 +529,12 @@ async def process_workflow_upload_request(
                             if media_record_dict and media_record_dict.get('id'):
                                 media_id_val = media_record_dict.get('id')
                         elif isinstance(upload_source, bytes): # Converted GIF (bytes)
-                            # Ensure author_profile_id_uuid is available (from earlier profile check)
-                            if not author_profile_id_uuid:
-                                logger.error(f"[WorkflowUpload][Media] Author profile UUID not available. Cannot upload converted GIF '{filename_for_storage}'.")
+                            # Ensure author_member_id is available (from earlier profile check)
+                            if not author_member_id:
+                                logger.error(f"[WorkflowUpload][Media] Author member ID not available. Cannot upload converted GIF '{filename_for_storage}'.")
                             elif hasattr(openmuse_interactor, 'upload_file_to_storage') and hasattr(openmuse_interactor, 'create_media_record'):
                                 # 1. Upload bytes to storage
-                                media_storage_path = f"user_media/{author_profile_id_uuid}/{parent_msg.id}/{filename_for_storage}"
+                                media_storage_path = f"user_media/{author_member_id}/{parent_msg.id}/{filename_for_storage}"
                                 media_url = await openmuse_interactor.upload_file_to_storage(
                                     file_source=upload_source, # bytes
                                     bucket_name="videos", # Assuming 'videos' bucket as per upload_discord_attachment
@@ -559,54 +543,8 @@ async def process_workflow_upload_request(
                                 )
                                 if media_url:
                                     logger.info(f"[WorkflowUpload][Media] Converted media '{filename_for_storage}' uploaded to storage: {media_url}")
-                                    # 2. Create a media record for this URL
-                                    # We need profile_data for the welcome DM logic in create_media_record
-                                    # This profile_data should be fetched once before the media loop if possible,
-                                    # or ensure find_or_create_profile in section 6.5 returns it and it's passed down.
-                                    # For now, assuming author_profile_data is available from section 6.5.
-                                    # If not, this will need adjustment to pass the profile_data object.
-                                    
-                                    # We need the full profile_data dict, not just the UUID, for create_media_record's welcome DM logic.
-                                    # Let's assume we have `author_initial_profile_data` from section 6.5
-                                    # This is a placeholder - this data needs to be correctly plumbed.
-                                    # It would be set around line 310-350 where author_profile_id_uuid is set.
-                                    # For the purpose of this edit, we will assume `author_profile_data_for_media` is available.
-                                    # This might require a change in how `find_or_create_profile` returns or how its result is stored.
-
-                                    # Correct way: ensure `profile_info_dict` from `find_or_create_profile` is available here.
-                                    # Let's assume it was stored as `author_full_profile_info` alongside `author_profile_id_uuid`
-
-                                    # Fetch profile_data again if not available easily, or pass it down.
-                                    # To avoid re-fetching, this design relies on `author_profile_data_dict` being populated
-                                    # when `author_profile_id_uuid` is determined.
-                                    # Let's assume `author_profile_details_dict` is the variable holding this.
-                                    # This variable would need to be populated after the find_or_create_profile call.
-                                    
-                                    # If `author_profile_data_dict` is not directly available here, this is a contract violation.
-                                    # For now, we proceed assuming it *is* available in this scope or passed correctly.
-                                    # (This highlights a potential need to refactor how profile data is passed around)
-                                    
-                                    # SIMPLIFICATION: Let's assume `process_workflow_upload_request` stores the dict from `find_or_create_profile`
-                                    # in a variable like `retrieved_author_profile_dict`
-
-                                    # If we need to pass the profile dict to this point, it needs to be done systematically.
-                                    # For now, this edit assumes that `author_profile_details_dict` is available.
-                                    # This will be `profile_info[0]` if `find_or_create_profile` returns `(dict, uuid_str)`
-
-                                    # Let's assume `retrieved_profile_dict_for_author` is available in this scope.
-                                    # This would have been populated from `profile_info[0]` from `find_or_create_profile` call.
-
-                                    # To make this work, the `process_workflow_upload_request` needs to store the profile dictionary.
-                                    # Example: after `author_profile_id_uuid = profile_info[1]`, add `retrieved_author_profile_dict = profile_info[0]`
-                                    # And then ensure `retrieved_author_profile_dict` is passed to this part of the code if it's in a sub-function,
-                                    # or available in the same scope. Since this is a deep part of the function, it implies `retrieved_author_profile_dict`
-                                    # needs to be available in `process_workflow_upload_request`'s main scope.
-
-                                    # Let's assume `author_db_profile_data` is the variable available in `process_workflow_upload_request` scope
-                                    # that holds the dictionary part of the tuple returned by `find_or_create_profile`.
-
                                     media_record_dict = await openmuse_interactor.create_media_record(
-                                        user_id_uuid=author_profile_id_uuid,
+                                        member_id=author_member_id,
                                         media_url=media_url,
                                         filename=filename_for_storage, # The new .mp4 filename
                                         content_type=content_type_for_upload, # "video/mp4"
@@ -1296,4 +1234,4 @@ Example if model found but no specific variant and no default: {{"model": "Anoth
 #             db_handler=db_handler_instance,
 #             claude_client=claude_client_instance, # if needed
 #             openmuse_interactor=openmuse_interactor_instance # if needed
-#         ) 
+#         )

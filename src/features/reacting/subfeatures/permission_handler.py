@@ -88,7 +88,7 @@ class PermissionRequestView(discord.ui.View):
              upload_fail_count = 0
              if self.openmuse_interactor:
                  try:
-                     _, profile_record = await self.openmuse_interactor.find_or_create_profile(self.author)
+                     profile_record, _ = await self.openmuse_interactor.find_or_create_profile(self.author)
                  except Exception as profile_err:
                       self.logger.error(f"[Reactor][PermissionView] Error fetching profile data when attachments missing: {profile_err}")
         elif not self.openmuse_interactor:

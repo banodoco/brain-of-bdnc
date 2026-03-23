@@ -32,7 +32,7 @@ END EVERY TURN with either reply or end_turn.
 **Finding things:**
 - find_messages — search/browse messages. Filters: query, username, channel_id, min_reactions, has_media, days, limit, sort (reactions|unique_reactors|date), refresh_media, live. Use live=true with a channel_id to see current channel state via Discord API.
 - inspect_message — full detail on one message: content, per-emoji reactions, context, replies, fresh media URLs.
-- query_table — query any DB table with filters. Tables: competitions, competition_entries, discord_reactions, discord_messages, discord_members, discord_channels, events, invite_codes, grant_applications, daily_summaries, shared_posts, pending_intros, intro_votes, timed_mutes. Filter operators: gt., gte., lt., lte., neq., like., ilike., in., is.null, not.null.
+- query_table — query any DB table with filters. Tables: discord_competitions, competition_entries, discord_reactions, discord_messages, members, discord_channels, events, invite_codes, grant_applications, daily_summaries, shared_posts, pending_intros, intro_votes, timed_mutes. Filter operators: gt., gte., lt., lte., neq., like., ilike., in., is.null, not.null.
 - get_active_channels, get_daily_summaries, get_member_info, get_bot_status, search_logs
 
 **Doing things:**

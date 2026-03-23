@@ -54,8 +54,8 @@ class AdminUpdateSocialsModal(discord.ui.Modal):
         self.bot = bot  # Store bot for role updates
 
         # Pre-fill modal
-        self.twitter_input.default = user_details.get('twitter_handle')
-        self.reddit_input.default = user_details.get('reddit_handle')
+        self.twitter_input.default = user_details.get('twitter_url')
+        self.reddit_input.default = user_details.get('reddit_url')
 
         # Pre-fill permission inputs based on DB fields
         # Note: these default to TRUE in DB, so None or True = "Yes", only False = "No"
@@ -97,8 +97,8 @@ class AdminUpdateSocialsModal(discord.ui.Modal):
                 return
             
             updated_data = {
-                'twitter_handle': self.twitter_input.value.strip() or None,
-                'reddit_handle': self.reddit_input.value.strip() or None,
+                'twitter_url': self.twitter_input.value.strip() or None,
+                'reddit_url': self.reddit_input.value.strip() or None,
                 'include_in_updates': final_include_in_updates,
                 'allow_content_sharing': final_allow_content_sharing,
             }
@@ -734,8 +734,8 @@ class AdminCog(commands.Cog):
                      'member_id': user_id,
                      'username': interaction.user.name,
                      'global_name': interaction.user.global_name,
-                     'twitter_handle': None,
-                     'reddit_handle': None,
+                     'twitter_url': None,
+                     'reddit_url': None,
                      'include_in_updates': None,  # Will default to TRUE behavior
                      'allow_content_sharing': None,  # Will default to TRUE behavior
                 }
