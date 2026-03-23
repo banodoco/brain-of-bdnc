@@ -127,47 +127,24 @@ class OpenMuseInteractor:
             return response.data[0]
         return None
 
-    async def _generate_openmuse_username(self, base_username: Optional[str], member_id: int) -> str:
-        """Pick a unique OpenMuse username for a member."""
-        cleaned_username = (base_username or "").strip() or f"discord-user-{member_id}"
-        candidates = [
-            cleaned_username,
-            f"{cleaned_username}-{member_id}",
-            f"{cleaned_username}_{member_id}",
-        ]
-
-        for candidate in candidates:
-            existing_row = await self._select_single_row(
-                MEMBERS_TABLE,
-                {"username": candidate},
-            )
-            if not existing_row or int(existing_row.get("member_id")) == member_id:
-                return candidate
-
-        return f"discord-user-{member_id}"
-
-    def _build_combined_profile(
-        self,
-        member_row: Dict[str, Any],
-        openmuse_row: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Normalize members + openmuse_profiles into the legacy profile shape."""
+    def _build_member_profile(self, member_row: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize the shared members row into the legacy profile shape."""
         member_id = int(member_row["member_id"])
         return {
             "id": str(member_id),
             "member_id": member_id,
             "discord_user_id": str(member_id),
-            "username": openmuse_row.get("username"),
+            "username": member_row.get("username"),
             "discord_username": member_row.get("username"),
             "display_name": member_row.get("global_name") or member_row.get("username"),
             "avatar_url": member_row.get("stored_avatar_url") or member_row.get("avatar_url"),
             "description": member_row.get("bio"),
             "real_name": member_row.get("real_name"),
-            "links": openmuse_row.get("links") or [],
-            "background_image_url": openmuse_row.get("background_image_url"),
-            "discord_connected": bool(openmuse_row.get("discord_connected", False)),
-            "created_at": openmuse_row.get("created_at"),
-            "updated_at": openmuse_row.get("updated_at"),
+            "links": [],
+            "background_image_url": None,
+            "discord_connected": None,
+            "created_at": member_row.get("created_at"),
+            "updated_at": member_row.get("updated_at"),
         }
 
     async def _mark_profile_connected_and_send_welcome_dm(
@@ -245,9 +222,7 @@ class OpenMuseInteractor:
 
     async def find_or_create_profile(self, user: discord.User | discord.Member) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
-        Finds or creates the canonical OpenMuse profile for a Discord member.
-        members is the shared user table; openmuse_profiles stores only
-        OpenMuse-specific extensions.
+        Ensure the shared members row exists for a Discord member.
 
         Args:
             user: The discord.User or discord.Member object.
@@ -319,36 +294,7 @@ class OpenMuseInteractor:
                     return None, None
                 member_row = insert_response.data[0]
 
-            openmuse_row = await self._select_single_row(
-                MEMBERS_TABLE,
-                {"member_id": member_id},
-            )
-            if not openmuse_row:
-                self.logger.info(
-                    f"[OpenMuseInteractor] No openmuse_profiles row found for {member_id_str}. "
-                    "Creating one."
-                )
-                openmuse_payload = {
-                    "member_id": member_id,
-                    "username": await self._generate_openmuse_username(user.name, member_id),
-                    "discord_connected": False,
-                    "links": [],
-                    "background_image_url": None,
-                }
-                insert_response = await asyncio.to_thread(
-                    self.supabase.table(MEMBERS_TABLE)
-                    .insert(openmuse_payload)
-                    .execute
-                )
-                if not insert_response.data:
-                    self.logger.error(
-                        f"[OpenMuseInteractor] Supabase insert returned no openmuse_profiles "
-                        f"row for {member_id_str}."
-                    )
-                    return None, None
-                openmuse_row = insert_response.data[0]
-
-            combined_profile = self._build_combined_profile(member_row, openmuse_row)
+            combined_profile = self._build_member_profile(member_row)
             self.logger.debug(
                 f"[OpenMuseInteractor] Resolved canonical profile: "
                 f"{_truncate_avatar_in_dict_for_logging(combined_profile)}"

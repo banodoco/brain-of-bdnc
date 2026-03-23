@@ -3,9 +3,9 @@
 Competition voting system — fully driven by database state.
 
 Setup: insert rows directly in Supabase:
-  1. Insert into `discord_competitions` with slug, name, channel_id, voting_starts_at, etc.
+  1. Insert into `competitions` with `type='community'`, slug, name, channel_id, voting_start, etc.
   2. Insert into `competition_entries` tagging message IDs as entries
-  3. The bot picks it up automatically when voting_starts_at arrives
+  3. The bot picks it up automatically when `voting_start` arrives
 
 The bot handles:
   - Scheduled voting start (posts entries, activates moderation)
@@ -97,6 +97,7 @@ class CompetitionCog(commands.Cog):
     def _register_active_competition(
         self,
         *,
+        competition_id: str,
         guild_id: int,
         slug: str,
         voting_channel_id: int,
@@ -105,6 +106,7 @@ class CompetitionCog(commands.Cog):
         next_entry_number: int,
     ) -> dict:
         state = {
+            'competition_id': competition_id,
             'guild_id': guild_id,
             'slug': slug,
             'voting_channel_id': voting_channel_id,
@@ -158,7 +160,7 @@ class CompetitionCog(commands.Cog):
         # Restore voting state if the bot restarted mid-vote
         active = await asyncio.to_thread(self.db.get_active_competitions)
         for comp in active:
-            ends_at = self._parse_dt(comp.get('voting_ends_at'))
+            ends_at = self._parse_dt(comp.get('voting_end'))
             if not ends_at:
                 continue
 
@@ -172,10 +174,11 @@ class CompetitionCog(commands.Cog):
             questions_thread_id = comp.get('questions_thread_id')
 
             # Restore next entry number from max existing entry
-            entries = await asyncio.to_thread(self.db.get_competition_entries, comp['slug'], guild_id)
+            entries = await asyncio.to_thread(self.db.get_competition_entries, comp['id'], guild_id)
             max_num = max((e.get('entry_number', 0) or 0 for e in entries), default=0)
             next_entry_number = max_num + 1
             self._register_active_competition(
+                competition_id=comp['id'],
                 guild_id=guild_id,
                 slug=comp['slug'],
                 voting_channel_id=voting_channel_id,
@@ -266,7 +269,7 @@ class CompetitionCog(commands.Cog):
             # Record in DB
             if self.db:
                 await asyncio.to_thread(self.db.upsert_competition_entry, {
-                    'competition_slug': state['slug'],
+                    'competition_id': state['competition_id'],
                     'message_id': message.id,
                     'channel_id': message.channel.id,
                     'author_id': message.author.id,
@@ -319,7 +322,7 @@ class CompetitionCog(commands.Cog):
         try:
             scheduled = await asyncio.to_thread(self.db.get_scheduled_competitions)
             for comp in scheduled:
-                starts_at = self._parse_dt(comp.get('voting_starts_at'))
+                starts_at = self._parse_dt(comp.get('voting_start'))
                 if not starts_at:
                     continue
                 if datetime.now(timezone.utc) >= starts_at:
@@ -353,9 +356,10 @@ class CompetitionCog(commands.Cog):
     async def _trigger_voting(self, comp: dict):
         """Start voting for a competition — fetch entries, post, activate moderation."""
         slug = comp['slug']
+        competition_id = comp['id']
         guild_id = self._resolve_guild_id(comp=comp)
         try:
-            entry_rows = await asyncio.to_thread(self.db.get_competition_entries, slug, guild_id)
+            entry_rows = await asyncio.to_thread(self.db.get_competition_entries, competition_id, guild_id)
             if not entry_rows:
                 logger.warning(f"Scheduled voting for {slug} but no entries — skipping")
                 return
@@ -389,6 +393,7 @@ class CompetitionCog(commands.Cog):
                 comp.get('voting_header'),
             )
             self._register_active_competition(
+                competition_id=competition_id,
                 guild_id=guild_id,
                 slug=slug,
                 voting_channel_id=voting_ch_id,
@@ -405,7 +410,7 @@ class CompetitionCog(commands.Cog):
             await asyncio.to_thread(self.db.update_competition, slug, {
                 'status': 'voting',
                 'voting_started_at': datetime.now(timezone.utc).isoformat(),
-                'voting_ends_at': voting_end.isoformat(),
+                'voting_end': voting_end.isoformat(),
                 'questions_thread_id': questions_thread_id,
             }, guild_id=guild_id)
 
@@ -520,7 +525,7 @@ class CompetitionCog(commands.Cog):
 
         await ctx.send(f"Posting test voting for `{slug}` to <#{channel_id}>...")
 
-        entry_rows = await asyncio.to_thread(self.db.get_competition_entries, slug, guild_id)
+        entry_rows = await asyncio.to_thread(self.db.get_competition_entries, comp['id'], guild_id)
         if not entry_rows:
             await ctx.send("No entries found.")
             return
@@ -548,6 +553,7 @@ class CompetitionCog(commands.Cog):
         # Set active state so late entries via the questions thread work
         voting_end = datetime.now(timezone.utc) + timedelta(hours=voting_hours)
         self._register_active_competition(
+            competition_id=comp['id'],
             guild_id=guild_id,
             slug=slug,
             voting_channel_id=channel_id,

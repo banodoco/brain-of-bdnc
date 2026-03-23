@@ -1745,16 +1745,37 @@ class DatabaseHandler:
     def upsert_competition(self, data: Dict, guild_id: Optional[int] = None) -> bool:
         payload = dict(data)
         effective_guild_id = guild_id or payload.get('guild_id')
+        slug = payload.get('slug')
         if effective_guild_id is not None:
             payload['guild_id'] = effective_guild_id
+        payload['type'] = 'community'
+        if effective_guild_id is None or not slug:
+            logger.error("upsert_competition requires guild_id and slug")
+            return False
         if not self._gate_check(effective_guild_id):
             return False
         if not self.storage_handler or not self.storage_handler.supabase_client:
             return False
         try:
-            self.storage_handler.supabase_client.table('discord_competitions').upsert(
-                payload, on_conflict='guild_id,slug'
-            ).execute()
+            existing = (
+                self.storage_handler.supabase_client.table('competitions')
+                .select('id')
+                .eq('type', 'community')
+                .eq('guild_id', effective_guild_id)
+                .eq('slug', slug)
+                .limit(1)
+                .execute()
+            )
+
+            if existing.data:
+                (
+                    self.storage_handler.supabase_client.table('competitions')
+                    .update(payload)
+                    .eq('id', existing.data[0]['id'])
+                    .execute()
+                )
+            else:
+                self.storage_handler.supabase_client.table('competitions').insert(payload).execute()
             return True
         except Exception as e:
             logger.error(f"Error upserting competition: {e}", exc_info=True)
@@ -1765,8 +1786,10 @@ class DatabaseHandler:
             return None
         try:
             query = (
-                self.storage_handler.supabase_client.table('discord_competitions')
-                .select('*').eq('slug', slug)
+                self.storage_handler.supabase_client.table('competitions')
+                .select('*')
+                .eq('type', 'community')
+                .eq('slug', slug)
             )
             if guild_id is not None:
                 query = query.eq('guild_id', guild_id)
@@ -1782,8 +1805,10 @@ class DatabaseHandler:
             return []
         try:
             query = (
-                self.storage_handler.supabase_client.table('discord_competitions')
-                .select('*').eq('status', 'voting')
+                self.storage_handler.supabase_client.table('competitions')
+                .select('*')
+                .eq('type', 'community')
+                .eq('status', 'voting')
             )
             if guild_id is not None:
                 query = query.eq('guild_id', guild_id)
@@ -1794,15 +1819,16 @@ class DatabaseHandler:
             return []
 
     def get_scheduled_competitions(self, guild_id: Optional[int] = None) -> List[Dict]:
-        """Return competitions in 'setup' status that have a voting_starts_at set."""
+        """Return competitions in 'setup' status that have a voting_start set."""
         if not self.storage_handler or not self.storage_handler.supabase_client:
             return []
         try:
             query = (
-                self.storage_handler.supabase_client.table('discord_competitions')
+                self.storage_handler.supabase_client.table('competitions')
                 .select('*')
+                .eq('type', 'community')
                 .eq('status', 'setup')
-                .not_.is_('voting_starts_at', 'null')
+                .not_.is_('voting_start', 'null')
             )
             if guild_id is not None:
                 query = query.eq('guild_id', guild_id)
@@ -1820,14 +1846,19 @@ class DatabaseHandler:
         if effective_guild_id is None:
             logger.error(f"update_competition({slug}): guild_id is required")
             return False
+        payload['type'] = 'community'
         if not self._gate_check(effective_guild_id):
             return False
         if not self.storage_handler or not self.storage_handler.supabase_client:
             return False
         try:
             (
-                self.storage_handler.supabase_client.table('discord_competitions')
-                .update(payload).eq('slug', slug).eq('guild_id', effective_guild_id).execute()
+                self.storage_handler.supabase_client.table('competitions')
+                .update(payload)
+                .eq('type', 'community')
+                .eq('slug', slug)
+                .eq('guild_id', effective_guild_id)
+                .execute()
             )
             return True
         except Exception as e:
@@ -1840,41 +1871,42 @@ class DatabaseHandler:
 
     def upsert_competition_entry(self, entry: Dict, guild_id: Optional[int] = None) -> bool:
         payload = dict(entry)
-        effective_guild_id = guild_id or payload.get('guild_id')
-        if effective_guild_id is not None:
-            payload['guild_id'] = effective_guild_id
-        if not self._gate_check(effective_guild_id):
+        competition_id = payload.get('competition_id')
+        if not competition_id:
+            logger.error("upsert_competition_entry requires competition_id")
+            return False
+        if guild_id is not None and not self._gate_check(guild_id):
             return False
         if not self.storage_handler or not self.storage_handler.supabase_client:
             return False
         try:
             self.storage_handler.supabase_client.table('competition_entries').upsert(
-                payload, on_conflict='guild_id,competition_slug,message_id'
+                payload, on_conflict='competition_id,message_id'
             ).execute()
             return True
         except Exception as e:
             logger.error(f"Error upserting competition entry: {e}", exc_info=True)
             return False
 
-    def get_competition_entries(self, slug: str, guild_id: Optional[int] = None) -> List[Dict]:
+    def get_competition_entries(self, competition_id: str, guild_id: Optional[int] = None) -> List[Dict]:
+        if guild_id is not None and not self._gate_check(guild_id):
+            return []
         if not self.storage_handler or not self.storage_handler.supabase_client:
             return []
         try:
             query = (
                 self.storage_handler.supabase_client.table('competition_entries')
                 .select('*')
-                .eq('competition_slug', slug)
+                .eq('competition_id', competition_id)
                 .order('created_at')
             )
-            if guild_id is not None:
-                query = query.eq('guild_id', guild_id)
             result = query.execute()
             return result.data or []
         except Exception as e:
-            logger.error(f"Error fetching competition entries for {slug}: {e}", exc_info=True)
+            logger.error(f"Error fetching competition entries for {competition_id}: {e}", exc_info=True)
             return []
 
-    def delete_competition_entry(self, slug: str, message_id: int, guild_id: Optional[int] = None) -> bool:
+    def delete_competition_entry(self, competition_id: str, message_id: int, guild_id: Optional[int] = None) -> bool:
         if not self._gate_check(guild_id):
             return False
         if not self.storage_handler or not self.storage_handler.supabase_client:
@@ -1882,7 +1914,9 @@ class DatabaseHandler:
         try:
             (
                 self.storage_handler.supabase_client.table('competition_entries')
-                .delete().eq('competition_slug', slug).eq('message_id', message_id).eq('guild_id', guild_id)
+                .delete()
+                .eq('competition_id', competition_id)
+                .eq('message_id', message_id)
                 .execute()
             )
             return True
@@ -1890,15 +1924,19 @@ class DatabaseHandler:
             logger.error(f"Error deleting competition entry {message_id}: {e}", exc_info=True)
             return False
 
-    def clear_competition_entries(self, slug: str, guild_id: Optional[int] = None) -> bool:
+    def clear_competition_entries(self, competition_id: str, guild_id: Optional[int] = None) -> bool:
+        if guild_id is not None and not self._gate_check(guild_id):
+            return False
         if not self.storage_handler or not self.storage_handler.supabase_client:
             return False
         try:
-            query = self.storage_handler.supabase_client.table('competition_entries').delete().eq('competition_slug', slug)
-            if guild_id is not None:
-                query = query.eq('guild_id', guild_id)
-            query.execute()
+            (
+                self.storage_handler.supabase_client.table('competition_entries')
+                .delete()
+                .eq('competition_id', competition_id)
+                .execute()
+            )
             return True
         except Exception as e:
-            logger.error(f"Error clearing competition entries for {slug}: {e}", exc_info=True)
+            logger.error(f"Error clearing competition entries for {competition_id}: {e}", exc_info=True)
             return False
