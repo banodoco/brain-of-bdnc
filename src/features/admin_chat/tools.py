@@ -6,10 +6,11 @@ Following the Arnold pattern - includes a 'reply' tool that the LLM uses to resp
 import os
 import re
 import sys
+import time
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 import discord
 from dotenv import load_dotenv
 
@@ -414,8 +415,43 @@ TOOLS = [
     },
 ]
 
+MEMBER_TOOLS = {
+    "reply",
+    "end_turn",
+    "find_messages",
+    "inspect_message",
+    "get_active_channels",
+    "get_daily_summaries",
+    "get_member_info",
+    "get_bot_status",
+    "resolve_user",
+}
+
+ADMIN_ONLY_TOOLS = {
+    "share_to_social",
+    "search_logs",
+    "send_message",
+    "edit_message",
+    "delete_message",
+    "upload_file",
+    "query_table",
+}
+
+ALL_TOOL_NAMES = {tool["name"] for tool in TOOLS}
+assert MEMBER_TOOLS | ADMIN_ONLY_TOOLS == ALL_TOOL_NAMES, "Every admin chat tool must be classified"
+assert MEMBER_TOOLS & ADMIN_ONLY_TOOLS == set(), "Tool role sets must be disjoint"
+
+
+def get_tools_for_role(is_admin: bool) -> List[Dict[str, Any]]:
+    """Return the tool schemas available for the current role."""
+    allowed = ALL_TOOL_NAMES if is_admin else MEMBER_TOOLS
+    return [tool for tool in TOOLS if tool["name"] in allowed]
+
 
 # ========== Helper Functions ==========
+
+_VISIBLE_CHANNEL_CACHE_TTL_SECONDS = 60
+_visible_channel_cache: Dict[Tuple[int, int], Tuple[float, Set[int]]] = {}
 
 def parse_message_link(link: str) -> Optional[Dict[str, int]]:
     """Parse a Discord message link into guild_id, channel_id, message_id."""
@@ -486,6 +522,47 @@ def _build_summary(formatted: List[Dict], header: str, media_urls_map: Dict[str,
     return SPLIT_MARKER.join(parts)
 
 
+async def _get_visible_channel_ids(bot: discord.Client, guild_id: int, user_id: int) -> Set[int]:
+    """Return channel and active thread IDs the requester can view.
+
+    Cached for 60s to avoid repeated Discord API lookups. Permission changes can
+    take up to one cache window to propagate here.
+    """
+    cache_key = (guild_id, user_id)
+    now = time.monotonic()
+    cached = _visible_channel_cache.get(cache_key)
+    if cached and now - cached[0] < _VISIBLE_CHANNEL_CACHE_TTL_SECONDS:
+        return set(cached[1])
+
+    if not bot:
+        return set()
+
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        try:
+            guild = await bot.fetch_guild(guild_id)
+        except Exception:
+            return set()
+
+    member = guild.get_member(user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except Exception:
+            return set()
+
+    visible_channel_ids: Set[int] = set()
+    for channel in list(guild.channels) + list(guild.threads):
+        try:
+            if channel.permissions_for(member).view_channel:
+                visible_channel_ids.add(channel.id)
+        except Exception:
+            continue
+
+    _visible_channel_cache[cache_key] = (now, visible_channel_ids)
+    return set(visible_channel_ids)
+
+
 # ========== Tool Executors ==========
 
 def execute_reply(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -527,7 +604,12 @@ def execute_end_turn(params: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = None) -> Dict[str, Any]:
+async def execute_find_messages(
+    params: Dict[str, Any],
+    bot: discord.Client = None,
+    visible_channels: Optional[Set[int]] = None,
+    resolved_guild_id: Optional[int] = None,
+) -> Dict[str, Any]:
     """Unified message search. Builds one query with all filters, or uses live Discord API."""
     from scripts.weekly_digest import get_client, get_user_by_name, _enrich_messages
     from src.common.discord_utils import refresh_media_url
@@ -554,7 +636,7 @@ async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = No
         resolved_username = user_data.get('username', username)
 
     try:
-        resolved_guild_id = _resolve_guild_id(params)
+        resolved_guild_id = resolved_guild_id or _resolve_guild_id(params)
         # ---- Live path: use Discord API directly ----
         if live:
             if not channel_id:
@@ -565,6 +647,8 @@ async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = No
             channel = bot.get_channel(int(channel_id))
             if not channel:
                 channel = await bot.fetch_channel(int(channel_id))
+            if visible_channels is not None and channel.id not in visible_channels:
+                return {"success": False, "error": "Permission denied"}
 
             messages = []
             # When sorting by reactions/reactors, collect more candidates since best ones may be older
@@ -614,6 +698,12 @@ async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = No
                 ch_query = ch_query.eq('guild_id', resolved_guild_id)
             channels_result = ch_query.execute()
             safe_channels = {ch['channel_id']: ch['channel_name'] for ch in channels_result.data if not ch.get('nsfw')}
+            if visible_channels is not None:
+                safe_channels = {
+                    ch_id: channel_name
+                    for ch_id, channel_name in safe_channels.items()
+                    if ch_id in visible_channels
+                }
 
             # Build query — chain all applicable filters
             MSG_SELECT = 'message_id, guild_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
@@ -623,8 +713,18 @@ async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = No
 
             # Only search in safe (non-NSFW) channels
             if channel_id:
-                q = q.eq('channel_id', int(channel_id))
+                requested_channel_id = int(channel_id)
+                if visible_channels is not None and requested_channel_id not in safe_channels:
+                    return {"success": False, "error": "Permission denied"}
+                q = q.eq('channel_id', requested_channel_id)
             else:
+                if not safe_channels:
+                    return {
+                        "success": True,
+                        "count": 0,
+                        "summary": f"No messages found matching your filters in the last {days} days.",
+                        "messages": []
+                    }
                 q = q.in_('channel_id', list(safe_channels.keys()))
 
             if author_id:
@@ -712,7 +812,11 @@ async def execute_find_messages(params: Dict[str, Any], bot: discord.Client = No
         return {"success": False, "error": str(e)}
 
 
-async def execute_inspect_message(params: Dict[str, Any], bot: discord.Client = None) -> Dict[str, Any]:
+async def execute_inspect_message(
+    params: Dict[str, Any],
+    bot: discord.Client = None,
+    visible_channels: Optional[Set[int]] = None,
+) -> Dict[str, Any]:
     """Deep look at one message: content, reactions, context, replies, fresh media."""
     from scripts.weekly_digest import get_message_context, get_message_by_id
     from src.common.discord_utils import refresh_media_url
@@ -739,6 +843,8 @@ async def execute_inspect_message(params: Dict[str, Any], bot: discord.Client = 
         live_reactions = []
         media_urls = []
         channel_id = target.get('channel_id')
+        if visible_channels is not None and channel_id not in visible_channels:
+            return {"success": False, "error": "Permission denied"}
 
         if bot and channel_id:
             try:
@@ -908,14 +1014,51 @@ async def execute_share_to_social(
         return {"success": False, "error": str(e)}
 
 
-async def execute_get_active_channels(params: Dict[str, Any]) -> Dict[str, Any]:
+async def execute_get_active_channels(
+    params: Dict[str, Any],
+    visible_channels: Optional[Set[int]] = None,
+    resolved_guild_id: Optional[int] = None,
+) -> Dict[str, Any]:
     """Get list of active channels."""
-    from scripts.weekly_digest import get_active_channels
 
     days = params.get('days', 7)
 
     try:
-        channels = get_active_channels(days=days)
+        client = _get_supabase()
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+
+        ch_query = client.table('discord_channels').select('channel_id, channel_name, nsfw')
+        if resolved_guild_id:
+            ch_query = ch_query.eq('guild_id', resolved_guild_id)
+        channels_result = ch_query.execute()
+
+        channel_map = {
+            ch['channel_id']: ch['channel_name']
+            for ch in channels_result.data
+            if not ch.get('nsfw') and (visible_channels is None or ch['channel_id'] in visible_channels)
+        }
+        if not channel_map:
+            return {"success": True, "count": 0, "channels": []}
+
+        msg_query = client.table('discord_messages').select('channel_id').gte('created_at', cutoff).eq('is_deleted', False)
+        if resolved_guild_id:
+            msg_query = msg_query.eq('guild_id', resolved_guild_id)
+        msg_query = msg_query.in_('channel_id', list(channel_map.keys()))
+        messages = msg_query.execute().data
+
+        channel_counts: Dict[int, int] = {}
+        for message in messages:
+            channel_id = message['channel_id']
+            channel_counts[channel_id] = channel_counts.get(channel_id, 0) + 1
+
+        channels = [
+            {
+                'channel_id': channel_id,
+                'channel_name': channel_map[channel_id],
+                'message_count': count,
+            }
+            for channel_id, count in sorted(channel_counts.items(), key=lambda item: item[1], reverse=True)
+        ]
 
         # Format for LLM (top 20)
         formatted = [
@@ -938,19 +1081,20 @@ async def execute_get_active_channels(params: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-async def execute_get_daily_summaries(params: Dict[str, Any]) -> Dict[str, Any]:
+async def execute_get_daily_summaries(
+    params: Dict[str, Any],
+    visible_channels: Optional[Set[int]] = None,
+    resolved_guild_id: Optional[int] = None,
+) -> Dict[str, Any]:
     """Get daily summaries."""
     from collections import defaultdict
-    from supabase import create_client as sc
 
     days = params.get('days', 7)
     channel_id = params.get('channel_id')
 
     try:
-        resolved_guild_id = _resolve_guild_id(params)
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_SERVICE_KEY")
-        client = sc(url, key)
+        resolved_guild_id = resolved_guild_id or _resolve_guild_id(params)
+        client = _get_supabase()
         cutoff = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
 
         q = client.table('daily_summaries').select('date, channel_id, short_summary') \
@@ -958,8 +1102,13 @@ async def execute_get_daily_summaries(params: Dict[str, Any]) -> Dict[str, Any]:
         if resolved_guild_id:
             q = q.eq('guild_id', resolved_guild_id)
         if channel_id:
+            requested_channel_id = int(channel_id)
+            if visible_channels is not None and requested_channel_id not in visible_channels:
+                return {"success": False, "error": "Permission denied"}
             q = q.eq('channel_id', str(channel_id))
         rows = q.execute().data
+        if visible_channels is not None:
+            rows = [row for row in rows if int(row['channel_id']) in visible_channels]
 
         by_date = defaultdict(list)
         for r in rows:
@@ -1390,9 +1539,15 @@ async def execute_tool(
     tool_input: Dict[str, Any],
     bot: discord.Client,
     db_handler,
-    sharer
+    sharer,
+    allowed_tools: Optional[Set[str]] = None,
+    requester_id: Optional[int] = None,
+    trusted_guild_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Execute a tool by name and return the result as a dict."""
+
+    if allowed_tools is not None and tool_name not in allowed_tools:
+        return {"success": False, "error": "Permission denied"}
 
     # Log params for search tools (skip reply/end_turn which are noisy)
     if tool_name not in ("reply", "end_turn"):
@@ -1400,37 +1555,63 @@ async def execute_tool(
     else:
         logger.info(f"[AdminChat] Executing tool: {tool_name}")
 
+    trusted_tool_input = dict(tool_input)
+    resolved_guild_id = trusted_guild_id if requester_id is not None else None
+    visible_channels: Optional[Set[int]] = None
+
+    if requester_id is not None and trusted_guild_id is not None:
+        trusted_tool_input['guild_id'] = trusted_guild_id
+        if tool_name in {"find_messages", "inspect_message", "get_active_channels", "get_daily_summaries"}:
+            visible_channels = await _get_visible_channel_ids(bot, trusted_guild_id, requester_id)
+
     if tool_name == "reply":
-        return execute_reply(tool_input)
+        return execute_reply(trusted_tool_input)
     elif tool_name == "end_turn":
-        return execute_end_turn(tool_input)
+        return execute_end_turn(trusted_tool_input)
     elif tool_name == "find_messages":
-        return await execute_find_messages(tool_input, bot)
+        return await execute_find_messages(
+            trusted_tool_input,
+            bot,
+            visible_channels=visible_channels,
+            resolved_guild_id=resolved_guild_id,
+        )
     elif tool_name == "inspect_message":
-        return await execute_inspect_message(tool_input, bot)
+        return await execute_inspect_message(
+            trusted_tool_input,
+            bot,
+            visible_channels=visible_channels,
+        )
     elif tool_name == "share_to_social":
-        return await execute_share_to_social(bot, sharer, tool_input)
+        return await execute_share_to_social(bot, sharer, trusted_tool_input)
     elif tool_name == "get_active_channels":
-        return await execute_get_active_channels(tool_input)
+        return await execute_get_active_channels(
+            trusted_tool_input,
+            visible_channels=visible_channels,
+            resolved_guild_id=resolved_guild_id,
+        )
     elif tool_name == "get_daily_summaries":
-        return await execute_get_daily_summaries(tool_input)
+        return await execute_get_daily_summaries(
+            trusted_tool_input,
+            visible_channels=visible_channels,
+            resolved_guild_id=resolved_guild_id,
+        )
     elif tool_name == "get_member_info":
-        return await execute_get_member_info(db_handler, tool_input)
+        return await execute_get_member_info(db_handler, trusted_tool_input)
     elif tool_name == "get_bot_status":
         return await execute_get_bot_status(bot)
     elif tool_name == "search_logs":
-        return await execute_search_logs(tool_input)
+        return await execute_search_logs(trusted_tool_input)
     elif tool_name == "send_message":
-        return await execute_send_message(bot, tool_input)
+        return await execute_send_message(bot, trusted_tool_input)
     elif tool_name == "edit_message":
-        return await execute_edit_message(bot, tool_input)
+        return await execute_edit_message(bot, trusted_tool_input)
     elif tool_name == "delete_message":
-        return await execute_delete_message(bot, tool_input)
+        return await execute_delete_message(bot, trusted_tool_input)
     elif tool_name == "upload_file":
-        return await execute_upload_file(bot, tool_input)
+        return await execute_upload_file(bot, trusted_tool_input)
     elif tool_name == "resolve_user":
-        return await execute_resolve_user(tool_input)
+        return await execute_resolve_user(trusted_tool_input)
     elif tool_name == "query_table":
-        return await execute_query_table(tool_input)
+        return await execute_query_table(trusted_tool_input)
     else:
         return {"success": False, "error": f"Unknown tool: {tool_name}"}

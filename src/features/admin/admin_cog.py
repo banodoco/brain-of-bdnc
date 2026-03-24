@@ -10,6 +10,7 @@ import re
 import random
 import aiohttp
 import asyncio
+import time
 
 from src.common.db_handler import DatabaseHandler
 from src.common import discord_utils
@@ -163,6 +164,8 @@ class AdminCog(commands.Cog):
         self.bot = bot
         self.db_handler = bot.db_handler if hasattr(bot, 'db_handler') else None
         self.server_config = getattr(self.db_handler, 'server_config', None) if self.db_handler else None
+        self._dm_access_cache: dict[int, tuple[float, bool]] = {}
+        self._dm_guild_cache: dict[int, tuple[float, bool]] = {}
         # Initialize Supabase sync handler
         self.supabase_sync = SupabaseSyncHandler(
             self.db_handler,
@@ -204,6 +207,56 @@ class AdminCog(commands.Cog):
             if guild_id == self.server_config.bndc_guild_id:
                 return True
         return False
+
+    async def _can_user_message_bot(self, user_id: int) -> bool:
+        """Check members.can_message_bot with a short cache for DM routing."""
+        cached = self._dm_access_cache.get(user_id)
+        now = time.monotonic()
+        if cached and now - cached[0] < 60:
+            return cached[1]
+
+        storage_handler = getattr(self.db_handler, 'storage_handler', None)
+        client = getattr(storage_handler, 'supabase_client', None)
+        if client is None:
+            return False
+
+        result = await asyncio.to_thread(
+            client.table('members')
+            .select('can_message_bot')
+            .eq('member_id', user_id)
+            .limit(1)
+            .execute
+        )
+        allowed = bool(result.data and result.data[0].get('can_message_bot'))
+        self._dm_access_cache[user_id] = (now, allowed)
+        return allowed
+
+    async def _has_dm_chat_context(self, user_id: int) -> bool:
+        """Return True when the user shares an enabled guild with the bot."""
+        cached = self._dm_guild_cache.get(user_id)
+        now = time.monotonic()
+        if cached and now - cached[0] < 60:
+            return cached[1]
+
+        storage_handler = getattr(self.db_handler, 'storage_handler', None)
+        client = getattr(storage_handler, 'supabase_client', None)
+        if client is None:
+            return False
+
+        result = await asyncio.to_thread(
+            client.table('guild_members')
+            .select('guild_id')
+            .eq('member_id', user_id)
+            .execute
+        )
+        has_context = any(
+            row.get('guild_id') is not None
+            and self.bot.get_guild(int(row['guild_id'])) is not None
+            and (self.server_config is None or self.server_config.is_guild_enabled(int(row['guild_id'])))
+            for row in (result.data or [])
+        )
+        self._dm_guild_cache[user_id] = (now, has_context)
+        return has_context
 
     async def cog_load(self):
         """Called when the cog is loaded."""
@@ -306,6 +359,10 @@ class AdminCog(commands.Cog):
                     return
             except ValueError:
                 pass  # Invalid ADMIN_USER_ID, continue with normal flow
+
+        if await self._can_user_message_bot(message.author.id) and await self._has_dm_chat_context(message.author.id):
+            # Approved members can use AdminChatCog over DM.
+            return
 
         # Reply with robot sounds to all other DMs
         logger.info(f"Received DM from user {message.author.id}. Replying with robot sounds.")

@@ -1,11 +1,9 @@
-"""Discord cog for admin chat - handles DMs and @mentions from ADMIN_USER_ID.
-
-Listens for DMs from the admin and @mentions of the bot by the admin in
-public channels, then processes them through the Claude agent.
-"""
+"""Discord cog for privileged admin chat and approved member bot access."""
 import asyncio
 import os
 import logging
+import time
+from collections import deque
 import discord
 from discord.ext import commands
 
@@ -15,7 +13,11 @@ logger = logging.getLogger('DiscordBot')
 
 
 class AdminChatCog(commands.Cog):
-    """Cog that handles admin DM conversations with Claude."""
+    """Cog that handles admin chat plus approved member requests."""
+
+    _ACCESS_CACHE_TTL_SECONDS = 60
+    _RATE_LIMIT_WINDOW_SECONDS = 300
+    _RATE_LIMIT_MAX_MESSAGES = 10
 
     def __init__(self, bot: commands.Bot, db_handler, sharer):
         self.bot = bot
@@ -27,6 +29,9 @@ class AdminChatCog(commands.Cog):
         self._busy: dict[int, bool] = {}
         # Queue follow-up messages that arrive while agent is busy
         self._pending_messages: dict[int, discord.Message] = {}
+        self._message_access_cache: dict[int, tuple[float, bool]] = {}
+        self._guild_context_cache: dict[int, tuple[float, int | None]] = {}
+        self._rate_limits: dict[int, deque[float]] = {}
 
         # Get admin user ID
         admin_id_str = os.getenv('ADMIN_USER_ID')
@@ -40,6 +45,11 @@ class AdminChatCog(commands.Cog):
         else:
             logger.warning("[AdminChat] ADMIN_USER_ID not set - admin chat disabled")
             self.admin_user_id = None
+
+    def _get_supabase(self):
+        """Get the shared Supabase client if available."""
+        storage_handler = getattr(self.db_handler, 'storage_handler', None)
+        return getattr(storage_handler, 'supabase_client', None)
     
     def _ensure_agent(self):
         """Lazily initialize the agent (to avoid issues during bot startup)."""
@@ -82,6 +92,83 @@ class AdminChatCog(commands.Cog):
         """Check if a user is the admin."""
         return self.admin_user_id is not None and user_id == self.admin_user_id
 
+    async def _can_user_message_bot(self, user_id: int) -> bool:
+        """Check members.can_message_bot with a short in-memory cache."""
+        now = time.monotonic()
+        cached = self._message_access_cache.get(user_id)
+        if cached and now - cached[0] < self._ACCESS_CACHE_TTL_SECONDS:
+            return cached[1]
+
+        client = self._get_supabase()
+        if client is None:
+            return False
+
+        result = await asyncio.to_thread(
+            client.table('members')
+            .select('can_message_bot')
+            .eq('member_id', user_id)
+            .limit(1)
+            .execute
+        )
+        allowed = bool(result.data and result.data[0].get('can_message_bot'))
+        self._message_access_cache[user_id] = (now, allowed)
+        return allowed
+
+    async def _resolve_context_guild_id(self, user_id: int, guild_hint: int | None = None) -> int | None:
+        """Resolve a trusted guild context for the requester."""
+        if guild_hint is not None:
+            server_config = getattr(self.db_handler, 'server_config', None)
+            if self.bot.get_guild(guild_hint) is None:
+                return None
+            if server_config and not server_config.is_guild_enabled(guild_hint):
+                return None
+            return guild_hint
+
+        now = time.monotonic()
+        cached = self._guild_context_cache.get(user_id)
+        if cached and now - cached[0] < self._ACCESS_CACHE_TTL_SECONDS:
+            return cached[1]
+
+        client = self._get_supabase()
+        if client is None:
+            return None
+
+        result = await asyncio.to_thread(
+            client.table('guild_members')
+            .select('guild_id')
+            .eq('member_id', user_id)
+            .execute
+        )
+        server_config = getattr(self.db_handler, 'server_config', None)
+        guild_ids = sorted({
+            int(row['guild_id'])
+            for row in (result.data or [])
+            if row.get('guild_id') is not None
+            and self.bot.get_guild(int(row['guild_id'])) is not None
+            and (server_config is None or server_config.is_guild_enabled(int(row['guild_id'])))
+        })
+        if not guild_ids:
+            resolved = None
+        else:
+            default_guild_id = server_config.get_default_guild_id(require_write=False) if server_config else None
+            resolved = default_guild_id if default_guild_id in guild_ids else guild_ids[0]
+            if len(guild_ids) > 1:
+                logger.info(f"[AdminChat] Resolved DM guild for {user_id} to {resolved} from {guild_ids}")
+
+        self._guild_context_cache[user_id] = (now, resolved)
+        return resolved
+
+    def _is_rate_limited(self, user_id: int) -> bool:
+        """Apply a simple sliding-window limit for non-admin users."""
+        now = time.monotonic()
+        bucket = self._rate_limits.setdefault(user_id, deque())
+        while bucket and now - bucket[0] > self._RATE_LIMIT_WINDOW_SECONDS:
+            bucket.popleft()
+        if len(bucket) >= self._RATE_LIMIT_MAX_MESSAGES:
+            return True
+        bucket.append(now)
+        return False
+
     def _strip_mention(self, content: str) -> str:
         """Remove the bot @mention from message content."""
         if self.bot.user:
@@ -97,24 +184,34 @@ class AdminChatCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Listen for DMs and @mentions from the admin user."""
+        """Handle admin chat and approved member bot requests."""
 
         if not self._is_directed_at_bot(message):
             return
 
-        if not self._is_admin(message.author.id):
-            await message.reply("I can only respond to admins for now!")
-            return
-
         is_dm = isinstance(message.channel, discord.DMChannel)
+        is_admin = self._is_admin(message.author.id)
         content = message.content if is_dm else self._strip_mention(message.content)
 
         if not content:
             return
 
+        resolved_guild_id = message.guild.id if message.guild else None
+        if not is_admin:
+            if not await self._can_user_message_bot(message.author.id):
+                return
+            resolved_guild_id = await self._resolve_context_guild_id(message.author.id, resolved_guild_id)
+            if resolved_guild_id is None:
+                logger.info(f"[AdminChat] No guild context for approved member {message.author.id}")
+                return
+            if self._is_rate_limited(message.author.id):
+                await message.reply("Slow down a bit. Try again in a few minutes.")
+                return
+
         user_id = message.author.id
         source = "DM" if is_dm else f"#{getattr(message.channel, 'name', 'unknown')}"
-        logger.info(f"[AdminChat] Received from admin in {source}: {content[:50]}...")
+        role = "admin" if is_admin else "member"
+        logger.info(f"[AdminChat] Received from {role} in {source}: {content[:50]}...")
 
         # If agent is busy, check if this is an abort or queue it
         if self._busy.get(user_id):
@@ -135,10 +232,17 @@ class AdminChatCog(commands.Cog):
 
             # Build channel context for non-DM messages
             channel_context = None
-            if not is_dm:
+            if is_dm:
+                guild = self.bot.get_guild(resolved_guild_id) if resolved_guild_id else None
+                channel_context = {
+                    "source": "dm",
+                    "guild_id": str(resolved_guild_id) if resolved_guild_id else None,
+                    "guild_name": guild.name if guild else None,
+                }
+            else:
                 ch = message.channel
                 channel_context = {
-                    "guild_id": str(message.guild.id),
+                    "guild_id": str(resolved_guild_id),
                     "channel_id": str(ch.id),
                     "channel_name": getattr(ch, 'name', 'unknown'),
                 }
@@ -177,7 +281,9 @@ class AdminChatCog(commands.Cog):
                     user_id=user_id,
                     user_message=content,
                     channel_context=channel_context,
-                    channel=message.channel
+                    channel=message.channel,
+                    is_admin=is_admin,
+                    requester_id=None if is_admin else user_id,
                 )
             finally:
                 self._busy[user_id] = False
