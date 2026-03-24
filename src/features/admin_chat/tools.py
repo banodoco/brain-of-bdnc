@@ -135,7 +135,7 @@ TOOLS = [
                 },
                 "days": {
                     "type": "integer",
-                    "description": "Days back (default 7)"
+                    "description": "Filter to last N days. Omit to search all time."
                 },
                 "limit": {
                     "type": "integer",
@@ -619,7 +619,7 @@ async def execute_find_messages(
     channel_id = params.get('channel_id', '')
     min_reactions = params.get('min_reactions', 0)
     has_media = params.get('has_media', False)
-    days = params.get('days', 7)
+    days = params.get('days')  # None = all time
     limit = min(params.get('limit', 20), 100)
     sort = params.get('sort', 'reactions')
     do_refresh_media = params.get('refresh_media', False)
@@ -690,7 +690,6 @@ async def execute_find_messages(
         # ---- DB path: build single Supabase query ----
         else:
             client = get_client()
-            cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
             # Get channel names for enrichment + NSFW filtering
             ch_query = client.table('discord_channels').select('channel_id, channel_name, nsfw')
@@ -707,7 +706,10 @@ async def execute_find_messages(
 
             # Build query — chain all applicable filters
             MSG_SELECT = 'message_id, guild_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
-            q = client.table('discord_messages').select(MSG_SELECT).gte('created_at', cutoff).eq('is_deleted', False)
+            q = client.table('discord_messages').select(MSG_SELECT).eq('is_deleted', False)
+            if days is not None:
+                cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+                q = q.gte('created_at', cutoff)
             if resolved_guild_id:
                 q = q.eq('guild_id', resolved_guild_id)
 
@@ -763,10 +765,11 @@ async def execute_find_messages(
             if min_reactions:
                 desc_parts.append(f"with {min_reactions}+ reactions")
             desc = " ".join(desc_parts) or "matching your filters"
+            time_desc = f"in the last {days} days" if days else "across all time"
             return {
                 "success": True,
                 "count": 0,
-                "summary": f"No messages found {desc} in the last {days} days.",
+                "summary": f"No messages found {desc} {time_desc}.",
                 "messages": []
             }
 
@@ -788,14 +791,23 @@ async def execute_find_messages(
 
         formatted = [format_message_for_llm(msg) for msg in messages]
 
-        # Build header
-        header_parts = ["**Found ", str(len(formatted)), " messages"]
-        if query:
-            header_parts.append(f" matching '{query}'")
+        # Build header — be explicit about scope so the bot knows what it's looking at
+        hit_cap = len(formatted) >= limit
+        count_str = f"{len(formatted)}+" if hit_cap else str(len(formatted))
+        header_parts = [f"**Found {count_str} messages"]
         if resolved_username:
             header_parts.append(f" from {resolved_username}")
+        if query:
+            header_parts.append(f" matching '{query}'")
         if live:
             header_parts.append(f" in <#{channel_id}>")
+        if days:
+            header_parts.append(f" (last {days} days)")
+        else:
+            header_parts.append(" (all time)")
+        header_parts.append(f", sorted by {sort}")
+        if hit_cap:
+            header_parts.append(f" (showing top {limit}, use limit param for more)")
         header_parts.append(":**")
 
         summary = _build_summary(formatted, "".join(header_parts), media_urls_map)
