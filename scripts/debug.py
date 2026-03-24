@@ -405,7 +405,7 @@ def cmd_db_stats(args):
     tables = {
         'discord_messages': 'Messages',
         'discord_channels': 'Channels',
-        'discord_members': 'Members',
+        'members': 'Members',
         'daily_summaries': 'Daily Summaries',
         'system_logs': 'System Logs',
     }

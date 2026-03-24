@@ -138,7 +138,7 @@ def _member_map(db, member_ids: List[int]) -> Dict[int, str]:
 
     missing_ids = [member_id for member_id in member_ids if member_id not in member_map]
     if missing_ids:
-        members = db.table('discord_members').select(
+        members = db.table('members').select(
             'member_id, username, global_name, server_nick, include_in_updates'
         ).in_('member_id', missing_ids).execute()
         for member in (members.data or []):
@@ -361,13 +361,13 @@ def user(username: str, days: int = 7, limit: int = 30) -> List[Dict]:
     db = _supabase()
     # Find user
     for field in ('username', 'server_nick', 'global_name'):
-        r = db.table('discord_members').select('*').eq(field, username).execute()
+        r = db.table('members').select('*').eq(field, username).execute()
         if r.data:
             break
     else:
-        r = db.table('discord_members').select('*').ilike('username', f'%{username}%').limit(1).execute()
+        r = db.table('members').select('*').ilike('username', f'%{username}%').limit(1).execute()
     if not r.data:
-        r = db.table('discord_members').select('*').ilike('server_nick', f'%{username}%').limit(1).execute()
+        r = db.table('members').select('*').ilike('server_nick', f'%{username}%').limit(1).execute()
     if not r.data:
         return []
 
@@ -426,10 +426,10 @@ def get_member_id(username: str) -> Optional[str]:
     """Resolve a username to a Discord member ID."""
     db = _supabase()
     for field in ('username', 'server_nick', 'global_name'):
-        r = db.table('discord_members').select('member_id').eq(field, username).execute()
+        r = db.table('members').select('member_id').eq(field, username).execute()
         if r.data:
             return r.data[0]['member_id']
-    r = db.table('discord_members').select('member_id') \
+    r = db.table('members').select('member_id') \
         .ilike('username', f'%{username}%').limit(1).execute()
     if r.data:
         return r.data[0]['member_id']

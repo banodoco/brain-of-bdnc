@@ -102,7 +102,7 @@ def _fetch_member_map(client, author_ids: List[int], guild_override: Optional[in
     missing_ids = [author_id for author_id in author_ids if author_id not in member_map]
     if missing_ids:
         members_result = (
-            client.table('discord_members')
+            client.table('members')
             .select('member_id, username, global_name, server_nick, include_in_updates')
             .in_('member_id', missing_ids)
             .execute()
@@ -363,22 +363,22 @@ def get_user_by_name(username: str) -> Optional[Dict]:
     """Find a user by username (partial match)."""
     client = get_client()
     # Try exact match first
-    result = client.table('discord_members').select('*').eq('username', username).execute()
+    result = client.table('members').select('*').eq('username', username).execute()
     if result.data:
         return result.data[0]
     
     # Try server_nick
-    result = client.table('discord_members').select('*').eq('server_nick', username).execute()
+    result = client.table('members').select('*').eq('server_nick', username).execute()
     if result.data:
         return result.data[0]
     
     # Try global_name
-    result = client.table('discord_members').select('*').eq('global_name', username).execute()
+    result = client.table('members').select('*').eq('global_name', username).execute()
     if result.data:
         return result.data[0]
     
     # Try case-insensitive partial match on username
-    result = client.table('discord_members').select('*').ilike('username', f'%{username}%').limit(10).execute()
+    result = client.table('members').select('*').ilike('username', f'%{username}%').limit(10).execute()
     if result.data:
         return result.data[0]  # Return first match
     

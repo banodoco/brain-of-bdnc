@@ -82,7 +82,7 @@ def fetch_members(sb, member_ids: List[str], guild_id: Optional[int] = None) -> 
         missing = [member_id for member_id in batch if member_id not in names]
         if missing:
             res = (
-                sb.table('discord_members')
+                sb.table('members')
                 .select('member_id,username,global_name,server_nick')
                 .in_('member_id', missing)
                 .execute()

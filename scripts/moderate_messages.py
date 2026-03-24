@@ -59,7 +59,7 @@ def _read_ids_file(path: str) -> list[int]:
 
 
 # ---------------------------------------------------------------------------
-# Shared author-name cache backed by Supabase discord_members
+# Shared author-name cache backed by Supabase members
 # ---------------------------------------------------------------------------
 
 
@@ -75,7 +75,7 @@ class AuthorCache:
         if aid in self._cache:
             return self._cache[aid]
         resp = (
-            self._sb.table("discord_members")
+            self._sb.table("members")
             .select("member_id, username, global_name, server_nick")
             .eq("member_id", aid)
             .execute()
@@ -96,7 +96,7 @@ class AuthorCache:
             return
         str_ids = [str(a) for a in author_ids]
         resp = (
-            self._sb.table("discord_members")
+            self._sb.table("members")
             .select("member_id, username, global_name, server_nick")
             .in_("member_id", str_ids)
             .execute()

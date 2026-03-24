@@ -429,7 +429,7 @@ class ReactionBackfiller(BaseDiscordBot):
         if author_ids:
             for i in range(0, len(author_ids), 100):
                 batch_ids = author_ids[i:i + 100]
-                resp = sb.table('discord_members') \
+                resp = sb.table('members') \
                     .select('member_id, username, global_name, server_nick') \
                     .in_('member_id', batch_ids) \
                     .execute()

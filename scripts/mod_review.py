@@ -26,7 +26,7 @@ def resolve_user(sb, username: str) -> dict | None:
     """Look up a user by username/nick (case-insensitive fuzzy match)."""
     pattern = f"%{username}%"
     resp = (
-        sb.table("discord_members")
+        sb.table("members")
         .select("member_id, username, global_name, server_nick")
         .or_(
             f"username.ilike.{pattern},"

@@ -275,7 +275,7 @@ def backfill_guild_members(sb, guild_id: int, dry_run: bool):
 
     while True:
         result = (
-            sb.table('discord_members')
+            sb.table('members')
             .select('member_id, server_nick, guild_join_date, role_ids')
             .range(offset, offset + batch_size - 1)
             .execute()
