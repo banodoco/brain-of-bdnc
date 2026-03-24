@@ -139,7 +139,7 @@ TOOLS = [
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Max results (default 20, max 50)"
+                    "description": "Max results (default 20, max 100)"
                 },
                 "sort": {
                     "type": "string",
@@ -620,7 +620,7 @@ async def execute_find_messages(
     min_reactions = params.get('min_reactions', 0)
     has_media = params.get('has_media', False)
     days = params.get('days', 7)
-    limit = min(params.get('limit', 20), 50)
+    limit = min(params.get('limit', 20), 100)
     sort = params.get('sort', 'reactions')
     do_refresh_media = params.get('refresh_media', False)
     live = params.get('live', False)
