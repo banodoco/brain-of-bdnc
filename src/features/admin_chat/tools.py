@@ -144,7 +144,7 @@ TOOLS = [
                 "sort": {
                     "type": "string",
                     "enum": ["reactions", "unique_reactors", "date"],
-                    "description": "Sort order (default: reactions). unique_reactors = number of distinct users who reacted."
+                    "description": "Sort order (default: date, most recent first). reactions = most reacted. unique_reactors = most distinct reactors."
                 },
                 "refresh_media": {
                     "type": "boolean",
@@ -621,7 +621,7 @@ async def execute_find_messages(
     has_media = params.get('has_media', False)
     days = params.get('days')  # None = all time
     limit = min(params.get('limit', 20), 100)
-    sort = params.get('sort', 'reactions')
+    sort = params.get('sort', 'date')
     do_refresh_media = params.get('refresh_media', False)
     live = params.get('live', False)
 
