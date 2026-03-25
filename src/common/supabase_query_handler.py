@@ -1012,9 +1012,38 @@ class SupabaseQueryHandler:
                 if channel_response.data:
                     channel_names = {ch['channel_id']: ch.get('channel_name', '') for ch in channel_response.data}
         
+        # Handle bot message filtering: (mb.bot IS NULL OR mb.bot = FALSE)
+        # The SQL references the members table but the REST API fetches messages only,
+        # so we need to filter by looking up author bot status.
+        filter_bots = 'mb.bot' in sql_lower or 'bot = false' in sql_lower
+        bot_author_ids = set()
+        if filter_bots:
+            author_ids = list(set(str(msg.get('author_id')) for msg in messages if msg.get('author_id')))
+            if author_ids:
+                for i in range(0, len(author_ids), 100):
+                    batch = author_ids[i:i+100]
+                    members_result = self.supabase.table('members').select('member_id,bot').in_('member_id', batch).execute()
+                    if members_result.data:
+                        for m in members_result.data:
+                            if m.get('bot') is True:
+                                bot_author_ids.add(m['member_id'])
+                if bot_author_ids:
+                    logger.debug(f"Bot filter: found {len(bot_author_ids)} bot author(s) to exclude")
+
+        # Handle is_deleted filtering
+        filter_deleted = 'is_deleted = false' in sql_lower or 'is_deleted = 0' in sql_lower
+
         filtered = []
-        
+
         for msg in messages:
+            # Filter out bot messages
+            if filter_bots and msg.get('author_id') in bot_author_ids:
+                continue
+
+            # Filter out deleted messages
+            if filter_deleted and msg.get('is_deleted') is True:
+                continue
+
             # Always calculate reactor count first
             reactors = msg.get('reactors')
             try:

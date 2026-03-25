@@ -25,6 +25,8 @@ class LoggerCog(commands.Cog):
         except Exception as e:
             self.logger.error(f"Error retrieving BOT_USER_ID: {e}")
             self.bot_user_id = None
+        # Cache of thread IDs known to be summary threads
+        self._summary_thread_ids: set[int] = set()
 
     @property
     def server_config(self):
@@ -155,6 +157,26 @@ class LoggerCog(commands.Cog):
         except Exception as e:
             self.logger.error(f"[LoggerCog] Error in on_raw_message_delete: {e}", exc_info=True)
 
+    def _is_bot_summary_message(self, message) -> bool:
+        """Return True for bot messages posted inside a summary thread or the summary channel."""
+        if message.author.id != self.bot_user_id:
+            return False
+        channel = message.channel
+        # Check cache first
+        if channel.id in self._summary_thread_ids:
+            return True
+        # Bot messages in summary threads (thread name contains "Summary")
+        if isinstance(channel, discord.Thread) and "Summary" in (channel.name or ""):
+            self._summary_thread_ids.add(channel.id)
+            return True
+        # Bot messages that are summary headers or thread starters (posted to parent channel)
+        content = message.content or ""
+        if (content.startswith("### Channel summary for ")
+                or content.startswith("# Daily Summary - ")
+                or content.startswith("Summary thread for ")):
+            return True
+        return False
+
     @commands.Cog.listener()
     async def on_message(self, message):
         """Store every new message to Supabase in real-time."""
@@ -163,6 +185,9 @@ class LoggerCog(commands.Cog):
                 return
             # Skip other bots, but store our own messages (so admin can find/delete them)
             if message.author.bot and message.author.id != self.bot_user_id:
+                return
+            # Skip our own summary messages to prevent feedback loops
+            if message.author.id == self.bot_user_id and self._is_bot_summary_message(message):
                 return
 
             # Feature guard: logging_enabled
