@@ -70,16 +70,20 @@ in Banodoco, an open-source AI art community on Discord.
 
 {bot_voice}
 
-Given their introduction message and a list of available channels, write:
-1. A one-sentence summary of who they are and what they do (keep it punchy and specific)
-2. Pick 2-3 channels from the list that seem most relevant to their interests
+Write a single natural-sounding blurb (1-2 sentences) that:
+- Introduces them based on what they said in their intro — focus on who they are and \
+what they're into, NOT any problems or issues they mentioned.
+- Weaves in 3-4 channel suggestions naturally (using <#channel_id> format), like \
+"you might enjoy <#123> and <#456>" or "sounds like <#123> would be right up your alley."
+- If their intro is too vague to say anything specific about them, just write something \
+warm and characterful — "another mysterious soul joins the ranks" or similar. Don't \
+force specifics you don't have.
 
 Respond in EXACTLY this format (no extra text):
-SUMMARY: <one sentence about them>
-CHANNELS: <channel_id_1>, <channel_id_2>, <channel_id_3>
+BLURB: <your blurb here>
 
-Use only channel IDs from the provided list. If the intro is too vague to match channels, \
-pick the most generally useful ones."""
+Use only channel IDs from the provided list. Pick channels relevant to their interests — \
+prioritise tool-specific or model-specific channels over generic ones."""
 
 
 class GatingCog(commands.Cog):
@@ -421,8 +425,7 @@ class GatingCog(commands.Cog):
                                     member: discord.Member,
                                     recommendable: list[tuple[int, str]]) -> str | None:
         """Fetch the member's intro message and generate a welcome blurb with channel suggestions."""
-        intro_link = f"https://discord.com/channels/{guild.id}/{intro['channel_id']}/{intro['message_id']}"
-        fallback = f"- {member.mention} ([intro]({intro_link}))"
+        fallback = f"- {member.mention} — welcome aboard."
 
         # Fetch the intro message from Discord
         intro_channel = guild.get_channel(intro['channel_id'])
@@ -458,30 +461,17 @@ class GatingCog(commands.Cog):
             logger.error(f"GatingCog: failed to generate blurb for {member}: {e}")
             return fallback
 
-        # Parse SUMMARY and CHANNELS from the response
-        summary = ""
-        channel_ids = []
+        # Parse BLURB from the response
+        blurb_text = ""
         for line in response.split('\n'):
             line = line.strip()
-            if line.upper().startswith('SUMMARY:'):
-                summary = line.split(':', 1)[1].strip()
-            elif line.upper().startswith('CHANNELS:'):
-                raw = line.split(':', 1)[1].strip()
-                for part in raw.split(','):
-                    part = part.strip()
-                    try:
-                        channel_ids.append(int(part))
-                    except ValueError:
-                        pass
+            if line.upper().startswith('BLURB:'):
+                blurb_text = line.split(':', 1)[1].strip()
+                break
 
-        # Build the blurb
-        blurb = f"- {member.mention} — {summary}" if summary else f"- {member.mention}"
-        blurb += f" ([intro]({intro_link}))"
-        if channel_ids:
-            channel_mentions = [f"<#{cid}>" for cid in channel_ids if guild.get_channel(cid)]
-            if channel_mentions:
-                blurb += f"\n  Check out: {', '.join(channel_mentions)}"
-        return blurb
+        if blurb_text:
+            return f"- {member.mention} — {blurb_text}"
+        return fallback
 
     @tasks.loop(time=time(hour=19, minute=30, tzinfo=timezone.utc))
     async def daily_new_speakers(self):
