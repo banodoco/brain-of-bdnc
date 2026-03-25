@@ -528,7 +528,8 @@ class GatingCog(commands.Cog):
             # Format the message (respect Discord's 2000-char limit)
             header = f"**New speakers today** — welcome {', '.join(mentions)}! 🎉\n"
             body = "\n".join(blurbs) if blurbs else ""
-            content = f"{header}\n{body}" if body else header
+            footer = "\nCheck out the Getting Started information above for more info."
+            content = f"{header}\n{body}{footer}" if body else header
             if len(content) > 2000:
                 # Trim blurbs until it fits, keeping the header with all mentions
                 while blurbs and len(content) > 2000:
