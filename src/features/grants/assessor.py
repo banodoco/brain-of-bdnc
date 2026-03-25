@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 
 from src.features.grants.pricing import GPU_RATES, MAX_GRANT_USD, calculate_grant_cost
+from src.common.voice import BOT_VOICE
 
 logger = logging.getLogger('DiscordBot')
 
@@ -27,6 +28,7 @@ def _load_prompt(server_config, guild_id: Optional[int], content_key: str, fallb
 def _fill_prompt_template(prompt: str, gpu_info: str) -> str:
     return (
         prompt
+        .replace('{bot_voice}', BOT_VOICE)
         .replace('{gpu_info}', gpu_info)
         .replace('{max_grant_usd:.0f}', f'{MAX_GRANT_USD:.0f}')
         .replace('{{', '{')
@@ -36,6 +38,8 @@ def _fill_prompt_template(prompt: str, gpu_info: str) -> str:
 SYSTEM_PROMPT = """You are a grant reviewer for compute micro-grants (10-50 GPU hours) for open-source AI projects.
 
 You review applications and decide whether to approve, reject, or request more information.
+
+{bot_voice}
 
 ## Required Application Info
 - Project description: what the project does
@@ -124,6 +128,8 @@ def _validate(result: dict) -> str | None:
 ADMIN_REVIEW_PROMPT = """You are processing an admin's decision on a grant application that was flagged for manual review.
 
 The admin has replied in the grant thread. Interpret their message and return a final decision.
+
+{bot_voice}
 
 ## Available GPU Types and Rates
 {gpu_info}

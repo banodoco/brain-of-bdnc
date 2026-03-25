@@ -4,14 +4,14 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-# Assuming get_llm_response and DatabaseHandler are passed or imported
-# from src.common.llm import get_llm_response
-# from src.common.db_handler import DatabaseHandler
+from src.common.voice import BOT_VOICE
 
 # --- Constants for Dispute Resolution Feature ---
 DISPUTE_RESOLUTION_INITIATOR_ID = 301463647895683072
 DISPUTE_RESOLUTION_PHRASE_PATTERN = r"(?i)dispute resolution"  # Case-insensitive regex
-DISPUTE_RESOLUTION_LLM_SYSTEM_PROMPT = "Please analyze the provided messages to understand the interactions between the members. If there appears to be a disagreement, comment on how the people were relating such that it came to this point - who seemed to be instigating it, who was responding, and who could have diffused it? More importantly, suggest specific, actionable steps all involved parties could have taken, or could still take, to reach an amicable resolution. Frame your suggestions in a constructive and neutral tone. Explain it but don't be too verbose. Remind them that the community is centered around a shared passion for AI and its creative potential, and encourage them to find common ground and move forward positively."
+DISPUTE_RESOLUTION_LLM_SYSTEM_PROMPT = """Please analyze the provided messages to understand the interactions between the members. If there appears to be a disagreement, comment on how the people were relating such that it came to this point - who seemed to be instigating it, who was responding, and who could have diffused it? More importantly, suggest specific, actionable steps all involved parties could have taken, or could still take, to reach an amicable resolution. Frame your suggestions in a constructive and neutral tone. Explain it but don't be too verbose. Remind them that the community is centered around a shared passion for AI and its creative potential, and encourage them to find common ground and move forward positively.
+
+{bot_voice}"""
 DISPUTE_RESOLUTION_LLM_CLIENT = "openai"
 DISPUTE_RESOLUTION_LLM_MODEL = "o3-mini"
 DISPUTE_RESOLUTION_LLM_MAX_TOKENS = 10024
@@ -26,7 +26,7 @@ def _get_dispute_prompt(db_handler, guild_id: Optional[int]) -> str:
         server = sc.get_server(guild_id)
         if server:
             community_name = server.get('community_name') or community_name
-    return (prompt or DISPUTE_RESOLUTION_LLM_SYSTEM_PROMPT).replace("the community", community_name)
+    return (prompt or DISPUTE_RESOLUTION_LLM_SYSTEM_PROMPT).replace("{bot_voice}", BOT_VOICE).replace("the community", community_name)
 
 async def handle_initiate_dispute_resolution(
     message: discord.Message,

@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 import anthropic
 from openai import AsyncOpenAI
 
+from src.common.voice import BOT_VOICE
+
 # We removed direct Discord/bot usage here since SUMMARIZER handles posting logic now.
 # This class now focuses on:
 #  - queries to Claude (generate_news_summary, combine_channel_summaries, etc.)
@@ -63,6 +65,7 @@ class NewsSummarizer:
     def _render_prompt_template(self, template: str) -> str:
         return (
             template
+            .replace("{bot_voice}", BOT_VOICE)
             .replace("Banodoco", self.community_name)
             .replace("Banodocians", self.community_demonym)
         )
@@ -242,7 +245,7 @@ Evidence & Attribution:
 - For subjective opinions, attribute them: "**Draken** felt..."
 
 Tone:
-- Don't be hyperbolic or overly enthusiastic
+{bot_voice}
 - Refer to community members collectively as "Banodocians"
 
 === TECHNICAL REQUIREMENTS ===

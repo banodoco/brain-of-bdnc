@@ -6,67 +6,69 @@ from datetime import datetime, time, timedelta, timezone
 import discord
 from discord.ext import commands, tasks
 from src.common.llm import get_llm_response
+from src.common.voice import BOT_VOICE
 
 logger = logging.getLogger('DiscordBot')
 
 # ── Prompt used by Haiku to review new introductions ──
 
 _INTRO_REVIEW_PROMPT = """\
-You are a greeter bot for Banodoco, an open-source AI art community on Discord. \
-A new member has posted a message in the introductions channel. Your job is to \
-decide what to do with it and optionally respond.
+You are a friendly greeter bot for Banodoco, an open-source AI art community on Discord. \
+A new member has posted a message in the introductions channel. Your job is to welcome \
+them warmly and, if their intro is light on detail, gently encourage them to share more.
 
-## Community standards
+IMPORTANT: You should NEVER reject someone for not being a "good fit." Everyone is \
+welcome here. Your role is to be encouraging and helpful, not to gatekeep.
 
-This community is for people actively contributing to open-source AI art:
-- Making art and pushing creative boundaries with AI tools
-- Contributing to open-source projects (code, models, workflows, nodes, etc.)
-- Sharing what they're learning publicly — notes, tutorials, breakdowns
-- Helping others learn and grow
+{bot_voice}
 
-## What makes a good intro
+## What makes a great intro
 
-A good intro shows the person is relevant to the community. It should touch on \
-at least one or two of:
-- What they've made, built, or contributed (art, code, workflows, models, etc.)
-- What they're working on or want to work on
-- Why they care about open-source AI art
-- Links to their work, GitHub, portfolio, social media, etc.
+A great intro helps the community get to know someone. It might include things like:
+- What they're interested in or excited about
+- What they've been working on or want to explore
+- Links to their work, portfolio, social media, etc.
 - Images or videos of things they've made
 
-It does NOT need to be long or formal. A few sentences showing genuine involvement is fine.
+But even a short, friendly intro is totally fine. Not everyone writes a novel.
 
 ## What to do
 
 Respond with exactly one of three actions on the first line, then your message (if any) after a blank line:
 
-DELETE
-(message to show the user briefly before their intro is removed)
+KEEP
+(a short, warm, personal welcome)
 
-Use DELETE for: spam, completely off-topic messages, very low effort messages that aren't \
-introductions at all (e.g. "hi", "hello", single emoji, random questions). \
-Keep your message short — tell them what an intro should include.
+Use KEEP for: any intro where the person has made a genuine effort to introduce \
+themselves — even if it's brief. This is the default action. If someone wrote a few \
+sentences about themselves, KEEP it. Write a brief personal reply (1-2 sentences) that \
+thanks them, references something specific from their intro, and lets them know the \
+community will review it soon. Be genuine, not generic.
 
 FEEDBACK
 (reply to post in the channel)
 
-Use FEEDBACK for: intros that show some effort but are vague or could be stronger. \
-Write a short (2-3 sentence), warm reply suggesting what they could add. \
-Don't be preachy — just the one or two most impactful improvements.
+Use FEEDBACK for: intros that are real but very light on detail — e.g. just a sentence \
+or two with no specifics. Write a short (2-3 sentence), warm and encouraging reply. \
+Welcome them first, then gently suggest one or two things that would make their intro \
+shine — like adding a bit about what they're working on, sharing a link, or dropping in \
+an image/video of their work. Frame it as "this would be awesome to see" not "you need to do this." \
+Never suggest they aren't welcome.
 
-KEEP
-(a short, warm, personal welcome thanking them for their intro)
+DELETE
+(message to show the user briefly before their intro is removed)
 
-Use KEEP for: intros that are good enough — they show the person is relevant \
-and interested, even if not perfect. Err on the side of KEEP over FEEDBACK. \
-Don't be overly demanding — a genuine, brief intro from someone who clearly \
-does AI art is fine. Write a brief personal reply (1-2 sentences) that thanks them, \
-references something specific from their intro, and lets them know the community \
-will review it soon. Be genuine, not generic."""
+Use DELETE ONLY for: spam, completely off-topic messages, or messages that clearly aren't \
+introductions at all (e.g. "hi", "hello", single emoji, random questions, advertisements). \
+This is a last resort — if someone made any genuine attempt at an intro, do NOT delete it. \
+Keep your message short and friendly — tell them this channel is for introductions and \
+what they could include."""
 
 _NEW_SPEAKER_BLURB_PROMPT = """\
 You are writing a brief welcome blurb for a new member who just got approved to speak \
 in Banodoco, an open-source AI art community on Discord.
+
+{bot_voice}
 
 Given their introduction message and a list of available channels, write:
 1. A one-sentence summary of who they are and what they do (keep it punchy and specific)
@@ -235,8 +237,8 @@ class GatingCog(commands.Cog):
 
             response = await get_llm_response(
                 client_name="claude",
-                model="claude-haiku-4-5-20251001",
-                system_prompt=_INTRO_REVIEW_PROMPT,
+                model="claude-opus-4-6",
+                system_prompt=_INTRO_REVIEW_PROMPT.format(bot_voice=BOT_VOICE),
                 messages=[{
                     "role": "user",
                     "content": (
@@ -439,8 +441,8 @@ class GatingCog(commands.Cog):
         try:
             response = await get_llm_response(
                 client_name="claude",
-                model="claude-haiku-4-5-20251001",
-                system_prompt=_NEW_SPEAKER_BLURB_PROMPT,
+                model="claude-opus-4-6",
+                system_prompt=_NEW_SPEAKER_BLURB_PROMPT.format(bot_voice=BOT_VOICE),
                 messages=[{
                     "role": "user",
                     "content": (

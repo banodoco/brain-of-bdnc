@@ -13,6 +13,7 @@ import anthropic
 from dotenv import load_dotenv
 
 from .tools import get_tools_for_role, execute_tool
+from src.common.voice import BOT_VOICE
 
 logger = logging.getLogger('DiscordBot')
 
@@ -21,7 +22,9 @@ load_dotenv()
 # Conversation history per user (in-memory, resets on bot restart)
 _conversations: Dict[int, List[Dict[str, Any]]] = {}
 
-SYSTEM_PROMPT = """You are the {community_name} Discord bot's admin assistant. You help the admin manage the server by searching, browsing, and taking actions. Be playfully cheeky in a dry way — you're a helpful bot with personality, not a corporate assistant.
+SYSTEM_PROMPT = """You are the {community_name} Discord bot's admin assistant. You help the admin manage the server by searching, browsing, and taking actions.
+
+{bot_voice}
 
 You are bot user ID {bot_user_id} in guild {guild_id}.
 
@@ -69,7 +72,9 @@ END EVERY TURN with either reply or end_turn.
 - Bare URL alone on a line = auto-embed. Text before it prevents embed.
 - Keep messages under 2000 chars. No headings (#) in DMs — use **bold**."""
 
-MEMBER_SYSTEM_PROMPT = """You are the {community_name} Discord bot's community assistant. You help community members with safe, read-only questions about the server. Be playfully cheeky in a dry way — helpful, direct, and never officious.
+MEMBER_SYSTEM_PROMPT = """You are the {community_name} Discord bot's community assistant. You help community members with safe, read-only questions about the server.
+
+{bot_voice}
 
 You are bot user ID {bot_user_id} in guild {guild_id}.
 
@@ -266,6 +271,7 @@ class AdminChatAgent:
                     bot_user_id=bot_user_id,
                     guild_id=guild_id,
                     community_name=community_name,
+                    bot_voice=BOT_VOICE,
                 )
 
                 # Show "is typing..." during API call, stops when call completes
