@@ -64,6 +64,21 @@ does AI art is fine. Write a brief personal reply (1-2 sentences) that thanks th
 references something specific from their intro, and lets them know the community \
 will review it soon. Be genuine, not generic."""
 
+_NEW_SPEAKER_BLURB_PROMPT = """\
+You are writing a brief welcome blurb for a new member who just got approved to speak \
+in Banodoco, an open-source AI art community on Discord.
+
+Given their introduction message and a list of available channels, write:
+1. A one-sentence summary of who they are and what they do (keep it punchy and specific)
+2. Pick 2-3 channels from the list that seem most relevant to their interests
+
+Respond in EXACTLY this format (no extra text):
+SUMMARY: <one sentence about them>
+CHANNELS: <channel_id_1>, <channel_id_2>, <channel_id_3>
+
+Use only channel IDs from the provided list. If the intro is too vague to match channels, \
+pick the most generally useful ones."""
+
 
 class GatingCog(commands.Cog):
     """
@@ -384,6 +399,88 @@ class GatingCog(commands.Cog):
 
     _NEW_SPEAKERS_PATTERN = "New speakers today"
 
+    def _get_recommendable_channels(self, guild: discord.Guild) -> list[tuple[int, str]]:
+        """Return (id, name) pairs for text channels the bot can recommend to new members."""
+        # Skip channels that aren't useful recommendations (exact segment match, not substring)
+        skip_segments = {'rules', 'mod', 'admin', 'logs', 'bot', 'bots', 'gate', 'intro',
+                         'introductions', 'welcome', 'announcements', 'staff', 'test'}
+        channels = []
+        for ch in guild.text_channels:
+            segments = set(ch.name.lower().replace('-', ' ').replace('_', ' ').split())
+            if segments & skip_segments:
+                continue
+            # Only include channels the bot can see and that have some activity
+            if ch.permissions_for(guild.me).view_channel:
+                channels.append((ch.id, ch.name))
+        # Cap to avoid bloating the LLM prompt
+        return channels[:60]
+
+    async def _build_speaker_blurb(self, guild: discord.Guild, intro: dict,
+                                    member: discord.Member,
+                                    recommendable: list[tuple[int, str]]) -> str | None:
+        """Fetch the member's intro message and generate a welcome blurb with channel suggestions."""
+        intro_link = f"https://discord.com/channels/{guild.id}/{intro['channel_id']}/{intro['message_id']}"
+        fallback = f"- {member.mention} ([intro]({intro_link}))"
+
+        # Fetch the intro message from Discord
+        intro_channel = guild.get_channel(intro['channel_id'])
+        if not intro_channel:
+            return fallback
+        try:
+            intro_msg = await intro_channel.fetch_message(intro['message_id'])
+        except (discord.NotFound, discord.HTTPException):
+            return fallback
+
+        intro_text = intro_msg.content or "(no text — media only)"
+
+        # Build channel list for the LLM
+        channel_list = "\n".join(f"- {cid}: #{name}" for cid, name in recommendable)
+
+        try:
+            response = await get_llm_response(
+                client_name="claude",
+                model="claude-haiku-4-5-20251001",
+                system_prompt=_NEW_SPEAKER_BLURB_PROMPT,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Introduction from {member.display_name}:\n\n"
+                        f"{intro_text}\n\n"
+                        f"Available channels:\n{channel_list}"
+                    ),
+                }],
+                max_tokens=200,
+            )
+            response = response.strip()
+        except Exception as e:
+            logger.error(f"GatingCog: failed to generate blurb for {member}: {e}")
+            return fallback
+
+        # Parse SUMMARY and CHANNELS from the response
+        summary = ""
+        channel_ids = []
+        for line in response.split('\n'):
+            line = line.strip()
+            if line.upper().startswith('SUMMARY:'):
+                summary = line.split(':', 1)[1].strip()
+            elif line.upper().startswith('CHANNELS:'):
+                raw = line.split(':', 1)[1].strip()
+                for part in raw.split(','):
+                    part = part.strip()
+                    try:
+                        channel_ids.append(int(part))
+                    except ValueError:
+                        pass
+
+        # Build the blurb
+        blurb = f"- {member.mention} — {summary}" if summary else f"- {member.mention}"
+        blurb += f" ([intro]({intro_link}))"
+        if channel_ids:
+            channel_mentions = [f"<#{cid}>" for cid in channel_ids if guild.get_channel(cid)]
+            if channel_mentions:
+                blurb += f"\n  Check out: {', '.join(channel_mentions)}"
+        return blurb
+
     @tasks.loop(time=time(hour=19, minute=30, tzinfo=timezone.utc))
     async def daily_new_speakers(self):
         if not self.db:
@@ -411,18 +508,44 @@ class GatingCog(commands.Cog):
             approved = self.db.get_recently_approved_intros(hours=24, guild_id=guild.id)
             if not approved:
                 continue
+
+            # Deduplicate by member_id, keeping the most recent approval
+            seen: dict[int, dict] = {}
+            for intro in approved:
+                mid = intro['member_id']
+                if mid not in seen:
+                    seen[mid] = intro
+            unique_intros = list(seen.values())
+
+            # Build blurbs for each new speaker
+            recommendable = self._get_recommendable_channels(guild)
+            blurbs = []
             mentions = []
-            for mid in {intro['member_id'] for intro in approved}:
-                member = guild.get_member(mid)
-                if member:
-                    mentions.append(member.mention)
+            for intro in unique_intros:
+                member = guild.get_member(intro['member_id'])
+                if not member:
+                    continue
+                mentions.append(member.mention)
+                blurb = await self._build_speaker_blurb(guild, intro, member, recommendable)
+                if blurb:
+                    blurbs.append(blurb)
+
             if not mentions:
                 continue
 
+            # Format the message (respect Discord's 2000-char limit)
+            header = f"**New speakers today** — welcome {', '.join(mentions)}! 🎉\n"
+            body = "\n".join(blurbs) if blurbs else ""
+            content = f"{header}\n{body}" if body else header
+            if len(content) > 2000:
+                # Trim blurbs until it fits, keeping the header with all mentions
+                while blurbs and len(content) > 2000:
+                    blurbs.pop()
+                    body = "\n".join(blurbs)
+                    content = f"{header}\n{body}" if body else header
+
             try:
-                msg = await channel.send(
-                    f"**New speakers today** \u2014 welcome {', '.join(mentions)}! \U0001f389"
-                )
+                msg = await channel.send(content)
                 self._last_daily_speakers_msg[guild.id] = (channel.id, msg.id)
                 logger.info(f"GatingCog: posted daily new speakers ({len(mentions)}) in {guild.name}")
             except Exception as e:
