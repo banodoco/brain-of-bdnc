@@ -43,7 +43,10 @@ Use KEEP for: any intro where the person has made a genuine effort to introduce 
 themselves — even if it's brief. This is the default action. If someone wrote a few \
 sentences about themselves, KEEP it. Write a brief personal reply (1-2 sentences) that \
 thanks them, references something specific from their intro, and lets them know the \
-community will review it soon. Be genuine, not generic.
+community will review it soon. Be genuine, not generic. If the message has no links \
+and no media attachments, also encourage them to drop a link or upload a file — \
+their work, a video, anything visual — frame it as "the community would love to check out your work" \
+not as a requirement.
 
 FEEDBACK
 (reply to post in the channel)
