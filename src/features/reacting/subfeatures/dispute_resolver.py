@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from src.common.voice import BOT_VOICE
+from src.common.soul import BOT_VOICE
 
 # --- Constants for Dispute Resolution Feature ---
 DISPUTE_RESOLUTION_INITIATOR_ID = 301463647895683072

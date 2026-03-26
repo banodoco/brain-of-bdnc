@@ -1,0 +1,33 @@
+{
+  "type": "object",
+  "properties": {
+    "plan": {
+      "type": "string"
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "success_criteria": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "plan",
+    "questions",
+    "success_criteria",
+    "assumptions"
+  ],
+  "additionalProperties": false
+}

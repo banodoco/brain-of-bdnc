@@ -5,7 +5,7 @@ import logging
 from typing import Optional
 
 from src.features.grants.pricing import GPU_RATES, MAX_GRANT_USD, calculate_grant_cost
-from src.common.voice import BOT_VOICE
+from src.common.soul import BOT_VOICE
 
 logger = logging.getLogger('DiscordBot')
 

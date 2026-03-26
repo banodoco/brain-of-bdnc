@@ -13,7 +13,7 @@ import anthropic
 from dotenv import load_dotenv
 
 from .tools import get_tools_for_role, execute_tool
-from src.common.voice import BOT_VOICE
+from src.common.soul import BOT_VOICE
 
 logger = logging.getLogger('DiscordBot')
 

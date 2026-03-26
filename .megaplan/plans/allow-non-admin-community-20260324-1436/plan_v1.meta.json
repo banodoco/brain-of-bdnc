@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "timestamp": "2026-03-24T13:40:24Z",
+  "hash": "sha256:a5e8a04f75cb89346a365cb92523369cbf48830a93b0c32bdd5fe2c6e343b190",
+  "questions": [
+    "Should non-admin users be able to interact with the bot via @mentions in public channels, or only via DMs? Public channel usage is visible to everyone and could be noisy.",
+    "When a non-admin user without `can_message_bot` messages the bot, should it silently ignore them or reply with a message (e.g., 'Ask an admin to enable bot access for you')? Silent ignore is cleaner but less discoverable.",
+    "Should `query_table` be available to members at all? It's read-only but exposes raw database queries. An alternative is to only expose the purpose-built search tools (find_messages, get_member_info, etc.) and remove query_table from the member tool set entirely.",
+    "Is there a need for a middle tier (e.g., moderators who can send_message but not delete_message), or is the binary admin/member split sufficient for now?",
+    "Should the `can_message_bot` flag be per-guild (on `guild_members`) or global (on `members`)? Per-guild is more flexible for multi-server but adds complexity."
+  ],
+  "success_criteria": [
+    "Non-admin users with `can_message_bot=True` can DM the bot and receive responses using read-only tools",
+    "Non-admin users cannot invoke write tools (send_message, delete_message, edit_message, upload_file, share_to_social) \u2014 blocked at both prompt level (tools not offered to Claude) and executor level (rejected if somehow called)",
+    "Admin users experience zero regressions \u2014 all 16 tools remain available",
+    "Users without `can_message_bot=True` are properly rejected",
+    "Rate limiting prevents non-admin users from excessive API usage",
+    "search_logs and other sensitive read operations are restricted to admins",
+    "The `can_message_bot` flag can be toggled per-member via the database (and eventually via admin bot commands)"
+  ],
+  "assumptions": [
+    "Binary admin/member role split is sufficient (no moderator tier needed for v1)",
+    "The `can_message_bot` flag goes on the global `members` table, not per-guild `guild_members`, since multi-server bot access is not yet a real use case",
+    "Non-admin users should be able to interact via both DMs and @mentions (same channel detection logic as admin)",
+    "Rate limiting is in-memory only (resets on bot restart) \u2014 acceptable for v1",
+    "`query_table` will be available to members but with a restricted table subset (excluding system_logs, timed_mutes, invite_codes)",
+    "No new Discord slash commands needed \u2014 the existing message/mention flow is sufficient",
+    "Conversation history remains in-memory (no persistence change needed)"
+  ],
+  "structure_warnings": []
+}

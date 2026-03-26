@@ -1,0 +1,32 @@
+{
+  "type": "object",
+  "properties": {
+    "recommendation": {
+      "type": "string",
+      "enum": [
+        "PROCEED",
+        "ITERATE",
+        "ESCALATE"
+      ]
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "signals_assessment": {
+      "type": "string"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "recommendation",
+    "rationale",
+    "signals_assessment",
+    "warnings"
+  ],
+  "additionalProperties": false
+}

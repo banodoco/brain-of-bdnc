@@ -1,0 +1,24 @@
+{
+  "flags": [
+    {
+      "id": "public-channel-context-leak",
+      "concern": "This concern is still open. Step 6 assumes the read-only tools only expose what the requesting member can already see in Discord, but the repository does not enforce requester channel visibility anywhere. `find_messages` searches all non-NSFW channels the bot knows about, and the live/message-inspection paths fetch arbitrary channels/messages by ID with bot credentials. That means an approved member can still read bot-visible channels they may not personally have access to.",
+      "category": "security",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/admin_chat/tools.py:612-628` builds `safe_channels` from every non-NSFW row in `discord_channels`, not from channels visible to the requesting user; `src/features/admin_chat/tools.py:565-573` fetches any `channel_id` via the Discord API for `live=true`; `src/features/admin_chat/tools.py:743-759` fetches message details by `message_id` without checking requester permissions."
+    },
+    {
+      "id": "dm-guild-ambiguity",
+      "concern": "The new DM rule is under-specified in a way that can mis-scope data. The plan allows DMs when `can_message_bot=True` in any guild and then says to use the first matching guild as context. In this repository, guild context determines the prompt, community identity, and query scoping, so an arbitrary first match can route a DM into the wrong guild or expose the wrong guild's data.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`supabase/migrations/20260320000000_multi_server.sql:84-93` makes `guild_members` explicitly per-guild; `src/features/admin_chat/agent.py:188-200` selects the system prompt and community based on `guild_id`; query tools then scope off that guild context, e.g. `src/features/admin_chat/tools.py:557-628` for `find_messages` and `src/features/admin_chat/tools.py:1326-1338` for `query_table`."
+    }
+  ],
+  "verified_flag_ids": [
+    "dm-handler-conflict",
+    "guild-scoping-mismatch",
+    "member-query-surface-too-broad"
+  ],
+  "disputed_flag_ids": []
+}

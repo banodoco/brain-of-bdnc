@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "timestamp": "2026-03-24T13:46:51Z",
+  "hash": "sha256:63c46bd6b19993f031be70527344fb5788c389418a6f68d26ac1f2c32d39faa9",
+  "changes_summary": "Addressed all 4 significant flags from critique v1:\n\n1. **dm-handler-conflict**: Added Step 3 that explicitly handles the `AdminCog.on_message` robot-sounds listener (`admin_cog.py:295-316`). The fix extends the existing admin carve-out to also check `can_message_bot`, ensuring approved members' DMs pass through to `AdminChatCog` without triggering robot sounds. Validation Step 8.2 specifically tests all three DM paths.\n\n2. **public-channel-context-leak**: Added Step 6 with an explicit policy. Channel context injection is acceptable because non-admins can only see data from channels they're already in (matching Discord's own visibility). The read-only tools return data the user could access via Discord UI. Documented that private-channel restrictions can be added later if needed.\n\n3. **guild-scoping-mismatch**: Changed Step 1 to put `can_message_bot` on `guild_members` instead of `members`, aligning with the repo's existing multi-server architecture. Updated Step 4 to query `guild_members` with guild context, including DM handling (check across all guilds).\n\n4. **member-query-surface-too-broad**: Moved `query_table` entirely to `ADMIN_ONLY_TOOLS` in Step 2. The purpose-built search tools (`find_messages`, `get_member_info`, `get_active_channels`, `get_daily_summaries`) cover member read-only needs without exposing arbitrary column access to `auth_user_id`, `grant_applications`, `invite_codes`, etc.",
+  "flags_addressed": [
+    "dm-handler-conflict",
+    "public-channel-context-leak",
+    "guild-scoping-mismatch",
+    "member-query-surface-too-broad"
+  ],
+  "questions": [
+    "Should non-admin users be able to interact via @mentions in public channels, or only via DMs? Public usage is visible to everyone and could be noisy \u2014 but restricting to DMs-only is simpler.",
+    "Is there a need for a middle tier (e.g., moderators who can send_message but not delete_message), or is the binary admin/member split sufficient for now?"
+  ],
+  "success_criteria": [
+    "Non-admin users with can_message_bot=True in guild_members can DM the bot and receive responses using read-only tools",
+    "Non-admin users cannot invoke write tools (send_message, delete_message, edit_message, upload_file, share_to_social) \u2014 blocked at both prompt level (tools not offered to Claude) and executor level (rejected if somehow called)",
+    "query_table and search_logs are restricted to admins only",
+    "Admin users experience zero regressions \u2014 all 16 tools remain available",
+    "Users without can_message_bot=True get robot sounds from AdminCog (DMs) or are silently ignored (@mentions) \u2014 no dual-response bug",
+    "Rate limiting prevents non-admin users from excessive API usage (max 10 messages per 5 minutes)",
+    "The can_message_bot flag lives on guild_members (per-guild scoping) and can be toggled via the database",
+    "DM handler conflict between AdminCog and AdminChatCog is resolved \u2014 exactly one cog responds per DM"
+  ],
+  "assumptions": [
+    "Binary admin/member role split is sufficient (no moderator tier needed for v1)",
+    "Non-admin users can interact via both DMs and @mentions (same channel detection logic as admin)",
+    "Rate limiting is in-memory only (resets on bot restart) \u2014 acceptable for v1",
+    "No new Discord slash commands needed \u2014 the existing message/mention flow is sufficient",
+    "Conversation history remains in-memory (no persistence change needed)",
+    "For DMs (no guild context), if a user has can_message_bot=True in any guild, they are allowed to DM",
+    "Channel context injection for non-admins is acceptable since it matches Discord's own visibility model \u2014 users can only @mention the bot in channels they can see"
+  ],
+  "structure_warnings": [],
+  "delta_from_previous_percent": 61.66
+}

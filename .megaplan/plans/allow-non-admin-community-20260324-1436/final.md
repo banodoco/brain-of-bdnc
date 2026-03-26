@@ -1,0 +1,86 @@
+# Execution Checklist
+
+- [x] **T1:** Create SQL migration `supabase/migrations/YYYYMMDD_add_can_message_bot.sql` that adds `can_message_bot BOOLEAN DEFAULT FALSE` column to the `guild_members` table. Run migration locally to validate.
+  Executor notes: Added `/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/supabase/migrations/20260325080000_add_can_message_bot.sql` to add `members.can_message_bot BOOLEAN DEFAULT FALSE` and seed `member_id=1485999704696164502` to TRUE per user override. `supabase db lint --local` could not connect to the local Postgres endpoint in this sandbox, so local migration execution was not possible here.
+  Reviewer verdict: pass (override): migration correctly targets `members`, defaults to false, and seeds the requested test user; local migration execution remains unverified.
+
+- [x] **T2:** In `src/features/admin_chat/tools.py`, near `QUERYABLE_TABLES` (line 64), add `MEMBER_TOOLS` and `ADMIN_ONLY_TOOLS` constant sets. MEMBER_TOOLS = {'reply', 'end_turn', 'find_messages', 'inspect_message', 'get_active_channels', 'get_daily_summaries', 'get_member_info', 'get_bot_status', 'resolve_user'}. ADMIN_ONLY_TOOLS = {'send_message', 'edit_message', 'delete_message', 'upload_file', 'share_to_social', 'search_logs', 'query_table'}. Add `get_tools_for_role(is_admin: bool) -> list` that filters the existing `TOOLS` list (line 75) to return only schemas whose function name is in the appropriate set. Add `allowed_tools: set = None` parameter to `execute_tool()` (line 1388); if provided and tool_name not in allowed_tools, return `{"success": False, "error": "Permission denied"}` immediately before dispatch.
+  Executor notes: Updated `/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py` to add `MEMBER_TOOLS`, `ADMIN_ONLY_TOOLS`, coverage assertions, `get_tools_for_role(is_admin)`, and hard executor-level `allowed_tools` rejection in `execute_tool()` before dispatch.
+  Reviewer verdict: pass
+
+- [x] **T3:** In `src/features/admin_chat/tools.py`, add channel-visibility enforcement for non-admin users. (1) Add `requester_id: Optional[int] = None` parameter to `execute_tool()` (line 1388). (2) Add `_get_visible_channel_ids(bot, guild_id: int, user_id: int) -> set[int]` async helper that uses `channel.permissions_for(member).view_channel` to return channel IDs the user can see. Cache per (guild_id, user_id) for ~60s. (3) In `execute_find_messages`: for the live path (line 565), after fetching channel, reject if channel.id not in visible_channels; for the DB path (line 612-628), intersect safe_channels with visible_channels. (4) In `execute_inspect_message` (line 743), after resolving channel_id from DB record, reject if not in visible_channels. (5) Thread `visible_channels` (or None for admins) from `execute_tool` to these executors. This requires adding a `visible_channels` or `guild_id+requester_id` parameter to `execute_find_messages` and `execute_inspect_message`.
+  Depends on: T2
+  Executor notes: Updated `/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py` with `_get_visible_channel_ids()` cached for 60s using `channel.permissions_for(member).view_channel`, threaded trusted `requester_id`/`trusted_guild_id` through `execute_tool()`, and enforced visibility on `find_messages` live+DB paths and `inspect_message`. Also filtered `get_active_channels` and `get_daily_summaries` for non-admin visibility.
+  Reviewer verdict: pass for the specified channel-visibility scope; implementation also extends filtering to `get_active_channels` and `get_daily_summaries`.
+
+- [ ] **T4:** In `src/features/admin/admin_cog.py`, update the `on_message` DM listener (lines 294-319). The plan's Step 4 says to add a `can_message_bot` early-return, but per the gate warning, do NOT add it for v1. Non-admin DMs should always fall through to robot sounds regardless of `can_message_bot` status. Add a `# TODO: When DM support is added for non-admins, check can_message_bot here and return early for approved members` comment after the admin check (line 308). This keeps v1 behavior simple: all non-admin DMs get robot sounds. (skipped)
+  Depends on: T1
+  Executor notes: Superseded by the explicit user override enabling approved non-admin DMs. Instead of leaving `AdminCog` unchanged with a TODO-only comment, `/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin/admin_cog.py` now checks `members.can_message_bot` plus shared enabled `guild_members` context and routes approved DMs to `AdminChatCog`.
+  Reviewer verdict: superseded by user override: the task text is stale because approved non-admin DMs were intentionally enabled instead of left on robot-sounds-only behavior.
+
+- [x] **T5:** In `src/features/admin_chat/admin_chat_cog.py`, refactor the access gate (lines 105-107) to support non-admin @mentions. (1) Replace the admin-only check with a two-tier check: determine `is_admin` via `_is_admin()`, and if not admin, check `is_dm` — if DM, return early (no DM support for non-admins in v1). If guild @mention, query `guild_members.can_message_bot` for that `(user_id, guild_id)`. If flag is False or not found, return silently. (2) Add `_can_user_message_bot(user_id, guild_id)` method with ~60s in-memory cache. (3) Pass `is_admin` and `requester_id` (Discord user ID for non-admins, None for admins) through to `agent.chat()`. (4) Add per-user rate limiting for non-admin users: max 10 messages per 5 minutes using a sliding window dict (same pattern as `_busy` dict at line 27). Reply with a brief cooldown message when hit.
+  Depends on: T1, T2, T4
+  Executor notes: Refactored `/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py` to support admins plus approved members. Non-admin access now checks `members.can_message_bot`, resolves DM guild context from `guild_members`, applies a 10-messages-per-5-min sliding-window limit, passes `is_admin`/`requester_id` into `agent.chat()`, and silently ignores unapproved guild requests.
+  Reviewer verdict: pass with caveat: gating and rate limiting are implemented, but DM guild resolution is still ambiguous for multi-guild users.
+
+- [x] **T6:** In `src/features/admin_chat/agent.py`, update `AdminChatAgent.chat()` (line 111) to accept `is_admin: bool = True` and `requester_id: Optional[int] = None`. (1) Use `get_tools_for_role(is_admin)` when building the Claude API call (lines 214 and 222 — both the typing and non-typing paths). (2) Pass `allowed_tools` (MEMBER_TOOLS or full set) and `requester_id` to `execute_tool()` calls (line 264). (3) Create `MEMBER_SYSTEM_PROMPT` — a variant of `SYSTEM_PROMPT` (line 24) that removes write-operation instructions (delete, send, share, upload, query_table sections), frames the bot as a helpful community assistant, and lists only what members can do (search messages, look up members, browse channels, read summaries). (4) Select prompt based on `is_admin`. (5) Set `MAX_CONVERSATION_LENGTH` to 10 for non-admins (vs current 20 for admins).
+  Depends on: T2, T3
+  Executor notes: Updated `/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/agent.py` so `AdminChatAgent.chat()` accepts `is_admin` and `requester_id`, uses `get_tools_for_role()` in both Claude API call sites, selects a new read-only `MEMBER_SYSTEM_PROMPT`, forwards `allowed_tools`/`requester_id`/trusted guild context into `execute_tool()`, and trims member conversations to 10 turns instead of 20.
+  Reviewer verdict: pass
+
+- [ ] **T7:** End-to-end validation. Test the following scenarios manually or via test scripts: (1) Admin DMs → handled by AdminChatCog, all 16 tools available, no regression. (2) Admin @mentions → same, all tools. (3) Approved member @mention in guild → response with read-only tools only. (4) Approved member tries to search a channel they can't see → rejected. (5) Approved member DMs bot → robot sounds from AdminCog. (6) Unapproved member @mention → silently ignored. (7) Unapproved member DM → robot sounds. (8) Prompt injection: member message tries to get Claude to call delete_message → executor rejects. (9) Rate limiting: 11th message in 5 minutes → cooldown reply. (10) guild_members.can_message_bot correctly gates per-guild. (skipped)
+  Depends on: T5, T6
+  Executor notes: Ran targeted static validation only: `python -m py_compile` passed for all touched Python files, and a Python assertion script verified tool classification, member prompt restrictions, and executor-level denial for a forbidden member tool call. Full Discord/Supabase end-to-end scenarios were not runnable in this environment because local Supabase access was blocked (`supabase status`/`supabase db lint --local`).
+  Reviewer verdict: not completed: only static validation ran; the requested end-to-end Discord/Supabase scenarios were not executed.
+
+## Watch Items
+
+- DM routing consistency: AdminCog (admin_cog.py:294-319) must NOT add a can_message_bot early-return for v1. All non-admin DMs must reach robot sounds. The plan's Step 4 text is inconsistent with the success criteria on this point — the gate guidance is authoritative: do NOT add the early-return.
+- Dual response bug: AdminCog.on_message fires before AdminChatCog.on_message (cog load order in main.py). For guild @mentions, AdminCog returns early at line 297 (message.guild is not None), so no conflict. For admin DMs, AdminCog returns early at line 306. Verify this ordering is preserved if cog loading changes.
+- Tool tier completeness: MEMBER_TOOLS + ADMIN_ONLY_TOOLS must cover all 16 tools in the TOOLS list (line 75). If a new tool is added later, it must be classified. Consider adding an assertion that MEMBER_TOOLS | ADMIN_ONLY_TOOLS == {t['name'] for t in TOOLS} minus reply/end_turn.
+- Channel visibility cache staleness: The 60s cache on _get_visible_channel_ids means a permission change in Discord takes up to 60s to take effect. This is acceptable per plan assumptions but should be documented in code.
+- Rate limiting is in-memory only — resets on bot restart. Acceptable for v1 per plan assumptions.
+- execute_tool now has two new parameters (allowed_tools, requester_id). All existing call sites must be updated to pass these, or defaults must be backward-compatible (None = unrestricted).
+- MEMBER_SYSTEM_PROMPT must not mention admin-only tools by name — Claude may attempt to call tools it 'knows about' from the prompt even if they're not in the tool list.
+- The guild_id for channel visibility must come from the message context (channel_context['guild_id']), not from a tool parameter that the user/Claude could manipulate.
+
+## Sense Checks
+
+- **SC1** (T1): Does the migration add `can_message_bot BOOLEAN DEFAULT FALSE` to `guild_members` (not `members`)? Is the column nullable or has a default so existing rows aren't broken?
+  Verdict: superseded: the literal `guild_members` check fails, but this was intentionally changed by the user override to `members.can_message_bot`.
+
+- **SC2** (T2): Do MEMBER_TOOLS + ADMIN_ONLY_TOOLS exactly cover all tool names in the TOOLS list? Is the execute_tool enforcement a hard reject (not just a warning) that returns before any dispatch?
+  Verdict: pass
+
+- **SC3** (T3): Does _get_visible_channel_ids use Discord's permissions_for(member).view_channel (not role checks or DB lookups)? Are both the live path and DB path in find_messages filtered? Is inspect_message filtered? Does admin (requester_id=None) bypass all filtering?
+  Verdict: pass
+
+- **SC4** (T4): Is the AdminCog DM listener unchanged for v1 (no can_message_bot check added)? All non-admin DMs still get robot sounds? Is there a TODO comment for future DM support?
+  Verdict: superseded: AdminCog was intentionally changed to early-return approved non-admin DMs, so the literal 'unchanged for v1' check no longer applies.
+
+- **SC5** (T5): Does the cog correctly distinguish: admin (any channel) → full access, non-admin DM → return early (falls to robot sounds), non-admin guild @mention with flag → member access, non-admin guild @mention without flag → silently ignored? Does rate limiting only apply to non-admins?
+  Verdict: superseded/partial: admin access, guild-member gating, and non-admin rate limiting are present, but the literal 'non-admin DM -> robot sounds' branch is intentionally replaced by approved-DM support.
+
+- **SC6** (T6): Are BOTH Claude API call sites (lines 210-216 typing path AND lines 218-224 non-typing path) updated to use get_tools_for_role? Does MEMBER_SYSTEM_PROMPT avoid naming admin-only tools? Is MAX_CONVERSATION_LENGTH reduced for non-admins?
+  Verdict: pass
+
+- **SC7** (T7): Were all 10 validation scenarios tested? Did the prompt injection test (scenario 8) confirm executor-level rejection even if Claude somehow attempts a restricted tool call?
+  Verdict: fail: the full 10-scenario validation did not run; only static checks were performed.
+
+## Meta
+
+Critical executor guidance:
+
+1. **The DM routing flag (approved-member-dm-routing-conflict):** The plan text in Step 4 says to add a `can_message_bot` early-return in AdminCog, but this contradicts the v1 design (no DM support for non-admins) and the success criteria. The gate explicitly warns against this. In T4, do NOT add the early-return — just add a TODO comment. This is the single open flag from critique and the fix is trivial.
+
+2. **Two Claude API call sites in agent.py:** Lines 210-216 (inside `channel.typing()` context) and lines 218-224 (without typing). Both pass `tools=TOOLS` and both must be updated to use `get_tools_for_role()`. Easy to miss the second one.
+
+3. **Backward compatibility of execute_tool:** Adding `allowed_tools` and `requester_id` parameters must use defaults of `None` to avoid breaking existing call sites during incremental development. `None` means unrestricted (admin behavior).
+
+4. **T5 and T6 are tightly coupled** — the cog passes `is_admin` and `requester_id` to `agent.chat()`, which uses them for tool selection and enforcement. Implement them together or in quick succession. The dependency graph allows T5 after T4 and T6 after T3, but they should be tested together.
+
+5. **Channel visibility enforcement (T3) is the most complex task.** The `_get_visible_channel_ids` helper needs access to the bot's guild/member cache. If the member isn't cached, `guild.fetch_member()` makes an API call. The 60s TTL cache prevents this from being called per-tool-execution. Use `functools.lru_cache` or a simple dict with timestamps — the bot is single-process so no concurrency issues beyond asyncio.
+
+6. **guild_id sourcing for non-admin requests:** For @mentions, `channel_context['guild_id']` is set by the cog from `message.guild.id` — this is trustworthy. Do NOT use guild_id from tool_input for visibility checks, as Claude constructs tool_input from the conversation and it could be manipulated via prompt injection. The cog-level guild_id should be threaded through as a separate trusted parameter.
+
+7. **Execution order:** T1 and T2 are independent and can be done in parallel. T3 depends on T2. T4 depends on T1 (conceptually, for the TODO to reference the column). T5 depends on T1+T2+T4. T6 depends on T2+T3. T7 is final validation after T5+T6.

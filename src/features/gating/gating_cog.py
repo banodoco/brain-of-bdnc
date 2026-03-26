@@ -6,7 +6,7 @@ from datetime import datetime, time, timedelta, timezone
 import discord
 from discord.ext import commands, tasks
 from src.common.llm import get_llm_response
-from src.common.voice import BOT_VOICE
+from src.common.soul import BOT_VOICE
 
 logger = logging.getLogger('DiscordBot')
 

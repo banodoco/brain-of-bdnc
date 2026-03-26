@@ -1,0 +1,19 @@
+{
+  "flags": [
+    {
+      "id": "approved-member-dm-routing-conflict",
+      "concern": "The revised plan is internally inconsistent about approved non-admin DMs, and the actual repo paths make that inconsistency user-visible. Step 4 says `AdminCog` should return early for approved members, Step 5 says `AdminChatCog` should ignore non-admin DMs for v1, but the success criteria and validation still expect approved-member DMs to get robot sounds. In this codebase, only `AdminCog` sends the robot-sounds fallback, so returning early there means approved-member DMs get no response at all.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/admin/admin_cog.py:299-316` is the only non-admin DM responder; `src/features/admin_chat/admin_chat_cog.py:99-107` is the admin-only chat gate the plan would change. If Step 4's early return is added to `AdminCog` and Step 5's non-admin-DM ignore is added to `AdminChatCog`, approved-member DMs will hit neither reply path."
+    }
+  ],
+  "verified_flag_ids": [
+    "dm-handler-conflict",
+    "guild-scoping-mismatch",
+    "member-query-surface-too-broad",
+    "public-channel-context-leak",
+    "dm-guild-ambiguity"
+  ],
+  "disputed_flag_ids": []
+}

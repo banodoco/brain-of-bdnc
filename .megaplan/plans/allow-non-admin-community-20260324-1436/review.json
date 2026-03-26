@@ -1,0 +1,121 @@
+{
+  "criteria": [
+    {
+      "name": "`can_message_bot` is stored on `members` and seeded for the test user",
+      "pass": true,
+      "evidence": "`supabase/migrations/20260325080000_add_can_message_bot.sql:3-8` adds `members.can_message_bot BOOLEAN DEFAULT FALSE` and sets `member_id=1485999704696164502` to `TRUE`, matching the user override. Local migration execution was not validated here."
+    },
+    {
+      "name": "Approved non-admins can reach the bot via guild mentions and DMs",
+      "pass": true,
+      "evidence": "`src/features/admin/admin_cog.py:363-365` lets approved DMs fall through to `AdminChatCog`; `src/features/admin_chat/admin_chat_cog.py:199-209` admits non-admins with `members.can_message_bot` and a resolved guild context, for both DMs and guild messages."
+    },
+    {
+      "name": "Unapproved users are blocked from member access",
+      "pass": true,
+      "evidence": "Guild/mention path returns early when `can_message_bot` is false in `src/features/admin_chat/admin_chat_cog.py:200-202`; DM path only skips robot sounds for approved users with shared guild context in `src/features/admin/admin_cog.py:363-372`."
+    },
+    {
+      "name": "Non-admin tool tier is read-only and excludes obvious sensitive write/log/raw-query operations",
+      "pass": true,
+      "evidence": "`src/features/admin_chat/tools.py:418-438` restricts members to read-only tools and keeps `send_message`, `edit_message`, `delete_message`, `upload_file`, `share_to_social`, `search_logs`, and `query_table` admin-only."
+    },
+    {
+      "name": "Executor enforces tool permissions even if the model attempts a forbidden call",
+      "pass": true,
+      "evidence": "`src/features/admin_chat/tools.py:1549-1550` hard-rejects any tool not present in `allowed_tools` before dispatch."
+    },
+    {
+      "name": "Admins still receive the full 16-tool surface",
+      "pass": true,
+      "evidence": "`src/features/admin_chat/tools.py:440-448` gives admins `ALL_TOOL_NAMES`; both Claude API call sites use `available_tools` in `src/features/admin_chat/agent.py:267-284`, and tool execution passes the admin-allowed set in `src/features/admin_chat/agent.py:324-333`."
+    },
+    {
+      "name": "Non-admin message-reading tools are scoped to visible Discord channels",
+      "pass": true,
+      "evidence": "`src/features/admin_chat/tools.py:525-563` computes visible channels from `permissions_for(member).view_channel`; enforcement exists in `find_messages` live and DB paths (`647-651`, `700-728`), `inspect_message` (`845-847`), `get_active_channels` (`1035-1039`), and `get_daily_summaries` (`1105-1111`)."
+    },
+    {
+      "name": "DM guild context resolution is safe and unambiguous",
+      "pass": false,
+      "evidence": "`src/features/admin_chat/admin_chat_cog.py:143-156` resolves DMs by picking the default guild if shared, otherwise the first sorted guild ID. For members in multiple enabled guilds, DM requests are silently bound to an arbitrary guild rather than a user-selected one."
+    },
+    {
+      "name": "Member identity/profile lookups are safely scoped to the requester's guild",
+      "pass": false,
+      "evidence": "`get_member_info` reads directly from global `members` rows in `src/features/admin_chat/tools.py:1145-1179` and `src/common/supabase_query_handler.py:163-173`; `resolve_user` uses global `members` lookups in `src/features/admin_chat/tools.py:1438-1456` via `scripts/weekly_digest.py:362-385`. Approved non-admins can therefore resolve or inspect users outside the resolved guild."
+    },
+    {
+      "name": "Non-admin rate limiting is implemented",
+      "pass": true,
+      "evidence": "`src/features/admin_chat/admin_chat_cog.py:161-170` implements a 10-per-5-minute sliding window and `207-209` returns a cooldown reply when exceeded."
+    }
+  ],
+  "issues": [
+    "`get_member_info` and `resolve_user` remain global member-directory tools. Because they query `members` without any guild filter (`src/features/admin_chat/tools.py:1145-1179`, `src/features/admin_chat/tools.py:1438-1456`, `scripts/weekly_digest.py:362-385`), approved non-admins can retrieve profile/preference data for users outside the resolved guild. That undercuts the access-control goal for 'safe read-only' member operations.",
+    "DM guild resolution is still ambiguous for users who share multiple enabled guilds with the bot. `_resolve_context_guild_id()` picks the server default guild or the lowest guild ID (`src/features/admin_chat/admin_chat_cog.py:143-156`) instead of forcing disambiguation, so a DM can search the wrong guild silently.",
+    "T7 was not actually completed. The requested Discord/Supabase end-to-end scenarios were skipped, so admin/member DM routing, prompt-injection handling, and channel-visibility behavior are only statically inferred, not runtime-proven.",
+    "The tracking artifacts are stale after the user override. `finalize.json` task/sense-check text still asserts `guild_members.can_message_bot` and 'non-admin DMs -> robot sounds' for T4/SC4/SC5, while the implementation intentionally does the opposite. That makes the review trail contradictory even where the code is directionally correct."
+  ],
+  "summary": "The rollout is mostly in place: the membership flag moved to `members`, approved non-admins can DM or mention the bot, tool-tiering and executor-level denial are implemented, and channel-visibility filtering is wired through the main read tools. The main remaining gaps are unscoped member-lookup tools and ambiguous DM guild resolution for multi-guild users. End-to-end runtime validation was also not completed, and the task/sense-check metadata was not updated to reflect the approved override.",
+  "task_verdicts": [
+    {
+      "task_id": "T1",
+      "reviewer_verdict": "pass (override): migration correctly targets `members`, defaults to false, and seeds the requested test user; local migration execution remains unverified."
+    },
+    {
+      "task_id": "T2",
+      "reviewer_verdict": "pass"
+    },
+    {
+      "task_id": "T3",
+      "reviewer_verdict": "pass for the specified channel-visibility scope; implementation also extends filtering to `get_active_channels` and `get_daily_summaries`."
+    },
+    {
+      "task_id": "T4",
+      "reviewer_verdict": "superseded by user override: the task text is stale because approved non-admin DMs were intentionally enabled instead of left on robot-sounds-only behavior."
+    },
+    {
+      "task_id": "T5",
+      "reviewer_verdict": "pass with caveat: gating and rate limiting are implemented, but DM guild resolution is still ambiguous for multi-guild users."
+    },
+    {
+      "task_id": "T6",
+      "reviewer_verdict": "pass"
+    },
+    {
+      "task_id": "T7",
+      "reviewer_verdict": "not completed: only static validation ran; the requested end-to-end Discord/Supabase scenarios were not executed."
+    }
+  ],
+  "sense_check_verdicts": [
+    {
+      "sense_check_id": "SC1",
+      "verdict": "superseded: the literal `guild_members` check fails, but this was intentionally changed by the user override to `members.can_message_bot`."
+    },
+    {
+      "sense_check_id": "SC2",
+      "verdict": "pass"
+    },
+    {
+      "sense_check_id": "SC3",
+      "verdict": "pass"
+    },
+    {
+      "sense_check_id": "SC4",
+      "verdict": "superseded: AdminCog was intentionally changed to early-return approved non-admin DMs, so the literal 'unchanged for v1' check no longer applies."
+    },
+    {
+      "sense_check_id": "SC5",
+      "verdict": "superseded/partial: admin access, guild-member gating, and non-admin rate limiting are present, but the literal 'non-admin DM -> robot sounds' branch is intentionally replaced by approved-DM support."
+    },
+    {
+      "sense_check_id": "SC6",
+      "verdict": "pass"
+    },
+    {
+      "sense_check_id": "SC7",
+      "verdict": "fail: the full 10-scenario validation did not run; only static checks were performed."
+    }
+  ]
+}

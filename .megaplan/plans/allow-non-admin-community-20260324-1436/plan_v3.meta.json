@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "timestamp": "2026-03-24T13:51:02Z",
+  "hash": "sha256:afd8249439f6909b4ab7e64546d30c0b8bcabea9642ea4c2d1f4fcac6fff17dd",
+  "changes_summary": "Addressed both remaining significant flags:\n\n1. **public-channel-context-leak**: Replaced the policy-only Step 6 with a concrete enforcement mechanism in new Step 3. Added `requester_id` parameter threading through `execute_tool()`, a `_get_visible_channel_ids()` helper that uses Discord's `channel.permissions_for(member).view_channel` API, and enforcement points in `find_messages` (both live and DB paths) and `inspect_message`. Non-admin tool calls are filtered to only channels the requesting user can actually see. Admins pass `None` for unrestricted access. Validation Step 8.4 specifically tests cross-channel access denial.\n\n2. **dm-guild-ambiguity**: Simplified by restricting non-admin access to guild @mentions only for v1 (Step 5). This eliminates the multi-guild disambiguation problem entirely \u2014 when a user @mentions the bot in a guild channel, the guild_id is unambiguous from the message context. Admin DMs continue to work as before. Non-admin DMs get robot sounds. This is the cleanest fix and avoids over-engineering a multi-guild DM resolution system that isn't needed yet.",
+  "flags_addressed": [
+    "public-channel-context-leak",
+    "dm-guild-ambiguity"
+  ],
+  "questions": [
+    "Is there a need for a middle tier (e.g., moderators who can send_message but not delete_message), or is the binary admin/member split sufficient for now?"
+  ],
+  "success_criteria": [
+    "Non-admin users with can_message_bot=True in guild_members can @mention the bot in guild channels and receive responses using read-only tools",
+    "Non-admin users cannot invoke write tools (send_message, delete_message, edit_message, upload_file, share_to_social) \u2014 blocked at both prompt level (tools not offered to Claude) and executor level (rejected if somehow called)",
+    "query_table and search_logs are restricted to admins only",
+    "Admin users experience zero regressions \u2014 all 16 tools remain available via both DMs and @mentions",
+    "Users without can_message_bot=True are silently ignored when @mentioning the bot",
+    "Non-admin DMs get robot sounds from AdminCog (v1: no DM support for non-admins) \u2014 no dual-response bug",
+    "Rate limiting prevents non-admin users from excessive API usage (max 10 messages per 5 minutes)",
+    "The can_message_bot flag lives on guild_members (per-guild scoping) and can be toggled via the database",
+    "Non-admin tool calls are filtered to channels the requesting user has Discord ViewChannel permission for \u2014 no cross-channel data leaks via find_messages or inspect_message"
+  ],
+  "assumptions": [
+    "Binary admin/member role split is sufficient (no moderator tier needed for v1)",
+    "Non-admin users interact via guild @mentions only for v1 \u2014 DM support deferred to avoid multi-guild ambiguity",
+    "Rate limiting is in-memory only (resets on bot restart) \u2014 acceptable for v1",
+    "No new Discord slash commands needed \u2014 the existing message/mention flow is sufficient",
+    "Conversation history remains in-memory (no persistence change needed)",
+    "Channel-visibility check via Discord permissions_for(member).view_channel is the correct enforcement \u2014 matches what users can actually see in the Discord UI",
+    "Caching visible channels for ~60s is acceptable \u2014 channel permission changes are infrequent"
+  ],
+  "structure_warnings": [],
+  "delta_from_previous_percent": 26.85
+}

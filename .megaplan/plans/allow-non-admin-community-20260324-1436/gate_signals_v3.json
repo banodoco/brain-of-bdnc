@@ -1,0 +1,88 @@
+{
+  "robustness": "standard",
+  "signals": {
+    "iteration": 3,
+    "idea": "Allow non-admin community members to message the BNDC Discord bot directly, with access controls. Key requirements: 1) Add a flag on the members table (e.g. can_message_bot) that controls who can interact with the bot. 2) Cordon off sensitive operations so non-admin users can only do safe read-only things (search messages, look up member info, etc.) while admins retain full control (delete messages, send messages, manage server, etc.). 3) Figure out what data/operations are actually sensitive and should be restricted. The bot currently only works via admin_chat - need to understand the full current architecture and design how to open it up safely.",
+    "significant_flags": 1,
+    "unresolved_flags": [
+      {
+        "id": "approved-member-dm-routing-conflict",
+        "concern": "The revised plan is internally inconsistent about approved non-admin DMs, and the actual repo paths make that inconsistency user-visible. Step 4 says `AdminCog` should return early for approved members, Step 5 says `AdminChatCog` should ignore non-admin DMs for v1, but the success criteria and validation still expect approved-member DMs to get robot sounds. In this codebase, only `AdminCog` sends the robot-sounds fallback, so returning early there means approved-member DMs get no response at all.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      }
+    ],
+    "resolved_flags": [
+      {
+        "id": "dm-handler-conflict",
+        "concern": "The plan opens non-admin DMs in `AdminChatCog` but does not account for the existing DM listener in `AdminCog`. As written, approved non-admin users would still get the fallback robot-sounds DM, so the two cogs would conflict on the same message path.",
+        "resolution": "Addressed all 4 significant flags from critique v1:\n\n1. **dm-handler-conflict**: Added Step 3 that explicitly handles the `AdminCog.on_message` robot-sounds listener (`admin_cog.py:295-316`). The fix extends the existing admin carve-out to also check `can_message_bot`, ensuring approved members' DMs pass through to `AdminChatCog` without triggering robot sounds. Validation Step 8.2 specifically tests all three DM paths.\n\n2. **public-channel-context-leak**: Added Step 6 with an explicit policy. Channel context injection is acceptable because non-admins can only see data from channels they're already in (matching Discord's own visibility). The read-only tools return data the user could access via Discord UI. Documented that private-channel restrictions can be added later if needed.\n\n3. **guild-scoping-mismatch**: Changed Step 1 to put `can_message_bot` on `guild_members` instead of `members`, aligning with the repo's existing multi-server architecture. Updated Step 4 to query `guild_members` with guild context, including DM handling (check across all guilds).\n\n4. **member-query-surface-too-broad**: Moved `query_table` entirely to `ADMIN_ONLY_TOOLS` in Step 2. The purpose-built search tools (`find_messages`, `get_member_info`, `get_active_channels`, `get_daily_summaries`) cover member read-only needs without exposing arbitrary column access to `auth_user_id`, `grant_applications`, `invite_codes`, etc."
+      },
+      {
+        "id": "public-channel-context-leak",
+        "concern": "This concern is still open. Step 6 assumes the read-only tools only expose what the requesting member can already see in Discord, but the repository does not enforce requester channel visibility anywhere. `find_messages` searches all non-NSFW channels the bot knows about, and the live/message-inspection paths fetch arbitrary channels/messages by ID with bot credentials. That means an approved member can still read bot-visible channels they may not personally have access to.",
+        "resolution": "Addressed both remaining significant flags:\n\n1. **public-channel-context-leak**: Replaced the policy-only Step 6 with a concrete enforcement mechanism in new Step 3. Added `requester_id` parameter threading through `execute_tool()`, a `_get_visible_channel_ids()` helper that uses Discord's `channel.permissions_for(member).view_channel` API, and enforcement points in `find_messages` (both live and DB paths) and `inspect_message`. Non-admin tool calls are filtered to only channels the requesting user can actually see. Admins pass `None` for unrestricted access. Validation Step 8.4 specifically tests cross-channel access denial.\n\n2. **dm-guild-ambiguity**: Simplified by restricting non-admin access to guild @mentions only for v1 (Step 5). This eliminates the multi-guild disambiguation problem entirely \u2014 when a user @mentions the bot in a guild channel, the guild_id is unambiguous from the message context. Admin DMs continue to work as before. Non-admin DMs get robot sounds. This is the cleanest fix and avoids over-engineering a multi-guild DM resolution system that isn't needed yet."
+      },
+      {
+        "id": "guild-scoping-mismatch",
+        "concern": "The plan puts `can_message_bot` on the global `members` table, but the repository has already moved core bot configuration to guild scope. That makes the proposed access model fight the current architecture and bakes in another migration if per-guild enablement becomes necessary.",
+        "resolution": "Addressed all 4 significant flags from critique v1:\n\n1. **dm-handler-conflict**: Added Step 3 that explicitly handles the `AdminCog.on_message` robot-sounds listener (`admin_cog.py:295-316`). The fix extends the existing admin carve-out to also check `can_message_bot`, ensuring approved members' DMs pass through to `AdminChatCog` without triggering robot sounds. Validation Step 8.2 specifically tests all three DM paths.\n\n2. **public-channel-context-leak**: Added Step 6 with an explicit policy. Channel context injection is acceptable because non-admins can only see data from channels they're already in (matching Discord's own visibility). The read-only tools return data the user could access via Discord UI. Documented that private-channel restrictions can be added later if needed.\n\n3. **guild-scoping-mismatch**: Changed Step 1 to put `can_message_bot` on `guild_members` instead of `members`, aligning with the repo's existing multi-server architecture. Updated Step 4 to query `guild_members` with guild context, including DM handling (check across all guilds).\n\n4. **member-query-surface-too-broad**: Moved `query_table` entirely to `ADMIN_ONLY_TOOLS` in Step 2. The purpose-built search tools (`find_messages`, `get_member_info`, `get_active_channels`, `get_daily_summaries`) cover member read-only needs without exposing arbitrary column access to `auth_user_id`, `grant_applications`, `invite_codes`, etc."
+      },
+      {
+        "id": "member-query-surface-too-broad",
+        "concern": "The plan keeps `query_table` for non-admins, but in this repo that tool is effectively raw database access over a broad allowlist. Restricting a few table names is not enough: `members` now contains `auth_user_id`, and `query_table` can return arbitrary columns from `members`, `grant_applications`, `invite_codes`, `pending_intros`, and `timed_mutes`. For member access, this should be removed or replaced with a strict table-and-column allowlist.",
+        "resolution": "Addressed all 4 significant flags from critique v1:\n\n1. **dm-handler-conflict**: Added Step 3 that explicitly handles the `AdminCog.on_message` robot-sounds listener (`admin_cog.py:295-316`). The fix extends the existing admin carve-out to also check `can_message_bot`, ensuring approved members' DMs pass through to `AdminChatCog` without triggering robot sounds. Validation Step 8.2 specifically tests all three DM paths.\n\n2. **public-channel-context-leak**: Added Step 6 with an explicit policy. Channel context injection is acceptable because non-admins can only see data from channels they're already in (matching Discord's own visibility). The read-only tools return data the user could access via Discord UI. Documented that private-channel restrictions can be added later if needed.\n\n3. **guild-scoping-mismatch**: Changed Step 1 to put `can_message_bot` on `guild_members` instead of `members`, aligning with the repo's existing multi-server architecture. Updated Step 4 to query `guild_members` with guild context, including DM handling (check across all guilds).\n\n4. **member-query-surface-too-broad**: Moved `query_table` entirely to `ADMIN_ONLY_TOOLS` in Step 2. The purpose-built search tools (`find_messages`, `get_member_info`, `get_active_channels`, `get_daily_summaries`) cover member read-only needs without exposing arbitrary column access to `auth_user_id`, `grant_applications`, `invite_codes`, etc."
+      },
+      {
+        "id": "dm-guild-ambiguity",
+        "concern": "The new DM rule is under-specified in a way that can mis-scope data. The plan allows DMs when `can_message_bot=True` in any guild and then says to use the first matching guild as context. In this repository, guild context determines the prompt, community identity, and query scoping, so an arbitrary first match can route a DM into the wrong guild or expose the wrong guild's data.",
+        "resolution": "Addressed both remaining significant flags:\n\n1. **public-channel-context-leak**: Replaced the policy-only Step 6 with a concrete enforcement mechanism in new Step 3. Added `requester_id` parameter threading through `execute_tool()`, a `_get_visible_channel_ids()` helper that uses Discord's `channel.permissions_for(member).view_channel` API, and enforcement points in `find_messages` (both live and DB paths) and `inspect_message`. Non-admin tool calls are filtered to only channels the requesting user can actually see. Admins pass `None` for unrestricted access. Validation Step 8.4 specifically tests cross-channel access denial.\n\n2. **dm-guild-ambiguity**: Simplified by restricting non-admin access to guild @mentions only for v1 (Step 5). This eliminates the multi-guild disambiguation problem entirely \u2014 when a user @mentions the bot in a guild channel, the guild_id is unambiguous from the message context. Admin DMs continue to work as before. Non-admin DMs get robot sounds. This is the cleanest fix and avoids over-engineering a multi-guild DM resolution system that isn't needed yet."
+      }
+    ],
+    "weighted_score": 2.0,
+    "weighted_history": [
+      8.5,
+      5.0
+    ],
+    "plan_delta_from_previous": 26.85,
+    "recurring_critiques": [],
+    "scope_creep_flags": [],
+    "loop_summary": "Iteration 3. Weighted score trajectory: 8.5 -> 5.0 -> 2.0. Plan deltas: 61.7%, 26.9%. Recurring critiques: 0. Resolved flags: 5. Open significant flags: 1."
+  },
+  "warnings": [],
+  "criteria_check": {
+    "count": 9,
+    "items": [
+      "Non-admin users with can_message_bot=True in guild_members can @mention the bot in guild channels and receive responses using read-only tools",
+      "Non-admin users cannot invoke write tools (send_message, delete_message, edit_message, upload_file, share_to_social) \u2014 blocked at both prompt level (tools not offered to Claude) and executor level (rejected if somehow called)",
+      "query_table and search_logs are restricted to admins only",
+      "Admin users experience zero regressions \u2014 all 16 tools remain available via both DMs and @mentions",
+      "Users without can_message_bot=True are silently ignored when @mentioning the bot",
+      "Non-admin DMs get robot sounds from AdminCog (v1: no DM support for non-admins) \u2014 no dual-response bug",
+      "Rate limiting prevents non-admin users from excessive API usage (max 10 messages per 5 minutes)",
+      "The can_message_bot flag lives on guild_members (per-guild scoping) and can be toggled via the database",
+      "Non-admin tool calls are filtered to channels the requesting user has Discord ViewChannel permission for \u2014 no cross-channel data leaks via find_messages or inspect_message"
+    ]
+  },
+  "preflight_results": {
+    "project_dir_exists": true,
+    "project_dir_writable": true,
+    "success_criteria_present": true,
+    "claude_available": true,
+    "codex_available": true
+  },
+  "unresolved_flags": [
+    {
+      "id": "approved-member-dm-routing-conflict",
+      "concern": "The revised plan is internally inconsistent about approved non-admin DMs, and the actual repo paths make that inconsistency user-visible. Step 4 says `AdminCog` should return early for approved members, Step 5 says `AdminChatCog` should ignore non-admin DMs for v1, but the success criteria and validation still expect approved-member DMs to get robot sounds. In this codebase, only `AdminCog` sends the robot-sounds fallback, so returning early there means approved-member DMs get no response at all.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/admin/admin_cog.py:299-316` is the only non-admin DM responder; `src/features/admin_chat/admin_chat_cog.py:99-107` is the admin-only chat gate the plan would change. If Step 4's early return is added to `AdminCog` and Step 5's non-admin-DM ignore is added to `AdminChatCog`, approved-member DMs will hit neither reply path.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    }
+  ]
+}

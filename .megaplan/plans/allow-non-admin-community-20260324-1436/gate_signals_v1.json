@@ -1,0 +1,111 @@
+{
+  "robustness": "standard",
+  "signals": {
+    "iteration": 1,
+    "idea": "Allow non-admin community members to message the BNDC Discord bot directly, with access controls. Key requirements: 1) Add a flag on the members table (e.g. can_message_bot) that controls who can interact with the bot. 2) Cordon off sensitive operations so non-admin users can only do safe read-only things (search messages, look up member info, etc.) while admins retain full control (delete messages, send messages, manage server, etc.). 3) Figure out what data/operations are actually sensitive and should be restricted. The bot currently only works via admin_chat - need to understand the full current architecture and design how to open it up safely.",
+    "significant_flags": 4,
+    "unresolved_flags": [
+      {
+        "id": "dm-handler-conflict",
+        "concern": "The plan opens non-admin DMs in `AdminChatCog` but does not account for the existing DM listener in `AdminCog`. As written, approved non-admin users would still get the fallback robot-sounds DM, so the two cogs would conflict on the same message path.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "public-channel-context-leak",
+        "concern": "The plan frames access control mostly as tool filtering, but the current repo also leaks channel data through prompt construction. If you allow public @mentions, the bot already injects the replied-to message and the last 10 channel messages into the LLM prompt before any tool call, and member-safe tools can still fetch live channel/message content by ID. The plan needs an explicit policy for which channels/contexts non-admins may invoke the bot from.",
+        "category": "security",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "guild-scoping-mismatch",
+        "concern": "The plan puts `can_message_bot` on the global `members` table, but the repository has already moved core bot configuration to guild scope. That makes the proposed access model fight the current architecture and bakes in another migration if per-guild enablement becomes necessary.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "member-query-surface-too-broad",
+        "concern": "The plan keeps `query_table` for non-admins, but in this repo that tool is effectively raw database access over a broad allowlist. Restricting a few table names is not enough: `members` now contains `auth_user_id`, and `query_table` can return arbitrary columns from `members`, `grant_applications`, `invite_codes`, `pending_intros`, and `timed_mutes`. For member access, this should be removed or replaced with a strict table-and-column allowlist.",
+        "category": "security",
+        "severity": "significant",
+        "status": "open"
+      }
+    ],
+    "resolved_flags": [],
+    "weighted_score": 8.5,
+    "weighted_history": [],
+    "plan_delta_from_previous": null,
+    "recurring_critiques": [],
+    "scope_creep_flags": [],
+    "loop_summary": "Iteration 1. Weighted score trajectory: 8.5. Plan deltas: n/a. Recurring critiques: 0. Resolved flags: 0. Open significant flags: 4."
+  },
+  "warnings": [],
+  "criteria_check": {
+    "count": 7,
+    "items": [
+      "Non-admin users with `can_message_bot=True` can DM the bot and receive responses using read-only tools",
+      "Non-admin users cannot invoke write tools (send_message, delete_message, edit_message, upload_file, share_to_social) \u2014 blocked at both prompt level (tools not offered to Claude) and executor level (rejected if somehow called)",
+      "Admin users experience zero regressions \u2014 all 16 tools remain available",
+      "Users without `can_message_bot=True` are properly rejected",
+      "Rate limiting prevents non-admin users from excessive API usage",
+      "search_logs and other sensitive read operations are restricted to admins",
+      "The `can_message_bot` flag can be toggled per-member via the database (and eventually via admin bot commands)"
+    ]
+  },
+  "preflight_results": {
+    "project_dir_exists": true,
+    "project_dir_writable": true,
+    "success_criteria_present": true,
+    "claude_available": true,
+    "codex_available": true
+  },
+  "unresolved_flags": [
+    {
+      "id": "dm-handler-conflict",
+      "concern": "The plan opens non-admin DMs in `AdminChatCog` but does not account for the existing DM listener in `AdminCog`. As written, approved non-admin users would still get the fallback robot-sounds DM, so the two cogs would conflict on the same message path.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/admin/admin_cog.py:295-316` replies to every non-admin DM; `src/features/admin_chat/admin_chat_cog.py:99-107` is the gate the plan intends to relax for those same DMs.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "public-channel-context-leak",
+      "concern": "The plan frames access control mostly as tool filtering, but the current repo also leaks channel data through prompt construction. If you allow public @mentions, the bot already injects the replied-to message and the last 10 channel messages into the LLM prompt before any tool call, and member-safe tools can still fetch live channel/message content by ID. The plan needs an explicit policy for which channels/contexts non-admins may invoke the bot from.",
+      "category": "security",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/admin_chat/admin_chat_cog.py:136-169` builds `channel_context` with replied-to content and recent messages; `src/features/admin_chat/agent.py:136-157` injects that context into the prompt; `src/features/admin_chat/tools.py:559-567` and `src/features/admin_chat/tools.py:743-759` fetch live Discord data for `find_messages(live=true)` and `inspect_message`.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "guild-scoping-mismatch",
+      "concern": "The plan puts `can_message_bot` on the global `members` table, but the repository has already moved core bot configuration to guild scope. That makes the proposed access model fight the current architecture and bakes in another migration if per-guild enablement becomes necessary.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`supabase/migrations/20260320000000_multi_server.sql:7-25` adds `server_config.admin_user_id`; `supabase/migrations/20260320000000_multi_server.sql:84-93` adds `guild_members`; `src/common/server_config.py:26-106` resolves runtime behavior per guild; meanwhile `src/features/admin_chat/admin_chat_cog.py:32-41` still uses env `ADMIN_USER_ID`.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "member-query-surface-too-broad",
+      "concern": "The plan keeps `query_table` for non-admins, but in this repo that tool is effectively raw database access over a broad allowlist. Restricting a few table names is not enough: `members` now contains `auth_user_id`, and `query_table` can return arbitrary columns from `members`, `grant_applications`, `invite_codes`, `pending_intros`, and `timed_mutes`. For member access, this should be removed or replaced with a strict table-and-column allowlist.",
+      "category": "security",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/admin_chat/tools.py:64-70` includes `members`, `invite_codes`, `grant_applications`, `pending_intros`, and `timed_mutes` in `QUERYABLE_TABLES`; `src/features/admin_chat/tools.py:1313-1380` allows arbitrary `select`/filters/order on those tables; `supabase/migrations/20260324100000_redesign_for_elegance.sql:8-28` adds `members.auth_user_id`.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    }
+  ]
+}

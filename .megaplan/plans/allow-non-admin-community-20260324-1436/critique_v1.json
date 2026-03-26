@@ -1,0 +1,34 @@
+{
+  "flags": [
+    {
+      "id": "dm-handler-conflict",
+      "concern": "The plan opens non-admin DMs in `AdminChatCog` but does not account for the existing DM listener in `AdminCog`. As written, approved non-admin users would still get the fallback robot-sounds DM, so the two cogs would conflict on the same message path.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/admin/admin_cog.py:295-316` replies to every non-admin DM; `src/features/admin_chat/admin_chat_cog.py:99-107` is the gate the plan intends to relax for those same DMs."
+    },
+    {
+      "id": "public-channel-context-leak",
+      "concern": "The plan frames access control mostly as tool filtering, but the current repo also leaks channel data through prompt construction. If you allow public @mentions, the bot already injects the replied-to message and the last 10 channel messages into the LLM prompt before any tool call, and member-safe tools can still fetch live channel/message content by ID. The plan needs an explicit policy for which channels/contexts non-admins may invoke the bot from.",
+      "category": "security",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/admin_chat/admin_chat_cog.py:136-169` builds `channel_context` with replied-to content and recent messages; `src/features/admin_chat/agent.py:136-157` injects that context into the prompt; `src/features/admin_chat/tools.py:559-567` and `src/features/admin_chat/tools.py:743-759` fetch live Discord data for `find_messages(live=true)` and `inspect_message`."
+    },
+    {
+      "id": "guild-scoping-mismatch",
+      "concern": "The plan puts `can_message_bot` on the global `members` table, but the repository has already moved core bot configuration to guild scope. That makes the proposed access model fight the current architecture and bakes in another migration if per-guild enablement becomes necessary.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`supabase/migrations/20260320000000_multi_server.sql:7-25` adds `server_config.admin_user_id`; `supabase/migrations/20260320000000_multi_server.sql:84-93` adds `guild_members`; `src/common/server_config.py:26-106` resolves runtime behavior per guild; meanwhile `src/features/admin_chat/admin_chat_cog.py:32-41` still uses env `ADMIN_USER_ID`."
+    },
+    {
+      "id": "member-query-surface-too-broad",
+      "concern": "The plan keeps `query_table` for non-admins, but in this repo that tool is effectively raw database access over a broad allowlist. Restricting a few table names is not enough: `members` now contains `auth_user_id`, and `query_table` can return arbitrary columns from `members`, `grant_applications`, `invite_codes`, `pending_intros`, and `timed_mutes`. For member access, this should be removed or replaced with a strict table-and-column allowlist.",
+      "category": "security",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/admin_chat/tools.py:64-70` includes `members`, `invite_codes`, `grant_applications`, `pending_intros`, and `timed_mutes` in `QUERYABLE_TABLES`; `src/features/admin_chat/tools.py:1313-1380` allows arbitrary `select`/filters/order on those tables; `supabase/migrations/20260324100000_redesign_for_elegance.sql:8-28` adds `members.auth_user_id`."
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

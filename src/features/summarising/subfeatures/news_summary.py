@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 import anthropic
 from openai import AsyncOpenAI
 
-from src.common.voice import BOT_VOICE
+from src.common.soul import BOT_VOICE
 
 # We removed direct Discord/bot usage here since SUMMARIZER handles posting logic now.
 # This class now focuses on:
