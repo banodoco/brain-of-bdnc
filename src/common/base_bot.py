@@ -7,6 +7,7 @@ import traceback
 import os
 import aiohttp
 
+import discord
 from discord.ext import commands
 
 from src.common.rate_limiter import RateLimiter
@@ -44,6 +45,12 @@ class BaseDiscordBot(commands.Bot):
             # No running loop yet; fall back to discord.py defaults.
             pass
         
+        # Block @everyone, @here, and role mentions in all bot messages by default.
+        # Individual sends can override with their own allowed_mentions if needed.
+        kwargs.setdefault(
+            'allowed_mentions',
+            discord.AllowedMentions(everyone=False, roles=False, users=True),
+        )
         super().__init__(command_prefix=command_prefix, intents=intents, **kwargs)
         self.logger = logger
         self.dev_mode = dev_mode
