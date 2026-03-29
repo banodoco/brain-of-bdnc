@@ -270,7 +270,7 @@ class GatingCog(commands.Cog):
             if action == 'KEEP':
                 if body:
                     await message.reply(body, mention_author=True, delete_after=300)
-                logger.info(f"GatingCog: Haiku welcomed {message.author}")
+                logger.info(f"GatingCog: Haiku welcomed {message.author}: {body[:200] if body else '(no body)'}")
 
             elif action == 'DELETE':
                 self._pending_messages.pop(message.id, None)
@@ -287,12 +287,12 @@ class GatingCog(commands.Cog):
                         await hint.delete()
                 except Exception as e:
                     logger.error(f"GatingCog: failed to delete intro from {message.author}: {e}")
-                logger.info(f"GatingCog: Haiku deleted intro from {message.author}")
+                logger.info(f"GatingCog: Haiku deleted intro from {message.author}: {body[:200] if body else '(no body)'}")
 
             elif action == 'FEEDBACK':
                 if body:
                     await message.reply(body, mention_author=True, delete_after=300)
-                logger.info(f"GatingCog: Haiku sent feedback to {message.author}")
+                logger.info(f"GatingCog: Haiku sent feedback to {message.author}: {body[:200] if body else '(no body)'}")
 
             else:
                 logger.warning(f"GatingCog: unexpected Haiku response for {message.author}: {response[:100]}")
