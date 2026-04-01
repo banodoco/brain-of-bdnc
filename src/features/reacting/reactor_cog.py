@@ -30,6 +30,32 @@ class ReactorCog(commands.Cog):
         self.message_linker_channel_ids = [] # Initialize attribute
         self._rate_limit_until = 0  # monotonic timestamp; skip reaction handling while active
 
+    # Codepoints for emojis commonly used as political symbols (beyond flags)
+    POLITICAL_CODEPOINTS = {
+        0x1F349,   # 🍉 Watermelon (Palestinian solidarity)
+        0x1F53B,   # 🔻 Red triangle pointing down
+    }
+
+    @staticmethod
+    def _is_political_emoji(emoji_str: str) -> bool:
+        """Check if an emoji is a flag or political symbol."""
+        codepoints = [ord(c) for c in emoji_str]
+
+        # Country flags: pairs of Regional Indicator Symbol Letters (U+1F1E6 to U+1F1FF)
+        regional_indicators = [cp for cp in codepoints if 0x1F1E6 <= cp <= 0x1F1FF]
+        if len(regional_indicators) == 2:
+            return True
+
+        # Subdivision flags: 🏴 (U+1F3F4) followed by tag characters (U+E0061-U+E007A)
+        if codepoints and codepoints[0] == 0x1F3F4 and any(0xE0061 <= cp <= 0xE007A for cp in codepoints):
+            return True
+
+        # Other political symbols — check if any codepoint in the emoji matches
+        if any(cp in ReactorCog.POLITICAL_CODEPOINTS for cp in codepoints):
+            return True
+
+        return False
+
     def _is_feature_enabled(self, guild_id, channel_id, feature):
         """Check if a feature is enabled via server_config, defaulting to True."""
         sc = getattr(getattr(self.bot, 'db_handler', None), 'server_config', None)
@@ -281,6 +307,39 @@ class ReactorCog(commands.Cog):
             # --- STEP 3: Restore final logic (Simulate reaction, call logger, call reactor) ---
             # Proceed with Reactor check only if message was fetched successfully
             if message and user:
+                # --- Political emoji enforcement: remove and post reminder in rules channel ---
+                emoji_str = str(emoji)
+                if self._is_political_emoji(emoji_str):
+                    self.logger.info(f"[ReactorCog] Political emoji '{emoji_str}' detected from user {user.id} on message {message.id} — removing and posting reminder.")
+                    try:
+                        await message.remove_reaction(emoji, user)
+                    except (discord.Forbidden, discord.HTTPException) as e:
+                        self.logger.warning(f"[ReactorCog] Could not remove political reaction: {e}")
+                    # Post a temporary reminder in the rules channel (auto-deletes after 5 minutes)
+                    try:
+                        sc = getattr(getattr(self.bot, 'db_handler', None), 'server_config', None)
+                        rules_channel_id = sc.get_server_field(payload.guild_id, 'rules_channel_id', cast=int) if sc else None
+                        if rules_channel_id:
+                            rules_channel = self.bot.get_channel(rules_channel_id) or await self.bot.fetch_channel(rules_channel_id)
+                            reminder_msg = await rules_channel.send(
+                                f"<@{user.id}> — friendly reminder: political symbols (flags, political emojis, etc.) "
+                                f"are not allowed as reactions here. This is a non-political environment. "
+                                f"Please keep reactions fun and neutral! 🙂"
+                            )
+                            # Delete the reminder after 5 minutes so it doesn't clutter the channel
+                            async def _delete_after_delay(msg, delay):
+                                await asyncio.sleep(delay)
+                                try:
+                                    await msg.delete()
+                                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                                    pass
+                            asyncio.create_task(_delete_after_delay(reminder_msg, 300))
+                        else:
+                            self.logger.warning(f"[ReactorCog] No rules_channel_id configured for guild {payload.guild_id} — could not post political emoji reminder.")
+                    except (discord.Forbidden, discord.HTTPException) as e:
+                        self.logger.warning(f"[ReactorCog] Could not post political emoji reminder in rules channel: {e}")
+                    return  # Stop further processing for this reaction
+
                 # Simulate Reaction object (Needed for LoggerCog and Reactor)
                 simulated_reaction = SimpleReaction(message, emoji)
 
