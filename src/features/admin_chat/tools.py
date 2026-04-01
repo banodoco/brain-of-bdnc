@@ -413,6 +413,52 @@ TOOLS = [
             "required": ["table"]
         }
     },
+    {
+        "name": "download_media",
+        "description": "Download attachments from a Discord message to the local filesystem for processing. Files are saved to /tmp/media/{message_id}/. Use before run_media_command.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message_id": {
+                    "type": "string",
+                    "description": "Discord message ID"
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Channel/thread ID containing the message"
+                }
+            },
+            "required": ["message_id", "channel_id"]
+        }
+    },
+    {
+        "name": "run_media_command",
+        "description": "Run a media processing command (ffmpeg, ffprobe, or python3 for PIL/Pillow). Working directory is /tmp/media/. Use for combining images, transcoding video, generating thumbnails, image compositing with PIL, etc. For PIL: python3 -c \"from PIL import Image; ...\"",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Shell command to run. Must start with ffmpeg, ffprobe, or python3."
+                }
+            },
+            "required": ["command"]
+        }
+    },
+    {
+        "name": "list_media_files",
+        "description": "List files in the media working directory (/tmp/media/). Use to see downloaded files and processing results.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Subdirectory to list (relative to /tmp/media/). Defaults to listing all."
+                }
+            },
+            "required": []
+        }
+    },
 ]
 
 MEMBER_TOOLS = {
@@ -1544,6 +1590,126 @@ async def execute_query_table(params: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+# ========== Media Tools ==========
+
+MEDIA_DIR = '/tmp/media'
+ALLOWED_MEDIA_BINARIES = {'ffmpeg', 'ffprobe', 'python3'}
+
+
+async def execute_download_media(bot: discord.Client, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Download attachments from a Discord message to /tmp/media/."""
+    import aiohttp
+
+    message_id = params.get('message_id', '')
+    channel_id = params.get('channel_id', '')
+
+    if not message_id or not channel_id:
+        return {"success": False, "error": "message_id and channel_id are required"}
+
+    try:
+        channel = bot.get_channel(int(channel_id))
+        if not channel:
+            channel = await bot.fetch_channel(int(channel_id))
+        message = await channel.fetch_message(int(message_id))
+    except Exception as e:
+        return {"success": False, "error": f"Failed to fetch message: {e}"}
+
+    if not message.attachments:
+        return {"success": False, "error": "Message has no attachments"}
+
+    out_dir = os.path.join(MEDIA_DIR, str(message_id))
+    os.makedirs(out_dir, exist_ok=True)
+
+    downloaded = []
+    async with aiohttp.ClientSession() as session:
+        for att in message.attachments:
+            file_path = os.path.join(out_dir, att.filename)
+            try:
+                async with session.get(att.url) as resp:
+                    if resp.status == 200:
+                        with open(file_path, 'wb') as f:
+                            f.write(await resp.read())
+                        downloaded.append({
+                            "filename": att.filename,
+                            "path": file_path,
+                            "size_bytes": os.path.getsize(file_path),
+                            "content_type": att.content_type,
+                        })
+            except Exception as e:
+                downloaded.append({"filename": att.filename, "error": str(e)})
+
+    return {"success": True, "directory": out_dir, "files": downloaded}
+
+
+async def execute_run_media_command(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Run a whitelisted media command (ffmpeg, ffprobe, python3)."""
+    import asyncio as _asyncio
+    import shlex
+
+    command = params.get('command', '').strip()
+    if not command:
+        return {"success": False, "error": "command is required"}
+
+    # Validate the binary is allowed
+    try:
+        parts = shlex.split(command)
+    except ValueError as e:
+        return {"success": False, "error": f"Invalid command syntax: {e}"}
+
+    binary = os.path.basename(parts[0])
+    if binary not in ALLOWED_MEDIA_BINARIES:
+        return {"success": False, "error": f"Binary '{binary}' not allowed. Use: {', '.join(sorted(ALLOWED_MEDIA_BINARIES))}"}
+
+    os.makedirs(MEDIA_DIR, exist_ok=True)
+
+    try:
+        proc = await _asyncio.create_subprocess_shell(
+            command,
+            stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.PIPE,
+            cwd=MEDIA_DIR,
+        )
+        stdout, stderr = await _asyncio.wait_for(proc.communicate(), timeout=120)
+        return {
+            "success": proc.returncode == 0,
+            "return_code": proc.returncode,
+            "stdout": stdout.decode(errors='replace')[:4000],
+            "stderr": stderr.decode(errors='replace')[:4000],
+        }
+    except _asyncio.TimeoutError:
+        proc.kill()
+        return {"success": False, "error": "Command timed out after 120 seconds"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+async def execute_list_media_files(params: Dict[str, Any]) -> Dict[str, Any]:
+    """List files in the media working directory."""
+    sub = params.get('path', '')
+    base = os.path.join(MEDIA_DIR, sub) if sub else MEDIA_DIR
+
+    # Prevent directory traversal
+    base = os.path.realpath(base)
+    if not base.startswith(MEDIA_DIR):
+        return {"success": False, "error": "Path must be within /tmp/media/"}
+
+    if not os.path.exists(base):
+        return {"success": True, "files": [], "note": "Directory does not exist yet. Download some media first."}
+
+    files = []
+    for root, dirs, filenames in os.walk(base):
+        for fn in filenames:
+            fp = os.path.join(root, fn)
+            rel = os.path.relpath(fp, MEDIA_DIR)
+            files.append({
+                "path": fp,
+                "relative": rel,
+                "size_bytes": os.path.getsize(fp),
+            })
+
+    return {"success": True, "directory": base, "files": files}
+
+
 # ========== Tool Executor Dispatcher ==========
 
 async def execute_tool(
@@ -1625,5 +1791,11 @@ async def execute_tool(
         return await execute_resolve_user(trusted_tool_input)
     elif tool_name == "query_table":
         return await execute_query_table(trusted_tool_input)
+    elif tool_name == "download_media":
+        return await execute_download_media(bot, trusted_tool_input)
+    elif tool_name == "run_media_command":
+        return await execute_run_media_command(trusted_tool_input)
+    elif tool_name == "list_media_files":
+        return await execute_list_media_files(trusted_tool_input)
     else:
         return {"success": False, "error": f"Unknown tool: {tool_name}"}

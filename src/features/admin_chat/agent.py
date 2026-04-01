@@ -70,7 +70,19 @@ END EVERY TURN with either reply or end_turn.
 - **bold**, *italic*, > block quote, `backticks` for IDs/code
 - <#CHANNEL_ID> for channels, <@USER_ID> for mentions
 - Bare URL alone on a line = auto-embed. Text before it prevents embed.
-- Keep messages under 2000 chars. No headings (#) in DMs — use **bold**."""
+- Keep messages under 2000 chars. No headings (#) in DMs — use **bold**.
+
+## Media Tools
+
+You have FFmpeg, ffprobe, and Python/Pillow for media processing. You can:
+- Download attachments from Discord messages (download_media)
+- Process media with ffmpeg, ffprobe, or python3/PIL (run_media_command)
+- List working files (list_media_files)
+- Upload results to Discord (upload_file)
+- Share to social media (share_to_social)
+
+Working directory: /tmp/media/. For PIL, use: python3 -c "from PIL import Image; ..."
+Clean up files in /tmp/media/ when you're done with a task."""
 
 _POM_ADDENDUM = """
 
