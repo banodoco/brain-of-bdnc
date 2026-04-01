@@ -599,14 +599,13 @@ class GrantsCog(commands.Cog):
             return
 
         if decision == 'needs_info':
-            self.db.update_grant_status(thread_id, guild_id=guild_id, status='needs_info', llm_assessment=llm_assessment)
             await thread.send(
                 f"**More information needed**\n\n{response}\n\n"
                 f"Please reply here with the requested details and I'll re-review your application."
             )
+            self.db.update_grant_status(thread_id, guild_id=guild_id, status='needs_info', llm_assessment=llm_assessment)
 
         elif decision == 'needs_review':
-            self.db.update_grant_status(thread_id, guild_id=guild_id, status='needs_review', llm_assessment=llm_assessment)
             # Include LLM's recommended GPU/hours if provided
             details = ""
             if assessment.get('gpu_type') and assessment.get('recommended_hours'):
@@ -624,11 +623,12 @@ class GrantsCog(commands.Cog):
                 f"{self._admin_mention} **Manual review needed**{details}\n"
                 f"**Reasoning:** {reasoning}"
             )
+            self.db.update_grant_status(thread_id, guild_id=guild_id, status='needs_review', llm_assessment=llm_assessment)
 
         elif decision == 'rejected':
+            await thread.send(f"**Application not approved**\n\n{response}")
             self.db.update_grant_status(thread_id, guild_id=guild_id, status='rejected', llm_assessment=llm_assessment,
                                         rejected_at='now()')
-            await thread.send(f"**Application not approved**\n\n{response}")
             try:
                 await thread.edit(archived=True)
             except Exception as e:
@@ -640,17 +640,9 @@ class GrantsCog(commands.Cog):
             rate = GPU_RATES[gpu_type]
             total_cost = calculate_grant_cost(gpu_type, hours)
 
-            self.db.update_grant_status(
-                thread_id, 'awaiting_wallet',
-                guild_id=guild_id,
-                llm_assessment=llm_assessment,
-                gpu_type=gpu_type,
-                recommended_hours=hours,
-                gpu_rate_usd=rate,
-                total_cost_usd=total_cost,
-                approved_at='now()',
-            )
-
+            # Send the approval message BEFORE updating DB status to awaiting_wallet.
+            # If the message fails (e.g. Discord 503), the grant stays in reviewing
+            # and the applicant won't be incorrectly prompted for a wallet address.
             await self._apply_tag(thread, 'accepted')
             await thread.send(
                 f"<@{thread.owner_id}> **Grant Approved!**\n\n"
@@ -661,6 +653,17 @@ class GrantsCog(commands.Cog):
                 f"- Rate: ${rate:.2f}/hr (+ 10% fee buffer)\n"
                 f"- Total: ${total_cost:.2f} USD (paid in SOL)\n\n"
                 f"Please reply with your **Solana wallet address** to receive the grant."
+            )
+
+            self.db.update_grant_status(
+                thread_id, 'awaiting_wallet',
+                guild_id=guild_id,
+                llm_assessment=llm_assessment,
+                gpu_type=gpu_type,
+                recommended_hours=hours,
+                gpu_rate_usd=rate,
+                total_cost_usd=total_cost,
+                approved_at='now()',
             )
 
     def _explorer_url(self, tx_sig: str) -> str:

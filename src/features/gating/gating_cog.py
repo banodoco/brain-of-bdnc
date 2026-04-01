@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord.ext import commands, tasks
@@ -67,28 +67,6 @@ This is a last resort — if someone made any genuine attempt at an intro, do NO
 Keep your message short and friendly — tell them this channel is for introductions and \
 what they could include."""
 
-_NEW_SPEAKER_BLURB_PROMPT = """\
-You are writing a brief welcome blurb for a new member who just got approved to speak \
-in Banodoco, an open-source AI art community on Discord.
-
-{bot_voice}
-
-Write a single natural-sounding blurb (1-2 sentences) that:
-- Introduces them based on what they said in their intro — focus on who they are and \
-what they're into, NOT any problems or issues they mentioned.
-- Weaves in 3-4 channel suggestions naturally (using <#channel_id> format), like \
-"you might enjoy <#123> and <#456>" or "sounds like <#123> would be right up your alley."
-- If their intro is too vague to say anything specific about them, just write something \
-warm and characterful — "another mysterious soul joins the ranks" or similar. Don't \
-force specifics you don't have.
-
-Respond in EXACTLY this format (no extra text):
-BLURB: <your blurb here>
-
-Use only channel IDs from the provided list. Pick channels relevant to their interests — \
-prioritise tool-specific or model-specific channels over generic ones."""
-
-
 class GatingCog(commands.Cog):
     """
     Gated entry system: new members post intros, approvers react, bot grants Speaker role.
@@ -98,7 +76,6 @@ class GatingCog(commands.Cog):
       2. on_message          → track intro, Haiku reviews first message (DELETE / FEEDBACK / KEEP)
       3. on_raw_reaction_add → approver reacts on any tracked message → _approve_member
       4. _approve_member     → grant Speaker role, ✅ reaction, DM the member
-      5. daily_new_speakers  → 19:30 UTC batch announcement in welcome channel
 
     Cleanup:
       - on_raw_message_delete  → remove from tracking, expire DB if no messages left
@@ -115,9 +92,6 @@ class GatingCog(commands.Cog):
 
         # Temp gate-channel welcome pings awaiting deletion: {message_id: (channel_id, sent_at)}
         self._temp_welcomes: dict[int, tuple[int, datetime]] = {}
-
-        # Previous daily speakers announcement per guild: {guild_id: (channel_id, message_id)}
-        self._last_daily_speakers_msg: dict[int, tuple[int, int]] = {}
 
     # ── Config helpers ──
 
@@ -155,13 +129,11 @@ class GatingCog(commands.Cog):
         self.scan_intro_channels.start()
         self.cleanup_expired_intros.start()
         self.cleanup_temp_welcomes.start()
-        self.daily_new_speakers.start()
 
     async def cog_unload(self):
         self.scan_intro_channels.cancel()
         self.cleanup_expired_intros.cancel()
         self.cleanup_temp_welcomes.cancel()
-        self.daily_new_speakers.cancel()
 
     # ═══════════════════════════════════════════════════════════════
     #  1. New member joins → temp welcome in gate channel
@@ -401,170 +373,6 @@ class GatingCog(commands.Cog):
         to_remove = [mid for mid, m in self._pending_messages.items() if m == member_id]
         for mid in to_remove:
             del self._pending_messages[mid]
-
-    # ═══════════════════════════════════════════════════════════════
-    #  5. Daily new speakers announcement (19:30 UTC)
-    # ═══════════════════════════════════════════════════════════════
-
-    _NEW_SPEAKERS_PATTERN = "New speakers today"
-
-    def _get_recommendable_channels(self, guild: discord.Guild) -> list[tuple[int, str]]:
-        """Return (id, name) pairs for text channels the bot can recommend to new members."""
-        # Skip channels that aren't useful recommendations (exact segment match, not substring)
-        skip_segments = {'rules', 'mod', 'admin', 'logs', 'bot', 'bots', 'gate', 'intro',
-                         'introductions', 'welcome', 'announcements', 'staff', 'test'}
-        channels = []
-        for ch in guild.text_channels:
-            segments = set(ch.name.lower().replace('-', ' ').replace('_', ' ').split())
-            if segments & skip_segments:
-                continue
-            # Only include channels the bot can see and that have some activity
-            if ch.permissions_for(guild.me).view_channel:
-                channels.append((ch.id, ch.name))
-        # Cap to avoid bloating the LLM prompt
-        return channels[:60]
-
-    async def _build_speaker_blurb(self, guild: discord.Guild, intro: dict,
-                                    member: discord.Member,
-                                    recommendable: list[tuple[int, str]]) -> str | None:
-        """Fetch the member's intro message and generate a welcome blurb with channel suggestions."""
-        fallback = f"- {member.mention} — welcome aboard."
-
-        # Fetch the intro message from Discord
-        intro_channel = guild.get_channel(intro['channel_id'])
-        if not intro_channel:
-            return fallback
-        try:
-            intro_msg = await intro_channel.fetch_message(intro['message_id'])
-        except (discord.NotFound, discord.HTTPException):
-            return fallback
-
-        intro_text = intro_msg.content or "(no text — media only)"
-
-        # Build channel list for the LLM
-        channel_list = "\n".join(f"- {cid}: #{name}" for cid, name in recommendable)
-
-        try:
-            response = await get_llm_response(
-                client_name="claude",
-                model="claude-opus-4-6",
-                system_prompt=_NEW_SPEAKER_BLURB_PROMPT.format(bot_voice=BOT_VOICE),
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        f"Introduction from {member.display_name}:\n\n"
-                        f"{intro_text}\n\n"
-                        f"Available channels:\n{channel_list}"
-                    ),
-                }],
-                max_tokens=200,
-            )
-            response = response.strip()
-        except Exception as e:
-            logger.error(f"GatingCog: failed to generate blurb for {member}: {e}")
-            return fallback
-
-        # Parse BLURB from the response
-        blurb_text = ""
-        for line in response.split('\n'):
-            line = line.strip()
-            if line.upper().startswith('BLURB:'):
-                blurb_text = line.split(':', 1)[1].strip()
-                break
-
-        if blurb_text:
-            return f"- {member.mention} — {blurb_text}"
-        return fallback
-
-    @tasks.loop(time=time(hour=19, minute=30, tzinfo=timezone.utc))
-    async def daily_new_speakers(self):
-        if not self.db:
-            return
-        for guild in self.bot.guilds:
-            cfg = self._get_guild_config(guild.id)
-            welcome_channel_id = cfg.get('welcome_channel_id')
-            if not welcome_channel_id:
-                continue
-            channel = guild.get_channel(welcome_channel_id)
-            if not channel:
-                continue
-
-            # Delete previous day's announcement
-            prev = self._last_daily_speakers_msg.pop(guild.id, None)
-            if prev:
-                try:
-                    prev_channel = guild.get_channel(prev[0])
-                    if prev_channel:
-                        prev_msg = await prev_channel.fetch_message(prev[1])
-                        await prev_msg.delete()
-                except (discord.NotFound, discord.HTTPException):
-                    pass
-
-            approved = self.db.get_recently_approved_intros(hours=24, guild_id=guild.id)
-            if not approved:
-                continue
-
-            # Deduplicate by member_id, keeping the most recent approval
-            seen: dict[int, dict] = {}
-            for intro in approved:
-                mid = intro['member_id']
-                if mid not in seen:
-                    seen[mid] = intro
-            unique_intros = list(seen.values())
-
-            # Build blurbs for each new speaker
-            recommendable = self._get_recommendable_channels(guild)
-            blurbs = []
-            mentions = []
-            for intro in unique_intros:
-                member = guild.get_member(intro['member_id'])
-                if not member:
-                    continue
-                mentions.append(member.mention)
-                blurb = await self._build_speaker_blurb(guild, intro, member, recommendable)
-                if blurb:
-                    blurbs.append(blurb)
-
-            if not mentions:
-                continue
-
-            # Format the message (respect Discord's 2000-char limit)
-            header = f"**New speakers today** — welcome {', '.join(mentions)}! 🎉\n"
-            body = "\n".join(blurbs) if blurbs else ""
-            footer = "\nCheck out the Getting Started information above for more info."
-            content = f"{header}\n{body}{footer}" if body else header
-            if len(content) > 2000:
-                # Trim blurbs until it fits, keeping the header with all mentions
-                while blurbs and len(content) > 2000:
-                    blurbs.pop()
-                    body = "\n".join(blurbs)
-                    content = f"{header}\n{body}" if body else header
-
-            try:
-                msg = await channel.send(content)
-                self._last_daily_speakers_msg[guild.id] = (channel.id, msg.id)
-                logger.info(f"GatingCog: posted daily new speakers ({len(mentions)}) in {guild.name}")
-            except Exception as e:
-                logger.error(f"GatingCog: failed to post daily new speakers in {guild.name}: {e}")
-
-    @daily_new_speakers.before_loop
-    async def before_daily_new_speakers(self):
-        await self.bot.wait_until_ready()
-        for guild in self.bot.guilds:
-            cfg = self._get_guild_config(guild.id)
-            welcome_channel_id = cfg.get('welcome_channel_id')
-            if not welcome_channel_id:
-                continue
-            channel = guild.get_channel(welcome_channel_id)
-            if not channel:
-                continue
-            try:
-                async for msg in channel.history(limit=50):
-                    if msg.author.id == self.bot.user.id and self._NEW_SPEAKERS_PATTERN in msg.content:
-                        self._last_daily_speakers_msg[guild.id] = (channel.id, msg.id)
-                        break
-            except Exception as e:
-                logger.error(f"GatingCog: failed to scan for previous daily speakers msg: {e}")
 
     # ═══════════════════════════════════════════════════════════════
     #  Background tasks

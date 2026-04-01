@@ -35,6 +35,9 @@ from src.features.summarising.subfeatures.top_art_sharing import TopArtSharing
 # Content moderation
 from src.common.content_moderator import filter_summary_media
 
+# Speaker welcome blurbs
+from src.common.speaker_welcome import get_recommendable_channels, build_speaker_blurb
+
 # --- Import Sharer ---
 
 # Optional imports for media processing
@@ -441,6 +444,7 @@ class ChannelSummarizer:
                  self.channels_to_monitor = []
              self.art_channel_id = _field('art_channel_id') or int(os.getenv(f'{env_prefix}ART_CHANNEL_ID'))
              self.top_gens_channel_id = _field('top_gens_channel_id') or self.summary_channel_id
+             self.welcome_channel_id = _field('welcome_channel_id')
 
              monitor_desc = 'ALL' if self.monitor_all_channels else self.channels_to_monitor
              self.logger.info(f"Loaded {'DEV' if self.dev_mode else 'PROD'} config: Guild={self.guild_id}, Summary={self.summary_channel_id}, TopGens={self.top_gens_channel_id}, Monitor={monitor_desc}, Art={self.art_channel_id}")
@@ -1794,6 +1798,57 @@ class ChannelSummarizer:
             self.logger.warning(f"Discord connectivity check failed with unexpected error: {e}")
             return False
 
+    async def _post_new_speakers(self, summary_channel: discord.TextChannel):
+        """Post a new speakers welcome section to the summary channel."""
+        try:
+            approved = self.db_handler.get_recently_approved_intros(hours=24, guild_id=self.guild_id)
+            if not approved:
+                return
+
+            # Deduplicate by member_id
+            seen: dict[int, dict] = {}
+            for intro in approved:
+                mid = intro['member_id']
+                if mid not in seen:
+                    seen[mid] = intro
+            unique_intros = list(seen.values())
+
+            guild = summary_channel.guild
+            recommendable = get_recommendable_channels(guild)
+            blurbs = []
+            mentions = []
+            for intro in unique_intros:
+                member = guild.get_member(intro['member_id'])
+                if not member:
+                    continue
+                mentions.append(member.mention)
+                blurb = await build_speaker_blurb(guild, intro, member, recommendable)
+                if blurb:
+                    blurbs.append(blurb)
+
+            if not mentions:
+                return
+
+            header = f"## New Speakers\n\nWelcome {', '.join(mentions)}!\n"
+            body = "\n".join(blurbs) if blurbs else ""
+            welcome_ref = f"<#{self.welcome_channel_id}>" if self.welcome_channel_id else "the Getting Started channel"
+            footer = f"\nCheck out {welcome_ref} for more info on how to get started."
+            content = f"{header}\n{body}{footer}" if body else f"{header}{footer}"
+
+            # Split if needed (Discord 2000 char limit)
+            if len(content) > 2000:
+                while blurbs and len(content) > 2000:
+                    blurbs.pop()
+                    body = "\n".join(blurbs)
+                    content = f"{header}\n{body}{footer}" if body else f"{header}{footer}"
+
+            await discord_utils.safe_send_message(
+                self.bot, summary_channel, self.rate_limiter, self.logger, content=content
+            )
+            self.logger.info(f"Posted new speakers section ({len(mentions)} speakers) to summary channel")
+        except Exception as e:
+            self.logger.error(f"Failed to post new speakers section: {e}", exc_info=True)
+
     @handle_errors("generate_summary")
     async def generate_summary(self):
         """
@@ -2161,6 +2216,9 @@ class ChannelSummarizer:
                 self.logger.info(f"Posting Top Generations thread to summary channel, individual posts to top_gens channel (ID: {self.top_gens_channel_id})")
                 await self.top_generations.post_top_x_generations(summary_channel, limit=20, also_post_to_channel_id=self.top_gens_channel_id)
                 await self.top_art_sharer.post_top_art_share(summary_channel)
+
+                # Post new speakers welcome section
+                await self._post_new_speakers(summary_channel)
 
                 self.logger.info("Attempting to send link back to start...")
                 if self.first_message:
