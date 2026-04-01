@@ -1849,116 +1849,92 @@ class ChannelSummarizer:
         except Exception as e:
             self.logger.error(f"Failed to post new speakers section: {e}", exc_info=True)
 
-    async def _send_social_picks_dm(self):
-        """DM the admin with curated social-worthy picks from today's activity."""
+    _SOCIAL_PICKS_PROMPT = """\
+You are a social media editor for Banodoco, an open-source AI art community. \
+You're reviewing today's daily summary to find content worth tweeting from the @banodoco account.
+
+Look for:
+- Exciting new tools, models, or techniques people are discussing
+- Impressive generations or art that the community loved
+- Notable milestones, releases, or breakthroughs
+- Interesting experiments or creative uses of AI tools
+
+For each pick, write a short draft tweet (under 280 chars) that:
+- Is enthusiastic but not hype-brained — sounds like a real person, not a brand account
+- Credits the creator if there is one
+- Explains why it's interesting in plain language
+- Would make someone want to click through
+
+Respond with 3-5 picks in this exact format (no extra text):
+
+PICK
+Draft: <tweet text>
+Why: <1 sentence on why this is share-worthy>
+Link: <leave blank — will be filled in>
+
+PICK
+Draft: <tweet text>
+Why: <1 sentence>
+Link: <leave blank>
+
+If nothing stands out today, respond with just: NOTHING"""
+
+    async def _send_social_picks_dm(self, overall_summary=None, short_summary=None):
+        """DM the admin with Claude-curated social picks based on today's summary."""
         try:
             admin_id = int(os.getenv('ADMIN_USER_ID', '0'))
             if not admin_id:
                 return
 
-            yesterday = datetime.utcnow() - timedelta(hours=24)
-            art_channel_id = getattr(self, 'art_channel_id', 0) or 0
-
-            # Top video generations (same query as top_generations but we just want the data)
-            video_query = f"""
-                SELECT
-                    m.message_id, m.channel_id, m.content, m.attachments,
-                    c.channel_name,
-                    COALESCE(mem.server_nick, mem.global_name, mem.username) as author_name,
-                    CASE
-                        WHEN m.reactors IS NULL OR m.reactors = '[]' THEN 0
-                        ELSE json_array_length(m.reactors)
-                    END as unique_reactor_count
-                FROM messages m
-                JOIN channels c ON m.channel_id = c.channel_id
-                JOIN members mem ON m.author_id = mem.member_id
-                WHERE m.created_at > ?
-                AND m.guild_id = ?
-                AND m.channel_id != {art_channel_id}
-                AND json_valid(m.attachments) AND m.attachments != '[]'
-                AND LOWER(c.channel_name) NOT LIKE '%nsfw%'
-                AND EXISTS (
-                    SELECT 1 FROM json_each(m.attachments)
-                    WHERE LOWER(json_extract(value, '$.filename')) LIKE '%.mp4'
-                       OR LOWER(json_extract(value, '$.filename')) LIKE '%.mov'
-                       OR LOWER(json_extract(value, '$.filename')) LIKE '%.webm'
-                )
-                AND unique_reactor_count >= 3
-                ORDER BY unique_reactor_count DESC
-                LIMIT 10
-            """
-            top_videos = await asyncio.to_thread(
-                self.db_handler.execute_query, video_query,
-                (yesterday.isoformat(), self.guild_id)
-            )
-
-            # Top art/image posts
-            art_query = """
-                SELECT
-                    m.message_id, m.channel_id, m.content, m.attachments,
-                    COALESCE(mem.server_nick, mem.global_name, mem.username) as author_name,
-                    CASE
-                        WHEN m.reactors IS NULL OR m.reactors = '[]' THEN 0
-                        ELSE json_array_length(m.reactors)
-                    END as unique_reactor_count
-                FROM messages m
-                JOIN members mem ON m.author_id = mem.member_id
-                WHERE m.channel_id = ?
-                AND m.created_at > ?
-                AND json_valid(m.attachments) AND m.attachments != '[]'
-                AND unique_reactor_count >= 3
-                ORDER BY unique_reactor_count DESC
-                LIMIT 5
-            """
-            top_art = []
-            if art_channel_id:
-                top_art = await asyncio.to_thread(
-                    self.db_handler.execute_query, art_query,
-                    (art_channel_id, yesterday.isoformat())
-                )
-
-            if not top_videos and not top_art:
-                self.logger.info("No social picks to send today")
+            if not overall_summary and not short_summary:
+                self.logger.info("No summary data for social picks, skipping")
                 return
 
-            # Build the DM
-            lines = ["**Social picks for today:**\n"]
+            # Build context for Claude from whatever we have
+            context = ""
+            if short_summary:
+                context += f"Short summary:\n{short_summary}\n\n"
+            if overall_summary:
+                # overall_summary could be JSON or text — truncate to avoid token limits
+                summary_text = overall_summary if isinstance(overall_summary, str) else json.dumps(overall_summary)
+                context += f"Full summary:\n{summary_text[:8000]}"
 
-            if top_videos:
-                lines.append("**Videos**")
-                for i, v in enumerate(top_videos, 1):
-                    jump = f"https://discord.com/channels/{self.guild_id}/{v['channel_id']}/{v['message_id']}"
-                    desc = (v.get('content') or '').strip()
-                    desc = desc[:100] + '...' if len(desc) > 100 else desc
-                    author = v['author_name']
-                    reactions = v['unique_reactor_count']
-                    channel = v.get('channel_name', '')
-                    line = f"{i}. **{author}** in #{channel} ({reactions} reactions)"
-                    if desc:
-                        line += f" — \"{desc}\""
-                    line += f"\n   {jump}"
-                    lines.append(line)
+            from src.common.llm import get_llm_response
+            response = await get_llm_response(
+                client_name="claude",
+                model="claude-sonnet-4-5-20241022",
+                system_prompt=self._SOCIAL_PICKS_PROMPT,
+                messages=[{"role": "user", "content": context}],
+                max_tokens=1000,
+            )
+            response = response.strip()
 
-            if top_art:
-                lines.append("\n**Art**")
-                for i, a in enumerate(top_art, 1):
-                    jump = f"https://discord.com/channels/{self.guild_id}/{a['channel_id']}/{a['message_id']}"
-                    desc = (a.get('content') or '').strip()
-                    desc = desc[:100] + '...' if len(desc) > 100 else desc
-                    author = a['author_name']
-                    reactions = a['unique_reactor_count']
-                    line = f"{i}. **{author}** ({reactions} reactions)"
-                    if desc:
-                        line += f" — \"{desc}\""
-                    line += f"\n   {jump}"
-                    lines.append(line)
+            if response == "NOTHING":
+                self.logger.info("Social picks: Claude found nothing worth sharing today")
+                return
 
-            content = "\n".join(lines)
+            # Format for Discord DM
+            dm_lines = ["**Social picks for today:**\n"]
+            picks = response.split("PICK")
+            for pick in picks:
+                pick = pick.strip()
+                if not pick:
+                    continue
+                dm_lines.append(pick)
+                dm_lines.append("")  # blank line between picks
 
-            # Send to admin DM
+            content = "\n".join(dm_lines)
+
             admin_user = await self.bot.fetch_user(admin_id)
-            await admin_user.send(content[:2000])
-            self.logger.info(f"Sent social picks DM to admin ({len(top_videos)} videos, {len(top_art)} art)")
+            # Split if needed
+            if len(content) <= 2000:
+                await admin_user.send(content)
+            else:
+                # Send in chunks
+                for i in range(0, len(content), 2000):
+                    await admin_user.send(content[i:i+2000])
+
+            self.logger.info(f"Sent social picks DM to admin ({len(picks) - 1} picks)")
 
         except Exception as e:
             self.logger.error(f"Failed to send social picks DM: {e}", exc_info=True)
@@ -1977,6 +1953,8 @@ class ChannelSummarizer:
             async with self.summary_lock:
                 # Reset first_message so a stale reference from a previous run can't be used
                 self.first_message = None
+                self._today_summary = None
+                self._today_short_summary = None
 
                 # Check Discord connectivity before starting
                 if not await self._check_discord_connectivity():
@@ -2275,6 +2253,8 @@ class ChannelSummarizer:
                             
                             # Save main summary to database (with dev_mode flag if in dev mode)
                             short_summary = await self.news_summarizer.generate_short_summary(overall_summary, 0)
+                            self._today_summary = overall_summary
+                            self._today_short_summary = short_summary
                             main_summary_saved = await asyncio.to_thread(
                                 db_handler.store_daily_summary,
                                 self.summary_channel_id,
@@ -2343,7 +2323,10 @@ class ChannelSummarizer:
                     self.logger.warning("No first_message found, cannot send link back")
 
                 # Send social picks DM to admin
-                await self._send_social_picks_dm()
+                await self._send_social_picks_dm(
+                    getattr(self, '_today_summary', None),
+                    getattr(self, '_today_short_summary', None),
+                )
 
         except Exception as e:
             self.logger.error(f"Critical error in summary generation: {e}", exc_info=True)
