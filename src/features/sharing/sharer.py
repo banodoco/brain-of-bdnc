@@ -260,7 +260,7 @@ class Sharer:
         else:
             self.logger.warning(f"Cannot finalize sharing for message {message.id} (triggered by summary) as message.channel is not available.")
 
-    async def finalize_sharing(self, user_id: int, message_id: int, channel_id: int, summary_channel: Optional[discord.TextChannel] = None):
+    async def finalize_sharing(self, user_id: int, message_id: int, channel_id: int, summary_channel: Optional[discord.TextChannel] = None, tweet_text: Optional[str] = None):
         """
         Finalizes the sharing process after receiving consent. 
         This function now acts as the central point for all sharing activities for a given message.
@@ -340,7 +340,11 @@ class Sharer:
                 )
 
                 twitter_content = ""
-                if summary_channel and "top-art-sharing" in summary_channel.name.lower():
+                if tweet_text:
+                    # Custom tweet text provided (e.g. from admin chat)
+                    twitter_content = tweet_text
+                    self.logger.info(f"Using custom tweet text for message {message_id}: '{twitter_content[:80]}...'")
+                elif summary_channel and "top-art-sharing" in summary_channel.name.lower():
                     self.logger.info(f"Using specific Twitter format for message {message_id}. Content: '{summary_channel.topic[:50]}...'")
                     twitter_content = summary_channel.topic
                 else:

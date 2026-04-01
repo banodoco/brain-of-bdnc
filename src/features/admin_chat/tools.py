@@ -178,7 +178,7 @@ TOOLS = [
     },
     {
         "name": "share_to_social",
-        "description": "Share a Discord message to social media (Twitter, Instagram, TikTok, YouTube). Uses the existing sharing pipeline. Respects user opt-out preferences. The message MUST have attachments (images/videos). After sharing, use the reply tool to confirm.",
+        "description": "Share a Discord message to social media (Twitter, Instagram, TikTok, YouTube). Uses the existing sharing pipeline. Respects user opt-out preferences. The message MUST have attachments (images/videos). Use tweet_text to specify exact tweet copy — if omitted, a generic caption is auto-generated. After sharing, use the reply tool to confirm.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -189,6 +189,10 @@ TOOLS = [
                 "message_id": {
                     "type": "string",
                     "description": "Discord message ID (alternative to message_link)"
+                },
+                "tweet_text": {
+                    "type": "string",
+                    "description": "Custom tweet text (max 280 chars). If provided, this exact text is used as the tweet instead of auto-generating."
                 }
             },
             "required": []
@@ -1051,14 +1055,17 @@ async def execute_share_to_social(
         if not message.attachments:
             return {"success": False, "error": f"Message has no attachments to share. Content: '{message.content[:100]}...'"}
 
-        logger.info(f"[AdminChat] Triggering share for message {message_id} by user {message.author.id}")
+        tweet_text = params.get('tweet_text', '').strip() or None
+        logger.info(f"[AdminChat] Triggering share for message {message_id} by user {message.author.id}" +
+                     (f" with custom tweet: '{tweet_text[:80]}...'" if tweet_text else ""))
 
         # Use existing sharing path
         await sharer.finalize_sharing(
             user_id=message.author.id,
             message_id=message.id,
             channel_id=channel.id,
-            summary_channel=None
+            summary_channel=None,
+            tweet_text=tweet_text,
         )
 
         return {
