@@ -1849,6 +1849,120 @@ class ChannelSummarizer:
         except Exception as e:
             self.logger.error(f"Failed to post new speakers section: {e}", exc_info=True)
 
+    async def _send_social_picks_dm(self):
+        """DM the admin with curated social-worthy picks from today's activity."""
+        try:
+            admin_id = int(os.getenv('ADMIN_USER_ID', '0'))
+            if not admin_id:
+                return
+
+            yesterday = datetime.utcnow() - timedelta(hours=24)
+            art_channel_id = getattr(self, 'art_channel_id', 0) or 0
+
+            # Top video generations (same query as top_generations but we just want the data)
+            video_query = f"""
+                SELECT
+                    m.message_id, m.channel_id, m.content, m.attachments,
+                    c.channel_name,
+                    COALESCE(mem.server_nick, mem.global_name, mem.username) as author_name,
+                    CASE
+                        WHEN m.reactors IS NULL OR m.reactors = '[]' THEN 0
+                        ELSE json_array_length(m.reactors)
+                    END as unique_reactor_count
+                FROM messages m
+                JOIN channels c ON m.channel_id = c.channel_id
+                JOIN members mem ON m.author_id = mem.member_id
+                WHERE m.created_at > ?
+                AND m.guild_id = ?
+                AND m.channel_id != {art_channel_id}
+                AND json_valid(m.attachments) AND m.attachments != '[]'
+                AND LOWER(c.channel_name) NOT LIKE '%nsfw%'
+                AND EXISTS (
+                    SELECT 1 FROM json_each(m.attachments)
+                    WHERE LOWER(json_extract(value, '$.filename')) LIKE '%.mp4'
+                       OR LOWER(json_extract(value, '$.filename')) LIKE '%.mov'
+                       OR LOWER(json_extract(value, '$.filename')) LIKE '%.webm'
+                )
+                AND unique_reactor_count >= 3
+                ORDER BY unique_reactor_count DESC
+                LIMIT 10
+            """
+            top_videos = await asyncio.to_thread(
+                self.db_handler.execute_query, video_query,
+                (yesterday.isoformat(), self.guild_id)
+            )
+
+            # Top art/image posts
+            art_query = """
+                SELECT
+                    m.message_id, m.channel_id, m.content, m.attachments,
+                    COALESCE(mem.server_nick, mem.global_name, mem.username) as author_name,
+                    CASE
+                        WHEN m.reactors IS NULL OR m.reactors = '[]' THEN 0
+                        ELSE json_array_length(m.reactors)
+                    END as unique_reactor_count
+                FROM messages m
+                JOIN members mem ON m.author_id = mem.member_id
+                WHERE m.channel_id = ?
+                AND m.created_at > ?
+                AND json_valid(m.attachments) AND m.attachments != '[]'
+                AND unique_reactor_count >= 3
+                ORDER BY unique_reactor_count DESC
+                LIMIT 5
+            """
+            top_art = []
+            if art_channel_id:
+                top_art = await asyncio.to_thread(
+                    self.db_handler.execute_query, art_query,
+                    (art_channel_id, yesterday.isoformat())
+                )
+
+            if not top_videos and not top_art:
+                self.logger.info("No social picks to send today")
+                return
+
+            # Build the DM
+            lines = ["**Social picks for today:**\n"]
+
+            if top_videos:
+                lines.append("**Videos**")
+                for i, v in enumerate(top_videos, 1):
+                    jump = f"https://discord.com/channels/{self.guild_id}/{v['channel_id']}/{v['message_id']}"
+                    desc = (v.get('content') or '').strip()
+                    desc = desc[:100] + '...' if len(desc) > 100 else desc
+                    author = v['author_name']
+                    reactions = v['unique_reactor_count']
+                    channel = v.get('channel_name', '')
+                    line = f"{i}. **{author}** in #{channel} ({reactions} reactions)"
+                    if desc:
+                        line += f" — \"{desc}\""
+                    line += f"\n   {jump}"
+                    lines.append(line)
+
+            if top_art:
+                lines.append("\n**Art**")
+                for i, a in enumerate(top_art, 1):
+                    jump = f"https://discord.com/channels/{self.guild_id}/{a['channel_id']}/{a['message_id']}"
+                    desc = (a.get('content') or '').strip()
+                    desc = desc[:100] + '...' if len(desc) > 100 else desc
+                    author = a['author_name']
+                    reactions = a['unique_reactor_count']
+                    line = f"{i}. **{author}** ({reactions} reactions)"
+                    if desc:
+                        line += f" — \"{desc}\""
+                    line += f"\n   {jump}"
+                    lines.append(line)
+
+            content = "\n".join(lines)
+
+            # Send to admin DM
+            admin_user = await self.bot.fetch_user(admin_id)
+            await admin_user.send(content[:2000])
+            self.logger.info(f"Sent social picks DM to admin ({len(top_videos)} videos, {len(top_art)} art)")
+
+        except Exception as e:
+            self.logger.error(f"Failed to send social picks DM: {e}", exc_info=True)
+
     @handle_errors("generate_summary")
     async def generate_summary(self):
         """
@@ -2227,6 +2341,9 @@ class ChannelSummarizer:
                     await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\n---\n\n***Click here to jump to the beginning of today's summary:*** {link_to_start}")
                 else:
                     self.logger.warning("No first_message found, cannot send link back")
+
+                # Send social picks DM to admin
+                await self._send_social_picks_dm()
 
         except Exception as e:
             self.logger.error(f"Critical error in summary generation: {e}", exc_info=True)

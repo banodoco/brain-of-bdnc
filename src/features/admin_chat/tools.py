@@ -433,7 +433,7 @@ TOOLS = [
     },
     {
         "name": "run_media_command",
-        "description": "Run a media processing command (ffmpeg, ffprobe, or python3 for PIL/Pillow). Working directory is /tmp/media/. Use for combining images, transcoding video, generating thumbnails, image compositing with PIL, etc. For PIL: python3 -c \"from PIL import Image; ...\"",
+        "description": "Run a media processing command (ffmpeg, ffprobe, or python3 for PIL/Pillow). Working directory is /tmp/media/. 5 minute timeout. Use for combining images, transcoding video, generating thumbnails, image compositing with PIL, etc. For PIL: python3 -c \"from PIL import Image; ...\"",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -481,6 +481,9 @@ ADMIN_ONLY_TOOLS = {
     "delete_message",
     "upload_file",
     "query_table",
+    "download_media",
+    "run_media_command",
+    "list_media_files",
 }
 
 ALL_TOOL_NAMES = {tool["name"] for tool in TOOLS}
@@ -1669,7 +1672,7 @@ async def execute_run_media_command(params: Dict[str, Any]) -> Dict[str, Any]:
             stderr=_asyncio.subprocess.PIPE,
             cwd=MEDIA_DIR,
         )
-        stdout, stderr = await _asyncio.wait_for(proc.communicate(), timeout=120)
+        stdout, stderr = await _asyncio.wait_for(proc.communicate(), timeout=300)
         return {
             "success": proc.returncode == 0,
             "return_code": proc.returncode,
@@ -1678,7 +1681,7 @@ async def execute_run_media_command(params: Dict[str, Any]) -> Dict[str, Any]:
         }
     except _asyncio.TimeoutError:
         proc.kill()
-        return {"success": False, "error": "Command timed out after 120 seconds"}
+        return {"success": False, "error": "Command timed out after 5 minutes"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
