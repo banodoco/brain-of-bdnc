@@ -1881,13 +1881,16 @@ If nothing stands out today, respond with just: NOTHING"""
 
     async def _send_social_picks_dm(self, overall_summary=None, short_summary=None):
         """DM the admin with Claude-curated social picks based on today's summary."""
+        self.logger.info("[SocialPicks] Starting social picks generation")
         try:
             admin_id = int(os.getenv('ADMIN_USER_ID', '0'))
             if not admin_id:
+                self.logger.warning("[SocialPicks] No ADMIN_USER_ID set, skipping")
                 return
 
             if not overall_summary and not short_summary:
-                self.logger.info("No summary data for social picks, skipping")
+                self.logger.warning("[SocialPicks] No summary data available (overall_summary=%s, short_summary=%s), skipping",
+                                    type(overall_summary).__name__, type(short_summary).__name__)
                 return
 
             # Build context for Claude from whatever we have
@@ -1899,18 +1902,20 @@ If nothing stands out today, respond with just: NOTHING"""
                 summary_text = overall_summary if isinstance(overall_summary, str) else json.dumps(overall_summary)
                 context += f"Full summary:\n{summary_text[:8000]}"
 
+            self.logger.info("[SocialPicks] Calling Claude with %d chars of context", len(context))
             from src.common.llm import get_llm_response
             response = await get_llm_response(
                 client_name="claude",
-                model="claude-sonnet-4-5-20241022",
+                model="claude-sonnet-4-5-20250929",
                 system_prompt=self._SOCIAL_PICKS_PROMPT,
                 messages=[{"role": "user", "content": context}],
                 max_tokens=1000,
             )
             response = response.strip()
+            self.logger.info("[SocialPicks] Claude responded (%d chars)", len(response))
 
             if response == "NOTHING":
-                self.logger.info("Social picks: Claude found nothing worth sharing today")
+                self.logger.info("[SocialPicks] Claude found nothing worth sharing today")
                 return
 
             # Format for Discord DM
@@ -1934,10 +1939,10 @@ If nothing stands out today, respond with just: NOTHING"""
                 for i in range(0, len(content), 2000):
                     await admin_user.send(content[i:i+2000])
 
-            self.logger.info(f"Sent social picks DM to admin ({len(picks) - 1} picks)")
+            self.logger.info(f"[SocialPicks] Sent DM to admin ({len(picks) - 1} picks)")
 
         except Exception as e:
-            self.logger.error(f"Failed to send social picks DM: {e}", exc_info=True)
+            self.logger.error(f"[SocialPicks] Failed: {e}", exc_info=True)
 
     @handle_errors("generate_summary")
     async def generate_summary(self):
