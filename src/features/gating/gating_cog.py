@@ -416,20 +416,75 @@ class GatingCog(commands.Cog):
 
     @tasks.loop(hours=1)
     async def cleanup_expired_intros(self):
-        """Expire pending intros older than 7 days."""
+        """Expire and delete pending intros older than 3 days."""
         if not self.db:
             return
-        expired = self.db.get_expired_pending_intros(expiry_days=7)
+        expired = self.db.get_expired_pending_intros(expiry_days=3)
         if not expired:
             return
         logger.info(f"GatingCog: expiring {len(expired)} intro(s)")
         for intro in expired:
+            # Delete the message from Discord
+            await self._delete_intro_message(intro)
             self.db.expire_pending_intro(intro['message_id'], guild_id=intro.get('guild_id'))
             self._remove_member_messages(intro['member_id'])
+
+    async def _delete_intro_message(self, intro: dict):
+        """Try to delete an intro message from Discord."""
+        try:
+            guild = self.bot.get_guild(intro.get('guild_id')) if intro.get('guild_id') else None
+            if not guild:
+                return
+            channel = guild.get_channel(intro['channel_id'])
+            if not channel:
+                return
+            msg = await channel.fetch_message(intro['message_id'])
+            await msg.delete()
+            logger.info(f"GatingCog: deleted expired intro message {intro['message_id']} from {msg.author}")
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            logger.error(f"GatingCog: failed to delete intro message {intro['message_id']}: {e}")
 
     @cleanup_expired_intros.before_loop
     async def before_cleanup(self):
         await self.bot.wait_until_ready()
+        # One-time: clean up old stale intros from before this feature existed
+        await self._cleanup_old_stale_intros()
+
+    async def _cleanup_old_stale_intros(self):
+        """One-time scan: delete intro-channel messages from non-speakers older than 3 days."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+        for guild in self.bot.guilds:
+            cfg = self._get_gating_config(guild.id)
+            if not cfg:
+                continue
+            channel = guild.get_channel(cfg['intro_channel_id'])
+            if not channel:
+                continue
+            speaker_role = guild.get_role(cfg['speaker_role_id'])
+            if not speaker_role:
+                continue
+            deleted = 0
+            try:
+                async for msg in channel.history(limit=500, before=cutoff):
+                    if msg.author.bot:
+                        continue
+                    # If they still don't have Speaker role, delete
+                    member = guild.get_member(msg.author.id)
+                    if member and speaker_role in member.roles:
+                        continue
+                    try:
+                        await msg.delete()
+                        deleted += 1
+                    except discord.NotFound:
+                        pass
+                    except Exception as e:
+                        logger.error(f"GatingCog: failed to delete stale intro {msg.id}: {e}")
+            except Exception as e:
+                logger.error(f"GatingCog: failed to scan intro channel for stale messages: {e}")
+            if deleted:
+                logger.info(f"GatingCog: cleaned up {deleted} stale intro(s) in {guild.name}")
 
     TEMP_WELCOME_TTL = timedelta(minutes=5)
 
