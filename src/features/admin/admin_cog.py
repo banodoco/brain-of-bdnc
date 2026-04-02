@@ -676,6 +676,13 @@ class AdminCog(commands.Cog):
             # Phase 2: Enforce Speaker role permissions
             modes = self.db_handler.get_all_channel_speaker_modes(guild_id=guild.id)
 
+            # Gate channel should always be readonly (only the bot posts there)
+            gate_channel_id = None
+            if self.server_config:
+                server = self.server_config.get_server(guild.id)
+                if server and server.get('gate_channel_id'):
+                    gate_channel_id = int(server['gate_channel_id'])
+
             checked = 0
             fixed = 0
             errors = 0
@@ -689,6 +696,10 @@ class AdminCog(commands.Cog):
                 # Env var fallback — if listed as exempt in env, honour it
                 if channel.id in env_exempt_ids:
                     mode = 'exempt'
+
+                # Gate channel is always readonly — only the bot posts temp welcomes there
+                if gate_channel_id and channel.id == gate_channel_id:
+                    mode = 'readonly'
 
                 checked += 1
                 try:
