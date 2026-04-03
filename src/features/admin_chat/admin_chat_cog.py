@@ -80,6 +80,12 @@ class AdminChatCog(commands.Cog):
         if self.bot.user and self.bot.user.mentioned_in(message) and not message.mention_everyone:
             return True
 
+        # Also respond if the bot's managed role is @mentioned
+        if self.bot.user and message.role_mentions:
+            bot_member = message.guild.get_member(self.bot.user.id) if message.guild else None
+            if bot_member and any(role in message.role_mentions for role in bot_member.roles if role.is_bot_managed()):
+                return True
+
         # Also respond if replying to one of the bot's messages
         if message.reference and message.reference.resolved:
             ref = message.reference.resolved
@@ -169,10 +175,16 @@ class AdminChatCog(commands.Cog):
         bucket.append(now)
         return False
 
-    def _strip_mention(self, content: str) -> str:
-        """Remove the bot @mention from message content."""
+    def _strip_mention(self, content: str, guild: discord.Guild = None) -> str:
+        """Remove the bot @mention and bot role @mention from message content."""
         if self.bot.user:
             content = content.replace(f'<@{self.bot.user.id}>', '').replace(f'<@!{self.bot.user.id}>', '')
+            if guild:
+                bot_member = guild.get_member(self.bot.user.id)
+                if bot_member:
+                    for role in bot_member.roles:
+                        if role.is_bot_managed():
+                            content = content.replace(f'<@&{role.id}>', '')
         return content.strip()
 
     _ABORT_PHRASES = {'stop', 'abort', 'cancel', 'halt', 'nevermind', 'never mind', 'quit', 'enough'}
@@ -191,7 +203,7 @@ class AdminChatCog(commands.Cog):
 
         is_dm = isinstance(message.channel, discord.DMChannel)
         is_admin = self._is_admin(message.author.id)
-        content = message.content if is_dm else self._strip_mention(message.content)
+        content = message.content if is_dm else self._strip_mention(message.content, message.guild)
 
         if not content:
             return
