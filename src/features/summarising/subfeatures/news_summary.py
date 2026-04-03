@@ -244,6 +244,17 @@ Evidence & Attribution:
 - Always credit creators with bold usernames: "**username**"
 - For subjective opinions, attribute them: "**Draken** felt..."
 
+Titles:
+- Titles must not overstate or simplify claims. If a result came from a process \
+(iteration, collaboration, specific conditions), the title must reflect that.
+- BAD: "Kijai achieved 10x speed improvement on RIFE" (sounds like a standalone breakthrough)
+- GOOD: "Kijai iterates Claude-generated RIFE code to 10x speedup" (captures the real story)
+- When someone reports a number (speed, quality, size), include the context that \
+produced it. Never let a title imply a bigger claim than the source messages support.
+- No hyperbole. Don't inflate what happened. If someone made a nice workflow, don't \
+call it "groundbreaking." If something got faster, don't say "blazing." Report what \
+happened in plain language and let readers decide how impressed to be.
+
 Tone:
 {bot_voice}
 - Refer to community members collectively as "Banodocians"
