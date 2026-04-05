@@ -6,9 +6,9 @@
 #   ./scripts/run_equity_review.sh 2026-03   # specific month
 #
 # Pipeline:
-#   Layer 1 (code):  contributors command → signals JSON     (~30 seconds)
-#   Layer 2 (LLM):   profile + evaluate → evaluations JSON   (~5-10 minutes)
-#   Layer 3 (human):  POM reviews evaluations
+#   Layer 1 (code):   contributors command → signals JSON       (~30 seconds)
+#   Layer 2 (LLM):    profile + evaluate → enriched signals JSON (~5-10 minutes)
+#   Layer 3 (human):  POM reviews the enriched signals file
 
 set -euo pipefail
 
@@ -27,7 +27,6 @@ else
 fi
 
 SIGNALS_FILE="$PROJECT_DIR/results/${MONTH}_signals.json"
-EVAL_FILE="$PROJECT_DIR/results/${MONTH}_evaluations.json"
 
 echo "=== Equity Review Pipeline for $MONTH ==="
 echo ""
@@ -40,13 +39,12 @@ echo "Signals written to: $SIGNALS_FILE"
 echo ""
 
 # Layer 2: LLM evaluation
-echo "--- Layer 2: Running LLM evaluation ---"
+echo "--- Layer 2: Running qualitative evaluation ---"
 PROMPT=$(sed "s/{{MONTH}}/$MONTH/g" "$SCRIPT_DIR/equity_review_layer2_prompt.md")
 claude -p "$PROMPT" --allowedTools "Bash,Read,Write"
 echo ""
 
 echo "=== Done ==="
-echo "Signals:     $SIGNALS_FILE"
-echo "Evaluations: $EVAL_FILE"
+echo "Output: $SIGNALS_FILE (now enriched with Layer 2 evaluations)"
 echo ""
-echo "Layer 3: Review the evaluations file and make allocation decisions."
+echo "Layer 3: Open the file and review. Filter by verdict: strong, moderate, weak, notable_mention."
