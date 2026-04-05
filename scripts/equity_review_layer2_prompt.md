@@ -79,13 +79,38 @@ For notable mentions (Tier 3 skips and equity holders):
 
 People with 4 or fewer signals get no `evaluation` field — they stay as raw signal data.
 
+## Verdict criteria
+
+Use these definitions — they are the line between verdicts:
+
+**Strong** — Shipped something others are using or building on.
+- Released a tool, node, model, LoRA, or workflow that other people adopted
+- Evidence: others referencing it, building on it, using it in their own work, thanking them for it
+- The key question: can you point to something that exists in the world because of this person?
+
+**Moderate** — Real, original contribution but hasn't reached wide adoption yet. Includes:
+- Built or released something real but it's experimental or early-stage (NOT unreleased — it must be available)
+- Shared genuinely useful knowledge, guides, or workflows that helped others
+- Active helper who gives substantive technical answers (not one-liners)
+- Proactive tester who does robust comparative testing and shares findings that change how others work
+- Artist or creative contributor whose work inspires others or demonstrates new techniques
+
+**Weak** — Do NOT use this verdict. If someone doesn't meet the bar for Strong or Moderate, they should be a notable_mention or get no evaluation at all. The "Weak" category in previous runs was just noise — chatters, people sharing others' work, people talking about unreleased code.
+
+**Things that are NOT signals of contribution (downgrade or skip):**
+- Talking about work that isn't released or available — if it's not shipped, it doesn't count
+- Sharing links to other people's repos/models without adding original value
+- High message count with low substance (chatting)
+- Claims about forthcoming releases or unverified results
+- Reactions on casual/funny messages (entertainment ≠ contribution)
+
 ## Evaluation guidelines
 
 - **You are adding qualitative judgment, not restating numbers.** Layer 1 already counted reactions and signals. Your value is reading the *content* and making sense of it.
 - **"What they did" must name specifics.** Not "contributed to the ecosystem" — "shipped ComfyUI-LoRA-Optimizer with Triton-accelerated SVD scoring" or "answered 15 troubleshooting questions about VRAM management in #comfyui."
 - **Read the actual messages.** The difference between a builder and a chatter is in the content. Someone sharing `github.com/their-repo` with a description is different from someone saying "yeah that's cool."
 - **Read the actual replies.** "This fixed my issue, thank you!" is genuine value. "nice" is not.
-- **Cons must be substantive.** Not "could contribute more." Real cons: "work is unreleased and experimental," "attribution dispute," "almost all activity is in NSFW channels," "shared 5 GitHub links but 4 were to other people's repos."
+- **Cons must be substantive and unique to this person.** Not "could contribute more" and not the same sentence for everyone. Real cons: "attribution dispute with another contributor," "almost all activity is in NSFW channels," "shared 5 GitHub links but 4 were to other people's repos."
 - **Category should reflect what they primarily did this month.** Infrastructure Builders create tools others depend on. Knowledge/Tooling Creators share workflows, guides, and help. Artists inspire through creative work.
 
 ## Output
