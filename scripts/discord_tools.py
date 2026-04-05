@@ -573,6 +573,668 @@ def get_author_id(message_id: int) -> Optional[str]:
 
 
 # ============================================================
+# Contributors — Layer 1 structured signals
+# ============================================================
+
+# Channel categories for signal classification
+_RESOURCE_CHANNEL_KEYWORDS = ['resource']
+_GENS_CHANNEL_KEYWORDS = ['gens', 'gen_sharing', 'art_sharing']
+_TRAINING_CHANNEL_KEYWORDS = ['training']
+_TECH_CHANNEL_KEYWORDS = ['chatter', 'comfyui', 'help', 'support']
+
+
+def _categorize_channels() -> Dict[str, List[int]]:
+    """Categorize channels into types by name keywords."""
+    cmap = _channel_map(exclude_nsfw=True)
+    categories: Dict[str, List[int]] = {
+        'resources': [],
+        'gens': [],
+        'training': [],
+        'tech': [],
+    }
+    for cid, name in cmap.items():
+        lower = name.lower()
+        # Skip summary threads (they have " - Summary - " in the name)
+        if 'summary' in lower:
+            continue
+        if any(kw in lower for kw in _RESOURCE_CHANNEL_KEYWORDS):
+            categories['resources'].append(cid)
+        if any(kw in lower for kw in _GENS_CHANNEL_KEYWORDS):
+            categories['gens'].append(cid)
+        if any(kw in lower for kw in _TRAINING_CHANNEL_KEYWORDS):
+            categories['training'].append(cid)
+        if any(kw in lower for kw in _TECH_CHANNEL_KEYWORDS):
+            categories['tech'].append(cid)
+    return categories
+
+
+def _paginated_fetch(db, table: str, select: str, filters: Dict,
+                     order_col: str = 'created_at', page_size: int = 1000,
+                     max_pages: int = 50) -> List[Dict]:
+    """Fetch all rows matching filters with pagination."""
+    all_rows = []
+    for page in range(max_pages):
+        q = db.table(table).select(select)
+        for col, val in filters.items():
+            if isinstance(val, tuple) and len(val) == 2:
+                op, v = val
+                if op == 'gte':
+                    q = q.gte(col, v)
+                elif op == 'lte':
+                    q = q.lte(col, v)
+                elif op == 'in':
+                    q = q.in_(col, v)
+            else:
+                q = q.eq(col, val)
+        q = q.order(order_col).range(page * page_size, (page + 1) * page_size - 1)
+        rows = q.execute().data
+        all_rows.extend(rows)
+        if len(rows) < page_size:
+            break
+    return all_rows
+
+
+def contributors(month: str) -> Dict[str, Any]:
+    """Generate structured contributor signals for a month.
+
+    Returns a dict with metadata and a list of contributor signal profiles.
+    This is Layer 1 — deterministic, no LLM involved.
+    """
+    db = _supabase()
+    start, end = _month_to_date_range(month)
+    guild_id = _get_active_guild_id()
+    channel_cats = _categorize_channels()
+
+    # Get all non-NSFW channel IDs
+    safe_cmap = _channel_map(exclude_nsfw=True)
+    # Filter out summary threads
+    safe_channel_ids = [cid for cid, name in safe_cmap.items()
+                        if 'summary' not in name.lower()]
+
+    # ---- Fetch all messages for the month (paginated) ----
+    filters = {
+        'created_at': ('gte', start),
+    }
+    # Add end date filter separately since we need two filters on same col
+    # Build query manually for dual date filter
+    all_messages = []
+    page = 0
+    page_size = 1000
+    while True:
+        q = db.table('discord_messages').select(
+            'message_id, author_id, channel_id, content, created_at, '
+            'reaction_count, reactors, reference_id, attachments'
+        ).gte('created_at', start).lte('created_at', end)
+        if guild_id:
+            q = q.eq('guild_id', guild_id)
+        q = q.in_('channel_id', safe_channel_ids)
+        q = q.order('created_at').range(page * page_size, (page + 1) * page_size - 1)
+        rows = q.execute().data
+        all_messages.extend(rows)
+        if len(rows) < page_size:
+            break
+        page += 1
+
+    if not all_messages:
+        return {"month": month, "total_messages": 0, "contributors": []}
+
+    # ---- Fetch daily summaries and extract mentioned names ----
+    summary_rows = summaries(month=month)
+    all_summary_text = "\n".join(r.get('short_summary', '') or '' for r in summary_rows)
+
+    # ---- Fetch #updates channel posts and extract mentioned names ----
+    updates_channel_id = 1138790534987661363
+    updates_messages = []
+    upage = 0
+    while True:
+        uq = db.table('discord_messages').select(
+            'message_id, content, created_at, reaction_count'
+        ).eq('channel_id', updates_channel_id
+        ).gte('created_at', start).lte('created_at', end
+        ).order('created_at').range(upage * page_size, (upage + 1) * page_size - 1)
+        if guild_id:
+            uq = uq.eq('guild_id', guild_id)
+        rows = uq.execute().data
+        updates_messages.extend(rows)
+        if len(rows) < page_size:
+            break
+        upage += 1
+    all_updates_text = "\n".join(m.get('content', '') or '' for m in updates_messages)
+
+    # ---- Build per-author raw data ----
+    author_data: Dict[int, Dict] = defaultdict(lambda: {
+        'total_messages': 0,
+        'total_reactions': 0,
+        'max_reactions': 0,
+        'top_messages': [],  # (message_id, reaction_count) tuples, kept sorted
+        'unique_reactors': set(),
+        'resource_posts': 0,
+        'github_links': 0,
+        'huggingface_links': 0,
+        # Contribution signals
+        'resource_threads_created': 0,     # threads started in resource channels
+        'helpful_replies_reacted': 0,      # replies to others that got reactions
+        'distinct_repliers': set(),        # unique people who replied to their messages
+        # Raw counts for context
+        'replies_made': 0,
+        'channels_active': set(),
+    })
+
+    # Index messages by ID for reply/thread analysis
+    msg_by_id = {m['message_id']: m for m in all_messages}
+    resource_channel_ids = set(channel_cats.get('resources', []))
+
+    for msg in all_messages:
+        aid = msg['author_id']
+        d = author_data[aid]
+        d['total_messages'] += 1
+        rc = msg.get('reaction_count', 0) or 0
+        d['total_reactions'] += rc
+        if rc > d['max_reactions']:
+            d['max_reactions'] = rc
+        # Track top 5 messages by reaction count
+        if rc >= 1:
+            d['top_messages'].append((msg['message_id'], rc, msg['channel_id']))
+            d['top_messages'].sort(key=lambda x: x[1], reverse=True)
+            d['top_messages'] = d['top_messages'][:5]
+
+        # Parse reactors
+        reactors = msg.get('reactors', [])
+        if isinstance(reactors, str):
+            try:
+                reactors = json.loads(reactors)
+            except Exception:
+                reactors = []
+        if isinstance(reactors, list):
+            d['unique_reactors'].update(reactors)
+
+        # Channel tracking
+        cid = msg['channel_id']
+        d['channels_active'].add(cid)
+
+        # Resource channel posts
+        if cid in resource_channel_ids:
+            d['resource_posts'] += 1
+
+        # Reply tracking
+        is_reply = msg.get('reference_id') is not None
+        if is_reply:
+            d['replies_made'] += 1
+            # Helpful reply = reply to someone else that got reacted
+            ref = msg['reference_id']
+            if ref in msg_by_id and msg_by_id[ref]['author_id'] != aid and rc > 0:
+                d['helpful_replies_reacted'] += 1
+
+        # Content signals — links to own work
+        content = (msg.get('content') or '').lower()
+        if 'github.com' in content:
+            d['github_links'] += 1
+        if 'huggingface' in content or 'hf.co' in content:
+            d['huggingface_links'] += 1
+
+    # Second pass: count distinct repliers and resource thread creation
+    for msg in all_messages:
+        ref = msg.get('reference_id')
+        if ref and ref in msg_by_id:
+            parent_author = msg_by_id[ref]['author_id']
+            if parent_author != msg['author_id']:
+                author_data[parent_author]['distinct_repliers'].add(msg['author_id'])
+
+    # ---- Fetch emoji-level reaction data for the month ----
+    # Get appreciation/gratitude reactions and equity holder reactions
+    appreciation_emojis = {'❤️', '🙏', '💖', '💯', '👑', '❤️‍🔥'}
+
+    # Load equity holders first (need their IDs)
+    equity_holders_names = set()
+    equity_file = os.path.join(project_root, 'equity_holders.txt')
+    if os.path.exists(equity_file):
+        with open(equity_file) as f:
+            for line in f:
+                if ',' in line and not line.startswith('display_name'):
+                    parts = line.strip().split(',')
+                    equity_holders_names.add(parts[0].strip().lower())
+
+    # Fetch reactions for the month (paginated)
+    all_reactions = []
+    page = 0
+    while True:
+        rq = db.table('discord_reactions').select(
+            'message_id, user_id, emoji'
+        ).gte('created_at', start).lte('created_at', end)
+        if guild_id:
+            rq = rq.eq('guild_id', guild_id)
+        rq = rq.order('created_at').range(page * page_size, (page + 1) * page_size - 1)
+        rows = rq.execute().data
+        all_reactions.extend(rows)
+        if len(rows) < page_size:
+            break
+        page += 1
+
+    # Resolve equity holder member IDs
+    # First get all member records for equity holders
+    equity_holder_ids = set()
+    if equity_holders_names:
+        for field in ('username', 'server_nick', 'global_name'):
+            for name in list(equity_holders_names):
+                try:
+                    r = db.table('members').select('member_id').ilike(field, name).execute()
+                    for row in r.data:
+                        equity_holder_ids.add(row['member_id'])
+                except Exception:
+                    pass
+
+    # Count per-author: appreciation reactions received, equity holder endorsements
+    author_appreciation: Dict[int, int] = defaultdict(int)
+    author_equity_endorsers: Dict[int, set] = defaultdict(set)
+
+    for reaction in all_reactions:
+        mid = reaction['message_id']
+        if mid not in msg_by_id:
+            continue
+        msg_author = msg_by_id[mid]['author_id']
+        reactor_id = reaction['user_id']
+
+        # Skip self-reactions
+        if reactor_id == msg_author:
+            continue
+
+        # Appreciation reactions
+        if reaction.get('emoji') in appreciation_emojis:
+            author_appreciation[msg_author] += 1
+
+        # Equity holder endorsements
+        if reactor_id in equity_holder_ids:
+            author_equity_endorsers[msg_author].add(reactor_id)
+
+    # ---- Resolve author names ----
+    author_ids = list(author_data.keys())
+    mmap = _member_map(db, author_ids)
+
+    # ---- Extract names from summaries via **bold** pattern ----
+    import re
+    bold_matches = re.findall(r'\*\*([^*]+)\*\*', all_summary_text)
+
+    name_to_aid: Dict[str, int] = {}
+    for aid, name in mmap.items():
+        if name and name.lower() not in ('unknown', 'a community member'):
+            name_to_aid[name.lower()] = aid
+
+    def _count_bold_mentions(text: str) -> Dict[int, int]:
+        """Extract **bolded** names from text, match against known members."""
+        counts: Dict[int, int] = defaultdict(int)
+        for bold_text in re.findall(r'\*\*([^*]+)\*\*', text):
+            cleaned = bold_text.strip()
+            if cleaned.lower() in name_to_aid:
+                counts[name_to_aid[cleaned.lower()]] += 1
+                continue
+            for known_name, aid in name_to_aid.items():
+                if cleaned.lower().startswith(known_name) and len(known_name) >= 3:
+                    counts[aid] += 1
+                    break
+        return counts
+
+    summary_mention_counts = _count_bold_mentions(all_summary_text)
+    updates_mention_counts = _count_bold_mentions(all_updates_text)
+
+    # ---- Build output with contribution-focused signals ----
+    contributors_list = []
+    for aid, d in author_data.items():
+        name = mmap.get(aid, str(aid))
+
+        # Skip bots and pom
+        if name.lower() in ('bndc', 'general-scheming', 'pom', 'a community member'):
+            continue
+
+        is_holder = name.lower() in equity_holders_names
+        mentions = summary_mention_counts.get(aid, 0)
+        updates_mentions = updates_mention_counts.get(aid, 0)
+        appreciation = author_appreciation.get(aid, 0)
+        equity_endorser_count = len(author_equity_endorsers.get(aid, set()))
+        distinct_replier_count = len(d['distinct_repliers'])
+
+        # ---- Contribution signals (each = evidence of value created) ----
+        signals = []
+
+        # Work was noticed: community reacted meaningfully
+        if d['max_reactions'] >= 5:
+            signals.append('high-impact-post')
+
+        # Shared original work: links to repos/models
+        if d['github_links'] > 0 or d['huggingface_links'] > 0:
+            signals.append('shares-original-work')
+
+        # Posted in resource channels: sharing tools/workflows for others
+        if d['resource_posts'] > 0:
+            signals.append('resource-contributor')
+
+        # Sparked discussion: multiple different people replied to them
+        if distinct_replier_count >= 5:
+            signals.append('sparks-discussion')
+
+        # Helpful replies got recognized: their replies to others got reactions
+        if d['helpful_replies_reacted'] >= 3:
+            signals.append('recognized-helper')
+
+        # Endorsed by equity holders: known contributors reacted to their work
+        if equity_endorser_count >= 3:
+            signals.append('equity-holder-endorsed')
+
+        # Received gratitude: appreciation/heart reactions on their posts
+        if appreciation >= 5:
+            signals.append('appreciated')
+
+        # Editorially notable: bot's summaries called them out
+        if mentions >= 2:
+            signals.append('summary-featured')
+
+        # Featured in POM's updates: called out in #updates channel
+        if updates_mentions >= 1:
+            signals.append('updates-featured')
+
+        contributors_list.append({
+            'username': name,
+            'author_id': aid,
+            'is_equity_holder': is_holder,
+            'signal_count': len(signals),
+            'signals': signals,
+            'metrics': {
+                'total_messages': d['total_messages'],
+                'total_reactions': d['total_reactions'],
+                'max_reactions': d['max_reactions'],
+                'top_messages': [
+                    {'message_id': mid, 'reactions': rc, 'channel_id': cid}
+                    for mid, rc, cid in d['top_messages']
+                ],
+                'unique_reactor_count': len(d['unique_reactors']),
+                'resource_posts': d['resource_posts'],
+                'github_links': d['github_links'],
+                'huggingface_links': d['huggingface_links'],
+                'helpful_replies_reacted': d['helpful_replies_reacted'],
+                'distinct_repliers': distinct_replier_count,
+                'appreciation_reactions': appreciation,
+                'equity_holder_endorsements': equity_endorser_count,
+                'summary_mentions': mentions,
+                'updates_mentions': updates_mentions,
+            },
+        })
+
+    # Sort by signal count desc, then total reactions desc
+    contributors_list.sort(key=lambda x: (x['signal_count'], x['metrics']['total_reactions']),
+                           reverse=True)
+
+    return {
+        "month": month,
+        "total_messages": len(all_messages),
+        "total_authors": len(author_data),
+        "channel_categories": {k: len(v) for k, v in channel_cats.items()},
+        "contributors": contributors_list,
+    }
+
+
+def profile(username: str, month: str) -> Dict[str, Any]:
+    """Full contributor profile for Layer 2 deep dive.
+
+    Returns everything an evaluator needs about a person in one call:
+    their messages, who replied to them, who reacted, what the reactions were,
+    and relevant summary/updates excerpts.
+    """
+    db = _supabase()
+    start, end = _month_to_date_range(month)
+    guild_id = _get_active_guild_id()
+
+    # Resolve user
+    member = resolve_user(username)
+    if not member:
+        return {"error": f"User '{username}' not found"}
+
+    uid = member['member_id']
+    display_name = _member_name(member)
+
+    # ---- Get their messages for the month ----
+    msgs = []
+    page = 0
+    page_size = 1000
+    while True:
+        q = db.table('discord_messages').select(
+            'message_id, channel_id, content, created_at, '
+            'reaction_count, reactors, reference_id, attachments'
+        ).eq('author_id', uid).gte('created_at', start).lte('created_at', end)
+        if guild_id:
+            q = q.eq('guild_id', guild_id)
+        q = q.order('created_at').range(page * page_size, (page + 1) * page_size - 1)
+        rows = q.execute().data
+        msgs.extend(rows)
+        if len(rows) < page_size:
+            break
+        page += 1
+
+    if not msgs:
+        return {"username": display_name, "month": month, "total_messages": 0,
+                "messages": [], "replies_to_them": [], "summary_excerpts": []}
+
+    # Channel name map
+    cmap = _channel_map(exclude_nsfw=False)
+    msg_ids = [m['message_id'] for m in msgs]
+
+    # ---- Get replies to their messages ----
+    replies_to_them = []
+    # Batch query: messages where reference_id IN their message IDs
+    for i in range(0, len(msg_ids), 100):
+        batch = msg_ids[i:i+100]
+        rq = db.table('discord_messages').select(
+            'message_id, author_id, channel_id, content, created_at, '
+            'reaction_count, reference_id'
+        ).in_('reference_id', batch).gte('created_at', start).lte('created_at', end)
+        if guild_id:
+            rq = rq.eq('guild_id', guild_id)
+        replies_to_them.extend(rq.execute().data)
+
+    # Filter out self-replies
+    replies_to_them = [r for r in replies_to_them if r['author_id'] != uid]
+
+    # Resolve replier names
+    replier_ids = list({r['author_id'] for r in replies_to_them})
+    replier_map = _member_map(db, replier_ids) if replier_ids else {}
+
+    # ---- Get emoji-level reactions on their messages ----
+    reactions_on_them = []
+    for i in range(0, len(msg_ids), 100):
+        batch = msg_ids[i:i+100]
+        rq = db.table('discord_reactions').select(
+            'message_id, user_id, emoji'
+        ).in_('message_id', batch)
+        if guild_id:
+            rq = rq.eq('guild_id', guild_id)
+        reactions_on_them.extend(rq.execute().data)
+
+    # Filter out self-reactions
+    reactions_on_them = [r for r in reactions_on_them if r['user_id'] != uid]
+
+    # Resolve reactor names
+    reactor_ids = list({r['user_id'] for r in reactions_on_them})
+    reactor_map = _member_map(db, reactor_ids) if reactor_ids else {}
+
+    # Load equity holders for flagging
+    equity_holders_names = set()
+    equity_file = os.path.join(project_root, 'equity_holders.txt')
+    if os.path.exists(equity_file):
+        with open(equity_file) as f:
+            for line in f:
+                if ',' in line and not line.startswith('display_name'):
+                    equity_holders_names.add(line.strip().split(',')[0].strip().lower())
+
+    # ---- Build reaction summary per message ----
+    reaction_details: Dict[int, List] = defaultdict(list)
+    for r in reactions_on_them:
+        reactor_name = reactor_map.get(r['user_id'], str(r['user_id']))
+        is_holder = reactor_name.lower() in equity_holders_names
+        reaction_details[r['message_id']].append({
+            'reactor': reactor_name,
+            'emoji': r['emoji'],
+            'is_equity_holder': is_holder,
+        })
+
+    # ---- Build reply summary per message ----
+    reply_details: Dict[int, List] = defaultdict(list)
+    for r in replies_to_them:
+        replier_name = replier_map.get(r['author_id'], str(r['author_id']))
+        reply_details[r['reference_id']].append({
+            'replier': replier_name,
+            'content': (r.get('content') or '')[:200],
+            'reactions': r.get('reaction_count', 0),
+        })
+
+    # ---- Format messages with enriched context ----
+    formatted_msgs = []
+    for msg in sorted(msgs, key=lambda m: m.get('reaction_count', 0) or 0, reverse=True):
+        mid = msg['message_id']
+        reactions = reaction_details.get(mid, [])
+        replies = reply_details.get(mid, [])
+
+        # Count equity holder reactions for this message
+        eh_reactions = [r for r in reactions if r['is_equity_holder']]
+
+        formatted_msgs.append({
+            'message_id': mid,
+            'channel': cmap.get(msg['channel_id'], str(msg['channel_id'])),
+            'content': (msg.get('content') or '')[:500],
+            'date': msg.get('created_at', '')[:10],
+            'reaction_count': msg.get('reaction_count', 0),
+            'is_reply': msg.get('reference_id') is not None,
+            'link': jump_url(msg['channel_id'], mid),
+            'reactions': reactions[:20],  # cap for readability
+            'equity_holder_reactions': len(eh_reactions),
+            'replies': replies[:10],  # cap for readability
+            'reply_count': len(replies),
+        })
+
+    # ---- Extract summary excerpts mentioning this person ----
+    summary_rows = summaries(month=month)
+    summary_excerpts = []
+    name_lower = display_name.lower()
+    for row in summary_rows:
+        text = row.get('short_summary', '') or ''
+        if name_lower in text.lower():
+            # Extract the relevant bullet point(s)
+            for line in text.split('\n'):
+                if name_lower in line.lower():
+                    summary_excerpts.append({
+                        'date': row.get('date'),
+                        'excerpt': line.strip()[:300],
+                    })
+
+    # ---- Extract updates excerpts mentioning this person ----
+    updates_channel_id = 1138790534987661363
+    uq = db.table('discord_messages').select(
+        'message_id, content, created_at'
+    ).eq('channel_id', updates_channel_id
+    ).gte('created_at', start).lte('created_at', end
+    ).order('created_at')
+    if guild_id:
+        uq = uq.eq('guild_id', guild_id)
+    updates_msgs = uq.execute().data
+
+    updates_excerpts = []
+    for umsg in updates_msgs:
+        text = umsg.get('content', '') or ''
+        if name_lower in text.lower():
+            # Extract relevant sentences/lines
+            for line in text.split('\n'):
+                if name_lower in line.lower():
+                    updates_excerpts.append({
+                        'date': umsg.get('created_at', '')[:10],
+                        'excerpt': line.strip()[:300],
+                    })
+
+    # ---- Replies they made to others (who are they helping?) ----
+    their_replies = [m for m in msgs if m.get('reference_id')]
+    # Look up parent messages to see who they replied to
+    parent_ids = [m['reference_id'] for m in their_replies if m['reference_id']]
+    parent_msgs = {}
+    for i in range(0, len(parent_ids), 100):
+        batch = parent_ids[i:i+100]
+        pq = db.table('discord_messages').select(
+            'message_id, author_id, content, channel_id'
+        ).in_('message_id', batch)
+        for row in pq.execute().data:
+            parent_msgs[row['message_id']] = row
+
+    # Resolve parent author names
+    parent_author_ids = list({m['author_id'] for m in parent_msgs.values()})
+    parent_name_map = _member_map(db, parent_author_ids) if parent_author_ids else {}
+
+    # Build "who they helped" — their replies to others, sorted by reactions on the reply
+    helped_interactions = []
+    for msg in sorted(their_replies, key=lambda m: m.get('reaction_count', 0) or 0, reverse=True):
+        parent = parent_msgs.get(msg.get('reference_id'))
+        if not parent or parent['author_id'] == uid:
+            continue  # skip self-replies
+        helped_interactions.append({
+            'helped_user': parent_name_map.get(parent['author_id'], str(parent['author_id'])),
+            'their_question': (parent.get('content') or '')[:200],
+            'your_reply': (msg.get('content') or '')[:200],
+            'reply_reactions': msg.get('reaction_count', 0),
+            'channel': cmap.get(msg['channel_id'], str(msg['channel_id'])),
+            'date': msg.get('created_at', '')[:10],
+            'link': jump_url(msg['channel_id'], msg['message_id']),
+        })
+
+    # ---- @mentions of them by others (not in replies) ----
+    mention_str = f'<@{uid}>'
+    mention_msgs = db.table('discord_messages').select(
+        'message_id, author_id, content, channel_id, created_at, reaction_count'
+    ).ilike('content', f'%{mention_str}%'
+    ).gte('created_at', start).lte('created_at', end
+    ).neq('author_id', uid).order('reaction_count', desc=True).limit(20)
+    if guild_id:
+        mention_msgs = mention_msgs.eq('guild_id', guild_id)
+    mention_results = mention_msgs.execute().data
+
+    mention_author_ids = list({m['author_id'] for m in mention_results})
+    mention_name_map = _member_map(db, mention_author_ids) if mention_author_ids else {}
+
+    formatted_mentions = [{
+        'from': mention_name_map.get(m['author_id'], str(m['author_id'])),
+        'content': (m.get('content') or '')[:200],
+        'channel': cmap.get(m['channel_id'], str(m['channel_id'])),
+        'date': m.get('created_at', '')[:10],
+        'reactions': m.get('reaction_count', 0),
+    } for m in mention_results]
+
+    # ---- Channel breakdown ----
+    from collections import Counter
+    channel_counts = Counter(cmap.get(m['channel_id'], str(m['channel_id'])) for m in msgs)
+    channel_breakdown = [
+        {'channel': ch, 'messages': count, 'pct': round(100 * count / len(msgs))}
+        for ch, count in channel_counts.most_common(10)
+    ]
+
+    # ---- Emoji summary on their posts ----
+    emoji_counts = Counter(r['emoji'] for r in reactions_on_them)
+    emoji_summary = [{'emoji': e, 'count': c} for e, c in emoji_counts.most_common(10)]
+
+    return {
+        'username': display_name,
+        'author_id': uid,
+        'month': month,
+        'is_equity_holder': display_name.lower() in equity_holders_names,
+        'total_messages': len(msgs),
+        'total_reactions_received': sum(m.get('reaction_count', 0) or 0 for m in msgs),
+        'distinct_reactors': len({r['user_id'] for r in reactions_on_them}),
+        'distinct_repliers': len({r['author_id'] for r in replies_to_them}),
+        'total_replies_received': len(replies_to_them),
+        'total_replies_made': len(their_replies),
+        'channel_breakdown': channel_breakdown,
+        'emoji_summary': emoji_summary,
+        'messages': formatted_msgs[:30],  # top 30 by reactions
+        'helped': helped_interactions[:15],  # top 15 help interactions by reactions
+        'mentioned_by': formatted_mentions[:10],  # top 10 @mentions
+        'summary_excerpts': summary_excerpts,
+        'updates_excerpts': updates_excerpts,
+    }
+
+
+# ============================================================
 # Discord REST API
 # ============================================================
 
@@ -791,6 +1453,15 @@ def main():
     p.add_argument('--month', type=str, default=None, help='YYYY-MM (overrides --days)')
     p.add_argument('--channel', type=int, default=None)
 
+    p = sub.add_parser('contributors', help='Layer 1: Generate structured contributor signals for a month')
+    p.add_argument('--month', type=str, required=True, help='YYYY-MM')
+    p.add_argument('--min-signals', type=int, default=2, help='Min signal count to include (default 2)')
+    p.add_argument('--output', type=str, default=None, help='Write JSON to file instead of stdout')
+
+    p = sub.add_parser('profile', help='Layer 2: Full contributor dossier — messages, reactions, replies, summary excerpts')
+    p.add_argument('username')
+    p.add_argument('--month', type=str, required=True, help='YYYY-MM')
+
     # -- Discord API --
     p = sub.add_parser('api-get', help='Fetch messages from Discord API')
     p.add_argument('channel', type=int)
@@ -903,6 +1574,25 @@ def main():
         print(f"\nActive channels ({period}):\n")
         for ch in chs:
             print(f"  {ch['channel_name']}: {ch['messages']} msgs ({ch['channel_id']})")
+
+    elif args.cmd == 'contributors':
+        result = contributors(args.month)
+        # Filter by min signals
+        result['contributors'] = [
+            c for c in result['contributors']
+            if c['signal_count'] >= args.min_signals
+        ]
+        output = json.dumps(result, indent=2, default=str)
+        if args.output:
+            with open(args.output, 'w') as f:
+                f.write(output)
+            print(f"Wrote {len(result['contributors'])} contributors to {args.output}")
+        else:
+            print(output)
+
+    elif args.cmd == 'profile':
+        result = profile(args.username, args.month)
+        print(json.dumps(result, indent=2, default=str))
 
     elif args.cmd == 'summaries':
         rows = summaries(args.days, month=args.month, channel_id=args.channel)
