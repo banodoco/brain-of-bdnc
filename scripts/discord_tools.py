@@ -715,6 +715,9 @@ def contributors(month: str) -> Dict[str, Any]:
         'resource_threads_created': 0,     # threads started in resource channels
         'helpful_replies_reacted': 0,      # replies to others that got reactions
         'distinct_repliers': set(),        # unique people who replied to their messages
+        'long_form_posts': 0,             # messages 500+ chars (tutorials, guides, explanations)
+        'tutorial_posts': 0,              # messages with tutorial/guide keywords
+        'rich_resource_posts': 0,         # resource channel posts with both text AND links/attachments
         # Raw counts for context
         'replies_made': 0,
         'channels_active': set(),
@@ -766,11 +769,36 @@ def contributors(month: str) -> Dict[str, Any]:
                 d['helpful_replies_reacted'] += 1
 
         # Content signals — links to own work
-        content = (msg.get('content') or '').lower()
-        if 'github.com' in content:
+        content = (msg.get('content') or '')
+        content_lower = content.lower()
+        if 'github.com' in content_lower:
             d['github_links'] += 1
-        if 'huggingface' in content or 'hf.co' in content:
+        if 'huggingface' in content_lower or 'hf.co' in content_lower:
             d['huggingface_links'] += 1
+
+        # Long-form content (500+ chars, excluding pure URLs/logs)
+        if len(content) >= 500:
+            # Filter out messages that are mostly URLs or error logs
+            non_url_content = content
+            for word in content.split():
+                if word.startswith('http'):
+                    non_url_content = non_url_content.replace(word, '')
+            if len(non_url_content.strip()) >= 300:
+                d['long_form_posts'] += 1
+
+        # Tutorial/guide signals
+        tutorial_keywords = ['tutorial', 'guide', 'how to', 'step by step', 'walkthrough',
+                             'here\'s how', 'explanation', 'breakdown', 'demo video']
+        if any(kw in content_lower for kw in tutorial_keywords):
+            d['tutorial_posts'] += 1
+
+        # Rich resource posts (resource channel + has text + has link or attachment)
+        if cid in resource_channel_ids and len(content) >= 100:
+            has_link = 'http' in content_lower
+            atts = msg.get('attachments')
+            has_attachment = atts and atts != '[]'
+            if has_link or has_attachment:
+                d['rich_resource_posts'] += 1
 
     # Second pass: count distinct repliers and resource thread creation
     for msg in all_messages:
@@ -931,6 +959,14 @@ def contributors(month: str) -> Dict[str, Any]:
         if updates_mentions >= 1:
             signals.append('updates-featured')
 
+        # Educator: writes long-form explanations, tutorials, guides
+        if d['long_form_posts'] >= 5 or d['rich_resource_posts'] >= 3:
+            signals.append('educator')
+
+        # Rich resource contributor: substantial posts in resource channels
+        if d['rich_resource_posts'] >= 2:
+            signals.append('rich-resource-poster')
+
         contributors_list.append({
             'username': name,
             'author_id': aid,
@@ -953,6 +989,9 @@ def contributors(month: str) -> Dict[str, Any]:
                 'distinct_repliers': distinct_replier_count,
                 'appreciation_reactions': appreciation,
                 'equity_holder_endorsements': equity_endorser_count,
+                'long_form_posts': d['long_form_posts'],
+                'tutorial_posts': d['tutorial_posts'],
+                'rich_resource_posts': d['rich_resource_posts'],
                 'summary_mentions': mentions,
                 'updates_mentions': updates_mentions,
             },
