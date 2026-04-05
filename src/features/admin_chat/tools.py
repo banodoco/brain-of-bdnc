@@ -663,8 +663,12 @@ async def execute_find_messages(
     visible_channels: Optional[Set[int]] = None,
     resolved_guild_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Unified message search. Builds one query with all filters, or uses live Discord API."""
-    from scripts.weekly_digest import get_client, get_user_by_name, _enrich_messages
+    """Unified message search. Delegates DB queries to discord_tools.find_messages,
+    keeping the live Discord API path and LLM formatting here."""
+    from scripts.discord_tools import (
+        find_messages as dt_find, resolve_user as dt_resolve_user,
+        _set_active_guild_id, _channel_map,
+    )
     from src.common.discord_utils import refresh_media_url
 
     query = params.get('query', '')
@@ -682,7 +686,7 @@ async def execute_find_messages(
     author_id = None
     resolved_username = None
     if username:
-        user_data = get_user_by_name(username)
+        user_data = dt_resolve_user(username)
         if not user_data:
             return {"success": False, "error": f"User '{username}' not found"}
         author_id = user_data['member_id']
@@ -690,6 +694,7 @@ async def execute_find_messages(
 
     try:
         resolved_guild_id = resolved_guild_id or _resolve_guild_id(params)
+
         # ---- Live path: use Discord API directly ----
         if live:
             if not channel_id:
@@ -704,7 +709,6 @@ async def execute_find_messages(
                 return {"success": False, "error": "Permission denied"}
 
             messages = []
-            # When sorting by reactions/reactors, collect more candidates since best ones may be older
             need_all = sort in ('reactions', 'unique_reactors')
             fetch_limit = limit * 3 if need_all else limit * 2
             async for msg in channel.history(limit=min(fetch_limit, 500)):
@@ -718,7 +722,6 @@ async def execute_find_messages(
                 if has_media and not msg.attachments:
                     continue
 
-                # Build a dict that matches the DB shape so format_message_for_llm works
                 messages.append({
                     "message_id": msg.id,
                     "channel_id": int(channel_id),
@@ -729,84 +732,48 @@ async def execute_find_messages(
                     "media_urls": [a.url for a in msg.attachments] if msg.attachments else None,
                     "created_at": msg.created_at.isoformat(),
                 })
-                # For date sort, stop early once we have enough
                 if not need_all and len(messages) >= limit:
                     break
 
-            # Sort and trim
             if sort == 'unique_reactors':
                 messages.sort(key=lambda m: m.get('unique_reactor_count', 0), reverse=True)
             elif sort == 'reactions':
                 messages.sort(key=lambda m: m['reaction_count'], reverse=True)
             messages = messages[:limit]
 
-        # ---- DB path: build single Supabase query ----
+        # ---- DB path: delegate to discord_tools ----
         else:
-            client = get_client()
+            _set_active_guild_id(resolved_guild_id)
 
-            # Get channel names for enrichment + NSFW filtering
-            ch_query = client.table('discord_channels').select('channel_id, channel_name, nsfw')
-            if resolved_guild_id:
-                ch_query = ch_query.eq('guild_id', resolved_guild_id)
-            channels_result = ch_query.execute()
-            safe_channels = {ch['channel_id']: ch['channel_name'] for ch in channels_result.data if not ch.get('nsfw')}
-            if visible_channels is not None:
-                safe_channels = {
-                    ch_id: channel_name
-                    for ch_id, channel_name in safe_channels.items()
-                    if ch_id in visible_channels
-                }
-
-            # Build query — chain all applicable filters
-            MSG_SELECT = 'message_id, guild_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
-            q = client.table('discord_messages').select(MSG_SELECT).eq('is_deleted', False)
-            if days is not None:
-                cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-                q = q.gte('created_at', cutoff)
-            if resolved_guild_id:
-                q = q.eq('guild_id', resolved_guild_id)
-
-            # Only search in safe (non-NSFW) channels
+            # Build allowed channel list (non-NSFW + visible)
+            allowed_channel_ids = None
             if channel_id:
                 requested_channel_id = int(channel_id)
-                if visible_channels is not None and requested_channel_id not in safe_channels:
+                if visible_channels is not None and requested_channel_id not in visible_channels:
                     return {"success": False, "error": "Permission denied"}
-                q = q.eq('channel_id', requested_channel_id)
+                # channel_id is passed directly, no need for allowed list
             else:
-                if not safe_channels:
+                cmap = _channel_map(exclude_nsfw=True)
+                safe_ids = set(cmap.keys())
+                if visible_channels is not None:
+                    safe_ids = safe_ids & visible_channels
+                if not safe_ids:
                     return {
-                        "success": True,
-                        "count": 0,
-                        "summary": f"No messages found matching your filters in the last {days} days.",
+                        "success": True, "count": 0,
+                        "summary": f"No messages found matching your filters.",
                         "messages": []
                     }
-                q = q.in_('channel_id', list(safe_channels.keys()))
+                allowed_channel_ids = list(safe_ids)
 
-            if author_id:
-                q = q.eq('author_id', author_id)
-            if query:
-                q = q.ilike('content', f'%{query}%')
-            if min_reactions:
-                q = q.gte('reaction_count', min_reactions)
-            if has_media:
-                q = q.neq('attachments', [])
-
-            # Sort and limit at the DB level when possible
-            if sort == 'unique_reactors':
-                # Can't sort by array length in Supabase REST — over-fetch and sort client-side
-                q = q.order('reaction_count', desc=True).limit(limit * 3)
-            elif sort == 'date':
-                q = q.order('created_at', desc=True).limit(limit)
-            else:
-                q = q.order('reaction_count', desc=True).limit(limit)
-
-            messages = q.execute().data
-            _enrich_messages(messages, channel_names=safe_channels, parse_reactors=True)
-
-            # Client-side sort for unique_reactors
-            if sort == 'unique_reactors':
-                messages.sort(key=lambda m: m.get('unique_reactor_count', 0), reverse=True)
-                messages = messages[:limit]
+            messages = dt_find(
+                query=query, days=days,
+                channel_id=int(channel_id) if channel_id else None,
+                author_id=author_id,
+                min_reactions=min_reactions, has_media=has_media,
+                limit=limit, sort=sort,
+                exclude_nsfw=False,  # handled above via allowed_channel_ids
+                allowed_channel_ids=allowed_channel_ids,
+            )
 
         # ---- Common output for both paths ----
         if not messages:
@@ -844,7 +811,7 @@ async def execute_find_messages(
 
         formatted = [format_message_for_llm(msg) for msg in messages]
 
-        # Build header — be explicit about scope so the bot knows what it's looking at
+        # Build header
         hit_cap = len(formatted) >= limit
         count_str = f"{len(formatted)}+" if hit_cap else str(len(formatted))
         header_parts = [f"**Found {count_str} messages"]
@@ -883,7 +850,7 @@ async def execute_inspect_message(
     visible_channels: Optional[Set[int]] = None,
 ) -> Dict[str, Any]:
     """Deep look at one message: content, reactions, context, replies, fresh media."""
-    from scripts.weekly_digest import get_message_context, get_message_by_id
+    from scripts.discord_tools import context as dt_context, _set_active_guild_id
     from src.common.discord_utils import refresh_media_url
 
     message_id = params.get('message_id', '')
@@ -893,16 +860,20 @@ async def execute_inspect_message(
         return {"success": False, "error": "message_id is required"}
 
     try:
-        # Get message + context from DB
-        context = get_message_context(int(message_id), surrounding=context_size)
+        resolved_guild_id = _resolve_guild_id(params)
+        if resolved_guild_id:
+            _set_active_guild_id(resolved_guild_id)
 
-        if context.get('error'):
-            return {"success": False, "error": context['error']}
+        # Get message + context from DB via discord_tools
+        ctx = dt_context(int(message_id), surrounding=context_size)
 
-        target = context.get('target_message', {})
-        replies = context.get('replies', [])
-        before = context.get('before', [])
-        after = context.get('after', [])
+        if ctx.get('error'):
+            return {"success": False, "error": ctx['error']}
+
+        target = ctx.get('target', {})
+        replies = ctx.get('replies', [])
+        before = ctx.get('before', [])
+        after = ctx.get('after', [])
 
         # Try to get live data from Discord API (fresh URLs + reaction detail)
         live_reactions = []
@@ -1034,8 +1005,8 @@ async def execute_share_to_social(
         message_id = parsed['message_id']
     elif message_id:
         # Need to find the channel - search in DB
-        from scripts.weekly_digest import get_message_by_id
-        msg_data = get_message_by_id(int(message_id))
+        from scripts.discord_tools import get_message as dt_get_message
+        msg_data = dt_get_message(int(message_id))
         if not msg_data:
             return {"success": False, "error": f"Message {message_id} not found in database"}
         channel_id = msg_data['channel_id']
@@ -1088,54 +1059,29 @@ async def execute_get_active_channels(
     resolved_guild_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Get list of active channels."""
+    from scripts.discord_tools import channels as dt_channels, _set_active_guild_id
 
     days = params.get('days', 7)
 
     try:
-        client = _get_supabase()
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-
-        ch_query = client.table('discord_channels').select('channel_id, channel_name, nsfw')
+        resolved_guild_id = resolved_guild_id or _resolve_guild_id(params)
         if resolved_guild_id:
-            ch_query = ch_query.eq('guild_id', resolved_guild_id)
-        channels_result = ch_query.execute()
+            _set_active_guild_id(resolved_guild_id)
 
-        channel_map = {
-            ch['channel_id']: ch['channel_name']
-            for ch in channels_result.data
-            if not ch.get('nsfw') and (visible_channels is None or ch['channel_id'] in visible_channels)
-        }
-        if not channel_map:
-            return {"success": True, "count": 0, "channels": []}
+        chs = dt_channels(days=days)
 
-        msg_query = client.table('discord_messages').select('channel_id').gte('created_at', cutoff).eq('is_deleted', False)
-        if resolved_guild_id:
-            msg_query = msg_query.eq('guild_id', resolved_guild_id)
-        msg_query = msg_query.in_('channel_id', list(channel_map.keys()))
-        messages = msg_query.execute().data
-
-        channel_counts: Dict[int, int] = {}
-        for message in messages:
-            channel_id = message['channel_id']
-            channel_counts[channel_id] = channel_counts.get(channel_id, 0) + 1
-
-        channels = [
-            {
-                'channel_id': channel_id,
-                'channel_name': channel_map[channel_id],
-                'message_count': count,
-            }
-            for channel_id, count in sorted(channel_counts.items(), key=lambda item: item[1], reverse=True)
-        ]
+        # Apply visible_channels filter
+        if visible_channels is not None:
+            chs = [ch for ch in chs if ch['channel_id'] in visible_channels]
 
         # Format for LLM (top 20)
         formatted = [
             {
                 "channel_id": str(ch['channel_id']),
                 "name": ch['channel_name'],
-                "messages": ch['message_count']
+                "messages": ch['messages']
             }
-            for ch in channels[:20]
+            for ch in chs[:20]
         ]
 
         return {
@@ -1156,25 +1102,24 @@ async def execute_get_daily_summaries(
 ) -> Dict[str, Any]:
     """Get daily summaries."""
     from collections import defaultdict
+    from scripts.discord_tools import summaries as dt_summaries, _set_active_guild_id
 
     days = params.get('days', 7)
     channel_id = params.get('channel_id')
 
     try:
         resolved_guild_id = resolved_guild_id or _resolve_guild_id(params)
-        client = _get_supabase()
-        cutoff = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
-
-        q = client.table('daily_summaries').select('date, channel_id, short_summary') \
-            .gte('date', cutoff).order('date', desc=True)
         if resolved_guild_id:
-            q = q.eq('guild_id', resolved_guild_id)
-        if channel_id:
-            requested_channel_id = int(channel_id)
-            if visible_channels is not None and requested_channel_id not in visible_channels:
+            _set_active_guild_id(resolved_guild_id)
+
+        # Permission check for specific channel
+        if channel_id and visible_channels is not None:
+            if int(channel_id) not in visible_channels:
                 return {"success": False, "error": "Permission denied"}
-            q = q.eq('channel_id', str(channel_id))
-        rows = q.execute().data
+
+        rows = dt_summaries(days=days, channel_id=int(channel_id) if channel_id else None)
+
+        # Apply visible_channels filter
         if visible_channels is not None:
             rows = [row for row in rows if int(row['channel_id']) in visible_channels]
 
@@ -1505,14 +1450,14 @@ async def execute_upload_file(bot: discord.Client, params: Dict[str, Any]) -> Di
 
 async def execute_resolve_user(params: Dict[str, Any]) -> Dict[str, Any]:
     """Resolve a username to a Discord user ID."""
-    from scripts.weekly_digest import get_user_by_name
+    from scripts.discord_tools import resolve_user as dt_resolve_user
 
     username = params.get('username', '')
     if not username:
         return {"success": False, "error": "username is required"}
 
     try:
-        user_data = get_user_by_name(username)
+        user_data = dt_resolve_user(username)
         if not user_data:
             return {"success": False, "error": f"User '{username}' not found"}
         return {

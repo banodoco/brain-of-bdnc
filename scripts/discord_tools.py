@@ -42,6 +42,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import calendar
+
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -60,6 +62,27 @@ MSG_SELECT = (
     'message_id, guild_id, channel_id, author_id, content, created_at, '
     'attachments, reaction_count, reactors, reference_id'
 )
+
+
+def _month_to_date_range(month: str):
+    """Convert 'YYYY-MM' to (start_iso, end_iso) covering the full month."""
+    dt = datetime.strptime(month, '%Y-%m')
+    _, last_day = calendar.monthrange(dt.year, dt.month)
+    start = dt.replace(day=1).isoformat()
+    end = dt.replace(day=last_day, hour=23, minute=59, second=59).isoformat()
+    return start, end
+
+
+def _resolve_date_range(days: Optional[int] = None,
+                        month: Optional[str] = None) -> str:
+    """Return a cutoff ISO string from --days, or a (start, end) tuple from --month.
+
+    Returns either a single cutoff string (for gte queries) or a tuple of
+    (start, end) strings when month is specified.
+    """
+    if month:
+        return _month_to_date_range(month)
+    return (datetime.utcnow() - timedelta(days=days or 7)).isoformat()
 
 
 # ============================================================
@@ -147,26 +170,39 @@ def _member_map(db, member_ids: List[int]) -> Dict[int, str]:
     return member_map
 
 
-def _enrich(messages: List[Dict], channel_names: Dict = None) -> List[Dict]:
-    """Add author_name (and optionally channel_name) to messages."""
+def _enrich(messages: List[Dict], channel_names: Dict = None,
+            resolve_reactors: bool = False) -> List[Dict]:
+    """Add author_name (and optionally channel_name / reactor_names) to messages."""
     if not messages:
         return messages
     db = _supabase()
     ids = list({m['author_id'] for m in messages})
-    mmap = _member_map(db, ids)
 
+    # Collect all reactor IDs if we need to resolve them
+    all_reactor_ids = set()
     for msg in messages:
-        msg['author_name'] = mmap.get(msg['author_id'], 'Unknown')
-        if channel_names:
-            msg['channel_name'] = channel_names.get(msg['channel_id'], 'Unknown')
-        # Parse reactor count
         reactors = msg.get('reactors', [])
         if isinstance(reactors, str):
             try:
                 reactors = json.loads(reactors)
             except Exception:
                 reactors = []
-        msg['unique_reactor_count'] = len(reactors) if isinstance(reactors, list) else 0
+        msg['_reactor_ids'] = reactors if isinstance(reactors, list) else []
+        msg['unique_reactor_count'] = len(msg['_reactor_ids'])
+        if resolve_reactors:
+            all_reactor_ids.update(msg['_reactor_ids'])
+
+    # Build one combined member map for authors + reactors
+    all_ids = list(set(ids) | all_reactor_ids)
+    mmap = _member_map(db, all_ids)
+
+    for msg in messages:
+        msg['author_name'] = mmap.get(msg['author_id'], 'Unknown')
+        if channel_names:
+            msg['channel_name'] = channel_names.get(msg['channel_id'], 'Unknown')
+        if resolve_reactors:
+            msg['reactor_names'] = [mmap.get(rid, str(rid)) for rid in msg['_reactor_ids']]
+        del msg['_reactor_ids']
     return messages
 
 
@@ -199,8 +235,14 @@ def _fmt(msg: Dict) -> str:
             c += '...'
         lines.append(f"  {c}")
     rc = msg.get('reaction_count', 0)
+    urc = msg.get('unique_reactor_count', 0)
     if rc:
-        lines.append(f"  Reactions: {rc}")
+        parts = [f"Reactions: {rc}"]
+        if urc and urc != rc:
+            parts.append(f"({urc} unique)")
+        lines.append(f"  {' '.join(parts)}")
+    if msg.get('reactor_names'):
+        lines.append(f"  Reacted by: {', '.join(msg['reactor_names'])}")
     atts = msg.get('attachments') or []
     if isinstance(atts, str):
         try:
@@ -218,44 +260,106 @@ def _fmt(msg: Dict) -> str:
 # DB-backed queries
 # ============================================================
 
-def search(query: str, days: int = 7, channel_id: int = None,
-           limit: int = 30, exclude_nsfw: bool = True) -> List[Dict]:
+def find_messages(query: str = '', days: int = None, month: str = None,
+                  channel_id: int = None, author_id: int = None,
+                  min_reactions: int = 0, has_media: bool = False,
+                  limit: int = 30, sort: str = 'date',
+                  exclude_nsfw: bool = True,
+                  show_reactors: bool = False,
+                  allowed_channel_ids: List[int] = None) -> List[Dict]:
+    """Unified message search — the single data-fetching function.
+
+    All other search functions (search, top, user) delegate to this.
+    The bot's admin_chat tools can also call this directly.
+
+    Args:
+        query: Text search (case-insensitive substring match)
+        days: Filter to last N days (mutually exclusive with month)
+        month: Filter to YYYY-MM month (overrides days)
+        channel_id: Filter to specific channel
+        author_id: Filter to specific author
+        min_reactions: Minimum reaction count
+        has_media: Only posts with attachments
+        limit: Max results
+        sort: 'date', 'reactions', or 'unique_reactors'
+        exclude_nsfw: Exclude NSFW channels (ignored if channel_id or allowed_channel_ids set)
+        show_reactors: Resolve reactor member IDs to names
+        allowed_channel_ids: Restrict to these channel IDs (for permission filtering)
+    """
+    db = _supabase()
+
+    q = db.table('discord_messages').select(MSG_SELECT)
+
+    # Date filtering
+    if month or days:
+        date_range = _resolve_date_range(days, month)
+        if isinstance(date_range, tuple):
+            q = q.gte('created_at', date_range[0]).lte('created_at', date_range[1])
+        else:
+            q = q.gte('created_at', date_range)
+
+    # Guild filter
+    if _get_active_guild_id():
+        q = q.eq('guild_id', _get_active_guild_id())
+
+    # Channel filtering
+    if channel_id:
+        q = q.eq('channel_id', channel_id)
+    elif allowed_channel_ids is not None:
+        q = q.in_('channel_id', allowed_channel_ids)
+    elif exclude_nsfw:
+        cmap = _channel_map(exclude_nsfw=True)
+        q = q.in_('channel_id', list(cmap.keys()))
+
+    # Content filters
+    if query:
+        q = q.ilike('content', f'%{query}%')
+    if author_id:
+        q = q.eq('author_id', author_id)
+    if min_reactions:
+        q = q.gte('reaction_count', min_reactions)
+    if has_media:
+        q = q.neq('attachments', [])
+
+    # Sort and limit
+    if sort == 'unique_reactors':
+        q = q.order('reaction_count', desc=True).limit(limit * 3)
+    elif sort == 'reactions':
+        q = q.order('reaction_count', desc=True).limit(limit)
+    else:
+        q = q.order('created_at', desc=True).limit(limit)
+
+    messages = q.execute().data
+
+    # Enrich
+    cmap = _channel_map(exclude_nsfw=False)
+    _enrich(messages, channel_names=cmap, resolve_reactors=show_reactors)
+
+    # Client-side sort for unique_reactors
+    if sort == 'unique_reactors':
+        messages.sort(key=lambda m: m.get('unique_reactor_count', 0), reverse=True)
+        messages = messages[:limit]
+
+    return messages
+
+
+def search(query: str, days: int = 7, month: str = None, channel_id: int = None,
+           limit: int = 30, exclude_nsfw: bool = True,
+           show_reactors: bool = False) -> List[Dict]:
     """Search messages by content (case-insensitive)."""
-    db = _supabase()
-    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    q = db.table('discord_messages').select(MSG_SELECT) \
-        .gte('created_at', cutoff).ilike('content', f'%{query}%') \
-        .order('created_at', desc=True).limit(limit)
-    if _get_active_guild_id():
-        q = q.eq('guild_id', _get_active_guild_id())
-    if channel_id:
-        q = q.eq('channel_id', channel_id)
-    elif exclude_nsfw:
-        cmap = _channel_map(exclude_nsfw=True)
-        q = q.in_('channel_id', list(cmap.keys()))
-    messages = q.execute().data
-    cmap = _channel_map(exclude_nsfw=False)
-    return _enrich(messages, channel_names=cmap)
+    return find_messages(query=query, days=days, month=month,
+                         channel_id=channel_id, limit=limit,
+                         sort='date', exclude_nsfw=exclude_nsfw,
+                         show_reactors=show_reactors)
 
 
-def top(days: int = 7, min_reactions: int = 3, limit: int = 30,
-        channel_id: int = None, exclude_nsfw: bool = True) -> List[Dict]:
+def top(days: int = 7, month: str = None, min_reactions: int = 3,
+        limit: int = 30, channel_id: int = None,
+        exclude_nsfw: bool = True, show_reactors: bool = False) -> List[Dict]:
     """Top messages by reaction count, server-wide or in a channel."""
-    db = _supabase()
-    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    q = db.table('discord_messages').select(MSG_SELECT) \
-        .gte('created_at', cutoff).gte('reaction_count', min_reactions) \
-        .order('reaction_count', desc=True).limit(limit)
-    if _get_active_guild_id():
-        q = q.eq('guild_id', _get_active_guild_id())
-    if channel_id:
-        q = q.eq('channel_id', channel_id)
-    elif exclude_nsfw:
-        cmap = _channel_map(exclude_nsfw=True)
-        q = q.in_('channel_id', list(cmap.keys()))
-    messages = q.execute().data
-    cmap = _channel_map(exclude_nsfw=False)
-    return _enrich(messages, channel_names=cmap)
+    return find_messages(days=days, month=month, min_reactions=min_reactions,
+                         limit=limit, channel_id=channel_id, sort='reactions',
+                         exclude_nsfw=exclude_nsfw, show_reactors=show_reactors)
 
 
 def messages(channel_id: int, days: int = 7, limit: int = 50) -> List[Dict]:
@@ -356,45 +460,47 @@ def thread(message_id: int) -> Dict[str, Any]:
     return {"root": chain[0], "messages": chain, "length": len(chain)}
 
 
-def user(username: str, days: int = 7, limit: int = 30) -> List[Dict]:
-    """Get messages from a user (fuzzy name match)."""
+def resolve_user(username: str) -> Optional[Dict]:
+    """Resolve a username to a member record (fuzzy match).
+
+    Returns the full member dict or None.
+    """
     db = _supabase()
-    # Find user
     for field in ('username', 'server_nick', 'global_name'):
         r = db.table('members').select('*').eq(field, username).execute()
         if r.data:
-            break
-    else:
-        r = db.table('members').select('*').ilike('username', f'%{username}%').limit(1).execute()
-    if not r.data:
-        r = db.table('members').select('*').ilike('server_nick', f'%{username}%').limit(1).execute()
-    if not r.data:
+            return r.data[0]
+    r = db.table('members').select('*').ilike('username', f'%{username}%').limit(1).execute()
+    if r.data:
+        return r.data[0]
+    r = db.table('members').select('*').ilike('server_nick', f'%{username}%').limit(1).execute()
+    if r.data:
+        return r.data[0]
+    return None
+
+
+def user(username: str, days: int = 7, month: str = None,
+         limit: int = 30, show_reactors: bool = False) -> List[Dict]:
+    """Get messages from a user (fuzzy name match)."""
+    member = resolve_user(username)
+    if not member:
         return []
-
-    member = r.data[0]
-    uid = member['member_id']
-    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    uq = db.table('discord_messages').select(MSG_SELECT) \
-        .eq('author_id', uid).gte('created_at', cutoff) \
-        .order('created_at', desc=True).limit(limit)
-    if _get_active_guild_id():
-        uq = uq.eq('guild_id', _get_active_guild_id())
-    msgs = uq.execute().data
-    cmap = _channel_map(exclude_nsfw=False)
-    name = _member_name(member)
-    for m in msgs:
-        m['author_name'] = name
-        m['channel_name'] = cmap.get(m['channel_id'], 'Unknown')
-    return msgs
+    return find_messages(days=days, month=month, author_id=member['member_id'],
+                         limit=limit, exclude_nsfw=False,
+                         show_reactors=show_reactors)
 
 
-def channels(days: int = 7, exclude_nsfw: bool = True) -> List[Dict]:
+def channels(days: int = 7, month: str = None,
+             exclude_nsfw: bool = True) -> List[Dict]:
     """Active channels with message counts."""
     db = _supabase()
-    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    date_range = _resolve_date_range(days, month)
     cmap = _channel_map(exclude_nsfw)
-    mq = db.table('discord_messages').select('channel_id') \
-        .gte('created_at', cutoff)
+    mq = db.table('discord_messages').select('channel_id')
+    if isinstance(date_range, tuple):
+        mq = mq.gte('created_at', date_range[0]).lte('created_at', date_range[1])
+    else:
+        mq = mq.gte('created_at', date_range)
     if _get_active_guild_id():
         mq = mq.eq('guild_id', _get_active_guild_id())
     rows = mq.execute().data
@@ -409,12 +515,18 @@ def channels(days: int = 7, exclude_nsfw: bool = True) -> List[Dict]:
     ], key=lambda x: x['messages'], reverse=True)
 
 
-def summaries(days: int = 7, channel_id: int = None) -> List[Dict]:
+def summaries(days: int = 7, month: str = None,
+              channel_id: int = None) -> List[Dict]:
     """Get daily summaries from the bot."""
     db = _supabase()
-    cutoff = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
     q = db.table('daily_summaries').select('date, channel_id, short_summary') \
-        .gte('date', cutoff).order('date', desc=True)
+        .order('date', desc=True)
+    if month:
+        start, end = _month_to_date_range(month)
+        q = q.gte('date', start[:10]).lte('date', end[:10])
+    else:
+        cutoff = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
+        q = q.gte('date', cutoff)
     if channel_id:
         q = q.eq('channel_id', str(channel_id))
     if _get_active_guild_id():
@@ -434,6 +546,20 @@ def get_member_id(username: str) -> Optional[str]:
     if r.data:
         return r.data[0]['member_id']
     return None
+
+
+def get_message(message_id: int) -> Optional[Dict]:
+    """Fetch a single message by ID."""
+    db = _supabase()
+    r = _apply_guild_filter(
+        db.table('discord_messages').select('*')
+        .eq('message_id', message_id)
+    ).execute()
+    if not r.data:
+        return None
+    msg = r.data[0]
+    _enrich([msg])
+    return msg
 
 
 def get_author_id(message_id: int) -> Optional[str]:
@@ -624,14 +750,18 @@ def main():
     p = sub.add_parser('search', help='Search messages by content')
     p.add_argument('query')
     p.add_argument('--days', type=int, default=7)
+    p.add_argument('--month', type=str, default=None, help='YYYY-MM (overrides --days)')
     p.add_argument('--channel', type=int, default=None)
     p.add_argument('--limit', type=int, default=30)
+    p.add_argument('--show-reactors', action='store_true', help='Show who reacted')
 
     p = sub.add_parser('top', help='Top messages by reactions')
     p.add_argument('channel', nargs='?', type=int, default=None)
     p.add_argument('--days', type=int, default=7)
+    p.add_argument('--month', type=str, default=None, help='YYYY-MM (overrides --days)')
     p.add_argument('--min-reactions', type=int, default=3)
     p.add_argument('--limit', type=int, default=30)
+    p.add_argument('--show-reactors', action='store_true', help='Show who reacted')
 
     p = sub.add_parser('messages', help='Recent messages from a channel')
     p.add_argument('channel', type=int)
@@ -648,13 +778,17 @@ def main():
     p = sub.add_parser('user', help='Messages from a user')
     p.add_argument('username')
     p.add_argument('--days', type=int, default=7)
+    p.add_argument('--month', type=str, default=None, help='YYYY-MM (overrides --days)')
     p.add_argument('--limit', type=int, default=30)
+    p.add_argument('--show-reactors', action='store_true', help='Show who reacted')
 
     p = sub.add_parser('channels', help='Active channels')
     p.add_argument('--days', type=int, default=7)
+    p.add_argument('--month', type=str, default=None, help='YYYY-MM (overrides --days)')
 
     p = sub.add_parser('summaries', help='Daily summaries')
     p.add_argument('--days', type=int, default=7)
+    p.add_argument('--month', type=str, default=None, help='YYYY-MM (overrides --days)')
     p.add_argument('--channel', type=int, default=None)
 
     # -- Discord API --
@@ -712,12 +846,19 @@ def main():
     _set_active_guild_id(args.guild_id or _DEFAULT_GUILD_ID)
 
     if args.cmd == 'search':
-        _print_messages(search(args.query, args.days, args.channel, args.limit),
-                        f"Search: '{args.query}' (last {args.days} days)")
+        period = args.month or f"last {args.days} days"
+        _print_messages(search(args.query, args.days, month=args.month,
+                               channel_id=args.channel, limit=args.limit,
+                               show_reactors=args.show_reactors),
+                        f"Search: '{args.query}' ({period})")
 
     elif args.cmd == 'top':
-        _print_messages(top(args.days, args.min_reactions, args.limit, args.channel),
-                        f"Top messages (last {args.days} days, min {args.min_reactions} reactions)")
+        period = args.month or f"last {args.days} days"
+        _print_messages(top(args.days, month=args.month,
+                           min_reactions=args.min_reactions, limit=args.limit,
+                           channel_id=args.channel,
+                           show_reactors=args.show_reactors),
+                        f"Top messages ({period}, min {args.min_reactions} reactions)")
 
     elif args.cmd == 'messages':
         _print_messages(messages(args.channel, args.days, args.limit),
@@ -751,17 +892,20 @@ def main():
             print(_fmt(m)); print()
 
     elif args.cmd == 'user':
-        _print_messages(user(args.username, args.days, args.limit),
-                        f"Messages from {args.username}")
+        period = args.month or f"last {args.days} days"
+        _print_messages(user(args.username, args.days, month=args.month,
+                            limit=args.limit, show_reactors=args.show_reactors),
+                        f"Messages from {args.username} ({period})")
 
     elif args.cmd == 'channels':
-        chs = channels(args.days)
-        print(f"\nActive channels (last {args.days} days):\n")
+        period = args.month or f"last {args.days} days"
+        chs = channels(args.days, month=args.month)
+        print(f"\nActive channels ({period}):\n")
         for ch in chs:
             print(f"  {ch['channel_name']}: {ch['messages']} msgs ({ch['channel_id']})")
 
     elif args.cmd == 'summaries':
-        rows = summaries(args.days, args.channel)
+        rows = summaries(args.days, month=args.month, channel_id=args.channel)
         by_date = defaultdict(list)
         for r in rows:
             by_date[r['date']].append(r)
