@@ -149,3 +149,4 @@ scripts/DOWNLOAD_DAILY_ART_README.md
 scripts/requirements_download_art.txt
 scripts/download_daily_art.py
 logs.*.json
+results/
