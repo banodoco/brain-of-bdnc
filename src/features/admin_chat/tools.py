@@ -178,7 +178,7 @@ TOOLS = [
     },
     {
         "name": "share_to_social",
-        "description": "Share a Discord message to social media (Twitter, Instagram, TikTok, YouTube). Uses the existing sharing pipeline. Respects user opt-out preferences. The message MUST have attachments (images/videos). Use tweet_text to specify exact tweet copy — if omitted, a generic caption is auto-generated. After sharing, use the reply tool to confirm.",
+        "description": "Share a Discord message to social media (Twitter). Uses the existing sharing pipeline. Respects user opt-out preferences. The message MUST have attachments (images/videos). Use tweet_text to specify exact tweet copy — if omitted, a generic caption is auto-generated. After sharing, use the reply tool to confirm.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -403,11 +403,11 @@ TOOLS = [
                 },
                 "filters": {
                     "type": "object",
-                    "description": "Equality filters as {column: value}. Use special prefixes for other operators: 'gt.', 'gte.', 'lt.', 'lte.', 'neq.', 'like.', 'ilike.' (e.g. {\"reaction_count\": \"gte.5\", \"author_name\": \"ilike.%john%\"})"
+                    "description": "Equality filters as {column: value}. Use special prefixes for other operators: 'gt.', 'gte.', 'lt.', 'lte.', 'neq.', 'like.', 'ilike.' (e.g. {\"reaction_count\": \"gte.5\", \"author_id\": \"123456789\"})"
                 },
                 "order": {
                     "type": "string",
-                    "description": "Column to order by (prefix with '-' for descending, e.g. '-created_at')"
+                    "description": "Column to order by (prefix with '-' for descending). Use a real column for the table you queried (e.g. '-reaction_count' for discord_messages)."
                 },
                 "limit": {
                     "type": "integer",
@@ -1016,8 +1016,28 @@ async def execute_share_to_social(
 
     try:
         channel = bot.get_channel(channel_id)
-        if not channel:
+        if channel is None:
             return {"success": False, "error": f"Could not find channel {channel_id}"}
+
+        if isinstance(channel, discord.ForumChannel) or not hasattr(channel, 'fetch_message'):
+            resolved_channel = None
+            guild = getattr(channel, 'guild', None)
+            if guild:
+                resolved_channel = guild.get_thread(int(message_id))
+
+            if resolved_channel is None:
+                try:
+                    fetched_channel = await bot.fetch_channel(int(message_id))
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    fetched_channel = None
+
+                if isinstance(fetched_channel, discord.Thread):
+                    resolved_channel = fetched_channel
+
+            if resolved_channel is None or not hasattr(resolved_channel, 'fetch_message'):
+                return {"success": False, "error": f"Could not resolve thread for forum post {message_id}"}
+
+            channel = resolved_channel
 
         message = await channel.fetch_message(message_id)
         if not message:
@@ -1041,7 +1061,7 @@ async def execute_share_to_social(
 
         return {
             "success": True,
-            "message": f"Initiated sharing for message {message_id} by {message.author.display_name}. Will post to Twitter/Instagram/TikTok/YouTube."
+            "message": f"Initiated sharing for message {message_id} by {message.author.display_name}. Will post to Twitter."
         }
 
     except discord.NotFound:
@@ -1676,6 +1696,7 @@ async def execute_tool(
     allowed_tools: Optional[Set[str]] = None,
     requester_id: Optional[int] = None,
     trusted_guild_id: Optional[int] = None,
+    dm_channel_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Execute a tool by name and return the result as a dict."""
 
@@ -1696,6 +1717,12 @@ async def execute_tool(
         trusted_tool_input['guild_id'] = trusted_guild_id
         if tool_name in {"find_messages", "inspect_message", "get_active_channels", "get_daily_summaries"}:
             visible_channels = await _get_visible_channel_ids(bot, trusted_guild_id, requester_id)
+            # Allow the requester to read their own DM with the bot via live=true.
+            if dm_channel_id is not None:
+                if visible_channels is None:
+                    visible_channels = {dm_channel_id}
+                else:
+                    visible_channels = set(visible_channels) | {dm_channel_id}
 
     if tool_name == "reply":
         return execute_reply(trusted_tool_input)

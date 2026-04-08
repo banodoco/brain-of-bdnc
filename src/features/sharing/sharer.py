@@ -20,9 +20,6 @@ from .subfeatures.notify_user import send_post_share_notification
 # Import specific functions from social_poster
 from .subfeatures.social_poster import (
     post_tweet,
-    post_to_instagram_via_zapier,
-    post_to_tiktok_via_zapier,
-    post_to_youtube_via_zapier,
     generate_media_title,
 )
 from src.common import discord_utils # Ensure this is imported
@@ -400,38 +397,6 @@ class Sharer:
                         self.logger.info(f"Marked message {message_id} as successfully shared to prevent duplicates.")
                     else:
                         self.logger.error(f"Failed to post message {message_id} to Twitter.")
-
-                if downloaded_attachments:
-                    self.logger.info(f"Attempting to post message {message_id} to Instagram via Zapier.")
-                    ig_caption = f"{generated_title}\n\n{llm_description}\n\nCredits to user: {message.author.display_name}"
-                    await post_to_instagram_via_zapier(
-                        user_details=user_details,
-                        attachments=downloaded_attachments,
-                        caption=ig_caption,
-                        jump_url=message.jump_url
-                    )
-
-                if downloaded_attachments and is_video:
-                    self.logger.info(f"Attempting to post message {message_id} to TikTok via Zapier.")
-                    tiktok_caption = f"{generated_title} - by {message.author.display_name}. {llm_description}"
-                    await post_to_tiktok_via_zapier(
-                        user_details=user_details,
-                        attachments=downloaded_attachments,
-                        caption=tiktok_caption,
-                        jump_url=message.jump_url
-                    )
-
-                if downloaded_attachments and is_video:
-                    self.logger.info(f"Attempting to post message {message_id} to YouTube via Zapier.")
-                    youtube_title = generated_title or f"Cool video by {message.author.display_name}"
-                    youtube_description = f"{llm_description}\n\nOriginally posted by {message.author.display_name} on Discord.\nOriginal post: {message.jump_url}"
-                    await post_to_youtube_via_zapier(
-                        user_details=user_details,
-                        attachments=downloaded_attachments,
-                        title=youtube_title,
-                        description=youtube_description,
-                        jump_url=message.jump_url
-                    )
 
                 # Removed summary channel posting to prevent messages appearing after "jump to beginning"
                 # if summary_channel:

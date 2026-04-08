@@ -82,7 +82,8 @@ class StorageHandler:
         
         if not messages:
             return 0
-        
+        messages = list(messages)
+
         try:
             # Transform messages to Supabase format
             supabase_messages = []

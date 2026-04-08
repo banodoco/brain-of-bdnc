@@ -35,7 +35,7 @@ END EVERY TURN with either reply or end_turn.
 **Finding things:**
 - find_messages — search/browse messages. Filters: query, username, channel_id, min_reactions, has_media, days, limit, sort (reactions|unique_reactors|date), refresh_media, live. Use live=true with a channel_id to see current channel state via Discord API.
 - inspect_message — full detail on one message: content, per-emoji reactions, context, replies, fresh media URLs.
-- query_table — query any DB table with filters. Tables: competitions, competition_entries, discord_reactions, discord_messages, members, discord_channels, events, invite_codes, grant_applications, daily_summaries, shared_posts, pending_intros, intro_votes, timed_mutes. Filter operators: gt., gte., lt., lte., neq., like., ilike., in., is.null, not.null.
+- query_table — query any DB table with filters. Tables: competitions, competition_entries, discord_reactions, discord_messages, members, discord_channels, events, invite_codes, grant_applications, daily_summaries, shared_posts, pending_intros, intro_votes, timed_mutes. Filter operators: gt., gte., lt., lte., neq., like., ilike., in., is.null, not.null. Cheatsheet: discord_messages => author_id, created_at, reaction_count; shared_posts => discord_user_id, shared_at, platform.
 - get_active_channels, get_daily_summaries, get_member_info, get_bot_status, search_logs
 
 **Doing things:**
@@ -43,7 +43,7 @@ END EVERY TURN with either reply or end_turn.
 - edit_message(channel_id, message_id, content)
 - delete_message(channel_id, message_id?, message_ids?) — delete one or many messages. You can delete ANY message, not just your own. To clean up a channel: browse it first with find_messages(live=true), then pass the IDs to delete.
 - upload_file(channel_id, file_path, content?)
-- share_to_social(message_id) — share to Twitter/Instagram/TikTok/YouTube. Needs a message with attachments.
+- share_to_social(message_id) — share to Twitter. Needs a message with attachments.
 - resolve_user(username) — get a user's Discord ID and mention tag.
 
 **Responding:**
@@ -53,6 +53,8 @@ END EVERY TURN with either reply or end_turn.
 ## How to work
 
 **Search first, act second.** When messaged from a channel, you see [Sent in #channel-name (channel_id: ...)]. Browse with find_messages(channel_id=..., live=true) before answering if you need context. If a search returns nothing useful, try different filters. If the user corrects you, re-examine your assumptions.
+
+**Reading further back in DMs.** When messaged via DM, you see [Sent via DM (dm_channel_id: ...)] and the last 10 messages of context. If the user references something earlier ("that link from yesterday", "the post you replied to before"), call find_messages(channel_id=<dm_channel_id>, live=true, limit=N) to read further back in this DM via the live Discord API. The DM history isn't in the database — you must use live=true.
 
 **Know your search scope.** find_messages results include a header showing the time range, sort order, and whether you hit the result cap. Pay attention to this — if you hit the cap or used a narrow time range, say so naturally rather than concluding data doesn't exist. You can widen the search with a larger limit, different sort, specific channel, or days filter. Never say "I don't have data on X" when you may just need to search differently.
 
@@ -124,6 +126,8 @@ END EVERY TURN with either reply or end_turn.
 **Stay read-only.** You can help people find messages, inspect posts, browse active channels, read summaries, look up member info, and resolve usernames. If asked to send, edit, delete, upload, share, manage settings, or access internal logs, politely refuse in plain language.
 
 **Search first, act second.** When messaged from a channel, you see [Sent in #channel-name (channel_id: ...)]. Browse with find_messages(channel_id=..., live=true) before answering if you need context. If a search returns nothing useful, try different filters. If the user corrects you, re-examine your assumptions.
+
+**Reading further back in DMs.** When messaged via DM, you see [Sent via DM (dm_channel_id: ...)] and the last 10 messages of context. If the user references something earlier in your conversation, call find_messages(channel_id=<dm_channel_id>, live=true, limit=N) to read further back via the live Discord API. The DM history isn't in the database — you must use live=true.
 
 **Know your search scope.** find_messages results include a header showing the time range, sort order, and whether you hit the result cap. Pay attention to this — if you hit the cap or used a narrow time range, say so naturally rather than concluding data doesn't exist. You can widen the search with a larger limit, different sort, specific channel, or days filter. Never say "I don't have data on X" when you may just need to search differently.
 
@@ -222,10 +226,15 @@ class AdminChatAgent:
             is_dm_context = channel_context.get('source') == 'dm'
             if is_dm_context:
                 ctx_parts = ["[Sent via DM"]
-                if channel_context.get('guild_id'):
+                if channel_context.get('channel_id'):
+                    ctx_parts.append(f" (dm_channel_id: {channel_context.get('channel_id')}")
+                    if channel_context.get('guild_id'):
+                        ctx_parts.append(f", guild_id: {channel_context.get('guild_id')}")
+                    if channel_context.get('guild_name'):
+                        ctx_parts.append(f", resolved guild: {channel_context.get('guild_name')}")
+                    ctx_parts.append(")")
+                elif channel_context.get('guild_id'):
                     ctx_parts.append(f" (guild_id: {channel_context.get('guild_id')})")
-                if channel_context.get('guild_name'):
-                    ctx_parts.append(f" [resolved guild: {channel_context.get('guild_name')}]")
                 ctx_parts.append("]")
             else:
                 ctx_parts = [f"[Sent in #{channel_context.get('channel_name', 'unknown')} (channel_id: {channel_context.get('channel_id')}"]
@@ -361,6 +370,12 @@ class AdminChatAgent:
                         tool_input['guild_id'] = int(channel_context['guild_id'])
 
                     # Execute the tool
+                    dm_channel_id = None
+                    if channel_context and channel_context.get('source') == 'dm' and channel_context.get('channel_id'):
+                        try:
+                            dm_channel_id = int(channel_context['channel_id'])
+                        except (TypeError, ValueError):
+                            dm_channel_id = None
                     result = await execute_tool(
                         tool_name=tool_name,
                         tool_input=tool_input,
@@ -370,6 +385,7 @@ class AdminChatAgent:
                         allowed_tools=allowed_tool_names,
                         requester_id=None if is_admin else requester_id,
                         trusted_guild_id=int(channel_context['guild_id']) if channel_context and channel_context.get('guild_id') else None,
+                        dm_channel_id=dm_channel_id,
                     )
                     
                     # Track action

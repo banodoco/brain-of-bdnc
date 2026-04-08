@@ -245,12 +245,36 @@ class AdminChatCog(commands.Cog):
             # Build channel context for non-DM messages
             channel_context = None
             if is_dm:
+                ch = message.channel
                 guild = self.bot.get_guild(resolved_guild_id) if resolved_guild_id else None
                 channel_context = {
                     "source": "dm",
                     "guild_id": str(resolved_guild_id) if resolved_guild_id else None,
                     "guild_name": guild.name if guild else None,
+                    "channel_id": str(ch.id),
+                    "channel_name": "DM",
                 }
+
+                if message.reference and message.reference.resolved:
+                    ref = message.reference.resolved
+                    if isinstance(ref, discord.Message):
+                        channel_context["replied_to"] = {
+                            "message_id": str(ref.id),
+                            "author": ref.author.display_name,
+                            "content": (ref.content or '')[:500],
+                        }
+                        channel_context["replied_to_anchor_note"] = "USER IS REPLYING TO THIS MESSAGE — treat it as the primary referent."
+
+                try:
+                    recent = []
+                    async for msg in ch.history(limit=10):
+                        if msg.id == message.id:
+                            continue
+                        recent.append(f"[{msg.id}] {msg.author.display_name}: {(msg.content or '')[:150]}")
+                    recent.reverse()
+                    channel_context["recent_messages"] = recent
+                except Exception:
+                    pass
             else:
                 ch = message.channel
                 channel_context = {
@@ -273,6 +297,7 @@ class AdminChatCog(commands.Cog):
                             "author": ref.author.display_name,
                             "content": (ref.content or '')[:500],
                         }
+                        channel_context["replied_to_anchor_note"] = "USER IS REPLYING TO THIS MESSAGE — treat it as the primary referent."
 
                 # Grab recent messages for surrounding context
                 try:
@@ -312,6 +337,16 @@ class AdminChatCog(commands.Cog):
             # In public channels, reply to the original message for the first response
             reply_ref = message if not is_dm else None
 
+            async def _send_with_retry(channel, content_to_send: str, reference=None):
+                backoffs = (0.5, 1.5)
+                for attempt in range(len(backoffs) + 1):
+                    try:
+                        return await channel.send(content_to_send, reference=reference)
+                    except discord.HTTPException as exc:
+                        if exc.status < 500 or attempt == len(backoffs):
+                            raise
+                        await asyncio.sleep(backoffs[attempt])
+
             for response in responses:
                 # Skip empty responses
                 if not response or not response.strip():
@@ -330,14 +365,14 @@ class AdminChatCog(commands.Cog):
 
                     # Handle long messages by splitting
                     if len(part) <= 2000:
-                        await message.channel.send(part, reference=reply_ref)
+                        await _send_with_retry(message.channel, part, reference=reply_ref)
                         messages_sent += 1
                     else:
                         # Split into chunks
                         chunks = [part[i:i+1990] for i in range(0, len(part), 1990)]
                         for chunk in chunks:
                             if chunk.strip():
-                                await message.channel.send(chunk, reference=reply_ref)
+                                await _send_with_retry(message.channel, chunk, reference=reply_ref)
                                 messages_sent += 1
 
                     # Only reply-thread the first message
@@ -345,9 +380,12 @@ class AdminChatCog(commands.Cog):
 
             logger.info(f"[AdminChat] Sent {messages_sent} message(s) ({total_chars} chars total)")
 
-        except Exception as e:
-            logger.error(f"[AdminChat] Error processing message: {e}", exc_info=True)
-            await message.channel.send(f"Sorry, I encountered an error: {str(e)}")
+        except Exception:
+            logger.exception("[AdminChat] Error processing message")
+            try:
+                await message.channel.send("Sorry, something went wrong on my side. Try again in a moment.")
+            except Exception:
+                logger.exception("[AdminChat] Failed to send neutral error message")
 
         # Process any message that arrived while we were busy
         pending = self._pending_messages.pop(user_id, None)

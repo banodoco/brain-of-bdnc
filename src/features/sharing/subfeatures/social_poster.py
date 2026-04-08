@@ -4,7 +4,6 @@ import tweepy
 import os
 import asyncio
 import logging
-import requests
 import cv2
 import shutil
 import base64
@@ -22,21 +21,9 @@ CONSUMER_SECRET = os.getenv("TWITTER_CONSUMER_SECRET")
 ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN")
 ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
 
-# Added Zapier URL checks
-ZAPIER_TIKTOK_BUFFER_URL = os.getenv("ZAPIER_TIKTOK_BUFFER_URL")
-ZAPIER_INSTAGRAM_URL = os.getenv("ZAPIER_INSTAGRAM_URL")
-ZAPIER_YOUTUBE_URL = os.getenv("ZAPIER_YOUTUBE_URL")
-
 if not all([CONSUMER_KEY, CONSUMER_SECRET, ACCESS_TOKEN, ACCESS_TOKEN_SECRET]):
     logger.critical("Twitter API credentials missing in environment variables!")
     # raise ValueError("Missing Twitter API credentials") # Consider uncommenting
-
-if not ZAPIER_TIKTOK_BUFFER_URL:
-    logger.warning("ZAPIER_TIKTOK_BUFFER_URL missing from environment variables!")
-if not ZAPIER_INSTAGRAM_URL:
-    logger.warning("ZAPIER_INSTAGRAM_URL missing from environment variables!")
-if not ZAPIER_YOUTUBE_URL:
-    logger.warning("ZAPIER_YOUTUBE_URL missing from environment variables!")
 
 # --- Helper Functions ---
 
@@ -516,80 +503,3 @@ async def delete_tweet(tweet_id: str) -> bool:
     except Exception as e:
         logger.error(f"Unexpected error deleting tweet {tweet_id}: {e}", exc_info=True)
         return False
-
-
-# --- Added Zapier Posting Functions ---
-
-async def post_to_instagram_via_zapier(user_details: Dict, attachments: List[Dict], caption: str, jump_url: str):
-    """Posts media to Instagram using a Zapier webhook."""
-    # TODO: Replace with the correct ZAPIER_INSTAGRAM_URL from environment variables
-    zapier_url = ZAPIER_INSTAGRAM_URL or "https://hooks.zapier.com/hooks/catch/19278166/your_instagram_hook/"
-    if not zapier_url or "your_instagram_hook" in zapier_url:
-        logger.error("Cannot post to Instagram: ZAPIER_INSTAGRAM_URL is not set or is a placeholder.")
-        return
-    if not attachments:
-        logger.warning("post_to_instagram_via_zapier called without attachments.")
-        return
-
-    payload = {
-        "user_details": user_details,
-        "media_url": attachments[0].get('url'),
-        "caption": caption,
-        "jump_url": jump_url
-    }
-    
-    try:
-        response = await asyncio.to_thread(requests.post, zapier_url, json=payload)
-        response.raise_for_status()
-        logger.info(f"Successfully sent post data to Instagram Zapier webhook for jump_url: {jump_url}. Status: {response.status_code}")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error posting to Instagram Zapier webhook: {e}")
-
-async def post_to_tiktok_via_zapier(user_details: Dict, attachments: List[Dict], caption: str, jump_url: str):
-    """Posts a video to TikTok using a Zapier Buffer webhook."""
-    # TODO: Replace with the correct ZAPIER_TIKTOK_BUFFER_URL from environment variables
-    zapier_url = ZAPIER_TIKTOK_BUFFER_URL or "https://hooks.zapier.com/hooks/catch/19278166/your_tiktok_hook/"
-    if not zapier_url or "your_tiktok_hook" in zapier_url:
-        logger.error("Cannot post to TikTok: ZAPIER_TIKTOK_BUFFER_URL is not set or is a placeholder.")
-        return
-    if not attachments:
-        logger.warning("post_to_tiktok_via_zapier called without attachments.")
-        return
-
-    payload = {
-        "user_details": user_details,
-        "media_url": attachments[0].get('url'),
-        "caption": caption,
-        "jump_url": jump_url
-    }
-
-    try:
-        response = await asyncio.to_thread(requests.post, zapier_url, json=payload)
-        response.raise_for_status()
-        logger.info(f"Successfully sent post data to TikTok Zapier webhook for jump_url: {jump_url}. Status: {response.status_code}")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error posting to TikTok Zapier webhook: {e}")
-
-async def post_to_youtube_via_zapier(user_details: Dict, attachments: List[Dict], title: str, description: str, jump_url: str):
-    """Uploads a video to YouTube via a Zapier webhook."""
-    if not ZAPIER_YOUTUBE_URL:
-        logger.error("Cannot post to YouTube: ZAPIER_YOUTUBE_URL is not set.")
-        return
-    if not attachments:
-        logger.warning("post_to_youtube_via_zapier called without attachments.")
-        return
-
-    payload = {
-        "user_details": user_details,
-        "media_url": attachments[0].get('url'),
-        "video_title": title,
-        "video_description": description,
-        "jump_url": jump_url
-    }
-
-    try:
-        response = await asyncio.to_thread(requests.post, ZAPIER_YOUTUBE_URL, json=payload)
-        response.raise_for_status()
-        logger.info(f"Successfully sent post data to YouTube Zapier webhook for jump_url: {jump_url}. Status: {response.status_code}")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error posting to YouTube Zapier webhook: {e}") 
