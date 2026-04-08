@@ -179,7 +179,7 @@ TOOLS = [
     },
     {
         "name": "share_to_social",
-        "description": "Share a Discord message to social media (Twitter). Uses the existing sharing pipeline. Respects user opt-out preferences. The post can be text-only or include attachments if the source message has them. Use tweet_text to specify exact tweet copy — if omitted, a generic caption is auto-generated. Set reply_to_tweet to post as a thread reply. The response always includes tweet_url. If you re-run without reply_to_tweet on a previously shared message, the existing tweet_url is returned.",
+        "description": "Share a Discord message to social media (Twitter). Uses the existing sharing pipeline. Respects user opt-out preferences. The post can be text-only or include attachments if the source message has them. Use tweet_text to specify exact tweet copy — if omitted, a generic caption is auto-generated. Set reply_to_tweet to post as a thread reply (replies default to text-only — set text_only=false to also reattach the source message's media). The response always includes tweet_url. If you re-run without reply_to_tweet on a previously shared message, the existing tweet_url is returned.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -198,6 +198,10 @@ TOOLS = [
                 "reply_to_tweet": {
                     "type": "string",
                     "description": "Optional Tweet ID or full tweet URL to reply to. When set, the post is added as a thread reply. If you re-run on a previously shared message without this field, the tool returns the existing tweet URL instead of posting again."
+                },
+                "text_only": {
+                    "type": "boolean",
+                    "description": "Skip the source message's attachments and post text only. Defaults to true for thread replies (so a follow-up doesn't reattach the same media as the parent tweet) and false otherwise. Set to false explicitly to force a reply that DOES include media."
                 }
             },
             "required": []
@@ -1045,6 +1049,14 @@ async def execute_share_to_social(
                 "error": "reply_to_tweet must be a Tweet ID or a tweet URL containing status/<digits>"
             }
 
+    # Default text_only=True for thread replies so a follow-up doesn't
+    # reattach the parent tweet's media. Caller can override with explicit false.
+    raw_text_only = params.get('text_only')
+    if raw_text_only is None:
+        text_only = bool(reply_to_tweet_id)
+    else:
+        text_only = bool(raw_text_only)
+
     # Parse link or use direct ID
     if message_link:
         parsed = parse_message_link(message_link)
@@ -1107,6 +1119,7 @@ async def execute_share_to_social(
             summary_channel=None,
             tweet_text=tweet_text,
             in_reply_to_tweet_id=reply_to_tweet_id,
+            text_only=text_only,
         )
 
         if not result or not result.get("success"):

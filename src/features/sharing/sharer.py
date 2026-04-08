@@ -264,7 +264,8 @@ class Sharer:
         channel_id: int,
         summary_channel: Optional[discord.TextChannel] = None,
         tweet_text: Optional[str] = None,
-        in_reply_to_tweet_id: Optional[str] = None
+        in_reply_to_tweet_id: Optional[str] = None,
+        text_only: bool = False,
     ) -> Dict[str, object]:
         """
         Finalizes the sharing process after receiving consent. 
@@ -301,15 +302,20 @@ class Sharer:
                     self.logger.error(f"Failed to fetch message {message_id} in finalize_sharing. Aborting.")
                     return {'success': False, 'error': 'Failed to fetch message', 'message_id': message_id}
 
-                # Step 3: Download attachments
+                # Step 3: Download attachments (skip entirely for text-only posts,
+                # e.g. follow-up replies in a thread that shouldn't reattach the
+                # source message's media).
                 downloaded_attachments = []
-                for attachment in message.attachments:
-                    downloaded_item = await self._download_attachment(attachment)
-                    if downloaded_item:
-                        downloaded_attachments.append(downloaded_item)
+                if text_only:
+                    self.logger.info(f"text_only=True for message {message_id}; skipping attachment download.")
+                else:
+                    for attachment in message.attachments:
+                        downloaded_item = await self._download_attachment(attachment)
+                        if downloaded_item:
+                            downloaded_attachments.append(downloaded_item)
 
-                if not downloaded_attachments:
-                    self.logger.warning(f"No attachments could be downloaded for message {message_id}. Sharing might fail for platforms requiring media.")
+                    if not downloaded_attachments:
+                        self.logger.warning(f"No attachments could be downloaded for message {message_id}. Sharing might fail for platforms requiring media.")
                 
                 # Step 4: Get author details
                 user_details = self.db_handler.get_member(user_id)
