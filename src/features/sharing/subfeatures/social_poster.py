@@ -20,6 +20,7 @@ CONSUMER_KEY = os.getenv("TWITTER_CONSUMER_KEY")
 CONSUMER_SECRET = os.getenv("TWITTER_CONSUMER_SECRET")
 ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN")
 ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
+_cached_screen_name: Optional[str] = None
 
 if not all([CONSUMER_KEY, CONSUMER_SECRET, ACCESS_TOKEN, ACCESS_TOKEN_SECRET]):
     logger.critical("Twitter API credentials missing in environment variables!")
@@ -34,6 +35,25 @@ def _truncate_with_ellipsis(text: str, max_length: int) -> str:
     else:
         # Adjust length to account for ellipsis and potential space
         return text[:max_length-4] + "..."
+
+def _get_cached_screen_name(api_v1: tweepy.API) -> str:
+    """Fetches and caches the authenticated bot screen name for tweet URLs."""
+    global _cached_screen_name
+
+    if _cached_screen_name:
+        return _cached_screen_name
+
+    try:
+        credentials = api_v1.verify_credentials()
+        screen_name = getattr(credentials, 'screen_name', None)
+        if screen_name:
+            _cached_screen_name = screen_name
+            return screen_name
+        logger.warning("Falling back to placeholder tweet URL username because verify_credentials returned no screen_name.")
+    except Exception as e:
+        logger.warning(f"Falling back to placeholder tweet URL username after screen-name lookup failed: {e}")
+
+    return "user"
 
 def _build_tweet_caption(base_description: str, user_details: Dict, original_content: Optional[str]) -> str:
     """Builds the final tweet caption, prioritizing base_description and then adding credit."""
@@ -363,7 +383,13 @@ async def generate_media_title(attachment: Dict, original_comment: Optional[str]
 
 # --- Main Posting Function ---
 
-async def post_tweet(generated_description: str, user_details: Dict, attachments: List[Dict], original_content: Optional[str]) -> Optional[Dict[str, str]]:
+async def post_tweet(
+    generated_description: str,
+    user_details: Dict,
+    attachments: Optional[List[Dict]],
+    original_content: Optional[str],
+    in_reply_to_tweet_id: Optional[str] = None
+) -> Optional[Dict[str, str]]:
     """Uploads media and posts a tweet with a generated caption.
     
     Returns:
@@ -374,24 +400,13 @@ async def post_tweet(generated_description: str, user_details: Dict, attachments
          logger.error("Cannot post tweet, API credentials missing.")
          return None
 
-    if not attachments:
-        logger.error("Cannot post tweet, no attachments provided.")
-        return None
-
-    # Assume the first attachment is the primary one to post
-    # TODO: Handle multiple attachments if Twitter API allows/needed
-    attachment = attachments[0]
-    media_path = attachment.get('local_path')
-    if not media_path or not os.path.exists(media_path):
-        logger.error(f"Cannot post tweet, media file path invalid or file missing: {media_path}")
-        return None
-        
-    filename = attachment.get('filename', Path(media_path).name)
-    file_extension = Path(filename).suffix.lower()
+    attachments = attachments or []
 
     # Build the final caption
     final_caption = _build_tweet_caption(generated_description, user_details, original_content)
     logger.info(f"Final Tweet Caption: {final_caption}") # Log the caption being used
+    if in_reply_to_tweet_id:
+        logger.info(f"Posting tweet as reply to tweet ID: {in_reply_to_tweet_id}")
 
     try:
         # --- Media Upload (v1.1 API) ---
@@ -400,22 +415,37 @@ async def post_tweet(generated_description: str, user_details: Dict, attachments
         api_v1 = tweepy.API(auth)
         
         loop = asyncio.get_event_loop()
-        
-        logger.info(f"Uploading media ({filename}) to Twitter...")
-        if file_extension == '.gif':
-            # GIFs need chunked upload and specific media category
-            media = await loop.run_in_executor(None,
-                lambda: api_v1.media_upload(media_path, chunked=True, media_category="tweet_gif")
-            )
-        else:
-             # Other types (images/videos) - use standard upload (chunked is good practice for videos)
-             # Tweepy v1's media_upload handles chunking automatically if file is large enough
-             media = await loop.run_in_executor(None,
-                 lambda: api_v1.media_upload(media_path, chunked=True)
-             )
+        media_id = None
 
-        media_id = media.media_id_string
-        logger.info(f"Twitter Media Upload successful. Media ID: {media_id}")
+        if attachments:
+            # Assume the first attachment is the primary one to post
+            # TODO: Handle multiple attachments if Twitter API allows/needed
+            attachment = attachments[0]
+            media_path = attachment.get('local_path')
+            if not media_path or not os.path.exists(media_path):
+                logger.error(f"Cannot post tweet, media file path invalid or file missing: {media_path}")
+                return None
+
+            filename = attachment.get('filename', Path(media_path).name)
+            file_extension = Path(filename).suffix.lower()
+
+            logger.info(f"Uploading media ({filename}) to Twitter...")
+            if file_extension == '.gif':
+                # GIFs need chunked upload and specific media category
+                media = await loop.run_in_executor(None,
+                    lambda: api_v1.media_upload(media_path, chunked=True, media_category="tweet_gif")
+                )
+            else:
+                 # Other types (images/videos) - use standard upload (chunked is good practice for videos)
+                 # Tweepy v1's media_upload handles chunking automatically if file is large enough
+                 media = await loop.run_in_executor(None,
+                     lambda: api_v1.media_upload(media_path, chunked=True)
+                 )
+
+            media_id = media.media_id_string
+            logger.info(f"Twitter Media Upload successful. Media ID: {media_id}")
+        else:
+            logger.info("Posting text-only tweet without media attachments.")
 
         # --- Create Tweet (v2 API) ---
         client_v2 = tweepy.Client(
@@ -426,14 +456,19 @@ async def post_tweet(generated_description: str, user_details: Dict, attachments
         )
         
         logger.info("Creating tweet...")
+        create_tweet_kwargs = {
+            'text': final_caption,
+            'in_reply_to_tweet_id': in_reply_to_tweet_id
+        }
+        if media_id:
+            create_tweet_kwargs['media_ids'] = [media_id]
         tweet = await loop.run_in_executor(None,
-             lambda: client_v2.create_tweet(text=final_caption, media_ids=[media_id])
+             lambda: client_v2.create_tweet(**create_tweet_kwargs)
         )
 
         tweet_id = tweet.data['id']
-        tweet_url = f"https://twitter.com/user/status/{tweet_id}" # Generic URL, replace 'user' if you know the bot's handle
-        # Better: Extract username from authenticated user if possible, or use a config value
-        # Example (might need API call): bot_user = api_v1.verify_credentials() -> tweet_url = f"https://twitter.com/{bot_user.screen_name}/status/{tweet_id}"
+        screen_name = _get_cached_screen_name(api_v1)
+        tweet_url = f"https://twitter.com/{screen_name}/status/{tweet_id}"
         
         logger.info(f"Tweet posted successfully: {tweet_url}")
         return {'url': tweet_url, 'id': tweet_id}

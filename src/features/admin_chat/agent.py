@@ -43,7 +43,7 @@ END EVERY TURN with either reply or end_turn.
 - edit_message(channel_id, message_id, content)
 - delete_message(channel_id, message_id?, message_ids?) — delete one or many messages. You can delete ANY message, not just your own. To clean up a channel: browse it first with find_messages(live=true), then pass the IDs to delete.
 - upload_file(channel_id, file_path, content?)
-- share_to_social(message_id) — share to Twitter. Needs a message with attachments.
+- share_to_social(message_id or message_link, tweet_text?, reply_to_tweet?) — share to Twitter as a standalone post or thread reply. Tweets are free-form: the source Discord message does NOT need attachments, and `tweet_text` alone is enough to post text-only. If the source message has attachments they'll be included; if not, a text-only tweet is posted. `reply_to_tweet` accepts a tweet URL or ID and works for both media and text-only replies. Success returns `tweet_url` and `tweet_id`; if `already_shared` is true on a rerun without `reply_to_tweet`, cite the returned `tweet_url` instead of treating it as a failure.
 - resolve_user(username) — get a user's Discord ID and mention tag.
 
 **Responding:**
@@ -81,7 +81,7 @@ You have FFmpeg, ffprobe, and Python/Pillow for media processing. You can:
 - Process media with ffmpeg, ffprobe, or python3/PIL (run_media_command)
 - List working files (list_media_files)
 - Upload results to Discord (upload_file)
-- Share to social media (share_to_social)
+- Share to social media with `share_to_social`, including thread replies via `reply_to_tweet`; use the returned `tweet_url`/`tweet_id`, and if `already_shared` is true, report the existing `tweet_url`.
 
 **Audio default.** ALWAYS preserve audio in ffmpeg operations unless the user explicitly says to strip it. The source clips usually have audio (the `-audio` suffix in filenames is a hint, not decoration), and a silent output is almost never what was wanted. Concrete rules:
 - For `concat` filter operations across mixed resolutions, set both `v=1` and `a=1` and map an audio output (e.g. `-filter_complex "[0:v][0:a][1:v][1:a]...concat=n=N:v=1:a=1[v][a]" -map "[v]" -map "[a]"`). If a source is missing audio, generate a silent track for it with `anullsrc` rather than dropping audio from the whole output.
@@ -153,6 +153,7 @@ END EVERY TURN with either reply or end_turn.
 
 ADMIN_MAX_CONVERSATION_LENGTH = 20
 MEMBER_MAX_CONVERSATION_LENGTH = 10
+MAX_CONVERSATION_BYTES = 80_000
 
 
 class AdminChatAgent:
@@ -189,10 +190,30 @@ class AdminChatAgent:
     
     def _trim_conversation(self, user_id: int, is_admin: bool = True):
         """Keep conversation to reasonable length."""
-        conv = _conversations.get(user_id, [])
-        max_length = ADMIN_MAX_CONVERSATION_LENGTH if is_admin else MEMBER_MAX_CONVERSATION_LENGTH
-        if len(conv) > max_length * 2:
-            _conversations[user_id] = conv[-(max_length * 2):]
+        conv = list(_conversations.get(user_id, []))
+        max_turns = ADMIN_MAX_CONVERSATION_LENGTH if is_admin else MEMBER_MAX_CONVERSATION_LENGTH
+
+        def get_turn_starts(messages: List[Dict[str, Any]]) -> List[int]:
+            return [
+                idx
+                for idx, message in enumerate(messages)
+                if message.get("role") == "user" and isinstance(message.get("content"), str)
+            ]
+
+        def conversation_size_bytes(messages: List[Dict[str, Any]]) -> int:
+            return len(json.dumps(messages, default=str).encode("utf-8"))
+
+        turn_starts = get_turn_starts(conv)
+        if len(turn_starts) > max_turns:
+            conv = conv[turn_starts[-max_turns]:]
+            turn_starts = get_turn_starts(conv)
+
+        # Trim only at persisted user-turn boundaries so tool_use/tool_result pairs stay aligned.
+        while len(turn_starts) > 1 and conversation_size_bytes(conv) > MAX_CONVERSATION_BYTES:
+            conv = conv[turn_starts[1]:]
+            turn_starts = get_turn_starts(conv)
+
+        _conversations[user_id] = conv
     
     async def chat(
         self,
@@ -224,7 +245,7 @@ class AdminChatAgent:
         # Build messages with conversation history
         conversation = self.get_conversation(user_id)
 
-        # Format: include recent history in the user message for context
+        # Persist only the raw user message; channel context is request-only.
         full_message = user_message
 
         # Add channel context for @mentions in public channels
@@ -263,17 +284,10 @@ class AdminChatAgent:
                     ctx_parts.append(f"\n  {line}")
 
             full_message = "".join(ctx_parts) + "\n\n" + user_message
-        max_history = ADMIN_MAX_CONVERSATION_LENGTH if is_admin else MEMBER_MAX_CONVERSATION_LENGTH
-        if conversation:
-            history_text = '\n'.join([
-                f"{'Bot' if m.get('role') == 'assistant' else 'User'}: {m.get('content', '')[:500]}"
-                for m in conversation[-max_history:]
-                if isinstance(m.get('content'), str)
-            ])
-            if history_text:
-                full_message = f"{full_message}\n\n---\nPREVIOUS CONVERSATION:\n{history_text}"
-        
-        messages: List[Dict[str, Any]] = [{"role": "user", "content": full_message}]
+        persisted_user_msg: Dict[str, Any] = {"role": "user", "content": user_message}
+        request_user_msg: Dict[str, Any] = {"role": "user", "content": full_message}
+        messages: List[Dict[str, Any]] = list(conversation)
+        messages.append(request_user_msg)
         actions: List[Dict[str, Any]] = []
         final_replies: List[str] = []  # Can have multiple messages
         available_tools = get_tools_for_role(is_admin)
@@ -345,6 +359,7 @@ class AdminChatAgent:
                 
                 if not tool_uses:
                     # Claude responded with text only - extract it
+                    messages.append({"role": "assistant", "content": response.content})
                     text_content = next((c for c in response.content if c.type == "text"), None)
                     if text_content and text_content.text:
                         final_replies.append(text_content.text)
@@ -431,26 +446,8 @@ class AdminChatAgent:
             # Log completion
             logger.info(f"[AdminChat] Completed: {len(actions)} actions, replies={len(final_replies)}")
             
-            # Update conversation history — include tool calls so the agent
-            # knows what it did on subsequent turns
-            conversation.append({"role": "user", "content": user_message})
-
-            # Build assistant history: tool calls + reply
-            assistant_parts = []
-            for action in actions:
-                tool = action["tool"]
-                if tool in ("reply", "end_turn"):
-                    continue
-                inp = action.get("input", {})
-                result = action.get("result", {})
-                count = result.get("count")
-                error = result.get("error")
-                status = f"error: {error}" if error else f"{count} results" if count is not None else "ok"
-                assistant_parts.append(f"[{tool}({inp}) → {status}]")
-            if final_replies:
-                assistant_parts.append("\n---\n".join(final_replies))
-            if assistant_parts:
-                conversation.append({"role": "assistant", "content": "\n".join(assistant_parts)})
+            persisted_messages = list(conversation) + [persisted_user_msg] + messages[len(conversation) + 1 :]
+            _conversations[user_id] = persisted_messages
             
             self._trim_conversation(user_id, is_admin=is_admin)
             

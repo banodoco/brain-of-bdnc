@@ -178,7 +178,7 @@ TOOLS = [
     },
     {
         "name": "share_to_social",
-        "description": "Share a Discord message to social media (Twitter). Uses the existing sharing pipeline. Respects user opt-out preferences. The message MUST have attachments (images/videos). Use tweet_text to specify exact tweet copy — if omitted, a generic caption is auto-generated. After sharing, use the reply tool to confirm.",
+        "description": "Share a Discord message to social media (Twitter). Uses the existing sharing pipeline. Respects user opt-out preferences. The post can be text-only or include attachments if the source message has them. Use tweet_text to specify exact tweet copy — if omitted, a generic caption is auto-generated. Set reply_to_tweet to post as a thread reply. The response always includes tweet_url. If you re-run without reply_to_tweet on a previously shared message, the existing tweet_url is returned.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -193,6 +193,10 @@ TOOLS = [
                 "tweet_text": {
                     "type": "string",
                     "description": "Custom tweet text (max 280 chars). If provided, this exact text is used as the tweet instead of auto-generating."
+                },
+                "reply_to_tweet": {
+                    "type": "string",
+                    "description": "Optional Tweet ID or full tweet URL to reply to. When set, the post is added as a thread reply. If you re-run on a previously shared message without this field, the tool returns the existing tweet URL instead of posting again."
                 }
             },
             "required": []
@@ -995,6 +999,21 @@ async def execute_share_to_social(
 
     message_link = params.get('message_link', '')
     message_id = params.get('message_id', '')
+    raw_reply_to_tweet = params.get('reply_to_tweet')
+    reply_to_tweet_id = None
+
+    if raw_reply_to_tweet not in (None, ''):
+        reply_value = str(raw_reply_to_tweet).strip()
+        status_match = re.search(r'status/(\d+)', reply_value)
+        if status_match:
+            reply_to_tweet_id = status_match.group(1)
+        elif reply_value.isdigit():
+            reply_to_tweet_id = reply_value
+        else:
+            return {
+                "success": False,
+                "error": "reply_to_tweet must be a Tweet ID or a tweet URL containing status/<digits>"
+            }
 
     # Parse link or use direct ID
     if message_link:
@@ -1043,25 +1062,43 @@ async def execute_share_to_social(
         if not message:
             return {"success": False, "error": f"Could not find message {message_id}"}
 
-        if not message.attachments:
-            return {"success": False, "error": f"Message has no attachments to share. Content: '{message.content[:100]}...'"}
-
         tweet_text = params.get('tweet_text', '').strip() or None
-        logger.info(f"[AdminChat] Triggering share for message {message_id} by user {message.author.id}" +
-                     (f" with custom tweet: '{tweet_text[:80]}...'" if tweet_text else ""))
+        logger.info(
+            f"[AdminChat] Triggering share for message {message_id} by user {message.author.id}" +
+            (f" with custom tweet: '{tweet_text[:80]}...'" if tweet_text else "") +
+            (f" in reply to tweet {reply_to_tweet_id}" if reply_to_tweet_id else "")
+        )
 
         # Use existing sharing path
-        await sharer.finalize_sharing(
+        result = await sharer.finalize_sharing(
             user_id=message.author.id,
             message_id=message.id,
             channel_id=channel.id,
             summary_channel=None,
             tweet_text=tweet_text,
+            in_reply_to_tweet_id=reply_to_tweet_id,
         )
+
+        if not result or not result.get("success"):
+            return {"success": False, "error": (result or {}).get("error", "Sharing failed")}
+
+        tweet_url = result.get("tweet_url")
+        tweet_id = result.get("tweet_id")
+        already_shared = bool(result.get("already_shared"))
+
+        if already_shared:
+            response_message = f"Already shared: {tweet_url}"
+        else:
+            response_message = f"Posted tweet: {tweet_url}"
+            if reply_to_tweet_id:
+                response_message += " (reply in thread)"
 
         return {
             "success": True,
-            "message": f"Initiated sharing for message {message_id} by {message.author.display_name}. Will post to Twitter."
+            "message": response_message,
+            "tweet_url": tweet_url,
+            "tweet_id": tweet_id,
+            "already_shared": already_shared,
         }
 
     except discord.NotFound:

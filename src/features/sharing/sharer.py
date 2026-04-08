@@ -133,7 +133,8 @@ class Sharer:
         author_display_name: str, # NEW parameter for display name
         original_message_content: Optional[str] = None, # Original Discord message text
         original_message_jump_url: Optional[str] = None,
-        guild_id: Optional[int] = None
+        guild_id: Optional[int] = None,
+        in_reply_to_tweet_id: Optional[str] = None
     ) -> Tuple[bool, Optional[str]]:
         """Prepares data and posts a tweet using the social_poster.post_tweet function."""
         self.logger.info(f"Sharer.send_tweet called for message_id {message_id} by user_id {user_id} with content: '{content[:50]}...'")
@@ -161,20 +162,18 @@ class Sharer:
             self._cleanup_files(temp_files_to_clean) # Clean up any partial downloads
             return False, None
         
-        if not downloaded_media_for_tweet: # No image_urls provided, or all failed
-             # If your post_tweet requires media, you must return False here.
-             # If post_tweet can handle text-only, you might proceed.
-             # Based on social_poster.py, post_tweet currently requires attachments.
-            self.logger.warning(f"Sharer.send_tweet: No media provided or prepared for message_id {message_id}. Cannot post tweet as post_tweet requires media.")
-            self._cleanup_files(temp_files_to_clean)
-            return False, None
+        if not downloaded_media_for_tweet:
+            self.logger.info(
+                f"Sharer.send_tweet: No media prepared for message_id {message_id}. Proceeding with a text-only tweet."
+            )
 
         self.logger.info(f"Sharer.send_tweet: Calling social_poster.post_tweet for message_id {message_id} with {len(downloaded_media_for_tweet)} media items.")
         tweet_result = await post_tweet(
             generated_description=content,  # This is the reactor's comment
             user_details=user_details,
             attachments=downloaded_media_for_tweet, # List of dicts with 'local_path'
-            original_content=original_message_content # Original Discord message text
+            original_content=original_message_content, # Original Discord message text
+            in_reply_to_tweet_id=in_reply_to_tweet_id
         )
 
         self._cleanup_files(temp_files_to_clean)
@@ -187,7 +186,8 @@ class Sharer:
                 tweet_url=tweet_url, 
                 author_display_name=author_display_name, 
                 original_message_jump_url=original_message_jump_url, 
-                context_message_id=message_id
+                context_message_id=message_id,
+                is_reply=bool(in_reply_to_tweet_id)
             )
             
             # Record the shared post
@@ -257,7 +257,15 @@ class Sharer:
         else:
             self.logger.warning(f"Cannot finalize sharing for message {message.id} (triggered by summary) as message.channel is not available.")
 
-    async def finalize_sharing(self, user_id: int, message_id: int, channel_id: int, summary_channel: Optional[discord.TextChannel] = None, tweet_text: Optional[str] = None):
+    async def finalize_sharing(
+        self,
+        user_id: int,
+        message_id: int,
+        channel_id: int,
+        summary_channel: Optional[discord.TextChannel] = None,
+        tweet_text: Optional[str] = None,
+        in_reply_to_tweet_id: Optional[str] = None
+    ) -> Dict[str, object]:
         """
         Finalizes the sharing process after receiving consent. 
         This function now acts as the central point for all sharing activities for a given message.
@@ -267,10 +275,23 @@ class Sharer:
         async with self._processing_lock:
             if message_id in self._currently_processing:
                 self.logger.warning(f"Sharing for message {message_id} is already in progress. Aborting.")
-                return
-            if message_id in self._successfully_shared:
-                self.logger.info(f"Message {message_id} has already been successfully shared. Skipping duplicate sharing attempt.")
-                return
+                return {'success': False, 'error': 'Sharing already in progress', 'message_id': message_id}
+            if in_reply_to_tweet_id is None and message_id in self._successfully_shared:
+                self.logger.info(f"Message {message_id} has already been successfully shared. Looking up existing tweet URL.")
+                prior_shared_post = self.db_handler.get_shared_post(message_id, 'twitter')
+                if prior_shared_post:
+                    return {
+                        'success': True,
+                        'tweet_url': prior_shared_post.get('platform_post_url'),
+                        'tweet_id': prior_shared_post.get('platform_post_id'),
+                        'message_id': message_id,
+                        'already_shared': True
+                    }
+                return {
+                    'success': False,
+                    'error': 'Already shared but URL not found in shared_posts',
+                    'message_id': message_id
+                }
             self._currently_processing.add(message_id)
 
             try:
@@ -278,7 +299,7 @@ class Sharer:
                 message = await self._fetch_message(channel_id, message_id)
                 if not message:
                     self.logger.error(f"Failed to fetch message {message_id} in finalize_sharing. Aborting.")
-                    return
+                    return {'success': False, 'error': 'Failed to fetch message', 'message_id': message_id}
 
                 # Step 3: Download attachments
                 downloaded_attachments = []
@@ -294,8 +315,7 @@ class Sharer:
                 user_details = self.db_handler.get_member(user_id)
                 if not user_details:
                     self.logger.error(f"Failed to get user details for user {user_id}. Aborting.")
-                    self._cleanup_files([att['local_path'] for att in downloaded_attachments])
-                    return
+                    return {'success': False, 'error': 'Failed to get user details', 'message_id': message_id}
 
                 # Step 5: Generate title and descriptions
                 is_video = any('video' in (att.get('content_type') or '') for att in downloaded_attachments)
@@ -354,49 +374,65 @@ class Sharer:
                          # This is regular reaction-based sharing
                          twitter_content = f"Check out this post by {message.author.display_name}! {message.jump_url}"
 
-                if downloaded_attachments:
-                    self.logger.info(f"Attempting to post message {message_id} to Twitter.")
-                    tweet_result = await post_tweet(
-                        generated_description=twitter_content,
-                        user_details=user_details,
-                        attachments=downloaded_attachments,
-                        original_content=message.content
+                self.logger.info(f"Attempting to post message {message_id} to Twitter.")
+                tweet_result = await post_tweet(
+                    generated_description=twitter_content,
+                    user_details=user_details,
+                    attachments=downloaded_attachments,
+                    original_content=message.content,
+                    in_reply_to_tweet_id=in_reply_to_tweet_id
+                )
+                if tweet_result:
+                    tweet_url = tweet_result.get('url')
+                    tweet_id = tweet_result.get('id')
+                    self.logger.info(f"Successfully posted message {message_id} to Twitter: {tweet_url}")
+                    await self._announce_tweet_url(
+                        tweet_url,
+                        message.author.display_name,
+                        message.jump_url,
+                        str(message_id),
+                        guild_id=getattr(message.guild, 'id', None),
+                        is_reply=bool(in_reply_to_tweet_id)
                     )
-                    if tweet_result:
-                        tweet_url = tweet_result.get('url')
-                        tweet_id = tweet_result.get('id')
-                        self.logger.info(f"Successfully posted message {message_id} to Twitter: {tweet_url}")
-                        await self._announce_tweet_url(tweet_url, message.author.display_name, message.jump_url, str(message_id), guild_id=getattr(message.guild, 'id', None))
-                        
-                        # Record the shared post in the database
-                        self.db_handler.record_shared_post(
-                            discord_message_id=message_id,
-                            discord_user_id=user_id,
-                            platform='twitter',
-                            platform_post_id=tweet_id,
-                            platform_post_url=tweet_url,
-                            delete_eligible_hours=6,
-                            guild_id=getattr(message.guild, 'id', None)
+                    
+                    # Record the shared post in the database
+                    self.db_handler.record_shared_post(
+                        discord_message_id=message_id,
+                        discord_user_id=user_id,
+                        platform='twitter',
+                        platform_post_id=tweet_id,
+                        platform_post_url=tweet_url,
+                        delete_eligible_hours=6,
+                        guild_id=getattr(message.guild, 'id', None)
+                    )
+                    
+                    # Check if this is the user's first share and send notification
+                    is_first_share = self.db_handler.mark_member_first_shared(user_id, guild_id=getattr(message.guild, 'id', None))
+                    if is_first_share:
+                        self.logger.info(f"First share for user {user_id}. Sending post-share notification.")
+                        await send_post_share_notification(
+                            bot=self.bot,
+                            user=message.author,
+                            discord_message=message,
+                            tweet_id=tweet_id,
+                            tweet_url=tweet_url,
+                            db_handler=self.db_handler
                         )
-                        
-                        # Check if this is the user's first share and send notification
-                        is_first_share = self.db_handler.mark_member_first_shared(user_id, guild_id=getattr(message.guild, 'id', None))
-                        if is_first_share:
-                            self.logger.info(f"First share for user {user_id}. Sending post-share notification.")
-                            await send_post_share_notification(
-                                bot=self.bot,
-                                user=message.author,
-                                discord_message=message,
-                                tweet_id=tweet_id,
-                                tweet_url=tweet_url,
-                                db_handler=self.db_handler
-                            )
-                        
-                        # Mark as successfully shared to prevent duplicate Twitter posts
+                    
+                    if in_reply_to_tweet_id is None:
+                        # Mark non-reply shares as successfully shared to prevent duplicates.
                         self._successfully_shared.add(message_id)
                         self.logger.info(f"Marked message {message_id} as successfully shared to prevent duplicates.")
-                    else:
-                        self.logger.error(f"Failed to post message {message_id} to Twitter.")
+                    return {
+                        'success': True,
+                        'tweet_url': tweet_url,
+                        'tweet_id': tweet_id,
+                        'message_id': message_id,
+                        'already_shared': False
+                    }
+
+                self.logger.error(f"Failed to post message {message_id} to Twitter.")
+                return {'success': False, 'error': 'Failed to post tweet', 'message_id': message_id}
 
                 # Removed summary channel posting to prevent messages appearing after "jump to beginning"
                 # if summary_channel:
@@ -413,6 +449,7 @@ class Sharer:
 
             except Exception as e:
                 self.logger.error(f"An unexpected error occurred during finalize_sharing for message {message_id}: {e}", exc_info=True)
+                return {'success': False, 'error': str(e), 'message_id': message_id}
             finally:
                 if message_id in self._currently_processing:
                     self._currently_processing.remove(message_id)
@@ -465,7 +502,15 @@ class Sharer:
                 return val
         return None
 
-    async def _announce_tweet_url(self, tweet_url: str, author_display_name: str, original_message_jump_url: Optional[str] = None, context_message_id: Optional[str] = None, guild_id: Optional[int] = None):
+    async def _announce_tweet_url(
+        self,
+        tweet_url: str,
+        author_display_name: str,
+        original_message_jump_url: Optional[str] = None,
+        context_message_id: Optional[str] = None,
+        guild_id: Optional[int] = None,
+        is_reply: bool = False
+    ):
         channel_id = self._get_announcement_channel_id(guild_id)
         if not channel_id:
             self.logger.info("[Sharer] Tweet announcement channel not configured. Skipping.")
@@ -480,7 +525,7 @@ class Sharer:
                 self.logger.error(f"[Sharer] Announcement channel {channel_id} is not a text channel.")
                 return
 
-            message_content = f"Tweet: {tweet_url}"
+            message_content = f"{'Replied in thread' if is_reply else 'Tweet'}: {tweet_url}"
             if original_message_jump_url:
                 message_content += f"\n\nBased on this post by {author_display_name}: {original_message_jump_url}"
             elif context_message_id:
