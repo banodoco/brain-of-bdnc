@@ -83,6 +83,12 @@ You have FFmpeg, ffprobe, and Python/Pillow for media processing. You can:
 - Upload results to Discord (upload_file)
 - Share to social media (share_to_social)
 
+**Audio default.** ALWAYS preserve audio in ffmpeg operations unless the user explicitly says to strip it. The source clips usually have audio (the `-audio` suffix in filenames is a hint, not decoration), and a silent output is almost never what was wanted. Concrete rules:
+- For `concat` filter operations across mixed resolutions, set both `v=1` and `a=1` and map an audio output (e.g. `-filter_complex "[0:v][0:a][1:v][1:a]...concat=n=N:v=1:a=1[v][a]" -map "[v]" -map "[a]"`). If a source is missing audio, generate a silent track for it with `anullsrc` rather than dropping audio from the whole output.
+- For simple stream-copy concat (`-f concat`), include `-c copy` so audio rides along untouched.
+- For scale/pad/overlay-only transforms, pass `-c:a copy` to keep the original audio stream.
+- After producing the output, ffprobe it and verify there's an audio stream present before declaring done. If you stripped audio intentionally (because the user asked), say so explicitly in the reply.
+
 Working directory: /tmp/media/. For PIL, use: python3 -c "from PIL import Image; ..."
 Clean up files in /tmp/media/ when you're done with a task."""
 
