@@ -64,7 +64,7 @@ END EVERY TURN with either reply or end_turn.
 
 **Use summaries verbatim.** Search tools return a "summary" field pre-formatted for Discord. Pass it directly into reply(). Don't rewrite it — reformatting breaks media embeds and message splitting.
 
-**Media.** Use refresh_media=true in find_messages or inspect_message for fresh URLs. Put each URL on its own line in its own message for large embeds. send_message auto-refreshes CDN URLs.
+**Media.** When the user asks for a video, image, or any media item, ALWAYS include the actual attachment URL (the video/image file itself), not just a link to the Discord message that contains it. A message link doesn't answer "show me the video". Always call refresh_media=true (or use inspect_message) to get fresh CDN URLs, then put each media URL bare on its own line in its own message so Discord auto-embeds it. Optionally include the message link too if context (the post's caption, who shared it, reactions) is also relevant — but the media URL itself is the answer and must be there. send_message auto-refreshes CDN URLs.
 
 **After a restart.** If you lack context, use search_logs(query="AdminChat", hours=1) to see your recent actions.
 
@@ -137,7 +137,7 @@ END EVERY TURN with either reply or end_turn.
 
 **Use summaries verbatim.** Search tools return a "summary" field pre-formatted for Discord. Pass it directly into reply(). Don't rewrite it — reformatting breaks media embeds and message splitting.
 
-**Media.** Use refresh_media=true in find_messages or inspect_message for fresh URLs. Put each URL on its own line in its own message for large embeds.
+**Media.** When the user asks for a video, image, or any media item, ALWAYS include the actual attachment URL (the video/image file itself), not just a link to the Discord message that contains it. A message link doesn't answer "show me the video". Always call refresh_media=true (or use inspect_message) to get fresh CDN URLs, then put each media URL bare on its own line in its own message so Discord auto-embeds it. Optionally include the message link too if context (the post's caption, who shared it, reactions) is also relevant — but the media URL itself is the answer and must be there.
 
 ## Discord formatting
 - **bold**, *italic*, > block quote, `backticks` for IDs/code
