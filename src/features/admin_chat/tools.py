@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+import asyncio
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -253,6 +254,34 @@ TOOLS = [
         }
     },
     {
+        "name": "update_member_socials",
+        "description": (
+            "Set or clear a member's Twitter/Reddit handle on file. The Twitter handle is "
+            "used by social picks to auto-tag the creator when drafting tweets. Pass an "
+            "empty string to clear a field; omit a field to leave it unchanged. Accepts "
+            "@handle, full URLs (twitter.com/x.com), or plain usernames — they'll be "
+            "normalized when used."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "Discord user ID of the member to update"
+                },
+                "twitter_url": {
+                    "type": "string",
+                    "description": "Twitter handle (@handle, URL, or username). Empty string clears it."
+                },
+                "reddit_url": {
+                    "type": "string",
+                    "description": "Reddit handle (u/name or URL). Empty string clears it."
+                }
+            },
+            "required": ["user_id"]
+        }
+    },
+    {
         "name": "get_bot_status",
         "description": "Get the bot's current status including uptime and connections.",
         "input_schema": {
@@ -483,6 +512,7 @@ MEMBER_TOOLS = {
 
 ADMIN_ONLY_TOOLS = {
     "share_to_social",
+    "update_member_socials",
     "search_logs",
     "send_message",
     "edit_message",
@@ -1253,6 +1283,48 @@ async def execute_get_member_info(db_handler, params: Dict[str, Any]) -> Dict[st
         return {"success": False, "error": str(e)}
 
 
+async def execute_update_member_socials(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Update a member's twitter/reddit handle without touching anything else."""
+    user_id = params.get('user_id')
+    if not user_id:
+        return {"success": False, "error": "user_id is required"}
+    try:
+        member_id = int(user_id)
+    except (TypeError, ValueError):
+        return {"success": False, "error": f"Invalid user_id: {user_id!r}"}
+
+    twitter_url = params.get('twitter_url')
+    reddit_url = params.get('reddit_url')
+    if twitter_url is None and reddit_url is None:
+        return {"success": False, "error": "Provide twitter_url and/or reddit_url"}
+
+    try:
+        existing = db_handler.get_member(member_id)
+        if not existing:
+            return {"success": False, "error": f"No member found for user_id {member_id}"}
+
+        ok = await asyncio.to_thread(
+            db_handler.update_member_socials,
+            member_id,
+            twitter_url,
+            reddit_url,
+        )
+        if not ok:
+            return {"success": False, "error": "Database update failed"}
+
+        updated = db_handler.get_member(member_id)
+        return {
+            "success": True,
+            "member_id": member_id,
+            "username": (updated or {}).get('username'),
+            "twitter_url": (updated or {}).get('twitter_url'),
+            "reddit_url": (updated or {}).get('reddit_url'),
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in update_member_socials: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 async def execute_get_bot_status(bot: discord.Client) -> Dict[str, Any]:
     """Get bot status information."""
     import time
@@ -1794,6 +1866,8 @@ async def execute_tool(
         )
     elif tool_name == "get_member_info":
         return await execute_get_member_info(db_handler, trusted_tool_input)
+    elif tool_name == "update_member_socials":
+        return await execute_update_member_socials(db_handler, trusted_tool_input)
     elif tool_name == "get_bot_status":
         return await execute_get_bot_status(bot)
     elif tool_name == "search_logs":

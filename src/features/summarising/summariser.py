@@ -1902,6 +1902,7 @@ If nothing stands out today, respond with just: NOTHING"""
                 # Build Discord link to original message
                 channel_id = item.get('channel_id')
                 message_id = item.get('message_id')
+                main_media_message_id = item.get('mainMediaMessageId')
                 discord_link = None
                 if self.guild_id and channel_id and message_id:
                     discord_link = f"https://discord.com/channels/{self.guild_id}/{channel_id}/{message_id}"
@@ -1924,13 +1925,90 @@ If nothing stands out today, respond with just: NOTHING"""
                 # Sort: videos first, then images
                 media_urls.sort(key=lambda m: (0 if m.get('type', '').startswith('video') else 1))
 
+                # The author we want to credit is whoever posted the actual
+                # creative artifact (mainMediaMessageId), falling back to the
+                # primary message_id if no media is attached.
+                author_message_id = main_media_message_id or message_id
+
                 lookup[title.lower()] = {
                     'discord_link': discord_link,
                     'all_media': media_urls,
+                    'author_message_id': author_message_id,
                 }
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             self.logger.warning(f"[SocialPicks] Failed to build summary lookup: {e}")
         return lookup
+
+    @staticmethod
+    def _extract_twitter_handle(twitter_url_value: Optional[str]) -> Optional[str]:
+        """Normalize a twitter_url value (URL, @handle, or plain text) to a bare handle (no @)."""
+        if not twitter_url_value:
+            return None
+        val = twitter_url_value.strip()
+        if not val:
+            return None
+        candidate: Optional[str] = None
+        if val.startswith('@'):
+            candidate = val[1:]
+        elif any(d in val.lower() for d in ('twitter.com/', 'x.com/', '://')):
+            path = val.split('://', 1)[-1] if '://' in val else val
+            lower = path.lower()
+            for marker in ('twitter.com/', 'x.com/'):
+                idx = lower.find(marker)
+                if idx != -1:
+                    candidate = path[idx + len(marker):].split('/')[0]
+                    break
+        else:
+            candidate = val
+        if not candidate:
+            return None
+        candidate = candidate.split('?')[0].split('#')[0].lstrip('@').strip()
+        return candidate or None
+
+    async def _resolve_pick_author_handles(self, message_ids: List[int]) -> Dict[int, Dict]:
+        """For a list of primary message_ids, return {message_id: {author_id, author_name, twitter_handle, twitter_raw}}.
+
+        Best-effort: any DB error returns an empty dict so social picks still send.
+        """
+        result: Dict[int, Dict] = {}
+        if not message_ids:
+            return result
+        try:
+            messages = await asyncio.to_thread(
+                self.db_handler.get_messages_by_ids, message_ids
+            )
+        except Exception as e:
+            self.logger.warning(f"[SocialPicks] Failed to fetch messages for author lookup: {e}")
+            return result
+
+        msg_by_id = {int(m['message_id']): m for m in messages if m.get('message_id') is not None}
+        unique_author_ids = list({int(m['author_id']) for m in messages if m.get('author_id') is not None})
+
+        members_by_id: Dict[int, Dict] = {}
+        for author_id in unique_author_ids:
+            try:
+                member = await asyncio.to_thread(self.db_handler.get_member, author_id)
+                if member:
+                    members_by_id[author_id] = member
+            except Exception as e:
+                self.logger.debug(f"[SocialPicks] get_member({author_id}) failed: {e}")
+
+        for mid in message_ids:
+            msg = msg_by_id.get(int(mid))
+            if not msg:
+                continue
+            author_id = int(msg['author_id']) if msg.get('author_id') is not None else None
+            member = members_by_id.get(author_id) if author_id else None
+            twitter_raw = (member or {}).get('twitter_url')
+            result[int(mid)] = {
+                'author_id': author_id,
+                'author_name': (msg.get('author_name')
+                                or (member or {}).get('global_name')
+                                or (member or {}).get('username')),
+                'twitter_raw': twitter_raw,
+                'twitter_handle': self._extract_twitter_handle(twitter_raw),
+            }
+        return result
 
     async def _send_social_picks_dm(self, enriched_summary=None, short_summary=None):
         """DM the admin with Claude-curated social picks, each as a separate message with media links."""
@@ -1978,12 +2056,13 @@ If nothing stands out today, respond with just: NOTHING"""
             admin_user = await self.bot.fetch_user(admin_id)
             pick_count = 0
 
+            # First pass: parse picks and resolve their matches so we can
+            # batch-fetch all author info in one round trip.
+            parsed_picks = []
             for pick_text in picks:
                 pick_text = pick_text.strip()
                 if not pick_text:
                     continue
-
-                # Extract fields from the pick
                 title = ""
                 draft = ""
                 why = ""
@@ -1995,17 +2074,14 @@ If nothing stands out today, respond with just: NOTHING"""
                         draft = line[len("Draft:"):].strip()
                     elif line.startswith("Why:"):
                         why = line[len("Why:"):].strip()
-
                 if not draft:
                     continue
 
-                # Match title to summary item for links (exact match first, then fuzzy)
                 matched = {}
                 if title:
                     title_key = title.lower()
                     matched = lookup.get(title_key, {})
                     if not matched:
-                        # Fuzzy: find the lookup key that shares the most words
                         title_words = set(title_key.split())
                         best_overlap, best_match = 0, {}
                         for key, val in lookup.items():
@@ -2014,13 +2090,57 @@ If nothing stands out today, respond with just: NOTHING"""
                                 best_overlap, best_match = overlap, val
                         if best_overlap >= 3:
                             matched = best_match
+                parsed_picks.append({
+                    'title': title,
+                    'draft': draft,
+                    'why': why,
+                    'matched': matched,
+                })
+
+            # Batch-resolve author + twitter handle for every pick's primary message
+            author_msg_ids = [
+                int(p['matched']['author_message_id'])
+                for p in parsed_picks
+                if p['matched'].get('author_message_id')
+            ]
+            author_info_by_msg = await self._resolve_pick_author_handles(author_msg_ids)
+            self.logger.info(
+                "[SocialPicks] Resolved author info for %d/%d picks",
+                len(author_info_by_msg), len(parsed_picks),
+            )
+
+            for parsed in parsed_picks:
+                draft = parsed['draft']
+                why = parsed['why']
+                matched = parsed['matched']
                 discord_link = matched.get('discord_link')
                 all_media = matched.get('all_media', [])
+                author_msg_id = matched.get('author_message_id')
+                author_info = author_info_by_msg.get(int(author_msg_id)) if author_msg_id else None
 
-                # Build the DM for this pick
+                # If we have a known twitter handle for the creator and the
+                # draft doesn't already mention it, append it so the admin
+                # can post as-is.
+                if author_info and author_info.get('twitter_handle'):
+                    handle = author_info['twitter_handle']
+                    if f"@{handle.lower()}" not in draft.lower():
+                        candidate = f"{draft} (@{handle})"
+                        if len(candidate) <= 280:
+                            draft = candidate
+
                 dm_parts = [f"**Draft:** {draft}"]
                 if why:
                     dm_parts.append(f"**Why:** {why}")
+
+                # Surface creator info so admin knows who to update if missing
+                if author_info and author_info.get('author_id'):
+                    name = author_info.get('author_name') or 'unknown'
+                    handle = author_info.get('twitter_handle')
+                    handle_str = f"@{handle}" if handle else "(no handle on file — DM the bot to set one)"
+                    dm_parts.append(
+                        f"**Creator:** {name} `{author_info['author_id']}` — {handle_str}"
+                    )
+
                 for i, asset in enumerate(all_media):
                     asset_type = asset.get('type', 'media')
                     label = f"Asset {i+1} ({asset_type})" if len(all_media) > 1 else f"Asset ({asset_type})"

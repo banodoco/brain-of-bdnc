@@ -482,6 +482,37 @@ class DatabaseHandler:
             logger.error(f"Error updating stored avatar for member {member_id}: {e}", exc_info=True)
             return False
 
+    def update_member_socials(self, member_id: int,
+                              twitter_url: Optional[str] = None,
+                              reddit_url: Optional[str] = None) -> bool:
+        """Update only the social handles for a member without touching anything else.
+
+        Pass an explicit empty string to clear a field. Pass None (the default)
+        to leave the field unchanged. Direct .update().eq() so we never
+        accidentally overwrite permission columns or other member data.
+        """
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        update_data: Dict[str, Any] = {}
+        if twitter_url is not None:
+            update_data['twitter_url'] = twitter_url or None
+        if reddit_url is not None:
+            update_data['reddit_url'] = reddit_url or None
+        if not update_data:
+            return False
+        update_data['updated_at'] = datetime.now().isoformat()
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('members')
+                .update(update_data)
+                .eq('member_id', member_id)
+                .execute()
+            )
+            return bool(result.data)
+        except Exception as e:
+            logger.error(f"Error updating socials for member {member_id}: {e}", exc_info=True)
+            return False
+
     # ========== Helpers ==========
 
     def _resolve_message_guild_id(self, message_id: int) -> Optional[int]:
