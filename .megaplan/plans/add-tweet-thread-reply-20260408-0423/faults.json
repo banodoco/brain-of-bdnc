@@ -1,0 +1,38 @@
+{
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Sharing dedupe: The plan converts duplicate-share exits into generic failures, but this repo already stores prior tweet URLs in `shared_posts`; without reading that record, admin re-runs still will not surface a tweet URL for messages that were already posted.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed FLAG-001 by adding a prior-URL lookup via db_handler.get_shared_post() in the dedupe short-circuit of finalize_sharing, so admin re-runs return the existing tweet URL instead of a generic failure. Also added an explicit dedupe-bypass rule for thread replies (a reply is intentionally a second post about the same Discord message), updated the admin-chat tool response shape to surface an `already_shared` flag, expanded test coverage to cover the re-run path, and reordered steps so the URL fix lands before the admin-chat wiring depends on it.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Verification: The proposed `python -m pytest tests/ -k \"share or tweet or social\"` step is not aligned with this repository; there is no `tests/` directory and the checked-in dependencies do not include `pytest`.",
+      "category": "completeness",
+      "severity_hint": "likely-minor",
+      "evidence": "A repo scan only finds `scripts/test_social_picks.py`, `find . -maxdepth 2 -type d -name tests -o -name test` returns nothing, and `requirements.txt:1-37` lists runtime deps but no `pytest`.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "minor",
+      "verified": false
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Verification: The suggested manual smoke path points at the wrong script. `scripts/test_social_picks.py` only reads summaries and drafts tweet copy; it never calls `share_to_social`, `finalize_sharing`, or `post_tweet`, so it cannot validate reply threading or returned tweet URLs.",
+      "category": "completeness",
+      "severity_hint": "likely-minor",
+      "evidence": "`scripts/test_social_picks.py:1-189` fetches a summary from Supabase and calls `get_llm_response()` to print picks; it contains no Twitter posting or sharing-pipeline calls.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "minor",
+      "verified": false
+    }
+  ]
+}

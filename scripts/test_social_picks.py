@@ -1,0 +1,189 @@
+"""Quick test: fetch today's enriched summary from Supabase, run social picks, print results."""
+import os
+import sys
+import json
+import asyncio
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from src.common.db_handler import DatabaseHandler
+from src.common.llm import get_llm_response
+
+
+GUILD_ID = os.getenv('GUILD_ID', '1076117621407223829')
+SUMMARY_CHANNEL_ID = int(os.getenv('SUMMARY_CHANNEL_ID', '1138790297355174039'))
+
+SOCIAL_PICKS_PROMPT = """\
+You are a social media editor for Banodoco, an open-source AI art community. \
+You're reviewing today's daily summary to find content worth tweeting from the @banodoco account.
+
+The summary data includes news items with titles. You MUST reference items by their \
+exact title so we can match your picks back to the original posts and their media.
+
+Look for:
+- Exciting new tools, models, or techniques people are discussing
+- Impressive generations or art that the community loved
+- Notable milestones, releases, or breakthroughs
+- Interesting experiments or creative uses of AI tools
+
+For each pick, write a short draft tweet (under 280 chars) that:
+- Is enthusiastic but not hype-brained — sounds like a real person, not a brand account
+- Credits the creator if there is one
+- Explains why it's interesting in plain language
+- Would make someone want to click through
+
+Respond with exactly 3 picks in this exact format (no extra text):
+
+PICK
+Title: <exact title of the news item from the summary>
+Draft: <tweet text>
+Why: <1 sentence on why this is share-worthy>
+
+PICK
+Title: <exact title>
+Draft: <tweet text>
+Why: <1 sentence>
+
+PICK
+Title: <exact title>
+Draft: <tweet text>
+Why: <1 sentence>
+
+If nothing stands out today, respond with just: NOTHING"""
+
+
+def build_summary_lookup(enriched_summary_str, guild_id):
+    lookup = {}
+    try:
+        items = json.loads(enriched_summary_str) if isinstance(enriched_summary_str, str) else enriched_summary_str
+        if not isinstance(items, list):
+            return lookup
+        for item in items:
+            title = item.get('title', '').strip()
+            if not title:
+                continue
+
+            channel_id = item.get('channel_id')
+            message_id = item.get('message_id')
+            discord_link = None
+            if guild_id and channel_id and message_id:
+                discord_link = f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
+
+            media_urls = []
+            for m in (item.get('mainMediaUrls') or []):
+                if isinstance(m, dict) and m.get('url'):
+                    media_urls.append(m)
+            for sub in item.get('subTopics', []):
+                for sub_media_list in (sub.get('subTopicMediaUrls') or []):
+                    if isinstance(sub_media_list, list):
+                        for m in sub_media_list:
+                            if isinstance(m, dict) and m.get('url'):
+                                media_urls.append(m)
+                    elif isinstance(sub_media_list, dict) and sub_media_list.get('url'):
+                        media_urls.append(sub_media_list)
+
+            best_asset = None
+            for m in media_urls:
+                if m.get('type', '').startswith('video'):
+                    best_asset = m
+                    break
+            if not best_asset and media_urls:
+                best_asset = media_urls[0]
+
+            lookup[title.lower()] = {
+                'discord_link': discord_link,
+                'best_asset': best_asset,
+            }
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        print(f"Failed to build lookup: {e}")
+    return lookup
+
+
+async def main():
+    print("Fetching today's summary from Supabase...")
+    db = DatabaseHandler(dev_mode=False)
+    summary = db.get_summary_for_date(channel_id=SUMMARY_CHANNEL_ID)
+
+    if not summary:
+        print("No summary found for today!")
+        return
+
+    print(f"Got summary ({len(summary)} chars)")
+
+    # Build lookup
+    lookup = build_summary_lookup(summary, GUILD_ID)
+    print(f"Built lookup with {len(lookup)} items")
+    print(f"Titles: {list(lookup.keys())[:10]}")
+    print()
+
+    # Call Claude
+    print("Calling Claude for social picks...")
+    context = f"Full summary:\n{summary[:8000]}"
+    response = await get_llm_response(
+        client_name="claude",
+        model="claude-sonnet-4-5-20250929",
+        system_prompt=SOCIAL_PICKS_PROMPT,
+        messages=[{"role": "user", "content": context}],
+        max_tokens=1000,
+    )
+    response = response.strip()
+
+    if response == "NOTHING":
+        print("Claude found nothing worth sharing today.")
+        return
+
+    # Parse and display picks
+    picks = response.split("PICK")
+    pick_num = 0
+    for pick_text in picks:
+        pick_text = pick_text.strip()
+        if not pick_text:
+            continue
+
+        pick_num += 1
+        title = draft = why = ""
+        for line in pick_text.split("\n"):
+            line = line.strip()
+            if line.startswith("Title:"):
+                title = line[len("Title:"):].strip()
+            elif line.startswith("Draft:"):
+                draft = line[len("Draft:"):].strip()
+            elif line.startswith("Why:"):
+                why = line[len("Why:"):].strip()
+
+        matched = {}
+        if title:
+            title_key = title.lower()
+            matched = lookup.get(title_key, {})
+            if not matched:
+                title_words = set(title_key.split())
+                best_overlap, best_match = 0, {}
+                for key, val in lookup.items():
+                    overlap = len(title_words & set(key.split()))
+                    if overlap > best_overlap:
+                        best_overlap, best_match = overlap, val
+                if best_overlap >= 3:
+                    matched = best_match
+        discord_link = matched.get('discord_link')
+        best_asset = matched.get('best_asset')
+
+        print(f"\n{'='*60}")
+        print(f"PICK {pick_num}")
+        print(f"{'='*60}")
+        print(f"Draft: {draft}")
+        print(f"Why: {why}")
+        if best_asset:
+            print(f"Asset ({best_asset.get('type', 'media')}): {best_asset['url']}")
+        else:
+            print(f"Asset: (none found — title was '{title}')")
+        if discord_link:
+            print(f"Original post: {discord_link}")
+        else:
+            print(f"Original post: (no match)")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

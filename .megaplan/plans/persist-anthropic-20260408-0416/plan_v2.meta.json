@@ -1,0 +1,72 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-08T02:25:01Z",
+  "hash": "sha256:659d9245ea5f8216482ff2faad25b658a395be60678626f6fdc934dfd8bb4224",
+  "changes_summary": "Addressed both significant flags. FLAG-001: Step 2 now splits the new user turn into two values \u2014 `request_user_msg` (with channel context, sent to Anthropic this turn only) and `persisted_user_msg` (clean user text, written back to history) \u2014 so stale channel context never enters the store. FLAG-002: Step 4 now enforces both a user-turn count cap AND a byte budget (`MAX_CONVERSATION_BYTES = 80_000`), evicting whole turn-groups from the front when a heavy `find_messages`/`inspect_message` payload pushes history over budget. Trimming still respects tool_use/tool_result pairing by only cutting at user-text turn boundaries. Added explicit smoke-test step to verify channel context is NOT replayed across turns. Promoted the channel-context criterion from `should` to `must` and added two new `must` criteria for the byte budget and the persist/request split.",
+  "flags_addressed": [
+    "FLAG-001",
+    "FLAG-002"
+  ],
+  "questions": [
+    "Is 80 KB the right starting byte budget for persisted history? It leaves comfortable headroom under Anthropic's per-request limit even with system prompt + tools schema, but if you'd prefer a tighter or looser cap, say so. Plan assumes 80 KB.",
+    "On exception mid-turn, the plan rolls back to pre-turn history (drops the partial turn). Confirm that's preferable to persisting whatever was committed before the failure."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "The module-level `_conversations` store in `src/features/admin_chat/agent.py` holds native Anthropic message dicts (user text, assistant content blocks including `tool_use`, and user `tool_result` blocks), not stringified recaps.",
+      "priority": "must"
+    },
+    {
+      "criterion": "On a follow-up turn, `messages` passed to `self.client.messages.create` is seeded from the persisted list plus the new user message \u2014 not from a `PREVIOUS CONVERSATION:` string appended to `full_message`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Persisted user-turn entries contain only the raw `user_message` text \u2014 channel context, recent-message snapshots, and DM headers from `full_message` are NEVER written into `_conversations`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`_trim_conversation` enforces both a user-turn count cap AND a byte-size cap (`MAX_CONVERSATION_BYTES`), evicting whole turn-groups from the front when either limit is exceeded.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Every persisted `tool_use` block has a matching `tool_result` block in the next user message \u2014 trimming never splits a pair, and exception paths never write an unpaired state.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`python -c 'from src.features.admin_chat.agent import AdminChatAgent'` succeeds with no syntax or import errors after the edit.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`clear_conversation` still fully wipes the per-user history, and `admin_chat_cog.py:401`'s call site is unchanged.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The text-only stop branch (Claude responds with text and no tool calls) appends the assistant's response to persisted history so the reply is visible on the next turn.",
+      "priority": "must"
+    },
+    {
+      "criterion": "If a single turn's serialized size exceeds `MAX_CONVERSATION_BYTES`, the trim function preserves it rather than emptying history \u2014 sending one oversized turn is better than breaking pairing.",
+      "priority": "should"
+    },
+    {
+      "criterion": "REPL shape check on a synthetic history with an oversized `tool_result` confirms count-trim, byte-trim, and pairing invariants all hold.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual live smoke test: a three-turn DM where turn 2 references turn 1's tool output and turn 3 verifies stale channel context from turn 1 is NOT replayed. No Anthropic 400.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "In-memory per-process persistence is sufficient \u2014 no disk/DB backing required.",
+    "`MAX_CONVERSATION_BYTES = 80_000` is a reasonable starting cap (~20K tokens of headroom). Tunable as a single constant if it proves too loose or too tight.",
+    "`ADMIN_MAX_CONVERSATION_LENGTH=20` / `MEMBER_MAX_CONVERSATION_LENGTH=10` now mean 'max user turns retained'. Numbers unchanged.",
+    "The abort path's existing synthetic-`tool_result`-on-skip discipline keeps `messages` API-valid; we rely on it when persisting aborted turns.",
+    "No existing tests cover `admin_chat/agent.py`, so no test updates are required.",
+    "`response.content` (Anthropic SDK content blocks) is JSON-serializable enough for `json.dumps(..., default=str)` size measurement and for direct re-submission to `messages.create` \u2014 the in-loop code at `agent.py:418` already does the latter.",
+    "Channel context in `full_message` is request-scoped only \u2014 turn N+1 will arrive with its own fresh channel context, so we never need the previous turn's context blob in history.",
+    "If a single turn alone exceeds `MAX_CONVERSATION_BYTES`, we keep it (stop trimming at `len(turn_starts) > 1`) rather than emptying history \u2014 better to send one oversized turn than to break the conversation."
+  ],
+  "delta_from_previous_percent": 67.92,
+  "structure_warnings": []
+}

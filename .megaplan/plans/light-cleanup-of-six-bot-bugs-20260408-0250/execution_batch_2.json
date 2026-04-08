@@ -1,0 +1,73 @@
+{
+  "output": "Batch 2 executed. Completed T2 and T5; `py_compile` passed for the touched modules; import smoke for `src.features.admin_chat.admin_chat_cog` and `src.features.sharing.sharer` passed; no relevant test module was found beyond `scripts/debug.py` (a utility script, not a test); and the batch checkpoint was written to `.megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/execution_batch_2.json`.",
+  "files_changed": [
+    "src/features/admin_chat/admin_chat_cog.py",
+    "src/features/sharing/sharer.py",
+    ".megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/execution_batch_2.json"
+  ],
+  "commands_run": [
+    "git status --short src/features/admin_chat/admin_chat_cog.py src/features/sharing/sharer.py",
+    "sed -n '300,380p' src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '1,120p' src/features/sharing/sharer.py",
+    "sed -n '292,455p' src/features/sharing/sharer.py",
+    "rg -n \"message\\.channel\\.send|asyncio|logger\\.error\\(|logger\\.exception\\(\" src/features/admin_chat/admin_chat_cog.py",
+    "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/sharing/sharer.py src/features/sharing/subfeatures/social_poster.py",
+    "rg -n 'post_to_(instagram|tiktok|youtube)_via_zapier|Instagram|TikTok|YouTube' src/features/sharing/sharer.py",
+    "rg -l 'admin_chat_cog|sharer|social_poster|finalize_sharing' tests scripts 2>/dev/null",
+    "python -c 'import src.features.admin_chat.admin_chat_cog, src.features.sharing.sharer'",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '338,388p'",
+    "nl -ba src/features/sharing/sharer.py | sed -n '20,25p;360,405p'",
+    "git diff -- src/features/admin_chat/admin_chat_cog.py src/features/sharing/sharer.py",
+    "mkdir -p .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250 && test -w .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250 && echo writable",
+    "cat <<'EOF' > .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/execution_batch_2.json",
+    "test -f .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/execution_batch_2.json && echo checkpointed && git status --short .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/execution_batch_2.json"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/execution_batch_2.json",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/admin_chat_cog.py, src/features/sharing/sharer.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/loop_execute.json, .megaplan/schemas/loop_plan.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, scripts/send_social_picks.py, scripts/test_social_picks.py, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment."
+  ],
+  "task_updates": [
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Every response-loop send now routes through a local `_send_with_retry` helper that retries only `discord.HTTPException` failures with `status >= 500`, using 0.5s then 1.5s backoff and re-raising on exhaustion or any non-5xx response. The outer catch-all now logs with `logger.exception`, sends fixed neutral copy with no raw exception text, and protects that fallback send in its own `try/except` so a second send failure cannot recurse.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "sed -n '300,380p' src/features/admin_chat/admin_chat_cog.py",
+        "rg -n \"message\\.channel\\.send|asyncio|logger\\.error\\(|logger\\.exception\\(\" src/features/admin_chat/admin_chat_cog.py",
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/sharing/sharer.py src/features/sharing/subfeatures/social_poster.py",
+        "python -c 'import src.features.admin_chat.admin_chat_cog, src.features.sharing.sharer'",
+        "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '338,388p'"
+      ]
+    },
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Removed the three dead Zapier imports and deleted the Instagram, TikTok, and YouTube call blocks from `finalize_sharing`, leaving the Twitter post, URL announcement, shared-post recording, first-share notification, and duplicate-prevention bookkeeping intact. Static reread of the surrounding block confirms there are no orphaned variables or broken success/failure branches after the removals.",
+      "files_changed": [
+        "src/features/sharing/sharer.py"
+      ],
+      "commands_run": [
+        "sed -n '1,120p' src/features/sharing/sharer.py",
+        "sed -n '292,455p' src/features/sharing/sharer.py",
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/sharing/sharer.py src/features/sharing/subfeatures/social_poster.py",
+        "rg -n 'post_to_(instagram|tiktok|youtube)_via_zapier|Instagram|TikTok|YouTube' src/features/sharing/sharer.py",
+        "nl -ba src/features/sharing/sharer.py | sed -n '20,25p;360,405p'"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "Verified the only two response-loop send sites now call `_send_with_retry`, which catches only `discord.HTTPException` and re-raises anything with `status < 500` or any third 5xx failure after the 0.5s/1.5s retries. The catch-all no longer interpolates `str(e)` into user-facing text and wraps its neutral fallback send in a separate `try/except`."
+    },
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Confirmed `sharer.py` now imports only `post_tweet` and `generate_media_title` from `social_poster`, and the Instagram/TikTok/YouTube call blocks are gone. The remaining Twitter path still owns the success/failure branching, URL announcement, DB write, notification, and duplicate-prevention set update without stray references to removed platforms."
+    }
+  ]
+}

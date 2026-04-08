@@ -1,0 +1,81 @@
+{
+  "output": "Validation for T9 succeeded through all non-git checks. `py_compile` passed for the six bug-fix files, the six-module import smoke passed, the Bug 3 grep sweep returned zero hits, the static reread confirms the required Bug 1/2/6 success criteria, the discovered script checks ran, and the throwaway deque repro demonstrated the old mutation failure and the fixed snapshot path before being deleted. The bundled commit could not be created in this sandbox because `.git` is not writable and `git add` cannot create `.git/index.lock`.",
+  "files_changed": [
+    ".megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/execution_batch_4.json"
+  ],
+  "commands_run": [
+    "git status --short",
+    "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/sharing/sharer.py src/features/sharing/subfeatures/social_poster.py src/common/storage_handler.py",
+    "python -c 'import src.features.admin_chat.admin_chat_cog, src.features.admin_chat.tools, src.features.admin_chat.agent, src.features.sharing.sharer, src.features.sharing.subfeatures.social_poster, src.common.storage_handler'",
+    "rg -n 'ZAPIER_(INSTAGRAM|TIKTOK|YOUTUBE)' src/",
+    "rg -n 'post_to_(instagram|tiktok|youtube)_via_zapier' src/",
+    "rg -n 'Instagram|TikTok|YouTube' src/features/sharing src/features/admin_chat",
+    "rg -l 'admin_chat_cog|store_messages_to_supabase|social_poster|share_to_social|query_table|storage_handler' tests scripts 2>/dev/null",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '240,395p'",
+    "nl -ba src/common/storage_handler.py | sed -n '65,170p'",
+    "sed -n '1,220p' scripts/test_social_picks.py",
+    "sed -n '1,220p' scripts/debug.py",
+    "sed -n '1,220p' scripts/backfill_reactions.py",
+    "python scripts/debug.py --help",
+    "python scripts/backfill_reactions.py --help",
+    "python scripts/test_social_picks.py",
+    "python tmp_deque_repro.py",
+    "test ! -f tmp_deque_repro.py && echo deleted",
+    "rg -n '_send_with_retry|message\\.channel\\.send|replied_to_anchor_note|recent_messages|replied_to' src/features/admin_chat/admin_chat_cog.py",
+    "rg -n 'if not messages|messages = list\\(messages\\)' src/common/storage_handler.py",
+    "git add src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/sharing/sharer.py src/features/sharing/subfeatures/social_poster.py src/common/storage_handler.py",
+    "ls -ld .git .git/index .git/index.lock 2>/dev/null || true",
+    "touch .git/codex_write_probe 2>/dev/null; echo $?; rm -f .git/codex_write_probe 2>/dev/null",
+    "git rev-parse --abbrev-ref HEAD",
+    "git log --oneline -1",
+    "git diff --name-only"
+  ],
+  "deviations": [
+    "The bundled commit could not be created because the sandbox denies writes inside `.git`; `git add` failed with `fatal: Unable to create '/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.git/index.lock': Operation not permitted`.",
+    "`scripts/test_social_picks.py` exited cleanly but could not reach Supabase in this network-restricted environment, so it reported connection errors followed by `No summary found for today!`; that smoke did not indicate a regression in the six bug-fix files.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/execution_batch_4.json",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/loop_execute.json, .megaplan/schemas/loop_plan.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, scripts/send_social_picks.py, scripts/test_social_picks.py, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment."
+  ],
+  "task_updates": [
+    {
+      "task_id": "T9",
+      "status": "skipped",
+      "executor_notes": "Validation is clean up to the commit boundary. `py_compile` passed for all six bug-fix files, the six-module import smoke passed, and the Bug 3 sweep still returns zero hits. Static reread confirms Bug 1 is fully solved in code because the DM branch now produces the same non-None `replied_to` shape and `recent_messages` history as the guild branch and sets `replied_to_anchor_note` whenever `replied_to` is present; Bug 2 is fully solved in code because the only response-loop sends go through `_send_with_retry`, only 5xx `discord.HTTPException` is retried/swallowed, non-5xx propagates, exhaustion re-raises, and the catch-all sends fixed neutral copy with its own protective `try/except`; Bug 6 is solved because `messages = list(messages)` is the first statement after the empty guard and the throwaway repro demonstrated the old deque-mutation failure while the current snapshot path stored the original batch without error. Unrelated worktree entries remain untouched in `git status`. The only reason T9 is not fully complete is environmental: `.git` is not writable here, so staging and the single bundled commit cannot be created from this sandbox.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py",
+        "src/features/admin_chat/tools.py",
+        "src/features/admin_chat/agent.py",
+        "src/features/sharing/sharer.py",
+        "src/features/sharing/subfeatures/social_poster.py",
+        "src/common/storage_handler.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/sharing/sharer.py src/features/sharing/subfeatures/social_poster.py src/common/storage_handler.py",
+        "python -c 'import src.features.admin_chat.admin_chat_cog, src.features.admin_chat.tools, src.features.admin_chat.agent, src.features.sharing.sharer, src.features.sharing.subfeatures.social_poster, src.common.storage_handler'",
+        "rg -n 'ZAPIER_(INSTAGRAM|TIKTOK|YOUTUBE)' src/",
+        "rg -n 'post_to_(instagram|tiktok|youtube)_via_zapier' src/",
+        "rg -n 'Instagram|TikTok|YouTube' src/features/sharing src/features/admin_chat",
+        "rg -l 'admin_chat_cog|store_messages_to_supabase|social_poster|share_to_social|query_table|storage_handler' tests scripts 2>/dev/null",
+        "python scripts/debug.py --help",
+        "python scripts/backfill_reactions.py --help",
+        "python scripts/test_social_picks.py",
+        "python tmp_deque_repro.py",
+        "test ! -f tmp_deque_repro.py && echo deleted",
+        "git status --short",
+        "git add src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/sharing/sharer.py src/features/sharing/subfeatures/social_poster.py src/common/storage_handler.py",
+        "ls -ld .git .git/index .git/index.lock 2>/dev/null || true",
+        "touch .git/codex_write_probe 2>/dev/null; echo $?; rm -f .git/codex_write_probe 2>/dev/null",
+        "git rev-parse --abbrev-ref HEAD",
+        "git log --oneline -1",
+        "git diff --name-only"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC9",
+      "executor_note": "Confirmed: `py_compile` passed for all six files; the six-module import smoke passed; the Bug 3 grep sweep returned zero hits; the static reread of Bugs 1, 2, and 6 matches the required success criteria; the throwaway deque repro passed and was deleted; and `git status` still shows the unrelated `.megaplan` schema files, `src/features/summarising/summariser.py`, and `scripts/` files as separate dirty/untracked worktree entries. The only unmet part of SC9 is the single bundled commit, which is blocked because this sandbox cannot write to `.git` (`index.lock` creation is denied), so no new commit could be created or pushed from this session. Bugs 1, 2, and 4 still need live dev-Discord runtime smoke outside this environment."
+    }
+  ]
+}

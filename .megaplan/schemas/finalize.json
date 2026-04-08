@@ -29,6 +29,24 @@
           "executor_notes": {
             "type": "string"
           },
+          "files_changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "commands_run": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "evidence_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "reviewer_verdict": {
             "type": "string"
           }
@@ -39,6 +57,9 @@
           "depends_on",
           "status",
           "executor_notes",
+          "files_changed",
+          "commands_run",
+          "evidence_files",
           "reviewer_verdict"
         ],
         "additionalProperties": false
@@ -64,6 +85,9 @@
           "question": {
             "type": "string"
           },
+          "executor_note": {
+            "type": "string"
+          },
           "verdict": {
             "type": "string"
           }
@@ -72,6 +96,7 @@
           "id",
           "task_id",
           "question",
+          "executor_note",
           "verdict"
         ],
         "additionalProperties": false
@@ -79,13 +104,60 @@
     },
     "meta_commentary": {
       "type": "string"
+    },
+    "validation": {
+      "type": "object",
+      "properties": {
+        "plan_steps_covered": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "plan_step_summary": {
+                "type": "string"
+              },
+              "finalize_task_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "plan_step_summary",
+              "finalize_task_ids"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "orphan_tasks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "completeness_notes": {
+          "type": "string"
+        },
+        "coverage_complete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "plan_steps_covered",
+        "orphan_tasks",
+        "completeness_notes",
+        "coverage_complete"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
     "tasks",
     "watch_items",
     "sense_checks",
-    "meta_commentary"
+    "meta_commentary",
+    "validation"
   ],
   "additionalProperties": false
 }

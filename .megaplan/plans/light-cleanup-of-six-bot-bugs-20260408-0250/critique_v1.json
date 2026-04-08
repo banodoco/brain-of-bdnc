@@ -1,0 +1,28 @@
+{
+  "checks": [],
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Planning workflow: The plan is stale and still blocks on collecting notes, even though the six bug notes and user decisions are already present in the plan state.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`.megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/state.json` already contains the full six-bug list plus meta answers ('One bundled commit is fine', 'Do not skip any bugs', and the critical verification requirement). But `.megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/plan_v1.md` says no notes exist, Step 1 is 'Obtain the six-bug list from the user', and Execution Order blocks all work on that obsolete step."
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Social sharing: The plan under-scopes bug 3; removing dead IG/TikTok/YouTube destinations requires coordinated cleanup across callers and tool-facing text, not just `social_poster.py`.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The dead-platform code is referenced in multiple places: `src/features/sharing/sharer.py` imports the Zapier helpers near the top and calls them in `finalize_sharing()`; `src/features/admin_chat/agent.py` still tells the model `share_to_social` posts to 'Twitter/Instagram/TikTok/YouTube'; `src/features/admin_chat/tools.py` still advertises those platforms in the tool description and success message. A literal single-file cleanup would leave dead imports, dead runtime paths, or incorrect operator guidance."
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Validation: The plan does not include explicit verification that bug 1 (DM context) and bug 2 (Discord 5xx send failure) are actually solved, even though the notes make that a critical success criterion.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/admin_chat/admin_chat_cog.py` shows both are runtime behaviors: the DM branch lacks `replied_to`/`recent_messages` around lines 246-285, and message sending plus the raw-error catch path sits around lines 318-350. `.megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/plan_v1.md` only proposes `py_compile`, imports, and optional manual smoke. Repo search for relevant tests (`rg ... -g 'test_*.py' -g '*test*.py'`) found no existing coverage for `admin_chat_cog`, so the current validation plan cannot prove those two fixes work."
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

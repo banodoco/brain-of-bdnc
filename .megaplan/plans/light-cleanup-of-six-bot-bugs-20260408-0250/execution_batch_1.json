@@ -1,0 +1,131 @@
+{
+  "output": "Batch 1 executed. Completed T1, T3, T4, T7, and T8; `python -m py_compile` passed for the touched modules; the `social_poster.py` Zapier/request sweep returned clean; and the batch checkpoint was written to `.megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/execution_batch_1.json`.",
+  "files_changed": [
+    "src/features/admin_chat/admin_chat_cog.py",
+    "src/common/storage_handler.py",
+    "src/features/sharing/subfeatures/social_poster.py",
+    "src/features/admin_chat/tools.py",
+    "src/features/admin_chat/agent.py",
+    ".megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/execution_batch_1.json"
+  ],
+  "commands_run": [
+    "git status --short",
+    "rg -n \"if is_dm:|replied_to|recent_messages|query_table|share_to_social|author_name|store_messages_to_supabase|ZAPIER_|post_to_(instagram|tiktok|youtube)_via_zapier|import requests|fetch_message|shared_posts\" src/features/admin_chat/admin_chat_cog.py src/common/storage_handler.py src/features/sharing/subfeatures/social_poster.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/common/db_handler.py",
+    "sed -n '220,320p' src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '60,180p' src/common/storage_handler.py",
+    "sed -n '1,220p' src/features/sharing/subfeatures/social_poster.py",
+    "sed -n '500,640p' src/features/sharing/subfeatures/social_poster.py",
+    "sed -n '160,460p' src/features/admin_chat/tools.py",
+    "sed -n '980,1060p' src/features/admin_chat/tools.py",
+    "sed -n '1,120p' src/features/admin_chat/agent.py",
+    "sed -n '860,920p' src/common/db_handler.py",
+    "sed -n '1460,1555p' src/features/admin_chat/tools.py",
+    "sed -n '160,215p' scripts/discord_tools.py",
+    "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/common/storage_handler.py src/features/sharing/subfeatures/social_poster.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py",
+    "rg -n 'requests\\.|ZAPIER_(TIKTOK|INSTAGRAM|YOUTUBE)|post_to_(instagram|tiktok|youtube)_via_zapier' src/features/sharing/subfeatures/social_poster.py",
+    "mkdir -p .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250 && test -w .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250 && echo writable",
+    "cat <<'EOF' > .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/execution_batch_1.json",
+    "test -f .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/execution_batch_1.json && echo checkpointed"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/execution_batch_1.json",
+    "Advisory quality: code changes lacked test updates: src/common/storage_handler.py, src/features/admin_chat/admin_chat_cog.py, src/features/admin_chat/agent.py, src/features/admin_chat/tools.py, src/features/sharing/subfeatures/social_poster.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/loop_execute.json, .megaplan/schemas/loop_plan.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, scripts/send_social_picks.py, scripts/test_social_picks.py, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment."
+  ],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "DM branch now mirrors the guild branch for reply/history context: it builds `replied_to` with `message_id`/`author`/`content`, collects `recent_messages` from `DMChannel.history(limit=10)`, and sets `replied_to_anchor_note` when a reply target exists. Static reread confirms the `replied_to` dict shape matches the guild branch and the anchor-note key is present in both branches whenever `replied_to` is populated.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "sed -n '220,320p' src/features/admin_chat/admin_chat_cog.py",
+        "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '244,302p'",
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/common/storage_handler.py src/features/sharing/subfeatures/social_poster.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py"
+      ]
+    },
+    {
+      "task_id": "T3",
+      "status": "done",
+      "executor_notes": "`store_messages_to_supabase` now snapshots the incoming iterable immediately after the empty guard with `messages = list(messages)`. Static reread confirms the transform loop and batching loop both iterate over the snapshot and the original argument is not reintroduced under another name.",
+      "files_changed": [
+        "src/common/storage_handler.py"
+      ],
+      "commands_run": [
+        "sed -n '60,180p' src/common/storage_handler.py",
+        "nl -ba src/common/storage_handler.py | sed -n '79,150p'",
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/common/storage_handler.py src/features/sharing/subfeatures/social_poster.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py"
+      ]
+    },
+    {
+      "task_id": "T4",
+      "status": "done",
+      "executor_notes": "Removed the three dead Zapier webhook functions plus the three `ZAPIER_*` env-var reads and warning logs from `social_poster.py`. A follow-up `rg` over that file returned no matches for `requests` usage, `ZAPIER` webhook env vars, or the deleted function names, so the `requests` import was removed as dead as well; the remaining Twitter code was left intact.",
+      "files_changed": [
+        "src/features/sharing/subfeatures/social_poster.py"
+      ],
+      "commands_run": [
+        "sed -n '1,220p' src/features/sharing/subfeatures/social_poster.py",
+        "sed -n '500,640p' src/features/sharing/subfeatures/social_poster.py",
+        "rg -n 'requests\\.|ZAPIER_(TIKTOK|INSTAGRAM|YOUTUBE)|post_to_(instagram|tiktok|youtube)_via_zapier' src/features/sharing/subfeatures/social_poster.py",
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/common/storage_handler.py src/features/sharing/subfeatures/social_poster.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py"
+      ]
+    },
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "`share_to_social` now returns a clean error if `bot.get_channel(channel_id)` is `None` and resolves forum-root posts to their thread before `fetch_message` by trying `guild.get_thread(message_id)` first, then `bot.fetch_channel(message_id)` as a fallback. The non-forum path still goes straight to `channel.fetch_message(message_id)`, so the existing `TextChannel` behavior is preserved.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py"
+      ],
+      "commands_run": [
+        "sed -n '980,1060p' src/features/admin_chat/tools.py",
+        "nl -ba src/features/admin_chat/tools.py | sed -n '1014,1044p'",
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/common/storage_handler.py src/features/sharing/subfeatures/social_poster.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py"
+      ]
+    },
+    {
+      "task_id": "T8",
+      "status": "done",
+      "executor_notes": "`query_table` docs now use real columns: the filter example references `author_id`, the order guidance points at a real per-table column, and the agent prompt includes a schema cheatsheet for `discord_messages` and `shared_posts`. Verified against `storage_handler`'s `discord_messages` upsert columns and `db_handler`'s `shared_posts` record columns; the `author_name` uses at `tools.py:526/928/938/942` still flow through the separate `discord_tools` enrichment/context path rather than `execute_query_table`, so they were left alone.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py",
+        "src/features/admin_chat/agent.py"
+      ],
+      "commands_run": [
+        "sed -n '160,460p' src/features/admin_chat/tools.py",
+        "sed -n '1,120p' src/features/admin_chat/agent.py",
+        "sed -n '1460,1555p' src/features/admin_chat/tools.py",
+        "sed -n '112,130p' src/common/storage_handler.py",
+        "sed -n '884,893p' src/common/db_handler.py",
+        "sed -n '160,215p' scripts/discord_tools.py",
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/common/storage_handler.py src/features/sharing/subfeatures/social_poster.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "Re-read DM and guild branches side by side. Both now emit the same `replied_to` dict keys (`message_id`/`author`/`content`), both set `replied_to_anchor_note` when `replied_to` exists, and both populate `recent_messages` from a 10-message history walk."
+    },
+    {
+      "sense_check_id": "SC3",
+      "executor_note": "Verified `messages = list(messages)` is the first statement after the empty guard in `store_messages_to_supabase`, before either iteration site, and the rest of the function continues to use that same `messages` name."
+    },
+    {
+      "sense_check_id": "SC4",
+      "executor_note": "`social_poster.py` no longer contains the three Zapier functions, the three `ZAPIER_*` env-var reads/warnings, or any `requests.*` usage. The Twitter credential block and tweet helpers remain in place."
+    },
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "Traced both paths in `execute_share_to_social`: normal channels still fetch the message directly, while `ForumChannel`-or-no-`fetch_message` cases now resolve the thread via `guild.get_thread(message_id)` then `bot.fetch_channel(message_id)` before calling `fetch_message`; missing channels still return a clean error immediately."
+    },
+    {
+      "sense_check_id": "SC8",
+      "executor_note": "Confirmed `tools.py` no longer suggests `author_name` for `query_table` filters, the order example now points to a real column, and `agent.py` includes a cheatsheet that matches the actual `discord_messages` and `shared_posts` write schemas. The remaining `author_name` references are in the separate `discord_tools` enrichment/context path, not the `query_table` Supabase path."
+    }
+  ]
+}

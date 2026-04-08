@@ -39,12 +39,45 @@
           },
           "executor_notes": {
             "type": "string"
+          },
+          "files_changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "commands_run": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
           "task_id",
           "status",
-          "executor_notes"
+          "executor_notes",
+          "files_changed",
+          "commands_run"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "sense_check_acknowledgments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sense_check_id": {
+            "type": "string"
+          },
+          "executor_note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sense_check_id",
+          "executor_note"
         ],
         "additionalProperties": false
       }
@@ -55,7 +88,8 @@
     "files_changed",
     "commands_run",
     "deviations",
-    "task_updates"
+    "task_updates",
+    "sense_check_acknowledgments"
   ],
   "additionalProperties": false
 }

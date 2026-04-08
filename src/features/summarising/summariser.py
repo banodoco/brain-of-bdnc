@@ -1853,6 +1853,9 @@ class ChannelSummarizer:
 You are a social media editor for Banodoco, an open-source AI art community. \
 You're reviewing today's daily summary to find content worth tweeting from the @banodoco account.
 
+The summary data includes news items with titles. You MUST reference items by their \
+exact title so we can match your picks back to the original posts and their media.
+
 Look for:
 - Exciting new tools, models, or techniques people are discussing
 - Impressive generations or art that the community loved
@@ -1865,22 +1868,72 @@ For each pick, write a short draft tweet (under 280 chars) that:
 - Explains why it's interesting in plain language
 - Would make someone want to click through
 
-Respond with 3-5 picks in this exact format (no extra text):
+Respond with exactly 3 picks in this exact format (no extra text):
 
 PICK
+Title: <exact title of the news item from the summary>
 Draft: <tweet text>
 Why: <1 sentence on why this is share-worthy>
-Link: <leave blank — will be filled in>
 
 PICK
+Title: <exact title>
 Draft: <tweet text>
 Why: <1 sentence>
-Link: <leave blank>
+
+PICK
+Title: <exact title>
+Draft: <tweet text>
+Why: <1 sentence>
 
 If nothing stands out today, respond with just: NOTHING"""
 
-    async def _send_social_picks_dm(self, overall_summary=None, short_summary=None):
-        """DM the admin with Claude-curated social picks based on today's summary."""
+    def _build_summary_lookup(self, enriched_summary: str) -> dict:
+        """Build a lookup from news item titles to their media URLs and Discord links."""
+        lookup = {}
+        try:
+            items = json.loads(enriched_summary) if isinstance(enriched_summary, str) else enriched_summary
+            if not isinstance(items, list):
+                return lookup
+            for item in items:
+                title = item.get('title', '').strip()
+                if not title:
+                    continue
+
+                # Build Discord link to original message
+                channel_id = item.get('channel_id')
+                message_id = item.get('message_id')
+                discord_link = None
+                if self.guild_id and channel_id and message_id:
+                    discord_link = f"https://discord.com/channels/{self.guild_id}/{channel_id}/{message_id}"
+
+                # Collect media URLs (videos first, then images)
+                media_urls = []
+                main_media = item.get('mainMediaUrls') or []
+                for m in main_media:
+                    if isinstance(m, dict) and m.get('url'):
+                        media_urls.append(m)
+                for sub in item.get('subTopics', []):
+                    for sub_media_list in (sub.get('subTopicMediaUrls') or []):
+                        if isinstance(sub_media_list, list):
+                            for m in sub_media_list:
+                                if isinstance(m, dict) and m.get('url'):
+                                    media_urls.append(m)
+                        elif isinstance(sub_media_list, dict) and sub_media_list.get('url'):
+                            media_urls.append(sub_media_list)
+
+                # Sort: videos first, then images
+                media_urls.sort(key=lambda m: (0 if m.get('type', '').startswith('video') else 1))
+
+                lookup[title.lower()] = {
+                    'discord_link': discord_link,
+                    'all_media': media_urls,
+                }
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            self.logger.warning(f"[SocialPicks] Failed to build summary lookup: {e}")
+        return lookup
+
+    async def _send_social_picks_dm(self, enriched_summary=None, short_summary=None):
+        """DM the admin with Claude-curated social picks, each as a separate message with media links."""
         self.logger.info("[SocialPicks] Starting social picks generation")
         try:
             admin_id = int(os.getenv('ADMIN_USER_ID', '0'))
@@ -1888,18 +1941,16 @@ If nothing stands out today, respond with just: NOTHING"""
                 self.logger.warning("[SocialPicks] No ADMIN_USER_ID set, skipping")
                 return
 
-            if not overall_summary and not short_summary:
-                self.logger.warning("[SocialPicks] No summary data available (overall_summary=%s, short_summary=%s), skipping",
-                                    type(overall_summary).__name__, type(short_summary).__name__)
+            if not enriched_summary and not short_summary:
+                self.logger.warning("[SocialPicks] No summary data available, skipping")
                 return
 
             # Build context for Claude from whatever we have
             context = ""
             if short_summary:
                 context += f"Short summary:\n{short_summary}\n\n"
-            if overall_summary:
-                # overall_summary could be JSON or text — truncate to avoid token limits
-                summary_text = overall_summary if isinstance(overall_summary, str) else json.dumps(overall_summary)
+            if enriched_summary:
+                summary_text = enriched_summary if isinstance(enriched_summary, str) else json.dumps(enriched_summary)
                 context += f"Full summary:\n{summary_text[:8000]}"
 
             self.logger.info("[SocialPicks] Calling Claude with %d chars of context", len(context))
@@ -1918,28 +1969,70 @@ If nothing stands out today, respond with just: NOTHING"""
                 self.logger.info("[SocialPicks] Claude found nothing worth sharing today")
                 return
 
-            # Format for Discord DM
-            dm_lines = ["**Social picks for today:**\n"]
+            # Build lookup from enriched summary data
+            lookup = self._build_summary_lookup(enriched_summary) if enriched_summary else {}
+            self.logger.info("[SocialPicks] Built lookup with %d items", len(lookup))
+
+            # Parse picks from Claude's response
             picks = response.split("PICK")
-            for pick in picks:
-                pick = pick.strip()
-                if not pick:
-                    continue
-                dm_lines.append(pick)
-                dm_lines.append("")  # blank line between picks
-
-            content = "\n".join(dm_lines)
-
             admin_user = await self.bot.fetch_user(admin_id)
-            # Split if needed
-            if len(content) <= 2000:
-                await admin_user.send(content)
-            else:
-                # Send in chunks
-                for i in range(0, len(content), 2000):
-                    await admin_user.send(content[i:i+2000])
+            pick_count = 0
 
-            self.logger.info(f"[SocialPicks] Sent DM to admin ({len(picks) - 1} picks)")
+            for pick_text in picks:
+                pick_text = pick_text.strip()
+                if not pick_text:
+                    continue
+
+                # Extract fields from the pick
+                title = ""
+                draft = ""
+                why = ""
+                for line in pick_text.split("\n"):
+                    line = line.strip()
+                    if line.startswith("Title:"):
+                        title = line[len("Title:"):].strip()
+                    elif line.startswith("Draft:"):
+                        draft = line[len("Draft:"):].strip()
+                    elif line.startswith("Why:"):
+                        why = line[len("Why:"):].strip()
+
+                if not draft:
+                    continue
+
+                # Match title to summary item for links (exact match first, then fuzzy)
+                matched = {}
+                if title:
+                    title_key = title.lower()
+                    matched = lookup.get(title_key, {})
+                    if not matched:
+                        # Fuzzy: find the lookup key that shares the most words
+                        title_words = set(title_key.split())
+                        best_overlap, best_match = 0, {}
+                        for key, val in lookup.items():
+                            overlap = len(title_words & set(key.split()))
+                            if overlap > best_overlap:
+                                best_overlap, best_match = overlap, val
+                        if best_overlap >= 3:
+                            matched = best_match
+                discord_link = matched.get('discord_link')
+                all_media = matched.get('all_media', [])
+
+                # Build the DM for this pick
+                dm_parts = [f"**Draft:** {draft}"]
+                if why:
+                    dm_parts.append(f"**Why:** {why}")
+                for i, asset in enumerate(all_media):
+                    asset_type = asset.get('type', 'media')
+                    label = f"Asset {i+1} ({asset_type})" if len(all_media) > 1 else f"Asset ({asset_type})"
+                    dm_parts.append(f"**{label}:** {asset['url']}")
+                if discord_link:
+                    dm_parts.append(f"**Original post:** {discord_link}")
+
+                content = "\n".join(dm_parts)
+                await admin_user.send(content)
+                pick_count += 1
+
+            self.logger.info(f"[SocialPicks] Sent {pick_count} individual pick DMs to admin")
 
         except Exception as e:
             self.logger.error(f"[SocialPicks] Failed: {e}", exc_info=True)
@@ -2259,6 +2352,7 @@ If nothing stands out today, respond with just: NOTHING"""
                             # Save main summary to database (with dev_mode flag if in dev mode)
                             short_summary = await self.news_summarizer.generate_short_summary(overall_summary, 0)
                             self._today_summary = overall_summary
+                            self._today_enriched_summary = enriched_summary
                             self._today_short_summary = short_summary
                             main_summary_saved = await asyncio.to_thread(
                                 db_handler.store_daily_summary,
@@ -2327,9 +2421,9 @@ If nothing stands out today, respond with just: NOTHING"""
                 else:
                     self.logger.warning("No first_message found, cannot send link back")
 
-                # Send social picks DM to admin
+                # Send social picks DM to admin (use enriched summary for media URLs)
                 await self._send_social_picks_dm(
-                    getattr(self, '_today_summary', None),
+                    getattr(self, '_today_enriched_summary', None) or getattr(self, '_today_summary', None),
                     getattr(self, '_today_short_summary', None),
                 )
 

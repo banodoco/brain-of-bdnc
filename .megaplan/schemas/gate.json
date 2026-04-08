@@ -20,13 +20,90 @@
       "items": {
         "type": "string"
       }
+    },
+    "settled_decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "decision"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "flag_resolutions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "flag_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "dispute",
+              "accept_tradeoff"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "flag_id",
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "accepted_tradeoffs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "flag_id": {
+            "type": "string"
+          },
+          "concern": {
+            "type": "string"
+          },
+          "subsystem": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "flag_id",
+          "concern"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "required": [
     "recommendation",
     "rationale",
     "signals_assessment",
-    "warnings"
+    "warnings",
+    "settled_decisions"
   ],
   "additionalProperties": false
 }

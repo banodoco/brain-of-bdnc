@@ -22,7 +22,25 @@
     "success_criteria": {
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "object",
+        "properties": {
+          "criterion": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "must",
+              "should",
+              "info"
+            ]
+          }
+        },
+        "required": [
+          "criterion",
+          "priority"
+        ],
+        "additionalProperties": false
       }
     },
     "questions": {
@@ -35,10 +53,7 @@
   "required": [
     "plan",
     "changes_summary",
-    "flags_addressed",
-    "assumptions",
-    "success_criteria",
-    "questions"
+    "flags_addressed"
   ],
   "additionalProperties": false
 }

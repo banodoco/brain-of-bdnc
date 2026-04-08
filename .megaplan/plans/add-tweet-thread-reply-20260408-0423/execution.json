@@ -1,0 +1,260 @@
+{
+  "output": "Aggregated execute batches: completed 7/7.\nBatch 1: Executed batch 1 tasks T1, T2, and T8. `post_tweet` now supports optional reply targets and text-only tweets, returned tweet URLs use a lazily cached bot screen name with a logged `user` fallback, and `share_to_social` now documents thread replies plus always-returned `tweet_url`. Syntax verification passed via `python -m py_compile`, and the batch checkpoint was written to `.megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_1.json`.\nBatch 2: Executed batch 2 task T3. `Sharer.send_tweet` now accepts `in_reply_to_tweet_id`, forwards it to `post_tweet`, preserves the existing `(success, tweet_url)` return contract, and no longer blocks valid text-only tweets at the sharer layer. Syntax verification passed via `python -m py_compile`, and the batch checkpoint was written to `.megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_2.json`.\nBatch 3: Executed batch 3 task T4. `Sharer.finalize_sharing` now accepts `in_reply_to_tweet_id`, forwards it into `post_tweet`, returns structured success/failure dicts instead of implicit `None`, and still keeps the existing `finally` cleanup block for in-flight state and temp files. Syntax verification passed via `python -m py_compile`, and the batch checkpoint was written to `.megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_3.json`.\nBatch 4: Executed batch 4 tasks T5, T6, and T7. `Sharer.finalize_sharing` now does reply-aware dedupe, non-reply reruns return the previously stored tweet URL/id with `already_shared: True`, reply posts bypass `_successfully_shared` while still honoring `_currently_processing`, and reply announcements now use `Replied in thread: <url>`. Caller audit confirmed the current dict return is safe for all existing `finalize_sharing()` call sites. Syntax verification passed via `python -m py_compile`, and the batch checkpoint was written to `.megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_4.json`.\nBatch 5: Executed batch 5 task T9. `execute_share_to_social()` now parses `reply_to_tweet` as either a raw tweet ID or a `status/<digits>` URL, rejects malformed reply targets, forwards the parsed ID into `finalize_sharing()`, no longer blocks text-only messages, and returns the actual `tweet_url`/`tweet_id`/`already_shared` fields from the sharer result. Syntax verification passed via `python -m py_compile`, and the batch checkpoint was written to `.megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_5.json`.\nBatch 6: Executed batch 6 task T10. The admin agent prompt now documents `share_to_social` thread replies via `reply_to_tweet`, the returned `tweet_url`/`tweet_id`, and the `already_shared` behavior so repeat non-reply shares are treated as successes that cite the existing URL. Syntax verification passed via `python -m py_compile`, and the batch checkpoint was written to `.megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_6.json`.\nBatch 7: Executed batch 7 task T11. The required import smoke passed, `pytest` ran as the repo\u2019s available test runner and collected 0 tests, and a throwaway verification script exercised the new standalone, reply, already-shared, reply-bypass, and `reply_to_tweet` parser paths successfully before being deleted. The batch checkpoint was written to `.megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_7.json`.",
+  "files_changed": [
+    "src/features/sharing/subfeatures/social_poster.py",
+    "src/features/admin_chat/tools.py",
+    ".megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_1.json",
+    "src/features/sharing/sharer.py",
+    ".megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_2.json",
+    ".megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_3.json",
+    ".megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_4.json",
+    ".megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_5.json",
+    "src/features/admin_chat/agent.py",
+    ".megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_6.json",
+    ".megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_7.json"
+  ],
+  "commands_run": [
+    "git status --short",
+    "python -m py_compile src/features/sharing/subfeatures/social_poster.py src/features/admin_chat/tools.py",
+    "git diff -- src/features/sharing/subfeatures/social_poster.py src/features/admin_chat/tools.py",
+    "python -m py_compile src/features/sharing/sharer.py",
+    "git diff -- src/features/sharing/sharer.py",
+    "rg -n \"finalize_sharing\\(\" -g'*.py'",
+    "sed -n '896,930p' src/common/db_handler.py",
+    "sed -n '988,1075p' src/features/admin_chat/tools.py",
+    "python -m py_compile src/features/admin_chat/tools.py",
+    "git diff -- src/features/admin_chat/tools.py",
+    "python -m py_compile src/features/admin_chat/agent.py",
+    "git diff -- src/features/admin_chat/agent.py",
+    "python -c \"from src.features.sharing.subfeatures.social_poster import post_tweet; from src.features.sharing.sharer import Sharer; from src.features.admin_chat.tools import execute_share_to_social\"",
+    "rg --files | rg '(^|/)(test|tests)(/|$)|(^|/)test_.*\\.py$'",
+    "pytest",
+    "PYTHONPATH=. python /tmp/tweet_reply_batch7_check.py",
+    "rm /tmp/tweet_reply_batch7_check.py",
+    "if [ ! -e /tmp/tweet_reply_batch7_check.py ]; then echo deleted; else echo still-present; fi"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_1.json",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/tools.py, src/features/sharing/subfeatures/social_poster.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/plans/add-tweet-thread-reply-20260408-0423, .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250, .megaplan/plans/persist-anthropic-20260408-0416, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/loop_execute.json, .megaplan/schemas/loop_plan.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, scripts/test_social_picks.py, src/features/admin_chat/agent.py, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_2.json",
+    "Advisory quality: code changes lacked test updates: src/features/sharing/sharer.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/plans/add-tweet-thread-reply-20260408-0423, .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250, .megaplan/plans/persist-anthropic-20260408-0416, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/loop_execute.json, .megaplan/schemas/loop_plan.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, scripts/test_social_picks.py, src/features/admin_chat/agent.py, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_3.json",
+    "Advisory quality: code changes lacked test updates: src/features/sharing/sharer.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/plans/add-tweet-thread-reply-20260408-0423, .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250, .megaplan/plans/persist-anthropic-20260408-0416, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/loop_execute.json, .megaplan/schemas/loop_plan.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, scripts/test_social_picks.py, src/features/admin_chat/agent.py, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_4.json",
+    "Advisory quality: code changes lacked test updates: src/features/sharing/sharer.py.",
+    "Advisory: done tasks rely on commands_run without files_changed (FLAG-006 softening): T6",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/plans/add-tweet-thread-reply-20260408-0423, .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250, .megaplan/plans/persist-anthropic-20260408-0416, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/loop_execute.json, .megaplan/schemas/loop_plan.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, scripts/test_social_picks.py, src/features/admin_chat/agent.py, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_5.json",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/tools.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/plans/add-tweet-thread-reply-20260408-0423, .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250, .megaplan/plans/persist-anthropic-20260408-0416, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/loop_execute.json, .megaplan/schemas/loop_plan.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, scripts/test_social_picks.py, src/features/admin_chat/agent.py, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_6.json",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/agent.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/plans/add-tweet-thread-reply-20260408-0423, .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250, .megaplan/plans/persist-anthropic-20260408-0416, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/loop_execute.json, .megaplan/schemas/loop_plan.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, scripts/test_social_picks.py, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_7.json",
+    "Advisory: done tasks rely on commands_run without files_changed (FLAG-006 softening): T11",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/plans/add-tweet-thread-reply-20260408-0423, .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250, .megaplan/plans/persist-anthropic-20260408-0416, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/loop_execute.json, .megaplan/schemas/loop_plan.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, scripts/test_social_picks.py, src/features/summarising/summariser.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/plans/add-tweet-thread-reply-20260408-0423, .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250, .megaplan/plans/persist-anthropic-20260408-0416, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/loop_execute.json, .megaplan/schemas/loop_plan.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, scripts/test_social_picks.py, src/features/summarising/summariser.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "Updated `post_tweet` to accept `in_reply_to_tweet_id`, log reply targets, and forward the value into `client_v2.create_tweet(...)` while preserving `None` for standalone posts. Per the user\u2019s override, removed the no-attachments rejection so text-only tweets now post without media; if attachments are present, the existing upload path still runs. The success return shape remains `{'url', 'id'}`. Verified by compiling the touched modules.",
+      "files_changed": [
+        "src/features/sharing/subfeatures/social_poster.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/subfeatures/social_poster.py src/features/admin_chat/tools.py"
+      ]
+    },
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Replaced the hardcoded tweet URL username with a module-level `_cached_screen_name` that is filled lazily from `api_v1.verify_credentials().screen_name` after a successful post. If lookup fails or returns no `screen_name`, the code logs the fallback and still returns `https://twitter.com/user/status/<id>` so posting is not blocked. Verified by compiling the touched modules.",
+      "files_changed": [
+        "src/features/sharing/subfeatures/social_poster.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/subfeatures/social_poster.py src/features/admin_chat/tools.py"
+      ]
+    },
+    {
+      "task_id": "T8",
+      "status": "done",
+      "executor_notes": "Updated the `share_to_social` tool description to mention text-only posts, thread replies, always-returned `tweet_url`, and the existing-URL behavior on rerun without `reply_to_tweet`. Added `reply_to_tweet` as an optional string schema field described as either a Tweet ID or full Tweet URL. Verified by compiling the touched modules.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/subfeatures/social_poster.py src/features/admin_chat/tools.py"
+      ]
+    },
+    {
+      "task_id": "T3",
+      "status": "done",
+      "executor_notes": "Extended `Sharer.send_tweet` with optional `in_reply_to_tweet_id` and forwarded it into `post_tweet` while keeping the existing `(success, tweet_url)` return unchanged. To stay consistent with the user\u2019s attachment waiver, removed the sharer-layer no-media rejection so text-only tweets can proceed; the existing failure path remains in place when media was requested but every download failed. Verified by compiling `src/features/sharing/sharer.py`.",
+      "files_changed": [
+        "src/features/sharing/sharer.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/sharer.py"
+      ]
+    },
+    {
+      "task_id": "T4",
+      "status": "done",
+      "executor_notes": "Extended `Sharer.finalize_sharing` with optional `in_reply_to_tweet_id`, forwarded it into `post_tweet`, and replaced the current implicit `None` exits with structured result dicts. Success now returns `success`, `tweet_url`, `tweet_id`, `message_id`, and `already_shared: False`; current failure exits return `success: False`, an `error`, and `message_id`. The existing `finally` cleanup block remains responsible for `_currently_processing` removal and attachment cleanup. Verified by compiling `src/features/sharing/sharer.py`.",
+      "files_changed": [
+        "src/features/sharing/sharer.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/sharer.py"
+      ]
+    },
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Updated `Sharer.finalize_sharing` so `_currently_processing` is still checked first, but `_successfully_shared` only short-circuits non-reply posts. When `in_reply_to_tweet_id` is `None` and the message was already shared, the function now calls `db_handler.get_shared_post(message_id, 'twitter')` and returns the stored `platform_post_url` and `platform_post_id` with `already_shared: True`; if no record is found, it returns `success: False` with `Already shared but URL not found in shared_posts`. When a reply target is set, the `_successfully_shared` short-circuit is bypassed and successful reply posts are not re-added to `_successfully_shared`. Verified by compiling `src/features/sharing/sharer.py` after confirming the shared-post field names in `src/common/db_handler.py`.",
+      "files_changed": [
+        "src/features/sharing/sharer.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/sharer.py",
+        "sed -n '896,930p' src/common/db_handler.py"
+      ]
+    },
+    {
+      "task_id": "T6",
+      "status": "done",
+      "executor_notes": "Audited all `finalize_sharing()` callers with `rg -n \"finalize_sharing\\(\" -g'*.py'`. The two internal callers in `src/features/sharing/sharer.py` are `asyncio.create_task(...)` fire-and-forget sites that discard the return value. The only other caller is `src/features/admin_chat/tools.py`, which awaits `finalize_sharing()` but currently ignores the return object; it does not assert the prior `None`, so the dict return is safe for this batch.",
+      "files_changed": [],
+      "commands_run": [
+        "rg -n \"finalize_sharing\\(\" -g'*.py'",
+        "sed -n '988,1075p' src/features/admin_chat/tools.py"
+      ]
+    },
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "Threaded a simple `is_reply` flag into `_announce_tweet_url()` and the two tweet-posting call sites in `sharer.py`. Reply posts now announce as `Replied in thread: <url>`, while standalone posts keep the existing `Tweet: <url>` wording. Verified by compiling `src/features/sharing/sharer.py`.",
+      "files_changed": [
+        "src/features/sharing/sharer.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/sharer.py"
+      ]
+    },
+    {
+      "task_id": "T9",
+      "status": "done",
+      "executor_notes": "Updated `execute_share_to_social()` to parse `reply_to_tweet` as either a raw numeric ID or a tweet URL containing `status/<digits>`, reject malformed values with a clear error, and pass the parsed ID into `sharer.finalize_sharing(..., in_reply_to_tweet_id=...)`. Removed the executor\u2019s old no-attachments rejection so text-only messages can flow through, and rebuilt the tool response from the returned result dict to include `tweet_url`, `tweet_id`, `already_shared`, plus the expected success/failure message variants. Verified by compiling `src/features/admin_chat/tools.py`.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py"
+      ]
+    },
+    {
+      "task_id": "T10",
+      "status": "done",
+      "executor_notes": "Updated the admin agent system prompt so `share_to_social` is documented as accepting `reply_to_tweet` (tweet URL or ID) for thread replies, returning `tweet_url` and `tweet_id`, and treating `already_shared` on a rerun without `reply_to_tweet` as a success that should cite the existing `tweet_url` rather than report failure. Applied the wording in both the main tool list and the media-tools reminder block. Verified by compiling `src/features/admin_chat/agent.py`.",
+      "files_changed": [
+        "src/features/admin_chat/agent.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/agent.py"
+      ]
+    },
+    {
+      "task_id": "T11",
+      "status": "done",
+      "executor_notes": "Ran the exact import smoke command and it exited cleanly; the only output was the expected environment warning about missing Twitter credentials during import. Checked the repo for existing tests and found only `scripts/test_social_picks.py`, which the plan explicitly excludes because it does not cover sharing; then ran the repo's available `pytest` test runner anyway, which completed discovery and exited with code 5 after collecting 0 tests. Wrote and ran a throwaway script at `/tmp/tweet_reply_batch7_check.py` that monkey-patched the Twitter client and DB lookup paths to verify: text-only standalone `post_tweet()` returns a tweet URL, reply `post_tweet()` forwards `in_reply_to_tweet_id`, non-reply reruns of `finalize_sharing()` return `already_shared=True` with the stored URL/id, reply calls bypass `_successfully_shared` and do not add themselves to it on success, and `execute_share_to_social()` parses both raw IDs and `status/<digits>` URLs into `'12345'` while rejecting malformed input. The script passed and was deleted afterward.",
+      "files_changed": [],
+      "commands_run": [
+        "python -c \"from src.features.sharing.subfeatures.social_poster import post_tweet; from src.features.sharing.sharer import Sharer; from src.features.admin_chat.tools import execute_share_to_social\"",
+        "rg --files | rg '(^|/)(test|tests)(/|$)|(^|/)test_.*\\.py$'",
+        "pytest",
+        "PYTHONPATH=. python /tmp/tweet_reply_batch7_check.py",
+        "rm /tmp/tweet_reply_batch7_check.py",
+        "if [ ! -e /tmp/tweet_reply_batch7_check.py ]; then echo deleted; else echo still-present; fi"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "`post_tweet` now accepts `in_reply_to_tweet_id` and passes it through `client_v2.create_tweet(...)`; when the value is `None`, the call remains a normal standalone post."
+    },
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "The bot screen name is fetched lazily through `verify_credentials()`, cached at module scope on success, and falls back to `'user'` with logging if lookup fails or returns no screen name."
+    },
+    {
+      "sense_check_id": "SC8",
+      "executor_note": "The `share_to_social` schema now exposes `reply_to_tweet` with a clear ID/URL description, and the tool description explicitly mentions thread replies plus the always-returned `tweet_url`."
+    },
+    {
+      "sense_check_id": "SC3",
+      "executor_note": "`Sharer.send_tweet` now accepts `in_reply_to_tweet_id`, forwards it to `post_tweet`, and still returns the original `(success, tweet_url)` tuple."
+    },
+    {
+      "sense_check_id": "SC4",
+      "executor_note": "`finalize_sharing` now returns a dict on each of its current success and failure exit paths, and the existing `finally` cleanup remains intact."
+    },
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Non-reply reruns now return the stored URL/id with `already_shared: True`, while reply posts bypass the `_successfully_shared` short-circuit and do not re-add themselves there after success."
+    },
+    {
+      "sense_check_id": "SC6",
+      "executor_note": "All current callers are safe with the dict return: two `asyncio.create_task(...)` fire-and-forget call sites in `sharer.py`, plus one awaited-but-ignored admin tool call in `tools.py`."
+    },
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "Reply announcements now use `Replied in thread: <url>`, while standalone posts keep the existing `Tweet: <url>` wording unchanged."
+    },
+    {
+      "sense_check_id": "SC9",
+      "executor_note": "`execute_share_to_social()` now parses both raw numeric IDs and `status/<digits>` URLs into the same reply tweet ID, rejects malformed inputs, forwards the parsed ID into `finalize_sharing()`, and returns `tweet_url`, `tweet_id`, and `already_shared` in the tool response."
+    },
+    {
+      "sense_check_id": "SC10",
+      "executor_note": "The admin agent prompt now mentions `reply_to_tweet`, the returned `tweet_url`/`tweet_id`, and instructs the model to cite the existing `tweet_url` when `already_shared` is true."
+    },
+    {
+      "sense_check_id": "SC11",
+      "executor_note": "The exact import smoke command passed. `pytest` ran but collected 0 tests, so the required end-to-end coverage came from a throwaway script that passed the standalone/reply/already-shared/parser scenarios and was then deleted."
+    }
+  ]
+}

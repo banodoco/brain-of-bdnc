@@ -1,6 +1,126 @@
 {
   "type": "object",
   "properties": {
+    "review_verdict": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "needs_rework"
+      ]
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "guidance": {
+            "type": "string"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "detail": {
+                  "type": "string"
+                },
+                "flagged": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "evidence_file": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "detail",
+                "flagged"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "prior_findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "detail": {
+                  "type": "string"
+                },
+                "flagged": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "detail",
+                "flagged",
+                "status"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "id",
+          "question",
+          "findings"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "pre_check_flags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "check": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "evidence_file": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "check",
+          "detail",
+          "severity"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "verified_flag_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "disputed_flag_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "criteria": {
       "type": "array",
       "items": {
@@ -9,8 +129,21 @@
           "name": {
             "type": "string"
           },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "must",
+              "should",
+              "info"
+            ]
+          },
           "pass": {
-            "type": "boolean"
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "waived"
+            ]
           },
           "evidence": {
             "type": "string"
@@ -18,6 +151,7 @@
         },
         "required": [
           "name",
+          "priority",
           "pass",
           "evidence"
         ],
@@ -28,6 +162,43 @@
       "type": "array",
       "items": {
         "type": "string"
+      }
+    },
+    "rework_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "string"
+          },
+          "actual": {
+            "type": "string"
+          },
+          "evidence_file": {
+            "type": "string"
+          },
+          "flag_id": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "issue",
+          "expected",
+          "actual",
+          "evidence_file"
+        ],
+        "additionalProperties": false
       }
     },
     "summary": {
@@ -43,11 +214,18 @@
           },
           "reviewer_verdict": {
             "type": "string"
+          },
+          "evidence_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
           "task_id",
-          "reviewer_verdict"
+          "reviewer_verdict",
+          "evidence_files"
         ],
         "additionalProperties": false
       }
@@ -73,8 +251,10 @@
     }
   },
   "required": [
+    "review_verdict",
     "criteria",
     "issues",
+    "rework_items",
     "summary",
     "task_verdicts",
     "sense_check_verdicts"

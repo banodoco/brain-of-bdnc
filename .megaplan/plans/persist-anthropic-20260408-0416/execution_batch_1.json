@@ -1,0 +1,47 @@
+{
+  "output": "Executed batch 1 task T1 in `src/features/admin_chat/agent.py` and checkpointed progress to `.megaplan/plans/persist-anthropic-20260408-0416/execution_batch_1.json`. Verified the `PREVIOUS CONVERSATION` synthesis is removed, the request path now seeds from persisted conversation plus `request_user_msg`, and `persisted_user_msg` is the user-side history value retained for writeback. Import check passed.",
+  "files_changed": [
+    "src/features/admin_chat/agent.py",
+    ".megaplan/plans/persist-anthropic-20260408-0416/execution_batch_1.json"
+  ],
+  "commands_run": [
+    "rg -n \"PREVIOUS CONVERSATION|max_history|get_conversation|def chat\\(\" src/features/admin_chat/agent.py",
+    "sed -n '180,340p' src/features/admin_chat/agent.py",
+    "sed -n '340,500p' src/features/admin_chat/agent.py",
+    "git status --short src/features/admin_chat/agent.py",
+    "git diff -- src/features/admin_chat/agent.py",
+    "rg -n \"PREVIOUS CONVERSATION|persisted_user_msg|request_user_msg\" src/features/admin_chat/agent.py",
+    "python -c 'from src.features.admin_chat.agent import AdminChatAgent'",
+    "cat <<'EOF' > .megaplan/plans/persist-anthropic-20260408-0416/execution_batch_1.json\n{\n  \"task_updates\": [\n    {\n      \"task_id\": \"T1\",\n      \"status\": \"done\",\n      \"executor_notes\": \"Refactored chat() to seed request messages from persisted conversation plus a request-only user message, removed PREVIOUS CONVERSATION synthesis and max_history usage, and kept raw user_message isolated in persisted_user_msg for history writeback.\",\n      \"files_changed\": [\n        \"src/features/admin_chat/agent.py\"\n      ],\n      \"commands_run\": [\n        \"rg -n \\\"PREVIOUS CONVERSATION|max_history|get_conversation|def chat\\\\(\\\" src/features/admin_chat/agent.py\",\n        \"sed -n '180,340p' src/features/admin_chat/agent.py\",\n        \"sed -n '340,500p' src/features/admin_chat/agent.py\",\n        \"git status --short src/features/admin_chat/agent.py\",\n        \"git diff -- src/features/admin_chat/agent.py\",\n        \"rg -n \\\"PREVIOUS CONVERSATION|persisted_user_msg|request_user_msg\\\" src/features/admin_chat/agent.py\",\n        \"python -c 'from src.features.admin_chat.agent import AdminChatAgent'\"\n      ]\n    }\n  ],\n  \"sense_check_acknowledgments\": [\n    {\n      \"sense_check_id\": \"SC1\",\n      \"executor_note\": \"Confirmed PREVIOUS CONVERSATION is absent via rg, both persisted_user_msg and request_user_msg are present, and only persisted_user_msg is used for the user-side history writeback.\"\n    }\n  ]\n}\nEOF",
+    "git status --short src/features/admin_chat/agent.py .megaplan/plans/persist-anthropic-20260408-0416/execution_batch_1.json"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/persist-anthropic-20260408-0416/execution_batch_1.json",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/agent.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/plans/add-tweet-thread-reply-20260408-0423, .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250, .megaplan/plans/persist-anthropic-20260408-0416, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/loop_execute.json, .megaplan/schemas/loop_plan.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, scripts/test_social_picks.py, src/features/summarising/summariser.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "Verified the chat() refactor now seeds request messages from persisted history plus a request-only user message, removes PREVIOUS CONVERSATION synthesis/max_history usage, keeps raw user text isolated in persisted_user_msg, and still imports cleanly.",
+      "files_changed": [
+        "src/features/admin_chat/agent.py"
+      ],
+      "commands_run": [
+        "rg -n \"PREVIOUS CONVERSATION|max_history|get_conversation|def chat\\(\" src/features/admin_chat/agent.py",
+        "sed -n '180,340p' src/features/admin_chat/agent.py",
+        "sed -n '340,500p' src/features/admin_chat/agent.py",
+        "git diff -- src/features/admin_chat/agent.py",
+        "rg -n \"PREVIOUS CONVERSATION|persisted_user_msg|request_user_msg\" src/features/admin_chat/agent.py",
+        "python -c 'from src.features.admin_chat.agent import AdminChatAgent'"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "Grep confirmed PREVIOUS CONVERSATION is fully removed; visual diff review confirmed both message variables exist and only persisted_user_msg is used for the user-message writeback path."
+    }
+  ]
+}

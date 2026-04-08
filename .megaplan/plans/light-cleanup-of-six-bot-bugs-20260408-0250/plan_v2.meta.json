@@ -1,0 +1,89 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-08T01:01:22Z",
+  "hash": "sha256:00297bfd5728d92d652aa34b29e95b5e7a321e4edf5f834439e394e785beb84f",
+  "changes_summary": "Replaced the stale scaffold (which still blocked on 'collect notes') with a concrete six-step implementation plan derived from the user's notes and verified against the actual files. Added explicit static-verification gates for Bug 1 (DM context) and Bug 2 (5xx crash) \u2014 both promoted to `must` success criteria \u2014 to satisfy the critical requirement. Expanded Bug 3 scope from a single file to all four files where the dead Zapier code/text live (`social_poster.py`, `sharer.py`, `tools.py`, `agent.py`), addressing FLAG-002. Pinned every step to verified file:line references. Removed assumptions and questions that were already answered in the notes.",
+  "flags_addressed": [
+    "FLAG-001",
+    "FLAG-002",
+    "FLAG-003"
+  ],
+  "questions": [
+    "For Bug 5, is the `author_name` column referenced in `tools.py:526`/`:531`/`:928`/`:938`/`:942` reading from a local-DB tool result (which has its own schema and is fine), or does it also flow through the supabase `query_table` path? I'll resolve this by reading those callsites during Step 5 \u2014 flagging here in case you already know.",
+    "For Bug 2 retry, is 2 retries with 0.5s/1.5s backoff acceptable, or do you want a different cap (e.g. 3 retries, exponential)?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "Bug 1 (DM context): the `if is_dm:` branch in `admin_chat_cog.py` populates `channel_context['replied_to']` (with `message_id`/`author`/`content`) whenever `message.reference.resolved` is a Message, AND populates `channel_context['recent_messages']` from `message.channel.history(limit=10)`, matching the guild branch's behavior",
+      "priority": "must"
+    },
+    {
+      "criterion": "Bug 1: when `replied_to` is set (in either DM or guild branch), an explicit anchor marker is included in `channel_context` so the model is loudly told which message is being referenced",
+      "priority": "must"
+    },
+    {
+      "criterion": "Bug 2 (5xx crash): every `await message.channel.send(...)` in the response loop in `admin_chat_cog.py` is wrapped in a retry that catches `discord.HTTPException` with `status >= 500`, retries up to 2 times with short backoff, and re-raises on exhaustion or for non-5xx errors",
+      "priority": "must"
+    },
+    {
+      "criterion": "Bug 2: the catch-all in `admin_chat_cog.py:348-350` no longer interpolates `str(e)` into the user-facing message; it sends a fixed neutral message and logs the exception with `exc_info=True`; the neutral-message send itself cannot recurse into the handler on failure",
+      "priority": "must"
+    },
+    {
+      "criterion": "Bug 3 (dead Zapier): `post_to_instagram_via_zapier`, `post_to_tiktok_via_zapier`, `post_to_youtube_via_zapier`, and the three `ZAPIER_*` env-var reads are deleted from `social_poster.py`; the imports and three call blocks in `sharer.py` are deleted; `tools.py:181`, `tools.py:1044`, and `agent.py:46` no longer mention Instagram/TikTok/YouTube",
+      "priority": "must"
+    },
+    {
+      "criterion": "Bug 3: a final repo-wide grep for `ZAPIER_(INSTAGRAM|TIKTOK|YOUTUBE)`, `post_to_(instagram|tiktok|youtube)_via_zapier`, and `Instagram|TikTok|YouTube` (within `src/features/sharing` and `src/features/admin_chat`) returns zero hits",
+      "priority": "must"
+    },
+    {
+      "criterion": "Bug 4 (ForumChannel): `tools.py:1017-1022` resolves a `ForumChannel` to its thread (via `guild.get_thread`/`bot.fetch_channel`) before calling `fetch_message`; the existing non-forum path is unchanged",
+      "priority": "must"
+    },
+    {
+      "criterion": "Bug 5 (query_table hints): the `author_name` example is removed from `tools.py:406`, the order example in `tools.py:410` no longer references a column that doesn't exist on the documented tables, and `agent.py:38` includes a short cheatsheet of the actual columns on `discord_messages` and `shared_posts` (`author_id`/`created_at` and `discord_user_id`/`shared_at`/`platform` respectively)",
+      "priority": "must"
+    },
+    {
+      "criterion": "Bug 6 (deque race): `store_messages_to_supabase` snapshots the input via `messages = list(messages)` immediately after the empty guard, before any iteration",
+      "priority": "must"
+    },
+    {
+      "criterion": "Every touched Python file passes `python -m py_compile` cleanly",
+      "priority": "must"
+    },
+    {
+      "criterion": "Every touched module imports without error from the repo root",
+      "priority": "must"
+    },
+    {
+      "criterion": "Unrelated working-tree changes (`.megaplan/schemas/*.json`, `src/features/summarising/summariser.py`, new `scripts/`) remain untouched",
+      "priority": "must"
+    },
+    {
+      "criterion": "Each fix is the smallest viable change \u2014 no refactors, no defensive wrappers, no drive-by cleanups beyond what each bug requires",
+      "priority": "should"
+    },
+    {
+      "criterion": "All six bugs land in a single bundled commit (per user instruction)",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke in dev Discord confirms: (a) DM context now includes the replied-to anchor, (b) follow-up tweet flows recover from a 503, (c) `share_to_social` succeeds against a forum thread",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "Bundled commit, no separate per-bug commits (per user notes).",
+    "All six bugs are in scope; none deferred (per user notes).",
+    "Unrelated in-progress changes in `summariser.py`, `.megaplan/schemas/*.json`, and new `scripts/` files are left untouched.",
+    "For Bug 3 the user has approved deleting the dead destinations entirely \u2014 no archive, no feature flag, no soft-disable.",
+    "For Bug 1 the small minimal refactor to a local helper for shared reply/history logic is acceptable; if not, inline duplication is fine.",
+    "For Bug 5 the existing local-DB callsites that read `author_name` from result rows (e.g. `tools.py:526`/`:928`) are reading from a different data source (local SQLite tools that do return `author_name`) and are NOT bugs \u2014 to be confirmed during the read in Step 5.",
+    "No new tests are required for this `light` cleanup; static verification + manual smoke is sufficient.",
+    "Discord library version supports `discord.ForumChannel`, `guild.get_thread`, and `bot.fetch_channel` \u2014 standard for recent discord.py / py-cord."
+  ],
+  "delta_from_previous_percent": 93.16,
+  "structure_warnings": []
+}

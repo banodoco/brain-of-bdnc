@@ -1,0 +1,40 @@
+{
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Planning workflow: The plan is stale and still blocks on collecting notes, even though the six bug notes and user decisions are already present in the plan state.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Replaced the stale scaffold (which still blocked on 'collect notes') with a concrete six-step implementation plan derived from the user's notes and verified against the actual files. Added explicit static-verification gates for Bug 1 (DM context) and Bug 2 (5xx crash) \u2014 both promoted to `must` success criteria \u2014 to satisfy the critical requirement. Expanded Bug 3 scope from a single file to all four files where the dead Zapier code/text live (`social_poster.py`, `sharer.py`, `tools.py`, `agent.py`), addressing FLAG-002. Pinned every step to verified file:line references. Removed assumptions and questions that were already answered in the notes.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Social sharing: The plan under-scopes bug 3; removing dead IG/TikTok/YouTube destinations requires coordinated cleanup across callers and tool-facing text, not just `social_poster.py`.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Replaced the stale scaffold (which still blocked on 'collect notes') with a concrete six-step implementation plan derived from the user's notes and verified against the actual files. Added explicit static-verification gates for Bug 1 (DM context) and Bug 2 (5xx crash) \u2014 both promoted to `must` success criteria \u2014 to satisfy the critical requirement. Expanded Bug 3 scope from a single file to all four files where the dead Zapier code/text live (`social_poster.py`, `sharer.py`, `tools.py`, `agent.py`), addressing FLAG-002. Pinned every step to verified file:line references. Removed assumptions and questions that were already answered in the notes.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Validation: The plan does not include explicit verification that bug 1 (DM context) and bug 2 (Discord 5xx send failure) are actually solved, even though the notes make that a critical success criterion.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Replaced the stale scaffold (which still blocked on 'collect notes') with a concrete six-step implementation plan derived from the user's notes and verified against the actual files. Added explicit static-verification gates for Bug 1 (DM context) and Bug 2 (5xx crash) \u2014 both promoted to `must` success criteria \u2014 to satisfy the critical requirement. Expanded Bug 3 scope from a single file to all four files where the dead Zapier code/text live (`social_poster.py`, `sharer.py`, `tools.py`, `agent.py`), addressing FLAG-002. Pinned every step to verified file:line references. Removed assumptions and questions that were already answered in the notes.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    }
+  ]
+}

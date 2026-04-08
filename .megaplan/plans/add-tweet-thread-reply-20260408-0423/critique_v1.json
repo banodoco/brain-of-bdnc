@@ -1,0 +1,28 @@
+{
+  "checks": [],
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Sharing dedupe: The plan converts duplicate-share exits into generic failures, but this repo already stores prior tweet URLs in `shared_posts`; without reading that record, admin re-runs still will not surface a tweet URL for messages that were already posted.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/sharing/sharer.py:267-273` short-circuits duplicate/in-progress shares before any URL is returned, `src/common/db_handler.py:852-920` already persists and can fetch `platform_post_url`, and `src/features/admin_chat/tools.py:1054-1065` depends on `finalize_sharing()` to produce the user-facing result."
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Verification: The proposed `python -m pytest tests/ -k \"share or tweet or social\"` step is not aligned with this repository; there is no `tests/` directory and the checked-in dependencies do not include `pytest`.",
+      "category": "completeness",
+      "severity_hint": "likely-minor",
+      "evidence": "A repo scan only finds `scripts/test_social_picks.py`, `find . -maxdepth 2 -type d -name tests -o -name test` returns nothing, and `requirements.txt:1-37` lists runtime deps but no `pytest`."
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Verification: The suggested manual smoke path points at the wrong script. `scripts/test_social_picks.py` only reads summaries and drafts tweet copy; it never calls `share_to_social`, `finalize_sharing`, or `post_tweet`, so it cannot validate reply threading or returned tweet URLs.",
+      "category": "completeness",
+      "severity_hint": "likely-minor",
+      "evidence": "`scripts/test_social_picks.py:1-189` fetches a summary from Supabase and calls `get_llm_response()` to print picks; it contains no Twitter posting or sharing-pipeline calls."
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

@@ -1,0 +1,273 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "In src/features/admin_chat/admin_chat_cog.py, fix Bug 1 (DM context): edit the `if is_dm:` branch around lines 247-253 to also build `replied_to` from `message.reference.resolved` (with message_id/author/content) and `recent_messages` from `message.channel.history(limit=10)`, exactly mirroring the guild branch at lines 268-287. Also set `channel_context['replied_to_anchor_note'] = 'USER IS REPLYING TO THIS MESSAGE \u2014 treat it as the primary referent.'` whenever `replied_to` is populated, in BOTH the DM and guild branches. Inline duplication is acceptable; only extract a tiny local helper if the duplication is awkward.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T2",
+      "description": "In the same file src/features/admin_chat/admin_chat_cog.py, fix Bug 2 (5xx crash): wrap each `await message.channel.send(...)` in the response loop (around lines 333 and 340) with a tiny retry that catches `discord.HTTPException` with `status >= 500` and retries up to 2 times with backoff (0.5s then 1.5s), re-raising on exhaustion or for any non-5xx exception. If both call sites are awkward inline, define one local `async def _send_with_retry(channel, content, reference)` inside `on_message`. Then replace the catch-all at lines 348-350 so it (a) keeps `logger.exception`/`exc_info=True` logging, (b) sends a fixed neutral user-facing message (e.g. 'Sorry, something went wrong on my side. Try again in a moment.') with NO `str(e)` interpolation, and (c) wraps that neutral-message send in its own try/except so a follow-up failure cannot recurse into the handler.",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T3",
+      "description": "Fix Bug 6 (deque race) in src/common/storage_handler.py: in `store_messages_to_supabase` at line 69, immediately after the `if not messages: return 0` empty-guard, add `messages = list(messages)` to snapshot the input before the transform loop (line 89) and the batching loop (line 139). Do not change the public signature or type hint. Verify no later code path re-references the original argument under a different name.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T4",
+      "description": "Fix Bug 3 (dead Zapier) \u2014 part A, src/features/sharing/subfeatures/social_poster.py: delete the three Zapier functions `post_to_instagram_via_zapier`, `post_to_tiktok_via_zapier`, `post_to_youtube_via_zapier` (around lines 521-595). Delete the env-var reads and warning logs for `ZAPIER_TIKTOK_BUFFER_URL`, `ZAPIER_INSTAGRAM_URL`, `ZAPIER_YOUTUBE_URL` (around lines 26-39, including the three `if not \u2026: logger.warning(\u2026)` lines). After deletion, grep this file for remaining `import requests` users \u2014 if none remain, also delete the `import requests` line at line 7 (Twitter path uses tweepy). Do not touch any Twitter code.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T5",
+      "description": "Fix Bug 3 \u2014 part B, src/features/sharing/sharer.py: remove `post_to_instagram_via_zapier`, `post_to_tiktok_via_zapier`, `post_to_youtube_via_zapier` from the import block at lines 23-25, and delete the three call blocks (Instagram ~404-412, TikTok ~414-422, YouTube ~424-434). Leave the Twitter call site intact. Make sure surrounding control flow (return values, success/failure aggregation) still makes sense after removal.",
+      "depends_on": [
+        "T4"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T6",
+      "description": "Fix Bug 3 \u2014 part C, operator-facing strings: in src/features/admin_chat/tools.py change line 181 description from `(Twitter, Instagram, TikTok, YouTube)` to `(Twitter)`, and change line 1044 from `Will post to Twitter/Instagram/TikTok/YouTube.` to `Will post to Twitter.`. In src/features/admin_chat/agent.py change line 46 from `share to Twitter/Instagram/TikTok/YouTube` to `share to Twitter`. Then run a final grep sweep: `rg -n 'ZAPIER_(INSTAGRAM|TIKTOK|YOUTUBE)' src/`, `rg -n 'post_to_(instagram|tiktok|youtube)_via_zapier' src/`, and `rg -n 'Instagram|TikTok|YouTube' src/features/sharing src/features/admin_chat` \u2014 all three must return zero hits before T6 is considered done. (Twitter remains.)",
+      "depends_on": [
+        "T4",
+        "T5"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T7",
+      "description": "Fix Bug 4 (ForumChannel) in src/features/admin_chat/tools.py at lines 1017-1022 (`share_to_social`): after `channel = bot.get_channel(channel_id)`, if `channel is None` return `{success: False, error: ...}`; if `isinstance(channel, discord.ForumChannel)` or `not hasattr(channel, 'fetch_message')`, resolve the actual thread before calling fetch_message \u2014 try `guild.get_thread(int(message_id))` first, then fall back to `await bot.fetch_channel(int(message_id))`, and if that fails return a clear error. Then call `channel.fetch_message(int(message_id))` on the resolved thread. Leave the downstream `sharer.finalize_sharing` call unchanged. Do not break the existing non-forum path.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T8",
+      "description": "Fix Bug 5 (query_table schema hints): in src/features/admin_chat/tools.py, edit line 406 to remove the bogus `author_name` example and replace it with a real column example like `{\"reaction_count\": \"gte.5\", \"author_id\": \"123456789\"}`; edit line 410 to use a column that actually exists across the documented tables (e.g. `'-reaction_count'`) or note that order columns are table-specific. In src/features/admin_chat/agent.py at line 38 (the `query_table` instructions), add a one-line cheatsheet listing the real columns: `discord_messages: author_id, created_at, reaction_count` and `shared_posts: discord_user_id, shared_at, platform`. Then read tools.py around lines 526, 531, 928, 938, 942 \u2014 those reference `msg.get('author_name', ...)` from local-DB result rows; confirm they read from a different (local SQLite) data source and leave them alone. Verify by reading `src/common/storage_handler.py:112-130` (discord_messages columns) and `src/common/db_handler.py:885-893` (shared_posts columns) that the cheatsheet matches reality.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T9",
+      "description": "Validate all changes and commit. (a) Run `python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/sharing/sharer.py src/features/sharing/subfeatures/social_poster.py src/common/storage_handler.py`. (b) Run `python -c 'import src.features.admin_chat.admin_chat_cog, src.features.admin_chat.tools, src.features.admin_chat.agent, src.features.sharing.sharer, src.features.sharing.subfeatures.social_poster, src.common.storage_handler'` from the repo root. (c) Re-run the Bug-3 grep sweep from T6 and confirm zero hits. (d) Static re-read Bugs 1, 2, and 6 against the success criteria (DM branch produces non-None replied_to + non-empty recent_messages with the same shape as guild branch; anchor note set whenever replied_to is set; every channel.send goes through retry; only 5xx HTTPException is swallowed; non-5xx propagates; retries re-raise on exhaustion; catch-all sends fixed neutral copy with no str(e); neutral send is itself protected; deque snapshot is the very first statement after the empty guard with no later reuse of the original arg). (e) Test discovery: `rg -l 'admin_chat_cog|store_messages_to_supabase|social_poster|share_to_social|query_table|storage_handler' tests scripts 2>/dev/null` \u2014 if anything turns up, run it. Repo currently has only `scripts/test_social_picks.py` (unrelated) \u2014 run it as an import-sanity smoke. (f) Write a tiny throwaway script that exercises the deque-snapshot fix to confirm Bug 6 is closed; run it; delete it. (g) Confirm the unrelated working-tree changes (.megaplan/schemas/*.json, src/features/summarising/summariser.py, scripts/) are still untouched in `git status`. (h) Stage ONLY the six bug-fix files and create a single bundled commit covering all six bugs. Do not push. If anything fails, fix it and re-run validation until clean.",
+      "depends_on": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6",
+        "T7",
+        "T8"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T10",
+      "description": "Run tests relevant to the changed files to verify correctness and check for regressions \u2014 run the full test file/module, not just individual functions. Find and run the project's existing test suite \u2014 do NOT create new test files. If any test fails, read the error, fix the code, and re-run until all tests pass.",
+      "depends_on": [
+        "T9"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    }
+  ],
+  "watch_items": [
+    "Do NOT touch the unrelated working-tree changes: .megaplan/schemas/*.json, src/features/summarising/summariser.py, and the new scripts/ files (send_social_picks.py, test_social_picks.py). They must remain dirty/untracked exactly as they are at start.",
+    "Bug 2 retry must ONLY swallow discord.HTTPException with status >= 500. All other exceptions (including 4xx) must propagate so the catch-all logs them. After 2 retries the 5xx must also re-raise.",
+    "Bug 2 catch-all: never interpolate str(e) into user-facing copy \u2014 that was the original symptom. The neutral-message send must be wrapped in its own try/except so a recursive failure cannot re-enter the handler.",
+    "Bug 1: the anchor-note key must be added to BOTH the DM and the guild branch whenever replied_to is set, not just the DM branch.",
+    "Bug 3: be thorough with grep \u2014 the success criterion is zero hits for ZAPIER_(INSTAGRAM|TIKTOK|YOUTUBE), post_to_(instagram|tiktok|youtube)_via_zapier, and Instagram|TikTok|YouTube under src/features/sharing and src/features/admin_chat. Twitter stays.",
+    "Bug 3: after deleting Zapier functions in social_poster.py, only remove `import requests` if grep confirms no remaining users in that file.",
+    "Bug 4: ForumChannel posts ARE threads \u2014 the message_id IS the thread id for the root post. Resolve via guild.get_thread first, then bot.fetch_channel as fallback. Do not regress the normal TextChannel path.",
+    "Bug 5: tools.py lines 526/531/928/938/942 reference author_name on local-DB result rows \u2014 those are NOT bugs. Read them, confirm they come from a different data source, and leave them alone.",
+    "Bug 6: the snapshot `messages = list(messages)` must be the first statement after the empty guard, before any iteration. Do not broaden the type hint or change the public signature.",
+    "Single bundled commit for all six bugs (per user instruction). Do not split into six commits. Do not push.",
+    "Open question from plan: retry cap is 2 retries with 0.5s/1.5s backoff. If the executor finds this awkward in context, surface to user rather than silently changing.",
+    "Open question from plan: confirm during T8 that the author_name references in tools.py:526/531/928/938/942 really are reading from local-DB rows (not supabase query_table). If they DO flow through query_table, that's an additional bug \u2014 surface to user.",
+    "Discord library assumption: discord.ForumChannel, guild.get_thread, and bot.fetch_channel must exist in the installed discord.py/py-cord version. If imports fail, surface immediately."
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "After the edit, does the DM branch produce a channel_context whose `replied_to` is a non-None dict (with message_id/author/content) when message.reference.resolved is set, AND a non-empty `recent_messages` list when prior DM history exists, matching the guild branch's shape exactly? Is the anchor-note key set in BOTH branches whenever replied_to is populated?",
+      "executor_note": "This is one of the two CRITICAL success criteria from the user. Verify by re-reading the DM branch side-by-side with the guild branch and confirming the dict keys are identical.",
+      "verdict": ""
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Does every `await message.channel.send(...)` in the response loop go through the retry path? Does the retry ONLY catch discord.HTTPException with status >= 500, letting all other exceptions propagate? After 2 retries does it re-raise? Does the catch-all at 348-350 send a fixed neutral message with NO str(e), and is that neutral send itself wrapped in try/except so it cannot recurse?",
+      "executor_note": "The other CRITICAL success criterion. The original user pain was raw exception text echoed into chat \u2014 zero tolerance for any str(e) interpolation in user-facing copy.",
+      "verdict": ""
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Is `messages = list(messages)` the very first statement after the `if not messages: return 0` guard in `store_messages_to_supabase`? Does any later code re-reference the original argument under a different name (which would defeat the snapshot)?",
+      "executor_note": "Use the throwaway repro script in T9(f) to actively prove the race is closed, not just static reasoning.",
+      "verdict": ""
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Are all three Zapier functions and all three ZAPIER_* env-var reads/warnings deleted from social_poster.py? Was `import requests` either kept (because other code in the file still uses it) or removed (because grep confirmed no remaining users)? Is the Twitter path still intact and untouched?",
+      "executor_note": "Run `rg -n 'requests\\.' src/features/sharing/subfeatures/social_poster.py` after the deletion to decide whether to drop the import.",
+      "verdict": ""
+    },
+    {
+      "id": "SC5",
+      "task_id": "T5",
+      "question": "Are the three Zapier imports removed from sharer.py:23-25 and the three call blocks (Instagram, TikTok, YouTube) removed? Does the surrounding control flow still make sense \u2014 are there orphaned variables, broken aggregation of success/failure, or stray references?",
+      "executor_note": "Read at least 30 lines of context around each deleted block to confirm the success/failure aggregator and any return value still makes sense.",
+      "verdict": ""
+    },
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "question": "Do the three operator-facing strings in tools.py:181, tools.py:1044, and agent.py:46 now reference Twitter only? Do all three grep commands return zero hits under src/features/sharing and src/features/admin_chat?",
+      "executor_note": "This is the contract for 'be thorough' \u2014 do not skip the grep sweep. If hits remain, investigate before declaring done.",
+      "verdict": ""
+    },
+    {
+      "id": "SC7",
+      "task_id": "T7",
+      "question": "Does share_to_social now resolve a ForumChannel to its thread (via guild.get_thread, then bot.fetch_channel fallback) before calling fetch_message? Is the existing TextChannel path unchanged and not regressed? Does None-channel still return a clean error?",
+      "executor_note": "Mentally trace both code paths: (a) normal TextChannel \u2014 must behave identically to before, (b) ForumChannel \u2014 must resolve to thread before fetch_message.",
+      "verdict": ""
+    },
+    {
+      "id": "SC8",
+      "task_id": "T8",
+      "question": "Does the query_table example at tools.py:406 no longer reference `author_name`? Does the order example at tools.py:410 use a column that actually exists on the documented tables? Does agent.py:38 now include the columns cheatsheet, and does it match the actual schemas verified in storage_handler.py:112-130 and db_handler.py:885-893?",
+      "executor_note": "If the author_name references at tools.py:526/531/928/938/942 turn out to flow through the supabase query_table path (not local SQLite), surface to user \u2014 that's an additional bug not in the original six.",
+      "verdict": ""
+    },
+    {
+      "id": "SC9",
+      "task_id": "T9",
+      "question": "Did py_compile pass for all six files? Did the import smoke pass? Did the Bug-3 grep return zero hits? Did the static re-read of Bugs 1, 2, and 6 confirm the success criteria? Did the throwaway deque-race repro confirm Bug 6 is closed (and was it deleted)? Are the unrelated working-tree files still untouched in git status? Is there exactly ONE new commit covering all six bugs (not pushed)?",
+      "executor_note": "Hand off Bugs 1, 2, and 4 to the user for runtime smoke in dev Discord at the end \u2014 they cannot be fully proven without a live bot.",
+      "verdict": ""
+    },
+    {
+      "id": "SC10",
+      "task_id": "T10",
+      "question": "Did the verification tests pass? Were any regressions found and fixed?",
+      "executor_note": "",
+      "verdict": ""
+    }
+  ],
+  "meta_commentary": "Six localized Discord-bot bug fixes landing as one bundled commit. Files and line numbers in the plan were verified by the planner against the actual code, so trust them as starting anchors but re-confirm before each edit (line numbers may have drifted by small amounts). Execution order is deliberate: T1+T2 share a file (open it once), T3 is a one-line easy win, T4+T5+T6 are the contiguous Zapier-removal block (do them together so the diff is coherent), T7 and T8 are isolated, and T9 validates and commits. The two CRITICAL success criteria \\u2014 that Bugs 1 and 2 are FULLY solved by the proposed changes \\u2014 are enforced by SC1, SC2, and the static re-read in T9(d); do not skip those. The user's #1 pain point is the catch-all that echoed raw exception text into chat, so be especially disciplined that NO str(e) makes it into user-facing copy in Bug 2. For Bug 3, the user said 'be thorough \\u2014 don\\u2019t leave dead code' \\u2014 the grep sweep in T6 is the contract, not optional. For Bug 1, the 'surface the anchor more loudly' requirement means an explicit key in channel_context, not just a hope that the model will notice replied_to. For Bug 6, the throwaway repro script in T9(f) is the only way to actually prove the race is closed without a real concurrent producer \\u2014 keep it tiny and delete it after. Leave the unrelated working-tree changes (.megaplan/schemas, summariser.py, scripts/) completely alone \\u2014 stage only the six bug-fix files. Do not push. If retry cap (2 retries / 0.5s+1.5s backoff) or any author_name flow surprise comes up, surface to the user rather than silently deciding. Bugs 1, 2, and 4 cannot be fully proven without a live dev Discord \\u2014 flag this in the final hand-off so the user runs the smoke.",
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Step 1 \u2014 Fix DM context: mirror reply/history into DM branch and add explicit anchor note",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 2 \u2014 Fix 5xx send crash: retry on HTTPException >=500 and replace catch-all with neutral copy",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 3 \u2014 Remove dead Zapier IG/TikTok/YouTube destinations across social_poster.py, sharer.py, tools.py, agent.py",
+        "finalize_task_ids": [
+          "T4",
+          "T5",
+          "T6"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 4 \u2014 Fix share_to_social ForumChannel resolution before fetch_message",
+        "finalize_task_ids": [
+          "T7"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 5 \u2014 Fix query_table schema hints (remove author_name example, fix order example, add cheatsheet)",
+        "finalize_task_ids": [
+          "T8"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 6 \u2014 Snapshot the deque in store_messages_to_supabase to fix the iteration race",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 7 \u2014 Validate (py_compile, imports, grep sweep, static re-read of Bugs 1/2/6, test discovery, commit)",
+        "finalize_task_ids": [
+          "T9"
+        ]
+      }
+    ],
+    "orphan_tasks": [
+      "T10"
+    ],
+    "completeness_notes": "All seven plan steps map to tasks. The Zapier-removal step (Step 3) is split across T4/T5/T6 because it spans four files and the user explicitly asked for thoroughness, but they execute as one contiguous block. T9 absorbs the validation step plus the bundled commit, since the user instructed one commit and the validation must complete before committing.",
+    "coverage_complete": true
+  }
+}

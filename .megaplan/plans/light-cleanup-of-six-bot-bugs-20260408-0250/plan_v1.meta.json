@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-08T00:51:52Z",
+  "hash": "sha256:57e7ffe17c776747b9ad065c7fecabe23a256c5521e72ada264aea1841619487",
+  "questions": [
+    "What are the six bot bugs? No notes file is attached to the plan directory \u2014 please paste the list (ideally with file:line references and a one-line description of each symptom).",
+    "Where should I look for the notes if they already exist somewhere? (e.g., a GitHub issue, a Discord message, a local file outside `.megaplan/`, the `docs/` directory?)",
+    "For each bug, do you already have a preferred fix in mind, or should I propose one per bug before implementing?",
+    "Should fixes be landed as one bundled commit or six separate commits (one per bug)?",
+    "Are there any of the six bugs you'd like me to skip or defer (e.g., ones that need product input)?",
+    "The working tree has unrelated in-progress changes in `.megaplan/schemas/*.json` and `src/features/summarising/summariser.py` \u2014 should I leave those alone, or are any of them related to the six bugs?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "The six specific bugs from the user's notes are each addressed by a minimal, targeted code change",
+      "priority": "must"
+    },
+    {
+      "criterion": "Every touched Python file passes `python -m py_compile` cleanly",
+      "priority": "must"
+    },
+    {
+      "criterion": "Every touched module imports without error from the repo root",
+      "priority": "must"
+    },
+    {
+      "criterion": "No unrelated files are modified (working-tree changes in `.megaplan/schemas/*.json` and `src/features/summarising/summariser.py` remain untouched unless they are one of the six bugs)",
+      "priority": "must"
+    },
+    {
+      "criterion": "Any existing tests that cover the touched modules still pass",
+      "priority": "must"
+    },
+    {
+      "criterion": "Each fix is the smallest viable change \u2014 no refactors, no defensive wrappers, no drive-by cleanups",
+      "priority": "should"
+    },
+    {
+      "criterion": "Each bug fix is isolated enough to be reverted independently (ideally one commit per bug)",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke in dev Discord bot confirms the fixed behaviors for any bugs whose symptoms can only be observed at runtime",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "'Bot' refers to the Discord bot in this repo (`brain-of-bndc`, entry point `main.py`, features under `src/features/`).",
+    "'Light cleanup' means each of the six bugs is small enough to fix in a handful of lines without refactoring \u2014 if any turns out to be larger, I will stop and re-plan rather than expand scope.",
+    "'See notes' refers to a list the user will paste in response to the clarifying questions; no pre-existing notes file has been located in `.megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250/` or elsewhere obvious.",
+    "The in-progress modifications in `.megaplan/schemas/*.json` and `src/features/summarising/summariser.py` are unrelated to the six bugs and should be left alone.",
+    "Fixes will be landed as six separate commits on `main` (current branch) unless the user says otherwise.",
+    "No new dependencies, no new files (unless a bug specifically requires one), no test infrastructure changes."
+  ],
+  "structure_warnings": [
+    "Each step section should reference at least one file in backticks."
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-08T02:26:07Z",
+  "hash": "sha256:fa4e06a25a31ea996dc23a20a47c2f66260f4643ead0d3f4befcf3c35075477e",
+  "questions": [
+    "Thread reply scope: does 'tweet thread reply' mean (a) replying to an *external* tweet the bot did not post (needs only an ID), (b) chaining a new tweet onto one the bot previously posted, or (c) both? I am assuming (c) \u2014 accepting any tweet ID/URL \u2014 because it is a strict superset.",
+    "For the admin-chat `reply_to_tweet` parameter, should the bot *require* media (current `post_tweet` requires attachments) or should thread replies be allowed text-only? I am assuming media is still required to keep the code path uniform; a text-only follow-up path would be a larger change.",
+    "Should the bot's own screen name be read from env (e.g. `TWITTER_BOT_HANDLE`) or from `verify_credentials()`? I am assuming `verify_credentials()` with a cache so there is no new config surface.",
+    "When a reply is posted, should the announcement channel message say 'Replied in thread: <url>' instead of 'Tweet: <url>'? I am assuming yes \u2014 minor label tweak in `_announce_tweet_url`."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "post_tweet() accepts an optional in_reply_to_tweet_id and forwards it to tweepy's client_v2.create_tweet(in_reply_to_tweet_id=...)",
+      "priority": "must"
+    },
+    {
+      "criterion": "Sharer.finalize_sharing() returns a dict containing tweet_url and tweet_id on success (instead of None) and a success=False dict on failure",
+      "priority": "must"
+    },
+    {
+      "criterion": "Sharer.finalize_sharing() and Sharer.send_tweet() accept and forward in_reply_to_tweet_id down to post_tweet()",
+      "priority": "must"
+    },
+    {
+      "criterion": "admin-chat share_to_social tool schema exposes a reply_to_tweet parameter (URL or ID), parses it into a numeric tweet ID, and forwards it to finalize_sharing",
+      "priority": "must"
+    },
+    {
+      "criterion": "admin-chat execute_share_to_social returns tweet_url (and tweet_id) in its success response so the LLM can cite the posted tweet",
+      "priority": "must"
+    },
+    {
+      "criterion": "Posting a standalone tweet still works end-to-end (no regression): media uploads, caption built, DB record written, announcement channel notified, first-share notification path unchanged",
+      "priority": "must"
+    },
+    {
+      "criterion": "Returned tweet URL uses the bot's actual Twitter screen name rather than the hardcoded 'user' placeholder",
+      "priority": "should"
+    },
+    {
+      "criterion": "Any existing tests touching post_tweet / finalize_sharing / execute_share_to_social continue to pass, and new tests cover the reply plumbing",
+      "priority": "must"
+    },
+    {
+      "criterion": "No other callers of finalize_sharing are broken by its new return type (they currently ignore the return value)",
+      "priority": "must"
+    },
+    {
+      "criterion": "Agent prompt (admin_chat/agent.py) mentions the new reply_to_tweet parameter and tweet_url return field",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke: post a standalone tweet, then post a reply that chains onto it in the Twitter UI as a thread",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "'Thread reply' means posting a new tweet whose in_reply_to_tweet_id points at an arbitrary target tweet \u2014 covers both replying to the bot's own prior tweet and replying to any external tweet.",
+    "Thread replies still require media attachments (same constraint as standalone tweets), since post_tweet already enforces this and loosening it is out of scope.",
+    "The admin-chat tool is the primary consumer that needs the returned URL; other finalize_sharing callers currently discard the return value and will continue to work with the new dict return type.",
+    "Twitter v2 API supports in_reply_to_tweet_id directly via tweepy.Client.create_tweet, so no OAuth scope changes are needed.",
+    "We'll cache the authenticated screen name via api_v1.verify_credentials() at first use rather than adding a TWITTER_BOT_HANDLE env var.",
+    "Tests exist or can be added with mocked tweepy clients; no live API calls are required for CI."
+  ],
+  "structure_warnings": []
+}

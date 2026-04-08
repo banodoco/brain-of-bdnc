@@ -1,0 +1,41 @@
+{
+  "output": "Executed batch 7 task T11. The required import smoke passed, `pytest` ran as the repo\u2019s available test runner and collected 0 tests, and a throwaway verification script exercised the new standalone, reply, already-shared, reply-bypass, and `reply_to_tweet` parser paths successfully before being deleted. The batch checkpoint was written to `.megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_7.json`.",
+  "files_changed": [
+    ".megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_7.json"
+  ],
+  "commands_run": [
+    "python -c \"from src.features.sharing.subfeatures.social_poster import post_tweet; from src.features.sharing.sharer import Sharer; from src.features.admin_chat.tools import execute_share_to_social\"",
+    "rg --files | rg '(^|/)(test|tests)(/|$)|(^|/)test_.*\\.py$'",
+    "pytest",
+    "PYTHONPATH=. python /tmp/tweet_reply_batch7_check.py",
+    "rm /tmp/tweet_reply_batch7_check.py",
+    "if [ ! -e /tmp/tweet_reply_batch7_check.py ]; then echo deleted; else echo still-present; fi"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/add-tweet-thread-reply-20260408-0423/execution_batch_7.json",
+    "Advisory: done tasks rely on commands_run without files_changed (FLAG-006 softening): T11",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/plans/add-tweet-thread-reply-20260408-0423, .megaplan/plans/light-cleanup-of-six-bot-bugs-20260408-0250, .megaplan/plans/persist-anthropic-20260408-0416, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/loop_execute.json, .megaplan/schemas/loop_plan.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, scripts/test_social_picks.py, src/features/summarising/summariser.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T11",
+      "status": "done",
+      "executor_notes": "Ran the exact import smoke command and it exited cleanly; the only output was the expected environment warning about missing Twitter credentials during import. Checked the repo for existing tests and found only `scripts/test_social_picks.py`, which the plan explicitly excludes because it does not cover sharing; then ran the repo's available `pytest` test runner anyway, which completed discovery and exited with code 5 after collecting 0 tests. Wrote and ran a throwaway script at `/tmp/tweet_reply_batch7_check.py` that monkey-patched the Twitter client and DB lookup paths to verify: text-only standalone `post_tweet()` returns a tweet URL, reply `post_tweet()` forwards `in_reply_to_tweet_id`, non-reply reruns of `finalize_sharing()` return `already_shared=True` with the stored URL/id, reply calls bypass `_successfully_shared` and do not add themselves to it on success, and `execute_share_to_social()` parses both raw IDs and `status/<digits>` URLs into `'12345'` while rejecting malformed input. The script passed and was deleted afterward.",
+      "files_changed": [],
+      "commands_run": [
+        "python -c \"from src.features.sharing.subfeatures.social_poster import post_tweet; from src.features.sharing.sharer import Sharer; from src.features.admin_chat.tools import execute_share_to_social\"",
+        "rg --files | rg '(^|/)(test|tests)(/|$)|(^|/)test_.*\\.py$'",
+        "pytest",
+        "PYTHONPATH=. python /tmp/tweet_reply_batch7_check.py",
+        "rm /tmp/tweet_reply_batch7_check.py",
+        "if [ ! -e /tmp/tweet_reply_batch7_check.py ]; then echo deleted; else echo still-present; fi"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC11",
+      "executor_note": "The exact import smoke command passed. `pytest` ran but collected 0 tests, so the required end-to-end coverage came from a throwaway script that passed the standalone/reply/already-shared/parser scenarios and was then deleted."
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-08T02:33:38Z",
+  "hash": "sha256:a9113c9b2209519c2b81714033c51bbefc34fe198b0011b17f912ac533f3bd26",
+  "changes_summary": "Addressed FLAG-001 by adding a prior-URL lookup via db_handler.get_shared_post() in the dedupe short-circuit of finalize_sharing, so admin re-runs return the existing tweet URL instead of a generic failure. Also added an explicit dedupe-bypass rule for thread replies (a reply is intentionally a second post about the same Discord message), updated the admin-chat tool response shape to surface an `already_shared` flag, expanded test coverage to cover the re-run path, and reordered steps so the URL fix lands before the admin-chat wiring depends on it.",
+  "flags_addressed": [
+    "FLAG-001"
+  ],
+  "questions": [
+    "Thread reply scope: I'm assuming both replying to the bot's own prior tweet and replying to an external tweet are in scope (strict superset). Confirm?",
+    "Should thread replies also be allowed text-only, or keep the current media-required constraint? I'm assuming media is still required.",
+    "Bot screen name source \u2014 verify_credentials() with cache, or a TWITTER_BOT_HANDLE env var? Assuming the former.",
+    "Announcement channel wording \u2014 should replies say 'Replied in thread: <url>' instead of 'Tweet: <url>'? Assuming yes (small label tweak in _announce_tweet_url)."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "post_tweet() accepts an optional in_reply_to_tweet_id and forwards it to tweepy's client_v2.create_tweet(in_reply_to_tweet_id=...)",
+      "priority": "must"
+    },
+    {
+      "criterion": "Sharer.finalize_sharing() returns a dict containing tweet_url and tweet_id on success (instead of None) and a success=False dict on failure",
+      "priority": "must"
+    },
+    {
+      "criterion": "Sharer.finalize_sharing() and Sharer.send_tweet() accept and forward in_reply_to_tweet_id down to post_tweet()",
+      "priority": "must"
+    },
+    {
+      "criterion": "Re-running finalize_sharing on a Discord message that was already shared (and no reply target supplied) returns success=True with the prior tweet_url/tweet_id looked up from db_handler.get_shared_post(message_id, 'twitter') and an already_shared=True flag",
+      "priority": "must"
+    },
+    {
+      "criterion": "When in_reply_to_tweet_id is set, finalize_sharing bypasses the _successfully_shared short-circuit so a thread reply can be posted for a message that was already shared",
+      "priority": "must"
+    },
+    {
+      "criterion": "admin-chat share_to_social tool schema exposes a reply_to_tweet parameter (URL or ID), parses it into a numeric tweet ID, and forwards it to finalize_sharing",
+      "priority": "must"
+    },
+    {
+      "criterion": "admin-chat execute_share_to_social returns tweet_url (and tweet_id, plus already_shared) in its success response so the LLM can cite the posted tweet on first share AND on repeat calls",
+      "priority": "must"
+    },
+    {
+      "criterion": "Posting a standalone tweet still works end-to-end (no regression): media uploads, caption built, DB record written, announcement channel notified, first-share notification path unchanged",
+      "priority": "must"
+    },
+    {
+      "criterion": "Returned tweet URL uses the bot's actual Twitter screen name rather than the hardcoded 'user' placeholder",
+      "priority": "should"
+    },
+    {
+      "criterion": "Any existing tests touching post_tweet / finalize_sharing / execute_share_to_social continue to pass, and new tests cover (a) reply plumbing, (b) the already-shared re-run path, and (c) reply bypassing the dedupe set",
+      "priority": "must"
+    },
+    {
+      "criterion": "No other callers of finalize_sharing are broken by its new return type (they currently ignore the return value)",
+      "priority": "must"
+    },
+    {
+      "criterion": "Agent prompt (admin_chat/agent.py) mentions the reply_to_tweet parameter, tweet_url return field, and already_shared semantics",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke: post a standalone tweet, then post a reply that chains onto it in the Twitter UI as a thread; re-run share_to_social on the same Discord message and confirm the original URL is returned",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "'Thread reply' means posting a new tweet whose in_reply_to_tweet_id points at an arbitrary target tweet \u2014 covers replying to the bot's own prior tweet and replying to any external tweet.",
+    "Thread replies still require media attachments (current post_tweet constraint); loosening this is out of scope.",
+    "When in_reply_to_tweet_id is set, the dedupe set should be bypassed because a thread is intentionally multiple posts about the same Discord message; the in-flight _currently_processing lock is still respected.",
+    "When a duplicate share is detected (no reply target), db_handler.get_shared_post(message_id, 'twitter') is the authoritative source for the prior tweet URL.",
+    "Other finalize_sharing callers fire-and-forget via asyncio.create_task and discard the return value, so changing None \u2192 dict is safe.",
+    "Twitter v2 supports in_reply_to_tweet_id via tweepy.Client.create_tweet without new OAuth scopes.",
+    "We'll cache the bot screen name via api_v1.verify_credentials() at first use; no new env var.",
+    "Tests can be added with mocked tweepy + mocked db_handler; no live API calls in CI."
+  ],
+  "delta_from_previous_percent": 55.87,
+  "structure_warnings": []
+}

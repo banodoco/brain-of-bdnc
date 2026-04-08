@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-08T02:18:44Z",
+  "hash": "sha256:89af63c695179920926388a1d143ae9bd998c1d3e5e2cb7aa404025c4ab19951",
+  "questions": [
+    "Should persistence survive bot restarts (e.g., write to SQLite/Supabase), or is in-memory per-process still fine? The current store is in-memory and this plan keeps it that way \u2014 confirm that matches intent.",
+    "When `clear`/`reset` is sent, should we also clear any in-flight persisted tool state, or is the existing `clear_conversation` behavior (wipe the whole list) still correct? Plan assumes the latter.",
+    "On an exception mid-turn (Anthropic API error after a tool_use block was appended but before its tool_result), is it acceptable to discard the whole turn's partial state and roll back to pre-turn history? Plan assumes yes, since persisting an unpaired tool_use would break the next turn."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "The module-level `_conversations` store in `src/features/admin_chat/agent.py` holds native Anthropic message dicts (user text, assistant content blocks including `tool_use`, and user `tool_result` blocks), not stringified recaps.",
+      "priority": "must"
+    },
+    {
+      "criterion": "On a follow-up turn, `messages` passed to `self.client.messages.create` is seeded from the persisted list plus the new user message \u2014 not from a `PREVIOUS CONVERSATION:` string appended to `full_message`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Every persisted `tool_use` block has a matching `tool_result` block in the next user message \u2014 trimming never splits a pair, and exception paths never write an unpaired state.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`python -c 'from src.features.admin_chat.agent import AdminChatAgent'` succeeds with no syntax or import errors after the edit.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`clear_conversation` still fully wipes the per-user history, and `admin_chat_cog.py:401`'s call site is unchanged.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The text-only stop branch (Claude responds with text and no tool calls) appends the assistant's response to persisted history so the reply is visible on the next turn.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`_trim_conversation` is structure-aware: it counts user-text messages as turn boundaries and never cuts mid-tool-pair.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Channel context / recent-messages are only attached to the current turn's user message and do not bloat persisted history on later turns.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual live smoke test: two-turn DM where the second turn references the first produces a coherent answer and no Anthropic 400 error.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "In-memory per-process persistence is sufficient \u2014 no disk/DB backing required.",
+    "The existing `ADMIN_MAX_CONVERSATION_LENGTH=20` / `MEMBER_MAX_CONVERSATION_LENGTH=10` constants now mean 'max user turns retained' rather than 'max list entries / 2'. Semantic meaning shifts slightly but the numbers stay the same.",
+    "The abort path's existing synthetic-`tool_result`-on-skip logic is correct and keeps `messages` API-valid; we rely on that invariant when persisting aborted turns.",
+    "No existing tests cover `admin_chat/agent.py` (grep confirmed), so no test updates are required. If the user wants a regression test for the trim function, that's an easy add but not in scope unless requested.",
+    "`response.content` (a list of Anthropic content blocks) is directly JSON-serializable enough for the Anthropic SDK to accept on the next request \u2014 this is already how the in-loop code appends assistant turns at `agent.py:418`, so reusing it across turns is safe.",
+    "The `channel_context` / recent-messages blob is attached only to the *current* turn's `full_message` and should NOT be re-injected on later turns \u2014 the channel context for turn N+1 will carry its own fresh context. Plan treats this correctly by only modifying `full_message` for the new turn."
+  ],
+  "structure_warnings": []
+}

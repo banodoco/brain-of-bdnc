@@ -1,0 +1,28 @@
+{
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "admin_chat: The plan persists the exact `full_message` that currently includes channel metadata, reply anchors, and `recent_messages`, so every future turn will replay stale context blobs instead of only the structured Anthropic history it is trying to preserve.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/admin_chat/agent.py:231-265` prepends channel/DM context and recent messages into `full_message`, and `src/features/admin_chat/agent.py:276` sends that string as the user message. The plan's Step 2/3 switches persistence to the raw `messages` list without any step that strips this context back out, so its own success criterion about not bloating later turns with channel context is not actually met.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Admin chat memory budget: Persisting raw tool-result payloads without any token- or size-aware trimming is likely to make follow-up Anthropic calls fail after large searches or inspections.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed both significant flags. FLAG-001: Step 2 now splits the new user turn into two values \u2014 `request_user_msg` (with channel context, sent to Anthropic this turn only) and `persisted_user_msg` (clean user text, written back to history) \u2014 so stale channel context never enters the store. FLAG-002: Step 4 now enforces both a user-turn count cap AND a byte budget (`MAX_CONVERSATION_BYTES = 80_000`), evicting whole turn-groups from the front when a heavy `find_messages`/`inspect_message` payload pushes history over budget. Trimming still respects tool_use/tool_result pairing by only cutting at user-text turn boundaries. Added explicit smoke-test step to verify channel context is NOT replayed across turns. Promoted the channel-context criterion from `should` to `must` and added two new `must` criteria for the byte budget and the persist/request split.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    }
+  ]
+}
