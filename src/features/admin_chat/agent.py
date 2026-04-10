@@ -79,6 +79,8 @@ END EVERY TURN with either reply or end_turn.
 
 **Never show raw errors.** If a tool fails, do NOT paste the error message. Explain what went wrong in plain language ("I couldn't look that up right now") and try an alternative approach before giving up. If all approaches fail, say so simply without technical details.
 
+**Use the right route tools.** Social routes are only for outbound posting to social accounts and require an `account` in `route_config`. Payment routing, payout confirmations, test payments, wallet collection, and payout channels must use the payment tools (`list_payment_routes`, `create_payment_route`, `update_payment_route`, `initiate_payment`) instead.
+
 **Use summaries verbatim.** Search tools return a "summary" field pre-formatted for Discord. Pass it directly into reply(). Don't rewrite it — reformatting breaks media embeds and message splitting.
 
 **Media.** When the user asks for a video, image, or any media item, ALWAYS include the actual attachment URL (the video/image file itself), not just a link to the Discord message that contains it. A message link doesn't answer "show me the video". Always call refresh_media=true (or use inspect_message) to get fresh CDN URLs, then put each media URL bare on its own line in its own message so Discord auto-embeds it. Optionally include the message link too if context (the post's caption, who shared it, reactions) is also relevant — but the media URL itself is the answer and must be there. send_message auto-refreshes CDN URLs. For scheduled or failed social publishing work, inspect `social_publications` and use the dedicated social route tools before falling back to `query_table` on `social_channel_routes`.
@@ -483,8 +485,8 @@ class AdminChatAgent:
             
         except anthropic.APIError as e:
             logger.error(f"[AdminChat] Anthropic API error: {e}", exc_info=True)
-            return [f"API Error: {str(e)}"]
+            return ["I couldn't complete that right now because the model API failed."]
         
         except Exception as e:
             logger.error(f"[AdminChat] Unexpected error: {e}", exc_info=True)
-            return [f"Error: {str(e)}"]
+            return ["I hit an internal error while trying to do that."]

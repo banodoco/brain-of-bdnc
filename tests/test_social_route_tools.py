@@ -343,6 +343,37 @@ async def test_create_social_route_validates_route_config(fake_supabase):
 
 
 @pytest.mark.anyio
+async def test_create_social_route_requires_account_for_twitter(fake_supabase):
+    result = await admin_tools.execute_create_social_route(
+        {
+            "platform": "twitter",
+            "route_config": {},
+        }
+    )
+
+    assert result["success"] is False
+    assert "route_config.account" in result["error"]
+    assert "create_payment_route" in result["error"]
+
+
+@pytest.mark.anyio
+async def test_update_social_route_requires_account_for_twitter(fake_supabase):
+    result = await admin_tools.execute_update_social_route(
+        {
+            "route_id": "route-default",
+            "route_config": {},
+        }
+    )
+
+    assert result["success"] is False
+    assert "route_config.account" in result["error"]
+
+
+def test_admin_prompt_steers_payment_requests_to_payment_tools():
+    assert "Payment routing, payout confirmations, test payments, wallet collection" in admin_agent.SYSTEM_PROMPT
+
+
+@pytest.mark.anyio
 async def test_payment_route_wallet_and_control_tools_are_redacted():
     db_handler = FakePaymentDB()
 

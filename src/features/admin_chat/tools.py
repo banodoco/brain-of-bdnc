@@ -999,6 +999,20 @@ def _normalize_route_config(route_config: Any) -> Dict[str, Any]:
     return dict(route_config)
 
 
+def _normalize_social_route_config(route_config: Any, *, platform: Any) -> Dict[str, Any]:
+    normalized = _normalize_route_config(route_config)
+    normalized_platform = _normalize_social_platform(platform)
+    if normalized_platform == 'twitter':
+        account = str(normalized.get('account') or '').strip()
+        if not account:
+            raise ValueError(
+                "social twitter routes require route_config.account. "
+                "If you meant payouts or payment confirmations, use create_payment_route instead."
+            )
+        normalized['account'] = account
+    return normalized
+
+
 def _resolve_db_handler_guild_id(db_handler: Any, params: Optional[Dict[str, Any]] = None) -> Optional[int]:
     """Resolve a guild for db-handler-backed tools, with a narrow in-memory fallback for tests."""
     params = params or {}
@@ -2062,12 +2076,13 @@ async def execute_create_social_route(params: Dict[str, Any]) -> Dict[str, Any]:
     """Create a social route row."""
     try:
         guild_id = _resolve_guild_id(params)
+        platform = _normalize_social_platform(params.get('platform'))
         payload = {
             'guild_id': guild_id,
-            'platform': _normalize_social_platform(params.get('platform')),
+            'platform': platform,
             'channel_id': _parse_optional_channel_id(params.get('channel_id')),
             'enabled': _coerce_bool(params['enabled'], 'enabled') if 'enabled' in params else True,
-            'route_config': _normalize_route_config(params.get('route_config')),
+            'route_config': _normalize_social_route_config(params.get('route_config'), platform=platform),
         }
         result = _get_supabase().table('social_channel_routes').insert(payload).execute()
         return {
@@ -2089,14 +2104,27 @@ async def execute_update_social_route(params: Dict[str, Any]) -> Dict[str, Any]:
     try:
         guild_id = _resolve_guild_id(params)
         updates: Dict[str, Any] = {}
+        platform = _normalize_social_platform(params.get('platform'))
+        existing_route = None
         if 'platform' in params:
-            updates['platform'] = _normalize_social_platform(params.get('platform'))
+            updates['platform'] = platform
         if 'channel_id' in params:
             updates['channel_id'] = _parse_optional_channel_id(params.get('channel_id'))
         if 'enabled' in params:
             updates['enabled'] = _coerce_bool(params.get('enabled'), 'enabled')
         if 'route_config' in params:
-            updates['route_config'] = _normalize_route_config(params.get('route_config'))
+            if 'platform' not in params:
+                existing_result = (
+                    _get_supabase().table('social_channel_routes')
+                    .select('platform')
+                    .eq('id', route_id)
+                    .eq('guild_id', guild_id)
+                    .limit(1)
+                    .execute()
+                )
+                existing_route = (existing_result.data or [None])[0]
+                platform = _normalize_social_platform((existing_route or {}).get('platform'))
+            updates['route_config'] = _normalize_social_route_config(params.get('route_config'), platform=platform)
 
         if not updates:
             return {"success": False, "error": "Provide at least one field to update"}
