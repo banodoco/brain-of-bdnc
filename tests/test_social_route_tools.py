@@ -373,6 +373,20 @@ def test_admin_prompt_steers_payment_requests_to_payment_tools():
     assert "Payment routing, payout confirmations, test payments, wallet collection" in admin_agent.SYSTEM_PROMPT
 
 
+def test_prompt_renderer_preserves_literal_json_braces():
+    rendered = admin_agent._render_prompt_template(
+        admin_agent.SYSTEM_PROMPT,
+        bot_user_id=123,
+        guild_id=456,
+        community_name="Banodoco",
+        bot_voice="VOICE",
+    )
+
+    assert '{"account": "main"}' in rendered
+    assert '{"use_source_thread": true}' in rendered
+    assert "Banodoco" in rendered
+
+
 @pytest.mark.anyio
 async def test_payment_route_wallet_and_control_tools_are_redacted():
     db_handler = FakePaymentDB()

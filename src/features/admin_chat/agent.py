@@ -22,6 +22,14 @@ load_dotenv()
 # Conversation history per user (in-memory, resets on bot restart)
 _conversations: Dict[int, List[Dict[str, Any]]] = {}
 
+
+def _render_prompt_template(template: str, **values: Any) -> str:
+    """Render known prompt placeholders without treating JSON braces as format fields."""
+    rendered = str(template)
+    for key, value in values.items():
+        rendered = rendered.replace(f"{{{key}}}", str(value))
+    return rendered
+
 SYSTEM_PROMPT = """You are the {community_name} Discord bot's admin assistant. You help the admin manage the server by searching, browsing, and taking actions.
 
 {bot_voice}
@@ -345,7 +353,8 @@ class AdminChatAgent:
                     community_name = (_server.get('community_name') if _server else None) or community_name
                     if is_admin:
                         prompt_template = sc.get_content(int(guild_id), 'prompt_admin_chat_system') or SYSTEM_PROMPT
-                system = prompt_template.format(
+                system = _render_prompt_template(
+                    prompt_template,
                     bot_user_id=bot_user_id,
                     guild_id=guild_id,
                     community_name=community_name,
