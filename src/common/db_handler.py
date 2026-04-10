@@ -1427,6 +1427,53 @@ class DatabaseHandler:
             logger.error(f"Error updating payment request {payment_id}: {e}", exc_info=True)
             return False
 
+    def _append_tx_signature_history(
+        self,
+        payment_id: str,
+        entry: Dict[str, Any],
+        *,
+        guild_id: Optional[int] = None,
+    ) -> bool:
+        """Append one audit entry to tx_signature_history without changing payment behavior."""
+        signature = entry.get('signature')
+        if not signature:
+            return True
+
+        effective_guild_id = guild_id or self._resolve_payment_request_guild_id(payment_id)
+        if not self._gate_check(effective_guild_id):
+            return False
+        if not self.supabase:
+            return False
+
+        existing = self.get_payment_request(payment_id, guild_id=effective_guild_id)
+        if not existing:
+            return False
+
+        current_history = existing.get('tx_signature_history') or []
+        if not isinstance(current_history, list):
+            current_history = []
+        updated_history = list(current_history)
+        updated_history.append(dict(entry))
+
+        try:
+            result = (
+                self.supabase.table('payment_requests')
+                .update(
+                    self._serialize_supabase_value(
+                        {
+                            'tx_signature_history': updated_history,
+                        }
+                    )
+                )
+                .eq('payment_id', payment_id)
+                .eq('guild_id', effective_guild_id)
+                .execute()
+            )
+            return bool(result.data)
+        except Exception as e:
+            logger.error(f"Error appending tx signature history for {payment_id}: {e}", exc_info=True)
+            return False
+
     def upsert_wallet(
         self,
         guild_id: int,
@@ -2063,11 +2110,12 @@ class DatabaseHandler:
         guild_id: Optional[int] = None,
     ) -> bool:
         """Persist submitted tx metadata immediately after broadcast."""
+        submitted_at = datetime.now(timezone.utc)
         payload: Dict[str, Any] = {
             'status': 'submitted',
             'tx_signature': tx_signature,
             'send_phase': send_phase,
-            'submitted_at': datetime.now(timezone.utc),
+            'submitted_at': submitted_at,
             'completed_at': None,
             'last_error': None,
             'retry_after': None,
@@ -2076,26 +2124,55 @@ class DatabaseHandler:
             payload['amount_token'] = amount_token
         if token_price_usd is not None:
             payload['token_price_usd'] = token_price_usd
-        return self._update_payment_request_record(
+        updated = self._update_payment_request_record(
             payment_id,
             payload,
             guild_id=guild_id,
             allowed_statuses=['processing'],
         )
+        if updated and not self._append_tx_signature_history(
+            payment_id,
+            {
+                'signature': tx_signature,
+                'status': 'submitted',
+                'timestamp': submitted_at,
+                'reason': 'submit',
+                'send_phase': send_phase,
+            },
+            guild_id=guild_id,
+        ):
+            logger.warning("Failed to append tx signature history after submit for %s", payment_id)
+        return updated
 
     def mark_payment_confirmed(self, payment_id: str, guild_id: Optional[int] = None) -> bool:
         """Mark a submitted payment as confirmed on-chain."""
-        return self._update_payment_request_record(
+        completed_at = datetime.now(timezone.utc)
+        updated = self._update_payment_request_record(
             payment_id,
             {
                 'status': 'confirmed',
-                'completed_at': datetime.now(timezone.utc),
+                'completed_at': completed_at,
                 'last_error': None,
                 'retry_after': None,
             },
             guild_id=guild_id,
             allowed_statuses=['submitted'],
         )
+        if updated:
+            payment = self.get_payment_request(payment_id, guild_id=guild_id)
+            if payment and not self._append_tx_signature_history(
+                payment_id,
+                {
+                    'signature': payment.get('tx_signature'),
+                    'status': 'confirmed',
+                    'timestamp': completed_at,
+                    'reason': 'confirm',
+                    'send_phase': payment.get('send_phase'),
+                },
+                guild_id=guild_id,
+            ):
+                logger.warning("Failed to append tx signature history after confirm for %s", payment_id)
+        return updated
 
     def mark_payment_failed(
         self,
@@ -2146,7 +2223,9 @@ class DatabaseHandler:
         guild_id: Optional[int] = None,
     ) -> bool:
         """Retry only from failed by returning the payment to the queued state."""
-        return self._update_payment_request_record(
+        requeue_at = datetime.now(timezone.utc)
+        payment = self.get_payment_request(payment_id, guild_id=guild_id)
+        updated = self._update_payment_request_record(
             payment_id,
             {
                 'status': 'queued',
@@ -2160,6 +2239,19 @@ class DatabaseHandler:
             guild_id=guild_id,
             allowed_statuses=['failed'],
         )
+        if updated and payment and not self._append_tx_signature_history(
+            payment_id,
+            {
+                'signature': payment.get('tx_signature'),
+                'status': 'failed',
+                'timestamp': requeue_at,
+                'reason': 'requeue',
+                'send_phase': payment.get('send_phase'),
+            },
+            guild_id=guild_id,
+        ):
+            logger.warning("Failed to append tx signature history before requeue for %s", payment_id)
+        return updated
 
     def release_payment_hold(
         self,

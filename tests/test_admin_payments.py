@@ -7,8 +7,8 @@ from src.common.db_handler import WalletUpdateBlockedError
 from src.features.admin_chat.admin_chat_cog import AdminChatCog
 from src.features.admin_chat.tools import execute_initiate_payment
 from src.features.grants.grants_cog import GrantsCog
-from src.features.payments.payment_cog import PaymentCog
-from src.features.payments.payment_service import PaymentService
+from src.features.payments.payment_service import PaymentActor, PaymentActorKind, PaymentService
+from src.features.payments.payment_worker_cog import PaymentWorkerCog
 
 
 VALID_SOL_ADDRESS = "11111111111111111111111111111111"
@@ -84,7 +84,7 @@ class FakeChannel:
         return iterator()
 
 
-class FakeAdminPaymentCog:
+class FakePaymentUICog:
     def __init__(self):
         self.confirmation_requests = []
 
@@ -107,14 +107,16 @@ class FakeBot:
         channel,
         *,
         payment_service=None,
-        payment_cog=None,
+        payment_ui_cog=None,
+        payment_worker_cog=None,
         admin_chat_cog=None,
         guilds=None,
         db_handler=None,
     ):
         self.payment_service = payment_service
         self._channel = channel
-        self._payment_cog = payment_cog
+        self._payment_ui_cog = payment_ui_cog
+        self._payment_worker_cog = payment_worker_cog
         self._admin_chat_cog = admin_chat_cog
         self.guilds = guilds or [channel.guild]
         self.user = SimpleNamespace(id=999)
@@ -147,8 +149,10 @@ class FakeBot:
         return user
 
     def get_cog(self, name):
-        if name == "PaymentCog":
-            return self._payment_cog
+        if name == "PaymentUICog":
+            return self._payment_ui_cog
+        if name == "PaymentWorkerCog":
+            return self._payment_worker_cog
         if name == "AdminChatCog":
             return self._admin_chat_cog
         return None
@@ -177,8 +181,8 @@ class FakeAdminPaymentService:
             }
         return self.request_result
 
-    def confirm_payment(self, payment_id, **kwargs):
-        self.confirm_calls.append((payment_id, dict(kwargs)))
+    def confirm_payment(self, payment_id, *, actor, guild_id=None):
+        self.confirm_calls.append((payment_id, {"guild_id": guild_id, "actor": actor}))
         return self.confirm_result
 
 
@@ -711,7 +715,7 @@ async def test_upsert_wallet_unblocked_after_terminal():
     assert grant_db.upsert_wallet_calls[0][3] == "Wallet44444444444444444444444444444444"
     assert payment_service.request_calls[0]["wallet_id"] == "wallet-existing"
     assert payment_service.confirm_calls == [
-        ("pay-test", {"guild_id": 1, "confirmed_by": "auto", "confirmed_by_user_id": 222})
+        ("pay-test", {"guild_id": 1, "actor": PaymentActor(PaymentActorKind.AUTO, 222)})
     ]
     assert grant_db.status_updates[-1][1] == "payment_requested"
 
@@ -776,8 +780,8 @@ async def test_handle_payment_result_test_confirmed():
         guild_id=1,
     )
     payment_service = FakeAdminPaymentService()
-    payment_cog = FakeAdminPaymentCog()
-    bot = FakeBot(channel, payment_service=payment_service, payment_cog=payment_cog)
+    payment_ui_cog = FakePaymentUICog()
+    bot = FakeBot(channel, payment_service=payment_service, payment_ui_cog=payment_ui_cog)
     cog = AdminChatCog(bot, db, sharer=object())
     cog.payment_service = payment_service
 
@@ -803,7 +807,7 @@ async def test_handle_payment_result_test_confirmed():
 
     assert payment_service.request_calls[0]["amount_token"] == 1.75
     assert payment_service.request_calls[0]["amount_usd"] is None if "amount_usd" in payment_service.request_calls[0] else True
-    assert payment_cog.confirmation_requests == ["payment-final"]
+    assert payment_ui_cog.confirmation_requests == ["payment-final"]
     assert db.intents[intent["intent_id"]]["status"] == "awaiting_confirmation"
     assert db.intents[intent["intent_id"]]["final_payment_id"] == "payment-final"
     assert db.intents[intent["intent_id"]]["prompt_message_id"] == 900
@@ -828,7 +832,7 @@ async def test_handle_payment_result_test_failed():
         guild_id=1,
     )
     payment_service = FakeAdminPaymentService()
-    bot = FakeBot(channel, payment_service=payment_service, payment_cog=FakeAdminPaymentCog())
+    bot = FakeBot(channel, payment_service=payment_service, payment_ui_cog=FakePaymentUICog())
     cog = AdminChatCog(bot, db, sharer=object())
     cog.payment_service = payment_service
 
@@ -875,7 +879,7 @@ async def test_confirmation_reply():
 
     assert handled is True
     assert payment_service.confirm_calls == [
-        ("payment-final", {"guild_id": 1, "confirmed_by": "free_text", "confirmed_by_user_id": 42})
+        ("payment-final", {"guild_id": 1, "actor": PaymentActor(PaymentActorKind.RECIPIENT_MESSAGE, 42)})
     ]
     assert db.intents[intent["intent_id"]]["status"] == "confirmed"
 
@@ -998,7 +1002,7 @@ async def test_admin_success_dm_over_threshold(monkeypatch, clear_payment_policy
     channel = FakeChannel(guild=SimpleNamespace(id=1))
     payment_service = SimpleNamespace(providers={"solana_payouts": FakeProvider()})
     bot = FakeBot(channel, payment_service=payment_service)
-    cog = PaymentCog(bot, FakePaymentRequestDB(), payment_service=payment_service)
+    cog = PaymentWorkerCog(bot, FakePaymentRequestDB(), payment_service=payment_service)
     cog._notify_payment_result = AsyncMock()
     cog._handoff_terminal_result = AsyncMock()
     cog._dm_admin_payment_success = AsyncMock()
@@ -1058,7 +1062,7 @@ async def test_admin_success_dm_sees_derived_usd(monkeypatch, clear_payment_poli
     channel = FakeChannel(guild=SimpleNamespace(id=1))
     payment_service = SimpleNamespace(providers={"solana_payouts": FakeProvider()})
     bot = FakeBot(channel, payment_service=payment_service)
-    cog = PaymentCog(bot, FakePaymentRequestDB(), payment_service=payment_service)
+    cog = PaymentWorkerCog(bot, FakePaymentRequestDB(), payment_service=payment_service)
 
     await cog._dm_admin_payment_success(
         {
@@ -1115,7 +1119,7 @@ async def test_startup_reconciliation():
     assert db.intents[intent["intent_id"]]["status"] == "confirmed"
     assert db.intents[intent["intent_id"]]["last_scanned_message_id"] == 1001
     assert payment_service.confirm_calls == [
-        ("payment-final", {"guild_id": 1, "confirmed_by": "free_text", "confirmed_by_user_id": 42})
+        ("payment-final", {"guild_id": 1, "actor": PaymentActor(PaymentActorKind.RECIPIENT_MESSAGE, 42)})
     ]
 
 

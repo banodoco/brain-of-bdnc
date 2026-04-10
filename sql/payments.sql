@@ -110,6 +110,7 @@ create table if not exists public.payment_requests (
     send_phase text
         check (send_phase is null or send_phase in ('pre_submit', 'submitted', 'ambiguous')),
     tx_signature text,
+    tx_signature_history jsonb not null default '[]'::jsonb,
     attempt_count integer not null default 0 check (attempt_count >= 0),
     retry_after timestamptz,
     scheduled_at timestamptz not null default timezone('utc', now()),
@@ -204,3 +205,19 @@ revoke all on public.wallet_registry from anon, authenticated;
 revoke all on public.payment_channel_routes from anon, authenticated;
 revoke all on public.payment_requests from anon, authenticated;
 revoke execute on function public.claim_due_payment_requests(integer, bigint[]) from anon, authenticated;
+
+alter table public.payment_requests
+    add column if not exists tx_signature_history jsonb not null default '[]'::jsonb;
+
+update public.payment_requests
+set tx_signature_history = jsonb_build_array(
+    jsonb_build_object(
+        'signature', tx_signature,
+        'status', status,
+        'timestamp', coalesce(completed_at, submitted_at, updated_at),
+        'reason', 'backfill',
+        'send_phase', send_phase
+    )
+)
+where tx_signature is not null
+  and jsonb_array_length(tx_signature_history) = 0;

@@ -1,11 +1,12 @@
-from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
-import src.features.payments.payment_cog as payment_cog_module
+import src.features.payments.payment_ui_cog as payment_ui_cog_module
+import src.features.payments.payment_worker_cog as payment_worker_cog_module
 import src.features.sharing.sharing_cog as sharing_cog_module
 from src.features.grants.grants_cog import GrantsCog
+from src.features.payments.payment_service import PaymentActor, PaymentActorKind
 from src.features.sharing.models import SocialPublishResult
 
 
@@ -152,12 +153,13 @@ class FakeProducerCog:
 
 
 class FakePaymentBot:
-    def __init__(self, payment_service, channel=None, producer_cog=None):
+    def __init__(self, payment_service, channel=None, producer_cog=None, payment_ui_cog=None):
         self.payment_service = payment_service
         self.ready_waits = 0
         self.added_views = []
         self.channel = channel or FakePaymentChannel()
         self.producer_cog = producer_cog
+        self.payment_ui_cog = payment_ui_cog
         self.db_handler = None
         self.claude_client = object()
         self.guilds = []
@@ -173,8 +175,8 @@ class FakePaymentBot:
         self.added_views.append((view, message_id))
 
     def get_cog(self, name):
-        if name == "PaymentCog":
-            return self.producer_cog
+        if name == "PaymentUICog":
+            return self.payment_ui_cog
         if name == "GrantsCog":
             return self.producer_cog
         return None
@@ -292,12 +294,12 @@ class FakeGrantPaymentService:
             **kwargs,
         }
 
-    def confirm_payment(self, payment_id, **kwargs):
-        self.confirm_calls.append((payment_id, kwargs))
+    def confirm_payment(self, payment_id, *, actor, guild_id=None):
+        self.confirm_calls.append((payment_id, {"guild_id": guild_id, "actor": actor}))
         return {"payment_id": payment_id, "status": "queued"}
 
 
-class FakeGrantPaymentCog:
+class FakeGrantPaymentUICog:
     def __init__(self):
         self.sent = []
 
@@ -400,27 +402,27 @@ async def test_payment_scheduler_lifecycle_registers_views_and_starts_worker():
     db_handler = FakePaymentDB()
     db_handler.server_config = None
     bot = FakePaymentBot(payment_service)
-    cog = payment_cog_module.PaymentCog(bot, db_handler, payment_service=payment_service)
+    ui_cog = payment_ui_cog_module.PaymentUICog(bot, db_handler, payment_service=payment_service)
+    worker_cog = payment_worker_cog_module.PaymentWorkerCog(bot, db_handler, payment_service=payment_service)
 
     calls = []
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(cog.payment_worker, "is_running", lambda: False)
-    monkeypatch.setattr(cog.payment_worker, "start", lambda: calls.append("start"))
-    monkeypatch.setattr(cog.payment_worker, "change_interval", lambda **kwargs: calls.append(kwargs["seconds"]))
+    monkeypatch.setattr(worker_cog.payment_worker, "is_running", lambda: False)
+    monkeypatch.setattr(worker_cog.payment_worker, "start", lambda: calls.append("start"))
+    monkeypatch.setattr(worker_cog.payment_worker, "change_interval", lambda **kwargs: calls.append(kwargs["seconds"]))
 
-    await cog.cog_load()
-    assert len(bot.added_views) == 0
-    await cog.on_ready()
+    await ui_cog.cog_load()
+    assert len(bot.added_views) == 1
+    await worker_cog.cog_load()
 
-    monkeypatch.setattr(cog.payment_worker, "is_running", lambda: True)
-    monkeypatch.setattr(cog.payment_worker, "cancel", lambda: calls.append("cancel"))
-    cog.cog_unload()
+    monkeypatch.setattr(worker_cog.payment_worker, "is_running", lambda: True)
+    monkeypatch.setattr(worker_cog.payment_worker, "cancel", lambda: calls.append("cancel"))
+    worker_cog.cog_unload()
     monkeypatch.undo()
 
-    assert calls == [cog.worker_interval_seconds, "start", "cancel"]
-    assert len(bot.added_views) == 1
+    assert calls == [worker_cog.worker_interval_seconds, "start", "cancel"]
     view, message_id = bot.added_views[0]
-    assert isinstance(view, payment_cog_module.PaymentConfirmView)
+    assert isinstance(view, payment_ui_cog_module.PaymentConfirmView)
     assert view.payment_id == "pay-pending"
     assert message_id is None
 
@@ -447,7 +449,7 @@ async def test_payment_scheduler_claims_executes_notifies_and_hands_off():
     payment_service = FakePaymentService(execute_results=[terminal_payment])
     producer_cog = FakeProducerCog()
     bot = FakePaymentBot(payment_service, producer_cog=producer_cog)
-    cog = payment_cog_module.PaymentCog(bot, db_handler, payment_service=payment_service)
+    cog = payment_worker_cog_module.PaymentWorkerCog(bot, db_handler, payment_service=payment_service)
 
     await cog.payment_worker.coro(cog)
 
@@ -462,7 +464,7 @@ async def test_payment_scheduler_replays_pending_terminal_handoff_on_ready():
     payment_service = FakePaymentService()
     db_handler = FakePaymentDB()
     bot = FakePaymentBot(payment_service, producer_cog=None)
-    cog = payment_cog_module.PaymentCog(bot, db_handler, payment_service=payment_service)
+    cog = payment_worker_cog_module.PaymentWorkerCog(bot, db_handler, payment_service=payment_service)
     payment = {
         "payment_id": "pay-recovered",
         "guild_id": 1,
@@ -482,11 +484,11 @@ async def test_payment_scheduler_replays_pending_terminal_handoff_on_ready():
     assert cog._pending_terminal_handoffs == {}
 
 
-async def test_payment_cog_load_does_not_block_on_wait_until_ready():
+async def test_payment_worker_cog_load_does_not_block_on_wait_until_ready():
     payment_service = FakePaymentService()
     db_handler = FakePaymentDB()
     bot = FakePaymentBot(payment_service)
-    cog = payment_cog_module.PaymentCog(bot, db_handler, payment_service=payment_service)
+    cog = payment_worker_cog_module.PaymentWorkerCog(bot, db_handler, payment_service=payment_service)
 
     calls = []
     monkeypatch = pytest.MonkeyPatch()
@@ -511,8 +513,8 @@ async def test_payment_confirm_view_rejects_non_recipient():
         "recipient_discord_id": 123,
     }
     bot = FakePaymentBot(payment_service)
-    cog = payment_cog_module.PaymentCog(bot, db_handler, payment_service=payment_service)
-    view = payment_cog_module.PaymentConfirmView(cog, "pay-1")
+    cog = payment_ui_cog_module.PaymentUICog(bot, db_handler, payment_service=payment_service)
+    view = payment_ui_cog_module.PaymentConfirmView(cog, "pay-1")
     interaction = FakeInteraction(user_id=999)
 
     await view._confirm_button_pressed(interaction)
@@ -523,14 +525,13 @@ async def test_payment_confirm_view_rejects_non_recipient():
 
 async def test_grants_wallet_submission_and_test_confirmation_queue_final_payment():
     payment_service = FakeGrantPaymentService()
-    payment_cog = FakeGrantPaymentCog()
+    payment_ui_cog = FakeGrantPaymentUICog()
     db_handler = FakeGrantsDB()
     thread = FakeGrantThread()
 
-    bot = FakePaymentBot(payment_service, channel=thread, producer_cog=payment_cog)
+    bot = FakePaymentBot(payment_service, channel=thread, payment_ui_cog=payment_ui_cog)
     bot.db_handler = db_handler
     bot.payment_service = payment_service
-    bot.get_cog = lambda name: payment_cog if name == "PaymentCog" else None
 
     cog = GrantsCog(bot)
     cog._tags["in progress"] = object()
@@ -545,7 +546,9 @@ async def test_grants_wallet_submission_and_test_confirmation_queue_final_paymen
 
     assert db_handler.wallet_calls[0][:4] == (1, 222, "solana", "Wallet111111111111111111111111111111111")
     assert payment_service.request_calls[0]["is_test"] is True
-    assert payment_service.confirm_calls == [("pay-test", {"guild_id": 1, "confirmed_by": "auto", "confirmed_by_user_id": 222})]
+    assert payment_service.confirm_calls == [
+        ("pay-test", {"guild_id": 1, "actor": PaymentActor(PaymentActorKind.AUTO, 222)})
+    ]
     assert db_handler.status_updates[-1][1] == "payment_requested"
 
     test_payment = {
@@ -576,7 +579,7 @@ async def test_grants_wallet_submission_and_test_confirmation_queue_final_paymen
     final_request = payment_service.request_calls[1]
     assert final_request["is_test"] is False
     assert final_request["amount_usd"] == 42.5
-    assert payment_cog.sent == ["pay-final"]
+    assert payment_ui_cog.sent == ["pay-final"]
     assert "Test payment confirmed." in thread.messages[-1]
 
 

@@ -11,6 +11,7 @@ from anthropic import AsyncAnthropic
 from discord.ext import commands
 
 from src.common.db_handler import WalletUpdateBlockedError
+from src.features.payments.payment_service import PaymentActor, PaymentActorKind
 from .agent import AdminChatAgent
 from src.features.grants.solana_client import is_valid_solana_address
 
@@ -165,8 +166,11 @@ class AdminChatCog(commands.Cog):
             'notify_thread_id': channel.id if parent_id else None,
         }
 
-    def _get_payment_cog(self):
-        return self.bot.get_cog('PaymentCog')
+    def _get_payment_ui_cog(self):
+        return (
+            getattr(self.bot, 'payment_ui_cog', None)
+            or self.bot.get_cog('PaymentUICog')
+        )
 
     async def _fetch_intent_channel(self, channel_id: int):
         channel = self.bot.get_channel(channel_id)
@@ -265,12 +269,10 @@ class AdminChatCog(commands.Cog):
             {'test_payment_id': test_payment.get('payment_id')},
             intent['guild_id'],
         ) or intent
-        # recipient_user_id matches the recipient_discord_id passed into request_payment above.
         confirmed = self.payment_service.confirm_payment(
             test_payment['payment_id'],
             guild_id=int(intent['guild_id']),
-            confirmed_by='auto',
-            confirmed_by_user_id=int(intent['recipient_user_id']),
+            actor=PaymentActor(PaymentActorKind.AUTO, int(intent['recipient_user_id'])),
         )
         if not confirmed:
             await self._notify_admin_review(channel, updated_intent, "I could not queue the wallet verification payment.")
@@ -287,12 +289,10 @@ class AdminChatCog(commands.Cog):
             await self._notify_admin_review(message.channel, intent, "The final payment record is unavailable, so I can't accept this confirmation.", resolved_by_message_id=message.id)
             return
 
-        # message.author.id must match the intended recipient_discord_id on the final payment row.
         confirmed = self.payment_service.confirm_payment(
             intent['final_payment_id'],
             guild_id=int(intent['guild_id']),
-            confirmed_by='free_text',
-            confirmed_by_user_id=message.author.id,
+            actor=PaymentActor(PaymentActorKind.RECIPIENT_MESSAGE, message.author.id),
         )
         if not confirmed:
             await self._notify_admin_review(message.channel, intent, "The final payout confirmation could not be applied.", resolved_by_message_id=message.id)
@@ -387,10 +387,10 @@ class AdminChatCog(commands.Cog):
                 return
 
             prompt_message = None
-            payment_cog = self._get_payment_cog()
-            if payment_cog and final_payment.get('status') == 'pending_confirmation':
+            payment_ui_cog = self._get_payment_ui_cog()
+            if payment_ui_cog and final_payment.get('status') == 'pending_confirmation':
                 try:
-                    await payment_cog.send_confirmation_request(final_payment['payment_id'])
+                    await payment_ui_cog.send_confirmation_request(final_payment['payment_id'])
                 except Exception as e:
                     logger.error(f"[AdminChat] Failed to send payment confirmation request for {final_payment.get('payment_id')}: {e}", exc_info=True)
 

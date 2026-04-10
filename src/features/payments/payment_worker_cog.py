@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 import discord
 from discord.ext import commands, tasks
 
-from src.common.discord_utils import safe_send_message
+from src.common.discord_utils import safe_delete_messages, safe_send_message
 
 from .payment_service import PaymentService
 
@@ -24,86 +24,8 @@ def _redact_wallet(wallet: Optional[str]) -> str:
     return f"{wallet[:4]}...{wallet[-4:]}"
 
 
-class PaymentConfirmView(discord.ui.View):
-    """Persistent per-payment confirmation control."""
-
-    def __init__(self, payment_cog: 'PaymentCog', payment_id: str):
-        super().__init__(timeout=None)
-        self.payment_cog = payment_cog
-        self.payment_id = payment_id
-
-        confirm_button = discord.ui.Button(
-            label="Confirm Payment",
-            style=discord.ButtonStyle.success,
-            custom_id=f"payment_confirm:{payment_id}",
-        )
-        confirm_button.callback = self._confirm_button_pressed
-        self.add_item(confirm_button)
-
-    async def _confirm_button_pressed(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-
-        existing_payment = self.payment_cog.db_handler.get_payment_request(
-            self.payment_id,
-            guild_id=interaction.guild_id,
-        )
-        if not existing_payment:
-            await interaction.followup.send(
-                "I couldn't find that payment request anymore.",
-                ephemeral=True,
-            )
-            return
-
-        expected_user_id = existing_payment.get('recipient_discord_id')
-        if expected_user_id and int(expected_user_id) != interaction.user.id:
-            await interaction.followup.send(
-                "Only the intended recipient can confirm this payment.",
-                ephemeral=True,
-            )
-            return
-
-        # interaction.user.id already matches existing_payment['recipient_discord_id'] when present.
-        payment = self.payment_cog.payment_service.confirm_payment(
-            self.payment_id,
-            guild_id=interaction.guild_id,
-            confirmed_by_user_id=interaction.user.id,
-            confirmed_by='discord',
-        )
-        if not payment:
-            await interaction.followup.send("I couldn't queue that payment.", ephemeral=True)
-            return
-
-        status = payment.get('status')
-        if status == 'queued':
-            self._disable_all_items()
-            try:
-                if interaction.message:
-                    await interaction.message.edit(view=self)
-            except Exception as exc:
-                logger.warning(
-                    "[PaymentCog] Failed to disable confirmation view for %s: %s",
-                    self.payment_id,
-                    exc,
-                )
-            await interaction.followup.send(
-                f"Queued payment `{self.payment_id}` for processing.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.followup.send(
-            f"Payment `{self.payment_id}` is already `{status}`.",
-            ephemeral=True,
-        )
-
-    def _disable_all_items(self):
-        for child in self.children:
-            if hasattr(child, 'disabled'):
-                child.disabled = True
-
-
-class PaymentCog(commands.Cog):
-    """Queue worker, restart recovery, and Discord confirmation flow for payments."""
+class PaymentWorkerCog(commands.Cog):
+    """Queue worker, restart recovery, and terminal handoff flow for payments."""
 
     def __init__(
         self,
@@ -113,11 +35,9 @@ class PaymentCog(commands.Cog):
     ):
         self.bot = bot
         self.db_handler = db_handler
-        self.payment_service = (
-            payment_service
-            or getattr(bot, 'payment_service', None)
-        )
+        self.payment_service = payment_service or getattr(bot, 'payment_service', None)
         self.bot.payment_service = self.payment_service
+        self.bot.payment_worker_cog = self
         self._pending_terminal_handoffs: Dict[str, Dict[str, Any]] = {}
         self._replayed_pending_handoffs = False
 
@@ -135,14 +55,14 @@ class PaymentCog(commands.Cog):
         self.payment_worker.change_interval(seconds=self.worker_interval_seconds)
         if not self.payment_worker.is_running():
             self.payment_worker.start()
-            logger.info("[PaymentCog] Payment worker started.")
+            logger.info("[PaymentWorkerCog] Payment worker started.")
         if self._bot_is_ready():
             await self._ensure_startup_sync()
 
     def cog_unload(self):
         if self.payment_worker.is_running():
             self.payment_worker.cancel()
-            logger.info("[PaymentCog] Payment worker stopped.")
+            logger.info("[PaymentWorkerCog] Payment worker stopped.")
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -165,7 +85,6 @@ class PaymentCog(commands.Cog):
         if self._startup_synced:
             return
         self._startup_synced = True
-        await self._register_pending_confirmation_views()
         await self._recover_inflight_payments()
 
     @tasks.loop(seconds=30)
@@ -178,32 +97,13 @@ class PaymentCog(commands.Cog):
         if not claimed:
             return
 
-        logger.info("[PaymentCog] Claimed %s payment request(s).", len(claimed))
+        logger.info("[PaymentWorkerCog] Claimed %s payment request(s).", len(claimed))
         for payment in claimed:
             await self._process_claimed_payment(payment)
 
     @payment_worker.before_loop
     async def _before_payment_worker(self):
         await self.bot.wait_until_ready()
-
-    async def _register_pending_confirmation_views(self):
-        if not self.payment_service:
-            return
-
-        pending = self.payment_service.get_pending_confirmation_payments(
-            guild_ids=self._get_writable_guild_ids(),
-        )
-        for payment in pending:
-            payment_id = payment.get('payment_id')
-            if not payment_id:
-                continue
-            self.bot.add_view(PaymentConfirmView(self, payment_id))
-
-        if pending:
-            logger.info(
-                "[PaymentCog] Re-registered %s persistent payment confirmation view(s).",
-                len(pending),
-            )
 
     async def _recover_inflight_payments(self):
         if not self.payment_service:
@@ -216,33 +116,6 @@ class PaymentCog(commands.Cog):
             if self._is_terminal(payment):
                 await self._handle_terminal_payment(payment)
 
-    async def send_confirmation_request(self, payment_id: str) -> Optional[discord.Message]:
-        """Post one confirmation message with a persistent view."""
-        payment = self.db_handler.get_payment_request(payment_id)
-        if not payment:
-            return None
-        if payment.get('status') != 'pending_confirmation':
-            return None
-
-        destination = await self._resolve_destination(
-            payment.get('confirm_channel_id'),
-            payment.get('confirm_thread_id'),
-        )
-        if destination is None:
-            logger.warning(
-                "[PaymentCog] Could not resolve confirmation destination for payment %s",
-                payment_id,
-            )
-            return None
-
-        view = PaymentConfirmView(self, payment_id)
-        self.bot.add_view(view)
-        return await self._send_message(
-            destination,
-            self._build_confirmation_message(payment),
-            view=view,
-        )
-
     async def _process_claimed_payment(self, payment: Dict[str, Any]):
         payment_id = payment.get('payment_id')
         guild_id = payment.get('guild_id')
@@ -253,7 +126,7 @@ class PaymentCog(commands.Cog):
             result = await self.payment_service.execute_payment(payment_id, guild_id=guild_id)
         except Exception as exc:
             logger.error(
-                "[PaymentCog] Unexpected error while executing payment %s: %s",
+                "[PaymentWorkerCog] Unexpected error while executing payment %s: %s",
                 payment_id,
                 exc,
                 exc_info=True,
@@ -285,25 +158,79 @@ class PaymentCog(commands.Cog):
             await self._dm_admin_payment_failure(payment)
         await self._handoff_terminal_result(payment)
 
+        cleanup_channel = await self._resolve_destination(
+            payment.get('notify_channel_id'),
+            payment.get('notify_thread_id'),
+        )
+        await safe_delete_messages(
+            cleanup_channel,
+            (payment.get('metadata') or {}).get('cleanup_message_ids') or [],
+            logger=logger,
+        )
+
+    async def _handoff_terminal_result(self, payment: Dict[str, Any]):
+        producer = str(payment.get('producer') or '').strip().lower()
+        if not producer:
+            return
+
+        cog = None
+        for candidate in self._candidate_producer_cog_names(producer):
+            cog = self.bot.get_cog(candidate)
+            if cog:
+                break
+        if cog is None or not hasattr(cog, 'handle_payment_result'):
+            payment_id = payment.get('payment_id')
+            if payment_id:
+                self._pending_terminal_handoffs[str(payment_id)] = dict(payment)
+            return
+
+        try:
+            result = cog.handle_payment_result(payment)
+            if inspect.isawaitable(result):
+                await result
+            payment_id = payment.get('payment_id')
+            if payment_id:
+                self._pending_terminal_handoffs.pop(str(payment_id), None)
+        except Exception as exc:
+            logger.error(
+                "[PaymentWorkerCog] Producer handoff failed for payment %s (%s): %s",
+                payment.get('payment_id'),
+                producer,
+                exc,
+                exc_info=True,
+            )
+
+    async def _flush_pending_terminal_handoffs(self):
+        if not self._pending_terminal_handoffs:
+            return
+
+        for payment_id, payment in list(self._pending_terminal_handoffs.items()):
+            await self._handoff_terminal_result(payment)
+            if payment_id in self._pending_terminal_handoffs:
+                logger.warning(
+                    "[PaymentWorkerCog] Producer handoff still unavailable for recovered payment %s",
+                    payment_id,
+                )
+
     async def _dm_admin_payment_success(self, payment: Dict[str, Any]):
         admin_id_env = os.getenv('ADMIN_USER_ID')
         if not admin_id_env:
             logger.warning(
-                "[PaymentCog] ADMIN_USER_ID not set; cannot DM admin about payment %s",
+                "[PaymentWorkerCog] ADMIN_USER_ID not set; cannot DM admin about payment %s",
                 payment.get('payment_id'),
             )
             return
         try:
             admin_id = int(admin_id_env)
         except ValueError:
-            logger.error("[PaymentCog] Invalid ADMIN_USER_ID; cannot DM admin.")
+            logger.error("[PaymentWorkerCog] Invalid ADMIN_USER_ID; cannot DM admin.")
             return
 
         try:
             admin_user = await self.bot.fetch_user(admin_id)
         except Exception as exc:
             logger.error(
-                "[PaymentCog] Failed to fetch admin user %s for payment DM: %s",
+                "[PaymentWorkerCog] Failed to fetch admin user %s for payment DM: %s",
                 admin_id,
                 exc,
             )
@@ -331,14 +258,14 @@ class PaymentCog(commands.Cog):
         try:
             await admin_user.send(message)
             logger.info(
-                "[PaymentCog] DM'd admin about confirmed payment %s",
+                "[PaymentWorkerCog] DM'd admin about confirmed payment %s",
                 payment.get('payment_id'),
             )
         except discord.Forbidden:
-            logger.error("[PaymentCog] Bot forbidden from DMing admin about payment success.")
+            logger.error("[PaymentWorkerCog] Bot forbidden from DMing admin about payment success.")
         except Exception as exc:
             logger.error(
-                "[PaymentCog] Failed to DM admin about payment %s: %s",
+                "[PaymentWorkerCog] Failed to DM admin about payment %s: %s",
                 payment.get('payment_id'),
                 exc,
             )
@@ -347,21 +274,21 @@ class PaymentCog(commands.Cog):
         admin_id_env = os.getenv('ADMIN_USER_ID')
         if not admin_id_env:
             logger.warning(
-                "[PaymentCog] ADMIN_USER_ID not set; cannot DM admin about payment %s",
+                "[PaymentWorkerCog] ADMIN_USER_ID not set; cannot DM admin about payment %s",
                 payment.get('payment_id'),
             )
             return
         try:
             admin_id = int(admin_id_env)
         except ValueError:
-            logger.error("[PaymentCog] Invalid ADMIN_USER_ID; cannot DM admin.")
+            logger.error("[PaymentWorkerCog] Invalid ADMIN_USER_ID; cannot DM admin.")
             return
 
         try:
             admin_user = await self.bot.fetch_user(admin_id)
         except Exception as exc:
             logger.error(
-                "[PaymentCog] Failed to fetch admin user %s for payment DM: %s",
+                "[PaymentWorkerCog] Failed to fetch admin user %s for payment DM: %s",
                 admin_id,
                 exc,
             )
@@ -392,15 +319,15 @@ class PaymentCog(commands.Cog):
         try:
             await admin_user.send(message)
             logger.info(
-                "[PaymentCog] DM'd admin about %s payment %s",
+                "[PaymentWorkerCog] DM'd admin about %s payment %s",
                 payment.get('status'),
                 payment.get('payment_id'),
             )
         except discord.Forbidden:
-            logger.error("[PaymentCog] Bot forbidden from DMing admin about payment failure.")
+            logger.error("[PaymentWorkerCog] Bot forbidden from DMing admin about payment failure.")
         except Exception as exc:
             logger.error(
-                "[PaymentCog] Failed to DM admin about payment %s: %s",
+                "[PaymentWorkerCog] Failed to DM admin about payment %s: %s",
                 payment.get('payment_id'),
                 exc,
             )
@@ -412,56 +339,12 @@ class PaymentCog(commands.Cog):
         )
         if destination is None:
             logger.warning(
-                "[PaymentCog] Could not resolve notify destination for payment %s",
+                "[PaymentWorkerCog] Could not resolve notify destination for payment %s",
                 payment.get('payment_id'),
             )
             return
 
         await self._send_message(destination, self._build_result_message(payment))
-
-    async def _handoff_terminal_result(self, payment: Dict[str, Any]):
-        producer = str(payment.get('producer') or '').strip().lower()
-        if not producer:
-            return
-
-        cog = None
-        for candidate in self._candidate_producer_cog_names(producer):
-            cog = self.bot.get_cog(candidate)
-            if cog:
-                break
-        if cog is None or not hasattr(cog, 'handle_payment_result'):
-            payment_id = payment.get('payment_id')
-            if payment_id:
-                self._pending_terminal_handoffs[str(payment_id)] = dict(payment)
-            return
-
-        try:
-            result = cog.handle_payment_result(payment)
-            if inspect.isawaitable(result):
-                await result
-            payment_id = payment.get('payment_id')
-            if payment_id:
-                self._pending_terminal_handoffs.pop(str(payment_id), None)
-        except Exception as exc:
-            logger.error(
-                "[PaymentCog] Producer handoff failed for payment %s (%s): %s",
-                payment.get('payment_id'),
-                producer,
-                exc,
-                exc_info=True,
-            )
-
-    async def _flush_pending_terminal_handoffs(self):
-        if not self._pending_terminal_handoffs:
-            return
-
-        for payment_id, payment in list(self._pending_terminal_handoffs.items()):
-            await self._handoff_terminal_result(payment)
-            if payment_id in self._pending_terminal_handoffs:
-                logger.warning(
-                    "[PaymentCog] Producer handoff still unavailable for recovered payment %s",
-                    payment_id,
-                )
 
     def _candidate_producer_cog_names(self, producer: str) -> List[str]:
         title = ''.join(part.capitalize() for part in producer.split('_'))
@@ -488,7 +371,7 @@ class PaymentCog(commands.Cog):
         try:
             return await self.bot.fetch_channel(target_id)
         except Exception as exc:
-            logger.warning("[PaymentCog] Failed to fetch destination %s: %s", target_id, exc)
+            logger.warning("[PaymentWorkerCog] Failed to fetch destination %s: %s", target_id, exc)
             return None
 
     async def _send_message(
@@ -509,19 +392,6 @@ class PaymentCog(commands.Cog):
                 view=view,
             )
         return await destination.send(content, view=view)
-
-    def _build_confirmation_message(self, payment: Dict[str, Any]) -> str:
-        amount = float(payment.get('amount_token') or 0)
-        payment_type = 'test payment' if payment.get('is_test') else 'final payment'
-        return (
-            f"**Payment confirmation required**\n"
-            f"- Payment ID: `{payment.get('payment_id')}`\n"
-            f"- Producer: `{payment.get('producer')}` / `{payment.get('producer_ref')}`\n"
-            f"- Type: {payment_type}\n"
-            f"- Amount: {amount:.8f} {self._token_label(payment)}\n"
-            f"- Wallet: `{_redact_wallet(payment.get('recipient_wallet'))}`\n"
-            f"- Route: `{payment.get('route_key') or 'unrouted'}`"
-        )
 
     def _build_result_message(self, payment: Dict[str, Any]) -> str:
         amount = float(payment.get('amount_token') or 0)
@@ -571,6 +441,6 @@ async def setup(bot: commands.Bot):
     db_handler = getattr(bot, 'db_handler', None)
     payment_service = getattr(bot, 'payment_service', None)
     if db_handler is None or payment_service is None:
-        logger.error("PaymentCog setup skipped because db_handler or payment_service is missing.")
+        logger.error("PaymentWorkerCog setup skipped because db_handler or payment_service is missing.")
         return
-    await bot.add_cog(PaymentCog(bot, db_handler, payment_service=payment_service))
+    await bot.add_cog(PaymentWorkerCog(bot, db_handler, payment_service=payment_service))

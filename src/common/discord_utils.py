@@ -1,8 +1,11 @@
-import discord
 import asyncio
+from dataclasses import dataclass
 import logging
 import os
-from typing import Union, Optional, List, Dict, Any
+from typing import Any, Dict, Iterable, List, Optional, Union
+
+import discord
+from discord.ext import commands
 
 from src.common.rate_limiter import RateLimiter
 
@@ -19,7 +22,7 @@ from src.common.error_handler import handle_errors
 
 @handle_errors("safe_send_message")
 async def safe_send_message(
-    bot: Union[discord.Client, discord.ext.commands.Bot],
+    bot: Union[discord.Client, commands.Bot],
     channel: discord.abc.Messageable,
     rate_limiter: RateLimiter,
     logger: logging.Logger,
@@ -85,7 +88,7 @@ async def safe_send_message(
 
 
 async def refresh_media_url(
-    bot: Union[discord.Client, discord.ext.commands.Bot],
+    bot: Union[discord.Client, commands.Bot],
     channel_id: int,
     message_id: int,
     logger: Optional[logging.Logger] = None
@@ -188,7 +191,7 @@ async def refresh_media_url(
 
 
 async def refresh_and_update_message_urls(
-    bot: Union[discord.Client, discord.ext.commands.Bot],
+    bot: Union[discord.Client, commands.Bot],
     db_handler: 'DatabaseHandler',
     channel_id: int,
     message_id: int,
@@ -247,7 +250,7 @@ async def refresh_and_update_message_urls(
 
 
 async def update_no_sharing_role(
-    bot: Union[discord.Client, discord.ext.commands.Bot],
+    bot: Union[discord.Client, commands.Bot],
     member_id: int,
     allow_sharing: bool,
     logger: Optional[logging.Logger] = None,
@@ -335,3 +338,116 @@ async def update_no_sharing_role(
     except Exception as e:
         log.error(f"Error updating 'no sharing' role for member {member_id}: {e}", exc_info=True)
         return False
+
+
+@dataclass(frozen=True)
+class DeleteCounts:
+    deleted: int
+    skipped: int
+    errored: int
+
+
+async def safe_delete_messages(
+    channel,
+    message_ids: Iterable[int],
+    *,
+    logger: logging.Logger,
+) -> DeleteCounts:
+    ids = list(message_ids)
+    if channel is None:
+        return DeleteCounts(0, len(ids), 0)
+
+    deleted = 0
+    skipped = 0
+    errored = 0
+    forbidden_logged = False
+
+    async def _delete_once(message_id: int) -> str:
+        message = await channel.fetch_message(message_id)
+        await message.delete()
+        return 'deleted'
+
+    async def _delete_with_retry(message_id: int) -> str:
+        try:
+            return await _delete_once(message_id)
+        except discord.NotFound:
+            return 'skipped'
+        except discord.Forbidden as exc:
+            nonlocal forbidden_logged
+            if not forbidden_logged:
+                logger.warning(
+                    "safe_delete_messages missing permission in channel %s: %s",
+                    getattr(channel, 'id', 'unknown'),
+                    exc,
+                )
+                forbidden_logged = True
+            return 'errored'
+        except discord.HTTPException as exc:
+            if getattr(exc, 'status', None) == 429:
+                await asyncio.sleep(getattr(exc, 'retry_after', 1.0))
+                try:
+                    return await _delete_once(message_id)
+                except discord.NotFound:
+                    return 'skipped'
+                except discord.Forbidden as retry_exc:
+                    if not forbidden_logged:
+                        logger.warning(
+                            "safe_delete_messages missing permission in channel %s: %s",
+                            getattr(channel, 'id', 'unknown'),
+                            retry_exc,
+                        )
+                        forbidden_logged = True
+                    return 'errored'
+                except discord.HTTPException as retry_http_exc:
+                    logger.warning(
+                        "safe_delete_messages HTTP error for message %s in channel %s after retry: %s",
+                        message_id,
+                        getattr(channel, 'id', 'unknown'),
+                        retry_http_exc,
+                    )
+                    return 'errored'
+                except AttributeError as retry_attr_exc:
+                    logger.warning(
+                        "safe_delete_messages attribute error for message %s in channel %s after retry: %s",
+                        message_id,
+                        getattr(channel, 'id', 'unknown'),
+                        retry_attr_exc,
+                    )
+                    return 'errored'
+            logger.warning(
+                "safe_delete_messages HTTP error for message %s in channel %s: %s",
+                message_id,
+                getattr(channel, 'id', 'unknown'),
+                exc,
+            )
+            return 'errored'
+        except AttributeError as exc:
+            logger.warning(
+                "safe_delete_messages attribute error for message %s in channel %s: %s",
+                message_id,
+                getattr(channel, 'id', 'unknown'),
+                exc,
+            )
+            return 'errored'
+
+    for message_id in ids:
+        try:
+            result = await _delete_with_retry(message_id)
+        except Exception as exc:
+            logger.warning(
+                "safe_delete_messages unexpected error for message %s in channel %s: %s",
+                message_id,
+                getattr(channel, 'id', 'unknown'),
+                exc,
+            )
+            errored += 1
+            continue
+
+        if result == 'deleted':
+            deleted += 1
+        elif result == 'skipped':
+            skipped += 1
+        else:
+            errored += 1
+
+    return DeleteCounts(deleted=deleted, skipped=skipped, errored=errored)

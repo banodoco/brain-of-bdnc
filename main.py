@@ -35,7 +35,8 @@ from src.features.reacting.reactor_cog import ReactorCog
 from src.features.archive.archive_cog import ArchiveCog
 from src.features.health.health_check_cog import HealthCheckCog
 from src.features.payments.payment_service import PaymentService
-from src.features.payments.payment_cog import PaymentCog
+from src.features.payments.payment_ui_cog import PaymentUICog
+from src.features.payments.payment_worker_cog import PaymentWorkerCog
 from src.features.grants.solana_client import SolanaClient
 from src.features.payments.solana_provider import SolanaProvider
 
@@ -64,15 +65,15 @@ def setup_logging(dev_mode=False):
 
 def _bind_cap_breach_dm(bot, logger):
     async def _notify(payment):
-        payment_cog = bot.get_cog('PaymentCog')
-        if not payment_cog or not hasattr(payment_cog, '_dm_admin_payment_failure'):
+        payment_worker_cog = bot.get_cog('PaymentWorkerCog')
+        if not payment_worker_cog or not hasattr(payment_worker_cog, '_dm_admin_payment_failure'):
             logger.warning(
-                "PaymentCog is not available to DM admin about manual-review payment %s",
+                "PaymentWorkerCog is not available to DM admin about manual-review payment %s",
                 payment.get('payment_id'),
             )
             return
         try:
-            await payment_cog._dm_admin_payment_failure(payment)
+            await payment_worker_cog._dm_admin_payment_failure(payment)
         except Exception as e:
             logger.error("Failed to DM admin about manual-review payment %s: %s", payment.get('payment_id'), e)
 
@@ -276,8 +277,10 @@ async def main_async(args):
         await bot.add_cog(ArchiveCog(bot))
         await bot.add_cog(HealthCheckCog(bot))
         if bot.payment_service is not None:
-            await bot.add_cog(PaymentCog(bot, bot.db_handler, payment_service=bot.payment_service))
-            logger.info("PaymentCog loaded.")
+            await bot.add_cog(PaymentWorkerCog(bot, bot.db_handler, payment_service=bot.payment_service))
+            logger.info("PaymentWorkerCog loaded.")
+            await bot.add_cog(PaymentUICog(bot, bot.db_handler, payment_service=bot.payment_service))
+            logger.info("PaymentUICog loaded.")
 
         # Optional cogs — don't block startup if they fail
         try:

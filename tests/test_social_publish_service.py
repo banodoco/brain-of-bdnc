@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.common.db_handler import WalletUpdateBlockedError
+from src.features.payments.payment_service import PaymentActor, PaymentActorKind
 from src.features.sharing.models import PublicationSourceContext, SocialPublishRequest
 from src.features.sharing.social_publish_service import SocialPublishService
 from src.features.payments.payment_service import PaymentService
@@ -560,8 +561,7 @@ async def test_payment_service_request_is_idempotent_and_test_amount_is_fixed():
 
     confirmed = service.confirm_payment(
         created["payment_id"],
-        confirmed_by="auto",
-        confirmed_by_user_id=99,
+        actor=PaymentActor(PaymentActorKind.AUTO, 99),
     )
     assert confirmed["status"] == "queued"
     assert confirmed["confirmed_by"] == "auto"
@@ -588,8 +588,16 @@ async def test_payment_service_confirm_payment_requires_expected_recipient():
         logger_instance=None,
     )
 
-    rejected = service.confirm_payment("pay-secure", guild_id=3, confirmed_by_user_id=999)
-    accepted = service.confirm_payment("pay-secure", guild_id=3, confirmed_by_user_id=123)
+    rejected = service.confirm_payment(
+        "pay-secure",
+        guild_id=3,
+        actor=PaymentActor(PaymentActorKind.RECIPIENT_CLICK, 999),
+    )
+    accepted = service.confirm_payment(
+        "pay-secure",
+        guild_id=3,
+        actor=PaymentActor(PaymentActorKind.RECIPIENT_CLICK, 123),
+    )
 
     assert rejected is None
     assert accepted["status"] == "queued"
@@ -616,21 +624,25 @@ async def test_confirm_rejects_null_recipient_discord_id():
         logger_instance=None,
     )
 
-    rejected = service.confirm_payment("pay-null", guild_id=3, confirmed_by_user_id=123)
+    rejected = service.confirm_payment(
+        "pay-null",
+        guild_id=3,
+        actor=PaymentActor(PaymentActorKind.RECIPIENT_CLICK, 123),
+    )
 
     assert rejected is None
     assert db_handler.rows["pay-null"]["status"] == "pending_confirmation"
 
 
-async def test_confirm_privileged_override_bypasses_null_check():
+async def test_confirm_rejects_auto_actor_for_non_test_payment():
     db_handler = FakePaymentDB()
-    db_handler.rows["pay-null"] = {
-        "payment_id": "pay-null",
+    db_handler.rows["pay-auto"] = {
+        "payment_id": "pay-auto",
         "guild_id": 3,
         "producer": "grants",
-        "producer_ref": "thread-null",
+        "producer_ref": "thread-auto",
         "recipient_wallet": "recipient-wallet",
-        "recipient_discord_id": None,
+        "recipient_discord_id": 123,
         "provider": "solana_native",
         "is_test": False,
         "amount_token": 1.0,
@@ -643,16 +655,14 @@ async def test_confirm_privileged_override_bypasses_null_check():
         logger_instance=None,
     )
 
-    accepted = service.confirm_payment(
-        "pay-null",
+    rejected = service.confirm_payment(
+        "pay-auto",
         guild_id=3,
-        confirmed_by="auto",
-        confirmed_by_user_id=None,
-        privileged_override=True,
+        actor=PaymentActor(PaymentActorKind.AUTO, 123),
     )
 
-    assert accepted["status"] == "queued"
-    assert accepted["confirmed_by"] == "auto"
+    assert rejected is None
+    assert db_handler.rows["pay-auto"]["status"] == "pending_confirmation"
 
 
 async def test_confirm_rejects_mismatched_user():
@@ -676,7 +686,11 @@ async def test_confirm_rejects_mismatched_user():
         logger_instance=None,
     )
 
-    rejected = service.confirm_payment("pay-mismatch", guild_id=3, confirmed_by_user_id=999)
+    rejected = service.confirm_payment(
+        "pay-mismatch",
+        guild_id=3,
+        actor=PaymentActor(PaymentActorKind.RECIPIENT_CLICK, 999),
+    )
 
     assert rejected is None
     assert db_handler.rows["pay-mismatch"]["status"] == "pending_confirmation"

@@ -13,6 +13,7 @@ from src.common.db_handler import WalletUpdateBlockedError
 from src.features.grants.assessor import assess_application, interpret_admin_decision
 from src.features.grants.pricing import GPU_RATES, calculate_grant_cost
 from src.features.grants.solana_client import is_valid_solana_address
+from src.features.payments.payment_service import PaymentActor, PaymentActorKind
 
 logger = logging.getLogger('DiscordBot')
 
@@ -601,12 +602,10 @@ class GrantsCog(commands.Cog):
             payment_status='test_requested',
         )
 
-        # grant['applicant_id'] matches the recipient_discord_id passed into request_payment above.
         confirmed_test = self.payment_service.confirm_payment(
             test_payment['payment_id'],
             guild_id=guild_id,
-            confirmed_by='auto',
-            confirmed_by_user_id=grant['applicant_id'],
+            actor=PaymentActor(PaymentActorKind.AUTO, grant['applicant_id']),
         )
         if not confirmed_test:
             raise RuntimeError("failed to queue the test payment")
@@ -633,8 +632,11 @@ class GrantsCog(commands.Cog):
             'notify_thread_id': thread.id if thread.parent_id else None,
         }
 
-    def _get_payment_cog(self):
-        return self.bot.get_cog('PaymentCog')
+    def _get_payment_ui_cog(self):
+        return (
+            getattr(self.bot, 'payment_ui_cog', None)
+            or self.bot.get_cog('PaymentUICog')
+        )
 
     async def _fetch_grant_thread(self, thread_id: int) -> Optional[discord.Thread]:
         channel = self.bot.get_channel(thread_id)
@@ -712,9 +714,9 @@ class GrantsCog(commands.Cog):
                 )
             return
 
-        payment_cog = self._get_payment_cog()
-        if payment_cog and final_payment.get('status') == 'pending_confirmation':
-            await payment_cog.send_confirmation_request(final_payment['payment_id'])
+        payment_ui_cog = self._get_payment_ui_cog()
+        if payment_ui_cog and final_payment.get('status') == 'pending_confirmation':
+            await payment_ui_cog.send_confirmation_request(final_payment['payment_id'])
 
         if thread:
             await thread.send(

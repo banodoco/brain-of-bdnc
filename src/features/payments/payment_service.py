@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
 import logging
+import os
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -12,6 +15,19 @@ if TYPE_CHECKING:
     from src.common.db_handler import DatabaseHandler
 
 logger = logging.getLogger('DiscordBot')
+
+
+class PaymentActorKind(str, Enum):
+    RECIPIENT_CLICK = 'recipient_click'
+    RECIPIENT_MESSAGE = 'recipient_message'
+    AUTO = 'auto'
+    ADMIN_DM = 'admin_dm'
+
+
+@dataclass(frozen=True)
+class PaymentActor:
+    kind: PaymentActorKind
+    actor_id: Optional[int]
 
 
 def _redact_wallet(wallet: Optional[str]) -> str:
@@ -299,14 +315,46 @@ class PaymentService:
             return None
         return canonical_row
 
+    def _authorize_actor(self, payment: Dict[str, Any], actor: PaymentActor) -> bool:
+        from .producer_flows import get_flow
+
+        producer = str(payment.get('producer') or '').strip().lower()
+        try:
+            flow = get_flow(producer)
+        except KeyError:
+            self.logger.warning(
+                "[PaymentService] unknown producer for confirmation authorization: %s",
+                producer or 'unknown',
+            )
+            return False
+
+        allowed_actor_kinds = flow.test_confirmed_by if payment.get('is_test') else flow.real_confirmed_by
+        if actor.kind not in allowed_actor_kinds:
+            return False
+
+        if actor.kind in {PaymentActorKind.RECIPIENT_CLICK, PaymentActorKind.RECIPIENT_MESSAGE}:
+            expected_user_id = payment.get('recipient_discord_id')
+            if expected_user_id is None or actor.actor_id is None:
+                return False
+            return int(expected_user_id) == int(actor.actor_id)
+
+        if actor.kind == PaymentActorKind.ADMIN_DM:
+            admin_user_id = os.getenv('ADMIN_USER_ID')
+            if admin_user_id is None or actor.actor_id is None:
+                return False
+            try:
+                return int(actor.actor_id) == int(admin_user_id)
+            except (TypeError, ValueError):
+                return False
+
+        return actor.kind == PaymentActorKind.AUTO
+
     def confirm_payment(
         self,
         payment_id: str,
         *,
+        actor: PaymentActor,
         guild_id: Optional[int] = None,
-        confirmed_by_user_id: Optional[int] = None,
-        confirmed_by: str = 'user',
-        privileged_override: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Move a payment from pending_confirmation into the queue."""
         payment = self.db_handler.get_payment_request(payment_id, guild_id=guild_id)
@@ -316,22 +364,20 @@ class PaymentService:
         if payment.get('status') != 'pending_confirmation':
             return payment
 
-        expected_user_id = payment.get('recipient_discord_id')
-        if not privileged_override:
-            if expected_user_id is None or confirmed_by_user_id is None or int(expected_user_id) != int(confirmed_by_user_id):
-                self.logger.warning(
-                    "[PaymentService] rejected confirmation for %s: expected recipient %s, got %s",
-                    payment_id,
-                    expected_user_id,
-                    confirmed_by_user_id,
-                )
-                return None
+        if not self._authorize_actor(payment, actor):
+            self.logger.warning(
+                "[PaymentService] rejected confirmation for %s: expected recipient %s, got %s",
+                payment_id,
+                payment.get('recipient_discord_id'),
+                actor.actor_id,
+            )
+            return None
 
         if not self.db_handler.mark_payment_confirmed_by_user(
             payment_id,
             guild_id=payment.get('guild_id'),
-            confirmed_by_user_id=confirmed_by_user_id,
-            confirmed_by=confirmed_by,
+            confirmed_by_user_id=actor.actor_id,
+            confirmed_by=actor.kind.value,
         ):
             return None
         return self.db_handler.get_payment_request(payment_id, guild_id=payment.get('guild_id'))
@@ -548,4 +594,4 @@ class PaymentService:
             await callback(payment)
 
 
-__all__ = ['PaymentService']
+__all__ = ['PaymentActor', 'PaymentActorKind', 'PaymentService']
