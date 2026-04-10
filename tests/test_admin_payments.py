@@ -108,9 +108,13 @@ class FakeBot:
         self.user = SimpleNamespace(id=999)
         self.ready_waits = 0
         self.fetched_users = {}
+        self._is_ready = False
 
     async def wait_until_ready(self):
         self.ready_waits += 1
+
+    def is_ready(self):
+        return self._is_ready
 
     def get_channel(self, channel_id):
         return self._channel if channel_id == self._channel.id else None
@@ -731,10 +735,24 @@ async def test_startup_reconciliation():
     channel._messages = [message]
 
     await cog.cog_load()
+    assert bot.ready_waits == 0
+    await cog.on_ready()
 
-    assert bot.ready_waits == 1
     assert db.intents[intent["intent_id"]]["status"] == "confirmed"
     assert db.intents[intent["intent_id"]]["last_scanned_message_id"] == 1001
     assert payment_service.confirm_calls == [
         ("payment-final", {"guild_id": 1, "confirmed_by": "free_text", "confirmed_by_user_id": 42})
     ]
+
+
+@pytest.mark.anyio
+async def test_admin_chat_cog_load_does_not_block_on_wait_until_ready():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(channel_id=55, guild=guild)
+    db = FakeIntentDB()
+    bot = FakeBot(channel, payment_service=object())
+    cog = AdminChatCog(bot, db, sharer=object())
+
+    await cog.cog_load()
+
+    assert bot.ready_waits == 0

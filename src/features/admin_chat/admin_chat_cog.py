@@ -57,6 +57,7 @@ class AdminChatCog(commands.Cog):
             logger.warning("[AdminChat] ADMIN_USER_ID not set - admin chat disabled")
             self.admin_user_id = None
         self._admin_mention = f"<@{self.admin_user_id}>" if self.admin_user_id else "the admin"
+        self._startup_reconciled = False
 
     async def _classify_payment_reply(self, stage: str, reply_text: str) -> Dict[str, str | None]:
         """Classify a wallet/confirmation reply after deterministic intent matching."""
@@ -436,7 +437,26 @@ class AdminChatCog(commands.Cog):
             self.db_handler.update_admin_payment_intent(intent_id, {'status': 'failed'}, guild_id)
 
     async def cog_load(self):
-        await self.bot.wait_until_ready()
+        if self._bot_is_ready():
+            await self._ensure_startup_reconciled()
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        await self._ensure_startup_reconciled()
+
+    def _bot_is_ready(self) -> bool:
+        checker = getattr(self.bot, 'is_ready', None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return False
+        return False
+
+    async def _ensure_startup_reconciled(self):
+        if self._startup_reconciled:
+            return
+        self._startup_reconciled = True
         try:
             await self._reconcile_active_intents()
         except Exception as e:

@@ -80,9 +80,13 @@ class FakeBot:
     def __init__(self, service):
         self.social_publish_service = service
         self.ready_waits = 0
+        self._is_ready = False
 
     async def wait_until_ready(self):
         self.ready_waits += 1
+
+    def is_ready(self):
+        return self._is_ready
 
 
 class FakePaymentChannel:
@@ -157,9 +161,13 @@ class FakePaymentBot:
         self.db_handler = None
         self.claude_client = object()
         self.guilds = []
+        self._is_ready = False
 
     async def wait_until_ready(self):
         self.ready_waits += 1
+
+    def is_ready(self):
+        return self._is_ready
 
     def add_view(self, view, message_id=None):
         self.added_views.append((view, message_id))
@@ -401,13 +409,14 @@ async def test_payment_scheduler_lifecycle_registers_views_and_starts_worker():
     monkeypatch.setattr(cog.payment_worker, "change_interval", lambda **kwargs: calls.append(kwargs["seconds"]))
 
     await cog.cog_load()
+    assert len(bot.added_views) == 0
+    await cog.on_ready()
 
     monkeypatch.setattr(cog.payment_worker, "is_running", lambda: True)
     monkeypatch.setattr(cog.payment_worker, "cancel", lambda: calls.append("cancel"))
     cog.cog_unload()
     monkeypatch.undo()
 
-    assert bot.ready_waits == 2
     assert calls == [cog.worker_interval_seconds, "start", "cancel"]
     assert len(bot.added_views) == 1
     view, message_id = bot.added_views[0]
@@ -471,6 +480,25 @@ async def test_payment_scheduler_replays_pending_terminal_handoff_on_ready():
 
     assert producer_cog.handled == ["pay-recovered"]
     assert cog._pending_terminal_handoffs == {}
+
+
+async def test_payment_cog_load_does_not_block_on_wait_until_ready():
+    payment_service = FakePaymentService()
+    db_handler = FakePaymentDB()
+    bot = FakePaymentBot(payment_service)
+    cog = payment_cog_module.PaymentCog(bot, db_handler, payment_service=payment_service)
+
+    calls = []
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(cog.payment_worker, "is_running", lambda: False)
+    monkeypatch.setattr(cog.payment_worker, "start", lambda: calls.append("start"))
+    monkeypatch.setattr(cog.payment_worker, "change_interval", lambda **kwargs: calls.append(kwargs["seconds"]))
+
+    await cog.cog_load()
+    monkeypatch.undo()
+
+    assert bot.ready_waits == 0
+    assert calls == [cog.worker_interval_seconds, "start"]
 
 
 async def test_payment_confirm_view_rejects_non_recipient():

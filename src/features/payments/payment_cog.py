@@ -122,16 +122,15 @@ class PaymentCog(commands.Cog):
 
         self.claim_batch_size = max(int(os.getenv('PAYMENT_CLAIM_LIMIT', '10')), 1)
         self.worker_interval_seconds = max(int(os.getenv('PAYMENT_WORKER_INTERVAL_SECONDS', '30')), 1)
+        self._startup_synced = False
 
     async def cog_load(self):
-        await self.bot.wait_until_ready()
-        await self._register_pending_confirmation_views()
-        await self._recover_inflight_payments()
-        await self._before_payment_worker()
         self.payment_worker.change_interval(seconds=self.worker_interval_seconds)
         if not self.payment_worker.is_running():
             self.payment_worker.start()
             logger.info("[PaymentCog] Payment worker started.")
+        if self._bot_is_ready():
+            await self._ensure_startup_sync()
 
     def cog_unload(self):
         if self.payment_worker.is_running():
@@ -140,10 +139,27 @@ class PaymentCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
+        await self._ensure_startup_sync()
         if self._replayed_pending_handoffs:
             return
         self._replayed_pending_handoffs = True
         await self._flush_pending_terminal_handoffs()
+
+    def _bot_is_ready(self) -> bool:
+        checker = getattr(self.bot, 'is_ready', None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return False
+        return False
+
+    async def _ensure_startup_sync(self):
+        if self._startup_synced:
+            return
+        self._startup_synced = True
+        await self._register_pending_confirmation_views()
+        await self._recover_inflight_payments()
 
     @tasks.loop(seconds=30)
     async def payment_worker(self):
