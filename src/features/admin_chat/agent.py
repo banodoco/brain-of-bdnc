@@ -13,6 +13,17 @@ import anthropic
 from dotenv import load_dotenv
 
 from .tools import get_tools_for_role, execute_tool
+
+# Tools that already post user-visible output directly to a Discord channel.
+# When any of these are invoked during a turn, the chat-text reply is suppressed
+# so the admin doesn't see a duplicate "OK I'll do that" alongside the tool's
+# own channel post.
+_CHANNEL_POSTING_TOOLS = frozenset({
+    "send_message",
+    "upload_file",
+    "initiate_payment",
+    "share_to_social",
+})
 from src.common.soul import BOT_VOICE
 
 logger = logging.getLogger('DiscordBot')
@@ -319,6 +330,7 @@ class AdminChatAgent:
         messages.append(request_user_msg)
         actions: List[Dict[str, Any]] = []
         final_replies: List[str] = []  # Can have multiple messages
+        action_tool_called = False  # Tracks whether any non-reply/non-end_turn tool ran
         available_tools = get_tools_for_role(is_admin)
         allowed_tool_names = {tool["name"] for tool in available_tools}
         
@@ -453,7 +465,12 @@ class AdminChatAgent:
                         "input": tool_input,
                         "result": result
                     })
-                    
+
+                    # Flag tools that post user-visible messages to a channel so we
+                    # can suppress the redundant chat-text reply afterwards.
+                    if tool_name in _CHANNEL_POSTING_TOOLS and result.get("success", False):
+                        action_tool_called = True
+
                     # If this was the reply tool, capture messages
                     if tool_name == "reply" and result.get("success"):
                         reply_msgs = result.get("messages", [])
@@ -483,12 +500,21 @@ class AdminChatAgent:
             
             # Log completion
             logger.info(f"[AdminChat] Completed: {len(actions)} actions, replies={len(final_replies)}")
-            
+
             persisted_messages = list(conversation) + [persisted_user_msg] + messages[len(conversation) + 1 :]
             _conversations[user_id] = persisted_messages
-            
+
             self._trim_conversation(user_id, is_admin=is_admin)
-            
+
+            # If a tool already posted its own user-visible message, drop the
+            # chat-text reply so the admin doesn't see the redundant LLM
+            # acknowledgement on top of the tool's own output.
+            if action_tool_called and final_replies:
+                logger.info(
+                    "[AdminChat] Suppressing chat-text reply because a channel-posting tool ran"
+                )
+                final_replies = []
+
             # Return list of messages (or None if ended without reply)
             return final_replies if final_replies else None
             
