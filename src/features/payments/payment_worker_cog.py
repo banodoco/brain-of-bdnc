@@ -317,6 +317,15 @@ class PaymentWorkerCog(commands.Cog):
         if payment.get('status') == 'manual_hold':
             lines.append("- ⚠️ Requires manual review — do NOT auto-retry.")
 
+        # Link back to the thread/channel where the payment was initiated so
+        # the admin can jump into context from the DM.
+        context_guild_id = payment.get('guild_id')
+        context_target_id = payment.get('confirm_thread_id') or payment.get('confirm_channel_id')
+        if context_guild_id and context_target_id:
+            lines.append(
+                f"- Context: https://discord.com/channels/{context_guild_id}/{context_target_id}"
+            )
+
         message = "\n".join(lines)
         if len(message) > 1900:
             message = message[:1900] + "..."
