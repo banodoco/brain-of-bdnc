@@ -2010,6 +2010,45 @@ If nothing stands out today, respond with just: NOTHING"""
             }
         return result
 
+    def _chunk_social_pick_assets(self, assets: List[Dict[str, str]], max_length: int = 1900) -> List[str]:
+        """Split asset references into Discord-safe follow-up messages."""
+        if not assets:
+            return []
+
+        asset_lines: List[str] = ["**Assets:**"]
+        multiple_assets = len(assets) > 1
+
+        for i, asset in enumerate(assets):
+            url = asset.get('url')
+            if not url:
+                continue
+            asset_type = asset.get('type', 'media')
+            label = f"Asset {i + 1} ({asset_type})" if multiple_assets else f"Asset ({asset_type})"
+            asset_lines.append(label)
+            asset_lines.append(url)
+
+        return self._chunk_text_for_discord("\n".join(asset_lines), max_length=max_length)
+
+    @staticmethod
+    def _chunk_text_for_discord(content: str, max_length: int = 1900) -> List[str]:
+        """Split text into Discord-safe message chunks."""
+        chunks: List[str] = []
+        current_chunk = ""
+
+        for line in content.split('\n'):
+            candidate = f"{current_chunk}\n{line}" if current_chunk else line
+            if len(candidate) <= max_length:
+                current_chunk = candidate
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                current_chunk = line
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        return chunks
+
     async def _send_social_picks_dm(self, enriched_summary=None, short_summary=None):
         """DM the admin with Claude-curated social picks, each as a separate message with media links."""
         self.logger.info("[SocialPicks] Starting social picks generation")
@@ -2109,6 +2148,7 @@ If nothing stands out today, respond with just: NOTHING"""
                 len(author_info_by_msg), len(parsed_picks),
             )
 
+            sent_message_count = 0
             for parsed in parsed_picks:
                 draft = parsed['draft']
                 why = parsed['why']
@@ -2141,18 +2181,25 @@ If nothing stands out today, respond with just: NOTHING"""
                         f"**Creator:** {name} `{author_info['author_id']}` — {handle_str}"
                     )
 
-                for i, asset in enumerate(all_media):
-                    asset_type = asset.get('type', 'media')
-                    label = f"Asset {i+1} ({asset_type})" if len(all_media) > 1 else f"Asset ({asset_type})"
-                    dm_parts.append(f"**{label}:** {asset['url']}")
                 if discord_link:
                     dm_parts.append(f"**Original post:** {discord_link}")
 
                 content = "\n".join(dm_parts)
-                await admin_user.send(content)
+                for chunk in self._chunk_text_for_discord(content, max_length=1900):
+                    await admin_user.send(chunk)
+                    sent_message_count += 1
+
+                for asset_chunk in self._chunk_social_pick_assets(all_media):
+                    await admin_user.send(asset_chunk)
+                    sent_message_count += 1
+
                 pick_count += 1
 
-            self.logger.info(f"[SocialPicks] Sent {pick_count} individual pick DMs to admin")
+            self.logger.info(
+                "[SocialPicks] Sent %d picks to admin across %d DM(s)",
+                pick_count,
+                sent_message_count,
+            )
 
         except Exception as e:
             self.logger.error(f"[SocialPicks] Failed: {e}", exc_info=True)

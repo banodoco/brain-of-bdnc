@@ -8,6 +8,7 @@ import os # For saving and removing temporary files
 import re # For regular expressions
 from src.common.llm.claude_client import ClaudeClient # Corrected LLM Client import
 from src.common import discord_utils # Added import
+from src.features.sharing.models import PublicationSourceContext, SocialPublishRequest
 
 # Assuming Sharer class will be passed or imported appropriately
 # from src.features.sharing.sharer import Sharer
@@ -269,16 +270,79 @@ Reply with that and nothing else"""
         media_urls = [att.url for att in message_to_share.attachments]
 
         if sharer_instance:
-            success, tweet_url = await sharer_instance.send_tweet(
-                content=tweet_text, 
-                image_urls=media_urls if media_urls else None,
-                message_id=str(message_to_share.id), 
-                user_id=original_poster.id, 
-                author_display_name=original_poster.display_name, # Added author's display name
-                original_message_content=message_to_share.content, 
-                original_message_jump_url=message_to_share.jump_url,
-                guild_id=getattr(message_to_share.guild, 'id', None)
-            )
+            downloaded_media = []
+            temp_files_to_clean = []
+            try:
+                if media_urls:
+                    for i, url in enumerate(media_urls):
+                        downloaded_item = await sharer_instance._download_media_from_url(
+                            url,
+                            str(message_to_share.id),
+                            i,
+                        )
+                        if downloaded_item and downloaded_item.get('local_path'):
+                            downloaded_media.append(downloaded_item)
+                            temp_files_to_clean.append(downloaded_item['local_path'])
+                        else:
+                            logger.warning(
+                                f"[TweetSharerBridge] ({path_type}) Failed to download media from URL: {url}"
+                            )
+                if media_urls and not downloaded_media:
+                    success = False
+                    tweet_url = None
+                else:
+                    request = SocialPublishRequest(
+                        message_id=message_to_share.id,
+                        channel_id=message_to_share.channel.id,
+                        guild_id=getattr(message_to_share.guild, 'id', None) or 0,
+                        user_id=original_poster.id,
+                        platform='twitter',
+                        action='post',
+                        text=tweet_text,
+                        media_hints=downloaded_media,
+                        source_kind='reaction_bridge',
+                        duplicate_policy={'check_existing': False},
+                        text_only=not downloaded_media,
+                        announce_policy={
+                            'enabled': True,
+                            'author_display_name': original_poster.display_name,
+                            'original_message_jump_url': message_to_share.jump_url,
+                        },
+                        first_share_notification_policy={'enabled': False},
+                        legacy_shared_post_policy={'enabled': True, 'delete_eligible_hours': 6},
+                        moderation_metadata={
+                            'decision': actual_moderation_decision,
+                            'reason': moderation_reason,
+                            'path_type': path_type,
+                        },
+                        source_context=PublicationSourceContext(
+                            source_kind='reaction_bridge',
+                            metadata={
+                                'user_details': member_data or {},
+                                'original_content': message_to_share.content,
+                                'author_display_name': original_poster.display_name,
+                                'original_message_jump_url': message_to_share.jump_url,
+                                'guild_id': _guild_id,
+                            },
+                        ),
+                    )
+                    publish_result = await sharer_instance.social_publish_service.publish_now(request)
+                    success = publish_result.success
+                    tweet_url = publish_result.tweet_url
+                    if success:
+                        if tweet_url:
+                            await sharer_instance._announce_tweet_url(
+                                tweet_url=tweet_url,
+                                author_display_name=original_poster.display_name,
+                                original_message_jump_url=message_to_share.jump_url,
+                                context_message_id=str(message_to_share.id),
+                                guild_id=_guild_id,
+                                is_reply=False,
+                            )
+                        db_handler.mark_member_first_shared(original_poster.id, guild_id=_guild_id)
+            finally:
+                sharer_instance._cleanup_files(temp_files_to_clean)
+
             if success:
                 reactor_dm_confirm_msg = f"Your comment on {message_to_share.jump_url} has been tweeted! View it here: {tweet_url}"
                 if not tweet_url: reactor_dm_confirm_msg = f"Your comment on {message_to_share.jump_url} has been tweeted!"

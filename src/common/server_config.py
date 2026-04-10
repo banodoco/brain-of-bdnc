@@ -180,6 +180,229 @@ class ServerConfig:
                 pass
         return None
 
+    def resolve_social_route(
+        self,
+        guild_id: Optional[int],
+        channel_id: Optional[int],
+        platform: Optional[str],
+    ) -> Optional[dict]:
+        """Resolve a social route row for a guild/channel/platform.
+
+        Resolution order:
+        1. Exact channel route
+        2. Parent channel route
+        3. Guild default route (channel_id is null)
+
+        Sharing must be enabled for the guild/channel first. For v1 the guild
+        default route is the primary supported path, but channel-specific rows
+        can still be resolved when seeded directly in the database.
+        """
+        if guild_id is None or not self._supabase or not platform:
+            return None
+
+        normalized_platform = str(platform).strip().lower()
+        if normalized_platform == 'x':
+            normalized_platform = 'twitter'
+
+        if not self.is_feature_enabled(guild_id, channel_id, 'sharing'):
+            return None
+
+        candidate_channels: List[Optional[int]] = []
+        if channel_id is not None:
+            candidate_channels.append(channel_id)
+            parent_id = self.resolve_parent_channel(channel_id)
+            if parent_id is not None and parent_id != channel_id:
+                candidate_channels.append(parent_id)
+        candidate_channels.append(None)
+
+        for candidate_channel_id in candidate_channels:
+            route = self._get_social_route_row(guild_id, candidate_channel_id, normalized_platform)
+            if route:
+                return route
+        return None
+
+    def _get_social_route_row(
+        self,
+        guild_id: int,
+        channel_id: Optional[int],
+        platform: str,
+    ) -> Optional[dict]:
+        """Fetch one enabled social route row."""
+        try:
+            query = (
+                self._supabase.table('social_channel_routes')
+                .select('*')
+                .eq('guild_id', guild_id)
+                .eq('platform', platform)
+                .eq('enabled', True)
+            )
+            if channel_id is None:
+                query = query.is_('channel_id', 'null')
+            else:
+                query = query.eq('channel_id', channel_id)
+
+            result = query.limit(1).execute()
+            if result.data:
+                return result.data[0]
+        except Exception as e:
+            logger.debug(
+                f"ServerConfig.resolve_social_route({guild_id}, {channel_id}, {platform}): {e}"
+            )
+        return None
+
+    def resolve_payment_route(
+        self,
+        guild_id: Optional[int],
+        channel_id: Optional[int],
+        producer: Optional[str],
+    ) -> Optional[dict]:
+        """Resolve a payment route row using exact channel, parent, then guild default."""
+        if guild_id is None or not self._supabase or not producer:
+            return None
+        if not self.is_write_allowed(guild_id):
+            return None
+
+        normalized_producer = str(producer).strip().lower()
+        if not normalized_producer:
+            return None
+
+        candidate_channels: List[Optional[int]] = []
+        if channel_id is not None:
+            candidate_channels.append(channel_id)
+            parent_id = self.resolve_parent_channel(channel_id)
+            if parent_id is not None and parent_id != channel_id:
+                candidate_channels.append(parent_id)
+        candidate_channels.append(None)
+
+        for candidate_channel_id in candidate_channels:
+            route = self._get_payment_route_row(guild_id, candidate_channel_id, normalized_producer)
+            if route:
+                return route
+        return None
+
+    def _get_payment_route_row(
+        self,
+        guild_id: int,
+        channel_id: Optional[int],
+        producer: str,
+    ) -> Optional[dict]:
+        """Fetch one enabled payment route row."""
+        try:
+            query = (
+                self._supabase.table('payment_channel_routes')
+                .select('*')
+                .eq('guild_id', guild_id)
+                .eq('producer', producer)
+                .eq('enabled', True)
+            )
+            if channel_id is None:
+                query = query.is_('channel_id', 'null')
+            else:
+                query = query.eq('channel_id', channel_id)
+
+            result = query.limit(1).execute()
+            if result.data:
+                return result.data[0]
+        except Exception as e:
+            logger.debug(
+                f"ServerConfig.resolve_payment_route({guild_id}, {channel_id}, {producer}): {e}"
+            )
+        return None
+
+    def resolve_payment_destinations(
+        self,
+        guild_id: Optional[int],
+        channel_id: Optional[int],
+        producer: Optional[str],
+    ) -> Optional[dict]:
+        """Resolve a payment route into persisted confirm/notify destination ids."""
+        route = self.resolve_payment_route(guild_id, channel_id, producer)
+        if not route:
+            return None
+
+        route_config = route.get('route_config')
+        if not isinstance(route_config, dict):
+            route_config = {}
+
+        source_channel_id, source_thread_id = self._resolve_source_payment_destination(channel_id)
+        confirm_channel_id, confirm_thread_id = self._resolve_payment_destination(
+            route,
+            route_config,
+            'confirm',
+            source_channel_id,
+            source_thread_id,
+            channel_id,
+        )
+        notify_channel_id, notify_thread_id = self._resolve_payment_destination(
+            route,
+            route_config,
+            'notify',
+            source_channel_id,
+            source_thread_id,
+            channel_id,
+        )
+
+        if notify_channel_id is None:
+            notify_channel_id = confirm_channel_id
+            notify_thread_id = confirm_thread_id
+
+        return {
+            'route_key': route.get('id'),
+            'confirm_channel_id': confirm_channel_id,
+            'confirm_thread_id': confirm_thread_id,
+            'notify_channel_id': notify_channel_id,
+            'notify_thread_id': notify_thread_id,
+        }
+
+    def _resolve_source_payment_destination(
+        self,
+        channel_id: Optional[int],
+    ) -> tuple[Optional[int], Optional[int]]:
+        """Translate a source channel/thread id into stored channel/thread destination ids."""
+        if channel_id is None:
+            return None, None
+
+        parent_id = self.resolve_parent_channel(channel_id)
+        if parent_id is not None and parent_id != channel_id:
+            return parent_id, channel_id
+        return channel_id, None
+
+    def _resolve_payment_destination(
+        self,
+        route: dict,
+        route_config: dict,
+        prefix: str,
+        source_channel_id: Optional[int],
+        source_thread_id: Optional[int],
+        requested_channel_id: Optional[int],
+    ) -> tuple[Optional[int], Optional[int]]:
+        """Resolve one confirm/notify destination from route config and route context."""
+        explicit_channel_id = _int_or_none(route_config.get(f'{prefix}_channel_id'))
+        explicit_thread_id = _int_or_none(route_config.get(f'{prefix}_thread_id'))
+        destination_target = str(
+            route_config.get(f'{prefix}_target')
+            or route_config.get('target')
+            or ''
+        ).strip().lower()
+        use_source_thread = bool(
+            route_config.get(f'{prefix}_use_source_thread')
+            or route_config.get('use_source_thread')
+        )
+
+        if explicit_channel_id is not None:
+            return explicit_channel_id, explicit_thread_id
+
+        if use_source_thread or destination_target in {'source', 'source_thread', 'source_channel'}:
+            return source_channel_id, source_thread_id
+
+        route_channel_id = _int_or_none(route.get('channel_id'))
+        if route_channel_id is None:
+            return None, explicit_thread_id
+
+        if route_channel_id in {requested_channel_id, source_channel_id, source_thread_id}:
+            return source_channel_id, source_thread_id
+        return route_channel_id, explicit_thread_id
+
     # ------------------------------------------------------------------
     # Content
     # ------------------------------------------------------------------

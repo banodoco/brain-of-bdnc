@@ -62,7 +62,7 @@ If they don't specify, choose based on project needs.
 
 ## Prior Grant History
 If the applicant has received grants before, this will be noted below the application.
-Be VERY hesitant to approve someone who already has an open/active grant (status: reviewing, awaiting_wallet).
+Be VERY hesitant to approve someone who already has an open/active grant (status: reviewing, awaiting_wallet, payment_requested).
 For applicants with past paid grants, apply higher scrutiny — they should demonstrate clear results from previous grants before receiving more.
 First-time applicants with no history should be evaluated normally.
 

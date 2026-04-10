@@ -3,10 +3,13 @@
 import discord
 import logging
 from discord.ext import commands
-from src.common.db_handler import DatabaseHandler
 from src.common import discord_utils
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 import os
+from datetime import datetime, timedelta, timezone
+
+if TYPE_CHECKING:
+    from src.common.db_handler import DatabaseHandler
 
 logger = logging.getLogger('DiscordBot')
 
@@ -23,9 +26,10 @@ class PostShareNotificationView(discord.ui.View):
     
     def __init__(
         self,
-        db_handler: DatabaseHandler,
+        db_handler: 'DatabaseHandler',
         discord_message_id: int,
         discord_user_id: int,
+        publication_id: Optional[str],
         tweet_id: str,
         tweet_url: str,
         bot=None,
@@ -36,12 +40,31 @@ class PostShareNotificationView(discord.ui.View):
         self.db_handler = db_handler
         self.discord_message_id = discord_message_id
         self.discord_user_id = discord_user_id
+        self.publication_id = publication_id
         self.tweet_id = tweet_id
         self.tweet_url = tweet_url
         self.bot = bot
         self.guild_id = guild_id
         self.message: Optional[discord.Message] = None
         self._delete_attempted = False
+
+    def _parse_timestamp(self, value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        except ValueError:
+            return None
+
+    def _delete_window_open(self, publication: dict) -> bool:
+        reference_time = (
+            self._parse_timestamp(publication.get('completed_at'))
+            or self._parse_timestamp(publication.get('created_at'))
+        )
+        if reference_time is None:
+            return True
+        expires_at = reference_time + timedelta(hours=6)
+        return datetime.now(timezone.utc) <= expires_at
     
     @discord.ui.button(label="Delete Post", style=discord.ButtonStyle.danger, custom_id="delete_post", emoji="🗑️", row=0)
     async def delete_post_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -51,20 +74,77 @@ class PostShareNotificationView(discord.ui.View):
             return
         
         self._delete_attempted = True
-        
-        # Import here to avoid circular imports
-        from .social_poster import delete_tweet
-        
         await interaction.response.defer(ephemeral=True)
         
-        logger.info(f"User {interaction.user.id} requested deletion of tweet {self.tweet_id}")
-        
-        success = await delete_tweet(self.tweet_id)
-        
+        logger.info(
+            f"User {interaction.user.id} requested deletion of tweet {self.tweet_id} "
+            f"(publication_id={self.publication_id})"
+        )
+
+        if not self.publication_id:
+            self._delete_attempted = False
+            await interaction.followup.send(
+                "This share predates canonical publication tracking, so I can't safely delete it automatically.",
+                ephemeral=True,
+            )
+            return
+
+        publication = self.db_handler.get_social_publication_by_id(
+            self.publication_id,
+            guild_id=self.guild_id,
+        )
+        if not publication:
+            self._delete_attempted = False
+            await interaction.followup.send(
+                "I couldn't find that social publication anymore.",
+                ephemeral=True,
+            )
+            return
+
+        if publication.get('user_id') != self.discord_user_id or interaction.user.id != self.discord_user_id:
+            self._delete_attempted = False
+            await interaction.followup.send(
+                "Only the owner of this shared post can delete it.",
+                ephemeral=True,
+            )
+            return
+
+        if publication.get('deleted_at') or publication.get('status') == 'cancelled':
+            await interaction.followup.send(
+                "This shared post has already been deleted.",
+                ephemeral=True,
+            )
+            return
+
+        if not self._delete_window_open(publication):
+            self._delete_attempted = False
+            await interaction.followup.send(
+                "The 6-hour delete window for this post has expired.",
+                ephemeral=True,
+            )
+            return
+
+        if not publication.get('delete_supported'):
+            self._delete_attempted = False
+            action = publication.get('action')
+            if action == 'retweet':
+                message = "Retweets can't be deleted through this button."
+            else:
+                message = "This shared post can't be deleted automatically."
+            await interaction.followup.send(message, ephemeral=True)
+            return
+
+        social_publish_service = getattr(self.bot, 'social_publish_service', None)
+        if social_publish_service is None:
+            self._delete_attempted = False
+            await interaction.followup.send(
+                "The social publishing service is unavailable right now. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        success = await social_publish_service.delete_publication(self.publication_id)
         if success:
-            # Mark as deleted in DB
-            self.db_handler.mark_shared_post_deleted(self.discord_message_id, 'twitter', guild_id=self.guild_id)
-            
             # Update the message to show deletion was successful
             button.disabled = True
             button.label = "Post Deleted"
@@ -76,8 +156,11 @@ class PostShareNotificationView(discord.ui.View):
                 except Exception as e:
                     logger.warning(f"Failed to update message after deletion: {e}")
             
-            await interaction.followup.send("Your post has been deleted from Twitter.", ephemeral=True)
-            logger.info(f"Successfully deleted tweet {self.tweet_id} at user {interaction.user.id}'s request")
+            await interaction.followup.send("Your post has been deleted from X.", ephemeral=True)
+            logger.info(
+                f"Successfully deleted publication {self.publication_id} "
+                f"at user {interaction.user.id}'s request"
+            )
         else:
             # Deletion failed - notify admin
             self._delete_attempted = False  # Allow retry
@@ -99,6 +182,7 @@ class PostShareNotificationView(discord.ui.View):
                             f"User <@{interaction.user.id}> requested deletion of their tweet but it failed.\n"
                             f"**Tweet URL:** {self.tweet_url}\n"
                             f"**Tweet ID:** {self.tweet_id}\n"
+                            f"**Publication ID:** {self.publication_id}\n"
                             f"**Discord Message ID:** {self.discord_message_id}\n\n"
                             f"Please delete manually."
                         )
@@ -169,9 +253,10 @@ async def send_post_share_notification(
     bot: commands.Bot,
     user: discord.User,
     discord_message: discord.Message,
+    publication_id: Optional[str],
     tweet_id: str,
     tweet_url: str,
-    db_handler: DatabaseHandler
+    db_handler: 'DatabaseHandler'
 ):
     """Sends a DM to user after their content is shared for the first time.
     
@@ -179,6 +264,7 @@ async def send_post_share_notification(
         bot: Discord bot instance
         user: The user whose content was shared
         discord_message: The original Discord message that was shared
+        publication_id: Canonical social_publications identifier
         tweet_id: ID of the posted tweet
         tweet_url: URL of the posted tweet
         db_handler: Database handler instance
@@ -238,6 +324,7 @@ You can always update your preferences by using `/update_details`."""
             db_handler=db_handler,
             discord_message_id=discord_message.id,
             discord_user_id=user.id,
+            publication_id=publication_id,
             tweet_id=tweet_id,
             tweet_url=tweet_url,
             bot=bot,

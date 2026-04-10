@@ -35,7 +35,7 @@ END EVERY TURN with either reply or end_turn.
 **Finding things:**
 - find_messages — search/browse messages. Filters: query, username, channel_id, min_reactions, has_media, days, limit, sort (reactions|unique_reactors|date), refresh_media, live. Use live=true with a channel_id to see current channel state via Discord API.
 - inspect_message — full detail on one message: content, per-emoji reactions, context, replies, fresh media URLs.
-- query_table — query any DB table with filters. Tables: competitions, competition_entries, discord_reactions, discord_messages, members, discord_channels, events, invite_codes, grant_applications, daily_summaries, shared_posts, pending_intros, intro_votes, timed_mutes. Filter operators: gt., gte., lt., lte., neq., like., ilike., in., is.null, not.null. Cheatsheet: discord_messages => author_id, created_at, reaction_count; shared_posts => discord_user_id, shared_at, platform.
+- query_table — query any DB table with filters. Tables: competitions, competition_entries, discord_reactions, discord_messages, members, discord_channels, events, invite_codes, grant_applications, daily_summaries, shared_posts, social_publications, social_channel_routes, pending_intros, intro_votes, timed_mutes. Filter operators: gt., gte., lt., lte., neq., like., ilike., in., is.null, not.null. Cheatsheet: discord_messages => author_id, created_at, reaction_count; shared_posts => discord_user_id, shared_at, platform; social_publications => publication_id, status, platform, action, provider_ref, provider_url, last_error, scheduled_at.
 - get_active_channels, get_daily_summaries, get_member_info, get_bot_status, search_logs
 
 **Doing things:**
@@ -43,7 +43,23 @@ END EVERY TURN with either reply or end_turn.
 - edit_message(channel_id, message_id, content)
 - delete_message(channel_id, message_id?, message_ids?) — delete one or many messages. You can delete ANY message, not just your own. To clean up a channel: browse it first with find_messages(live=true), then pass the IDs to delete.
 - upload_file(channel_id, file_path, content?)
-- share_to_social(message_id or message_link, tweet_text?, reply_to_tweet?, text_only?) — share to Twitter as a standalone post or thread reply. Tweets are free-form: the source Discord message does NOT need attachments, and `tweet_text` alone is enough to post text-only. If the source message has attachments they'll be included by default. `reply_to_tweet` accepts a tweet URL or ID. **Thread replies default to text-only** so a follow-up doesn't reattach the parent tweet's media — pass `text_only=false` explicitly if you DO want a reply to also include the source message's media. Success returns `tweet_url` and `tweet_id`; if `already_shared` is true on a rerun without `reply_to_tweet`, cite the returned `tweet_url` instead of treating it as a failure.
+- share_to_social(message_id or message_link, tweet_text?, action?, target_post?, reply_to_tweet?, text_only?, schedule_for?, platform?) — share or schedule publishing to X/Twitter. Supports post, reply, and retweet actions. `schedule_for` must be ISO-8601 with timezone. `target_post` or `reply_to_tweet` accepts a tweet URL or ID. **Thread replies default to text-only** so a follow-up doesn't reattach the parent tweet's media — pass `text_only=false` explicitly if you DO want a reply to also include the source message's media. Immediate success returns `tweet_url`/`tweet_id` plus `publication_id`; scheduled success returns `publication_id` with queued status. If `already_shared` is true on a rerun, cite the returned existing `tweet_url` instead of treating it as a failure.
+- list_social_routes(platform?, channel_id?, enabled?, limit?) — inspect configured social routes for the active guild.
+- create_social_route(platform?, channel_id?, enabled?, route_config?) — create a guild-default or channel-specific route. Omit channel_id for the guild default. Put outbound details in `route_config`, for example `{"account": "main"}`.
+- update_social_route(route_id, platform?, channel_id?, enabled?, route_config?) — update one route by id. Pass `channel_id=""` to convert it to the guild-default route.
+- delete_social_route(route_id) — delete one route by id.
+- list_payment_routes(producer?, channel_id?, enabled?, limit?) — inspect configured payment routes for the active guild.
+- create_payment_route(producer, channel_id?, enabled?, route_config?) — create a guild-default or channel-specific payment route. Put confirm/notify routing details in `route_config`, for example `{"use_source_thread": true}` or explicit channel/thread IDs.
+- update_payment_route(route_id, producer?, channel_id?, enabled?, route_config?) — update one payment route by id. Pass `channel_id=""` to convert it to the guild-default route.
+- delete_payment_route(route_id) — delete one payment route by id.
+- list_wallets(chain?, discord_user_id?, verified?, limit?) — inspect registered payout wallets with redacted addresses.
+- list_payments(status?, producer?, recipient_discord_id?, wallet_id?, is_test?, route_key?, limit?) — inspect payment ledger rows with redacted wallet addresses.
+- get_payment_status(payment_id) — inspect one payment row with redacted wallet address, status, transaction signature, and errors.
+- retry_payment(payment_id) — move a failed payment back to queued. This is blocked for submitted/manual_hold rows.
+- hold_payment(payment_id, reason) — force a payment into manual_hold.
+- release_payment(payment_id, new_status, reason?) — release a manual_hold payment to failed or keep it held.
+- cancel_payment(payment_id, reason?) — cancel a payment that has not entered submitted/manual_hold.
+- initiate_payment(recipient_user_id, amount_sol, reason?) — start an admin-triggered payout in SOL from a guild channel. If the user does not already have a verified Solana wallet on file, this pings them in-channel and waits for their wallet reply before continuing.
 - update_member_socials(user_id, twitter_url?, reddit_url?) — set/clear a member's Twitter or Reddit handle on file. The Twitter handle is what social picks use to auto-tag the creator. Pass an empty string to clear a field; omit a field to leave it alone. Use this whenever the admin says things like "set X's twitter to @y" or "X is @y on twitter".
 - resolve_user(username) — get a user's Discord ID and mention tag.
 
@@ -65,7 +81,7 @@ END EVERY TURN with either reply or end_turn.
 
 **Use summaries verbatim.** Search tools return a "summary" field pre-formatted for Discord. Pass it directly into reply(). Don't rewrite it — reformatting breaks media embeds and message splitting.
 
-**Media.** When the user asks for a video, image, or any media item, ALWAYS include the actual attachment URL (the video/image file itself), not just a link to the Discord message that contains it. A message link doesn't answer "show me the video". Always call refresh_media=true (or use inspect_message) to get fresh CDN URLs, then put each media URL bare on its own line in its own message so Discord auto-embeds it. Optionally include the message link too if context (the post's caption, who shared it, reactions) is also relevant — but the media URL itself is the answer and must be there. send_message auto-refreshes CDN URLs.
+**Media.** When the user asks for a video, image, or any media item, ALWAYS include the actual attachment URL (the video/image file itself), not just a link to the Discord message that contains it. A message link doesn't answer "show me the video". Always call refresh_media=true (or use inspect_message) to get fresh CDN URLs, then put each media URL bare on its own line in its own message so Discord auto-embeds it. Optionally include the message link too if context (the post's caption, who shared it, reactions) is also relevant — but the media URL itself is the answer and must be there. send_message auto-refreshes CDN URLs. For scheduled or failed social publishing work, inspect `social_publications` and use the dedicated social route tools before falling back to `query_table` on `social_channel_routes`.
 
 **After a restart.** If you lack context, use search_logs(query="AdminChat", hours=1) to see your recent actions.
 
@@ -82,7 +98,9 @@ You have FFmpeg, ffprobe, and Python/Pillow for media processing. You can:
 - Process media with ffmpeg, ffprobe, or python3/PIL (run_media_command)
 - List working files (list_media_files)
 - Upload results to Discord (upload_file)
-- Share to social media with `share_to_social`, including thread replies via `reply_to_tweet`; use the returned `tweet_url`/`tweet_id`, and if `already_shared` is true, report the existing `tweet_url`.
+- Share to social media with `share_to_social`, including scheduled posts/replies/retweets. Use the returned `publication_id` for canonical tracking, and if `already_shared` is true, report the existing `tweet_url`.
+- Manage channel-to-social routing with `list_social_routes`, `create_social_route`, `update_social_route`, and `delete_social_route` instead of editing `social_channel_routes` manually when possible.
+- Manage payment routing and payment state with the dedicated payment tools instead of querying payment tables directly. Those tools intentionally redact wallet addresses.
 
 **Audio default.** ALWAYS preserve audio in ffmpeg operations unless the user explicitly says to strip it. The source clips usually have audio (the `-audio` suffix in filenames is a hint, not decoration), and a silent output is almost never what was wanted. Concrete rules:
 - For `concat` filter operations across mixed resolutions, set both `v=1` and `a=1` and map an audio output (e.g. `-filter_complex "[0:v][0:a][1:v][1:a]...concat=n=N:v=1:a=1[v][a]" -map "[v]" -map "[a]"`). If a source is missing audio, generate a silent track for it with `anullsrc` rather than dropping audio from the whole output.
@@ -390,6 +408,14 @@ class AdminChatAgent:
                     if channel_context and channel_context.get('guild_id') and 'guild_id' not in tool_input:
                         tool_input = dict(tool_input)
                         tool_input['guild_id'] = int(channel_context['guild_id'])
+                    if channel_context and channel_context.get('channel_id') and 'source_channel_id' not in tool_input:
+                        if tool_input is tool_use.input:
+                            tool_input = dict(tool_input)
+                        tool_input['source_channel_id'] = int(channel_context['channel_id'])
+                    if is_admin and tool_name == "initiate_payment" and 'admin_user_id' not in tool_input:
+                        if tool_input is tool_use.input:
+                            tool_input = dict(tool_input)
+                        tool_input['admin_user_id'] = user_id
 
                     # Execute the tool
                     dm_channel_id = None

@@ -28,10 +28,15 @@ from src.features.summarising.summariser_cog import SummarizerCog
 from src.features.summarising.summariser import ChannelSummarizer
 from src.features.logging.logger_cog import LoggerCog
 from src.features.sharing.sharing_cog import SharingCog
+from src.features.sharing.providers.x_provider import XProvider
+from src.features.sharing.social_publish_service import SocialPublishService
 from src.features.reacting.reactor import Reactor
 from src.features.reacting.reactor_cog import ReactorCog
 from src.features.archive.archive_cog import ArchiveCog
 from src.features.health.health_check_cog import HealthCheckCog
+from src.features.payments.payment_service import PaymentService
+from src.features.payments.payment_cog import PaymentCog
+from src.features.payments.solana_provider import SolanaProvider
 
 def setup_logging(dev_mode=False):
     """Setup shared logging configuration for all bots"""
@@ -128,13 +133,46 @@ async def main_async(args):
         bot.server_config = bot.db_handler.server_config
         logger.info("DatabaseHandler initialized and attached to bot.")
 
+        # Shared social publish service for immediate callers and scheduled worker.
+        x_provider = XProvider()
+        bot.social_publish_service = SocialPublishService(
+            db_handler=bot.db_handler,
+            providers={
+                'twitter': x_provider,
+                'x': x_provider,
+            },
+            logger_instance=logger,
+        )
+        logger.info("SocialPublishService initialized and attached to bot.")
+
+        try:
+            test_payment_amount = float(os.getenv('PAYMENT_TEST_AMOUNT_SOL', '0.000001'))
+            solana_provider = SolanaProvider()
+            bot.payment_service = PaymentService(
+                db_handler=bot.db_handler,
+                providers={'solana': solana_provider},
+                test_payment_amount=test_payment_amount,
+                logger_instance=logger,
+            )
+            logger.info(
+                "PaymentService initialized with fixed test payment amount of %.8f SOL.",
+                test_payment_amount,
+            )
+        except Exception as e:
+            bot.payment_service = None
+            logger.warning(f"Failed to initialize payment subsystem (payments disabled): {e}")
+
         # 2. Claude Client
         claude_client_instance = ClaudeClient()
         bot.claude_client = claude_client_instance
         logger.info("ClaudeClient initialized.")
 
         # 3. Sharing Cog & Sharer Instance
-        sharing_cog_instance = SharingCog(bot, bot.db_handler)
+        sharing_cog_instance = SharingCog(
+            bot,
+            bot.db_handler,
+            social_publish_service=bot.social_publish_service,
+        )
         await bot.add_cog(sharing_cog_instance)
         sharer_instance = sharing_cog_instance.sharer_instance
         if not sharer_instance:
@@ -182,6 +220,9 @@ async def main_async(args):
         await bot.add_cog(ReactorCog(bot, logger, args.dev))
         await bot.add_cog(ArchiveCog(bot))
         await bot.add_cog(HealthCheckCog(bot))
+        if bot.payment_service is not None:
+            await bot.add_cog(PaymentCog(bot, bot.db_handler, payment_service=bot.payment_service))
+            logger.info("PaymentCog loaded.")
 
         # Optional cogs — don't block startup if they fail
         try:

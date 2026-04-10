@@ -10,10 +10,11 @@ import time
 import asyncio
 import logging
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 import discord
 from dotenv import load_dotenv
+from src.features.sharing.models import PublicationSourceContext, SocialPublishRequest
 
 load_dotenv()
 
@@ -69,7 +70,11 @@ QUERYABLE_TABLES = {
     'events', 'invite_codes', 'grant_applications',
     'daily_summaries', 'channel_summary', 'shared_posts',
     'pending_intros', 'intro_votes', 'timed_mutes',
+    'social_publications', 'social_channel_routes',
 }
+assert 'payment_requests' not in QUERYABLE_TABLES
+assert 'payment_channel_routes' not in QUERYABLE_TABLES
+assert 'wallet_registry' not in QUERYABLE_TABLES
 
 
 # ========== Tool Definitions (Anthropic format) ==========
@@ -179,7 +184,7 @@ TOOLS = [
     },
     {
         "name": "share_to_social",
-        "description": "Share a Discord message to social media (Twitter). Uses the existing sharing pipeline. Respects user opt-out preferences. The post can be text-only or include attachments if the source message has them. Use tweet_text to specify exact tweet copy — if omitted, a generic caption is auto-generated. Set reply_to_tweet to post as a thread reply (replies default to text-only — set text_only=false to also reattach the source message's media). The response always includes tweet_url. If you re-run without reply_to_tweet on a previously shared message, the existing tweet_url is returned.",
+        "description": "Share or schedule a Discord message to social media (currently X/Twitter). Supports standalone posts, thread replies, and retweets. Use schedule_for for queued publishing with an ISO-8601 timestamp. Use action plus target_post for replies/retweets. reply_to_tweet remains supported as a reply-only alias and replies still default to text_only=true unless you explicitly set text_only=false. Publishing resolves the configured social route for the message channel unless you supply route_key to force a specific route. Immediate success returns tweet_url/tweet_id/publication_id; scheduled success returns publication_id with queued status.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -195,16 +200,402 @@ TOOLS = [
                     "type": "string",
                     "description": "Custom tweet text (max 280 chars). If provided, this exact text is used as the tweet instead of auto-generating."
                 },
+                "action": {
+                    "type": "string",
+                    "enum": ["post", "reply", "retweet"],
+                    "description": "Publish action. Defaults to post. If omitted but target_post/reply_to_tweet is provided, reply is assumed."
+                },
+                "target_post": {
+                    "type": "string",
+                    "description": "Target tweet/X post ID or full URL for reply/retweet actions."
+                },
                 "reply_to_tweet": {
                     "type": "string",
-                    "description": "Optional Tweet ID or full tweet URL to reply to. When set, the post is added as a thread reply. If you re-run on a previously shared message without this field, the tool returns the existing tweet URL instead of posting again."
+                    "description": "Backward-compatible alias for target_post when action=reply. Accepts a Tweet ID or full tweet URL."
                 },
                 "text_only": {
                     "type": "boolean",
                     "description": "Skip the source message's attachments and post text only. Defaults to true for thread replies (so a follow-up doesn't reattach the same media as the parent tweet) and false otherwise. Set to false explicitly to force a reply that DOES include media."
+                },
+                "schedule_for": {
+                    "type": "string",
+                    "description": "Optional ISO-8601 timestamp for queued publishing. Stored in UTC. Example: 2026-04-09T18:30:00Z"
+                },
+                "platform": {
+                    "type": "string",
+                    "description": "Optional platform override. Currently only twitter/x is supported."
+                },
+                "route_key": {
+                    "type": "string",
+                    "description": "Optional explicit social route override. Use a social_channel_routes.id value when you need to bypass the normal channel -> parent -> guild-default route resolution."
                 }
             },
             "required": []
+        }
+    },
+    {
+        "name": "list_social_routes",
+        "description": "List configured outbound social routes for the current guild. Use this before creating or overriding routes. Omit channel_id to include guild-default and channel-specific rows.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "platform": {
+                    "type": "string",
+                    "description": "Optional platform filter. Defaults to twitter."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Optional Discord channel ID filter."
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Optional enabled-state filter."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows to return (default 50, max 100)."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "create_social_route",
+        "description": "Create a social route row for a guild default or a specific channel. Omit channel_id for the guild-default route. route_config is a JSON object describing the outbound target, such as {\"account\": \"main\"}.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "platform": {
+                    "type": "string",
+                    "description": "Platform name. Defaults to twitter."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Optional Discord channel ID. Omit for the guild-default route."
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether the route is enabled. Defaults to true."
+                },
+                "route_config": {
+                    "type": "object",
+                    "description": "JSON route config payload, for example {\"account\": \"main\"}."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "update_social_route",
+        "description": "Update one social route row by id. Pass channel_id as an empty string to convert it to the guild-default route.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "route_id": {
+                    "type": "string",
+                    "description": "social_channel_routes.id to update."
+                },
+                "platform": {
+                    "type": "string",
+                    "description": "Optional platform override."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Optional Discord channel ID. Pass an empty string to clear to the guild-default route."
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Optional enabled-state override."
+                },
+                "route_config": {
+                    "type": "object",
+                    "description": "Optional replacement JSON route config payload."
+                }
+            },
+            "required": ["route_id"]
+        }
+    },
+    {
+        "name": "delete_social_route",
+        "description": "Delete one social route row by id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "route_id": {
+                    "type": "string",
+                    "description": "social_channel_routes.id to delete."
+                }
+            },
+            "required": ["route_id"]
+        }
+    },
+    {
+        "name": "list_payment_routes",
+        "description": "List configured payment routes for the active guild. Use this before creating or overriding payment confirmations/notifications.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "producer": {
+                    "type": "string",
+                    "description": "Optional producer filter, for example grants."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Optional Discord channel ID filter."
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Optional enabled-state filter."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows to return (default 50, max 100)."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "create_payment_route",
+        "description": "Create a payment route row for a guild default or a specific channel. route_config can direct confirmations/notifications to the source thread/forum post or to explicit channel/thread IDs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "producer": {
+                    "type": "string",
+                    "description": "Producer name, for example grants."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Optional Discord channel ID. Omit for the guild-default route."
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether the route is enabled. Defaults to true."
+                },
+                "route_config": {
+                    "type": "object",
+                    "description": "JSON route config payload, for example {\"use_source_thread\": true} or explicit confirm/notify destination IDs."
+                }
+            },
+            "required": ["producer"]
+        }
+    },
+    {
+        "name": "update_payment_route",
+        "description": "Update one payment route row by id. Pass channel_id as an empty string to convert it to the guild-default route.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "route_id": {
+                    "type": "string",
+                    "description": "payment_channel_routes.id to update."
+                },
+                "producer": {
+                    "type": "string",
+                    "description": "Optional producer override."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Optional Discord channel ID. Pass an empty string to clear to the guild-default route."
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Optional enabled-state override."
+                },
+                "route_config": {
+                    "type": "object",
+                    "description": "Optional replacement JSON route config payload."
+                }
+            },
+            "required": ["route_id"]
+        }
+    },
+    {
+        "name": "delete_payment_route",
+        "description": "Delete one payment route row by id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "route_id": {
+                    "type": "string",
+                    "description": "payment_channel_routes.id to delete."
+                }
+            },
+            "required": ["route_id"]
+        }
+    },
+    {
+        "name": "list_wallets",
+        "description": "List wallet registry rows for the active guild with redacted wallet addresses.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chain": {
+                    "type": "string",
+                    "description": "Optional chain filter, for example solana."
+                },
+                "discord_user_id": {
+                    "type": "string",
+                    "description": "Optional Discord user ID filter."
+                },
+                "verified": {
+                    "type": "boolean",
+                    "description": "Optional filter for whether a wallet has been verified."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows to return (default 50, max 100)."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "list_payments",
+        "description": "List payment ledger rows for the active guild with redacted wallet addresses.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Optional payment status filter."
+                },
+                "producer": {
+                    "type": "string",
+                    "description": "Optional producer filter, for example grants."
+                },
+                "recipient_discord_id": {
+                    "type": "string",
+                    "description": "Optional recipient Discord user ID filter."
+                },
+                "wallet_id": {
+                    "type": "string",
+                    "description": "Optional wallet_id filter."
+                },
+                "is_test": {
+                    "type": "boolean",
+                    "description": "Optional test-vs-final filter."
+                },
+                "route_key": {
+                    "type": "string",
+                    "description": "Optional route key filter."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows to return (default 50, max 100)."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "get_payment_status",
+        "description": "Get one payment row by payment_id with redacted wallet address and status details.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "payment_id": {
+                    "type": "string",
+                    "description": "payment_requests.payment_id to inspect."
+                }
+            },
+            "required": ["payment_id"]
+        }
+    },
+    {
+        "name": "retry_payment",
+        "description": "Move one failed payment back to queued. This is blocked for submitted and manual_hold rows.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "payment_id": {
+                    "type": "string",
+                    "description": "payment_requests.payment_id to retry."
+                }
+            },
+            "required": ["payment_id"]
+        }
+    },
+    {
+        "name": "hold_payment",
+        "description": "Force one payment into manual_hold with a reason.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "payment_id": {
+                    "type": "string",
+                    "description": "payment_requests.payment_id to hold."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Reason to record on the payment."
+                }
+            },
+            "required": ["payment_id", "reason"]
+        }
+    },
+    {
+        "name": "release_payment",
+        "description": "Release one manual_hold payment. Allowed targets are failed or manual_hold.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "payment_id": {
+                    "type": "string",
+                    "description": "payment_requests.payment_id to release."
+                },
+                "new_status": {
+                    "type": "string",
+                    "enum": ["failed", "manual_hold"],
+                    "description": "Target status."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional reason to record."
+                }
+            },
+            "required": ["payment_id", "new_status"]
+        }
+    },
+    {
+        "name": "cancel_payment",
+        "description": "Cancel one payment if it has never entered submitted or manual_hold.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "payment_id": {
+                    "type": "string",
+                    "description": "payment_requests.payment_id to cancel."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional reason to record."
+                }
+            },
+            "required": ["payment_id"]
+        }
+    },
+    {
+        "name": "initiate_payment",
+        "description": "Create an admin-triggered payment request for a Banodoco user.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recipient_user_id": {
+                    "type": "string",
+                    "description": "Discord user ID of the intended payment recipient."
+                },
+                "amount_sol": {
+                    "type": "number",
+                    "description": "SOL amount requested by the admin."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional reason to store with the payment intent."
+                }
+            },
+            "required": ["recipient_user_id", "amount_sol"]
         }
     },
     {
@@ -426,13 +817,13 @@ TOOLS = [
     },
     {
         "name": "query_table",
-        "description": "Query any database table directly. Use for data that isn't covered by other tools (e.g. competition_entries, competitions, discord_reactions, events, grant_applications). Returns up to `limit` rows matching the filters.",
+        "description": "Query any database table directly. Use for data that isn't covered by other tools (e.g. competition_entries, competitions, discord_reactions, social_publications, social_channel_routes, events, grant_applications). Returns up to `limit` rows matching the filters.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "table": {
                     "type": "string",
-                    "description": "Table name (e.g. competition_entries, competitions, discord_reactions, events, invite_codes, grant_applications, members, discord_messages, discord_channels)"
+                    "description": "Table name (e.g. competition_entries, competitions, discord_reactions, social_publications, social_channel_routes, events, invite_codes, grant_applications, members, discord_messages, discord_channels)"
                 },
                 "select": {
                     "type": "string",
@@ -516,6 +907,22 @@ MEMBER_TOOLS = {
 
 ADMIN_ONLY_TOOLS = {
     "share_to_social",
+    "list_social_routes",
+    "create_social_route",
+    "update_social_route",
+    "delete_social_route",
+    "list_payment_routes",
+    "create_payment_route",
+    "update_payment_route",
+    "delete_payment_route",
+    "list_wallets",
+    "list_payments",
+    "get_payment_status",
+    "retry_payment",
+    "hold_payment",
+    "release_payment",
+    "cancel_payment",
+    "initiate_payment",
     "update_member_socials",
     "search_logs",
     "send_message",
@@ -555,6 +962,162 @@ def parse_message_link(link: str) -> Optional[Dict[str, int]]:
             'message_id': int(match.group(3))
         }
     return None
+
+
+def _normalize_social_platform(platform: Any) -> str:
+    normalized = str(platform or 'twitter').strip().lower()
+    if normalized == 'x':
+        return 'twitter'
+    return normalized
+
+
+def _normalize_payment_producer(producer: Any) -> str:
+    normalized = str(producer or '').strip().lower()
+    if not normalized:
+        raise ValueError("producer is required")
+    return normalized
+
+
+def _parse_optional_channel_id(raw_value: Any, *, allow_clear: bool = True) -> Optional[int]:
+    if raw_value is None:
+        return None
+    if raw_value == '' and allow_clear:
+        return None
+    if raw_value == '':
+        raise ValueError("channel_id cannot be empty")
+    try:
+        return int(str(raw_value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("channel_id must be a Discord channel ID") from exc
+
+
+def _normalize_route_config(route_config: Any) -> Dict[str, Any]:
+    if route_config in (None, ''):
+        return {}
+    if not isinstance(route_config, dict):
+        raise ValueError("route_config must be a JSON object")
+    return dict(route_config)
+
+
+def _resolve_db_handler_guild_id(db_handler: Any, params: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """Resolve a guild for db-handler-backed tools, with a narrow in-memory fallback for tests."""
+    params = params or {}
+    if params.get('guild_id') not in (None, '', 0, '0'):
+        return _resolve_guild_id(params)
+
+    server_config = getattr(db_handler, 'server_config', None)
+    if server_config is not None:
+        try:
+            return server_config.resolve_guild_id(None, require_write=True)
+        except Exception:
+            pass
+
+    for attr_name in ('payment_routes', 'wallets', 'payments'):
+        rows = getattr(db_handler, attr_name, None)
+        if not isinstance(rows, list):
+            continue
+        guild_ids = {
+            int(row['guild_id'])
+            for row in rows
+            if isinstance(row, dict) and row.get('guild_id') is not None
+        }
+        if len(guild_ids) == 1:
+            return next(iter(guild_ids))
+
+    return _resolve_guild_id(params)
+
+
+def _list_wallet_rows(
+    db_handler: Any,
+    *,
+    guild_id: int,
+    chain: Optional[str],
+    discord_user_id: Optional[int],
+    verified: Optional[bool],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """Support both the production db handler and lightweight test doubles."""
+    try:
+        return db_handler.list_wallets(
+            guild_id=guild_id,
+            chain=chain,
+            discord_user_id=discord_user_id,
+            verified_only=bool(verified) if verified is not None else False,
+            limit=limit,
+        )
+    except TypeError:
+        return db_handler.list_wallets(
+            guild_id=guild_id,
+            chain=chain,
+            discord_user_id=discord_user_id,
+            verified=verified,
+            limit=limit,
+        )
+
+
+def _redact_wallet_address(wallet_address: Any) -> Optional[str]:
+    if wallet_address in (None, ''):
+        return None
+    wallet = str(wallet_address)
+    if len(wallet) <= 10:
+        return wallet
+    return f"{wallet[:4]}...{wallet[-4:]}"
+
+
+def _redact_payment_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "payment_id": row.get("payment_id"),
+        "guild_id": row.get("guild_id"),
+        "producer": row.get("producer"),
+        "producer_ref": row.get("producer_ref"),
+        "wallet_id": row.get("wallet_id"),
+        "recipient_discord_id": row.get("recipient_discord_id"),
+        "recipient_wallet": _redact_wallet_address(row.get("recipient_wallet")),
+        "chain": row.get("chain"),
+        "provider": row.get("provider"),
+        "is_test": row.get("is_test"),
+        "route_key": row.get("route_key"),
+        "confirm_channel_id": row.get("confirm_channel_id"),
+        "confirm_thread_id": row.get("confirm_thread_id"),
+        "notify_channel_id": row.get("notify_channel_id"),
+        "notify_thread_id": row.get("notify_thread_id"),
+        "amount_token": row.get("amount_token"),
+        "amount_usd": row.get("amount_usd"),
+        "token_price_usd": row.get("token_price_usd"),
+        "status": row.get("status"),
+        "send_phase": row.get("send_phase"),
+        "tx_signature": row.get("tx_signature"),
+        "attempt_count": row.get("attempt_count"),
+        "retry_after": row.get("retry_after"),
+        "scheduled_at": row.get("scheduled_at"),
+        "confirmed_by": row.get("confirmed_by"),
+        "confirmed_by_user_id": row.get("confirmed_by_user_id"),
+        "confirmed_at": row.get("confirmed_at"),
+        "submitted_at": row.get("submitted_at"),
+        "completed_at": row.get("completed_at"),
+        "last_error": row.get("last_error"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _redact_wallet_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "wallet_id": row.get("wallet_id"),
+        "guild_id": row.get("guild_id"),
+        "discord_user_id": row.get("discord_user_id"),
+        "chain": row.get("chain"),
+        "wallet_address": _redact_wallet_address(row.get("wallet_address")),
+        "verified_at": row.get("verified_at"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _coerce_bool(value: Any, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{field_name} must be true or false")
 
 
 def format_message_for_llm(msg: Dict, include_link: bool = True) -> Dict:
@@ -1029,33 +1592,80 @@ async def execute_share_to_social(
     sharer,
     params: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Execute the share_to_social tool using existing sharer.finalize_sharing()."""
+    """Execute the share_to_social tool through the unified social publish service."""
 
     message_link = params.get('message_link', '')
     message_id = params.get('message_id', '')
+    target_post_input = params.get('target_post')
     raw_reply_to_tweet = params.get('reply_to_tweet')
+    raw_action = str(params.get('action', '') or '').strip().lower()
+    raw_route_override = params.get('route_key')
+    if raw_route_override in (None, ''):
+        raw_route_override = params.get('route_override')
+    target_post_id = None
     reply_to_tweet_id = None
 
-    if raw_reply_to_tweet not in (None, ''):
-        reply_value = str(raw_reply_to_tweet).strip()
+    target_input = target_post_input if target_post_input not in (None, '') else raw_reply_to_tweet
+
+    if target_input not in (None, ''):
+        reply_value = str(target_input).strip()
         status_match = re.search(r'status/(\d+)', reply_value)
         if status_match:
-            reply_to_tweet_id = status_match.group(1)
+            target_post_id = status_match.group(1)
         elif reply_value.isdigit():
-            reply_to_tweet_id = reply_value
+            target_post_id = reply_value
         else:
             return {
                 "success": False,
-                "error": "reply_to_tweet must be a Tweet ID or a tweet URL containing status/<digits>"
+                "error": "target_post/reply_to_tweet must be a Tweet ID or a tweet URL containing status/<digits>"
             }
+
+    if raw_action and raw_action not in {"post", "reply", "retweet"}:
+        return {"success": False, "error": "action must be one of: post, reply, retweet"}
+
+    if raw_action:
+        action = raw_action
+    elif raw_reply_to_tweet not in (None, '') or target_post_id:
+        action = 'reply'
+    else:
+        action = 'post'
+
+    if action in {'reply', 'retweet'} and not target_post_id:
+        return {"success": False, "error": f"action={action} requires target_post or reply_to_tweet"}
+    if action == 'post' and target_post_id:
+        return {"success": False, "error": "target_post/reply_to_tweet is only valid for reply or retweet actions"}
+
+    reply_to_tweet_id = target_post_id if action == 'reply' else None
 
     # Default text_only=True for thread replies so a follow-up doesn't
     # reattach the parent tweet's media. Caller can override with explicit false.
     raw_text_only = params.get('text_only')
     if raw_text_only is None:
-        text_only = bool(reply_to_tweet_id)
+        text_only = action == 'reply'
     else:
         text_only = bool(raw_text_only)
+
+    platform = str(params.get('platform') or 'twitter').strip().lower()
+    if platform == 'x':
+        platform = 'twitter'
+    if platform != 'twitter':
+        return {"success": False, "error": f"Unsupported platform: {platform}"}
+
+    route_override = None
+    if raw_route_override not in (None, ''):
+        route_override = {'route_key': str(raw_route_override).strip()}
+
+    scheduled_at = None
+    raw_schedule_for = params.get('schedule_for')
+    if raw_schedule_for not in (None, ''):
+        schedule_value = str(raw_schedule_for).strip().replace('Z', '+00:00')
+        try:
+            scheduled_at = datetime.fromisoformat(schedule_value)
+        except ValueError:
+            return {"success": False, "error": "schedule_for must be a valid ISO-8601 timestamp"}
+        if scheduled_at.tzinfo is None:
+            return {"success": False, "error": "schedule_for must include a timezone offset or Z suffix"}
+        scheduled_at = scheduled_at.astimezone(timezone.utc)
 
     # Parse link or use direct ID
     if message_link:
@@ -1076,6 +1686,10 @@ async def execute_share_to_social(
         return {"success": False, "error": "Provide either message_link or message_id"}
 
     try:
+        social_publish_service = getattr(sharer, 'social_publish_service', None)
+        if social_publish_service is None:
+            return {"success": False, "error": "Social publish service is not available"}
+
         channel = bot.get_channel(channel_id)
         if channel is None:
             return {"success": False, "error": f"Could not find channel {channel_id}"}
@@ -1104,44 +1718,157 @@ async def execute_share_to_social(
         if not message:
             return {"success": False, "error": f"Could not find message {message_id}"}
 
+        guild_id = getattr(message.guild, 'id', None)
+        if guild_id is None:
+            return {"success": False, "error": "This message is not in a server-backed channel"}
+
         tweet_text = params.get('tweet_text', '').strip() or None
+        if action == 'retweet' and tweet_text:
+            return {"success": False, "error": "tweet_text is not supported for retweet actions"}
         logger.info(
             f"[AdminChat] Triggering share for message {message_id} by user {message.author.id}" +
             (f" with custom tweet: '{tweet_text[:80]}...'" if tweet_text else "") +
-            (f" in reply to tweet {reply_to_tweet_id}" if reply_to_tweet_id else "")
+            (f" with action={action}" if action else "") +
+            (f" targeting tweet {target_post_id}" if target_post_id else "") +
+            (f" scheduled for {scheduled_at.isoformat()}" if scheduled_at else "")
         )
 
-        # Use existing sharing path
-        result = await sharer.finalize_sharing(
-            user_id=message.author.id,
+        user_details = sharer.db_handler.get_member(message.author.id)
+        if not user_details:
+            return {"success": False, "error": f"Could not load member {message.author.id} from the database"}
+
+        existing_publication = sharer._find_existing_publication(
+            message_id=message.id,
+            guild_id=guild_id,
+            platform=platform,
+            action=action,
+            source_kind='admin_chat',
+        )
+        if existing_publication:
+            tweet_url = existing_publication.get('provider_url')
+            tweet_id = existing_publication.get('provider_ref')
+            return {
+                "success": True,
+                "message": f"Already shared: {tweet_url}",
+                "tweet_url": tweet_url,
+                "tweet_id": tweet_id,
+                "publication_id": existing_publication.get('publication_id'),
+                "already_shared": True,
+            }
+
+        downloaded_attachments = []
+        if not text_only and action != 'retweet':
+            for attachment in message.attachments:
+                downloaded_item = await sharer._download_attachment(attachment)
+                if downloaded_item:
+                    downloaded_attachments.append(downloaded_item)
+
+        twitter_content = None
+        if action != 'retweet':
+            if tweet_text:
+                twitter_content = tweet_text
+            else:
+                twitter_content = f"Check out this post by {message.author.display_name}! {message.jump_url}"
+
+        request = SocialPublishRequest(
             message_id=message.id,
             channel_id=channel.id,
-            summary_channel=None,
-            tweet_text=tweet_text,
-            in_reply_to_tweet_id=reply_to_tweet_id,
+            guild_id=guild_id,
+            user_id=message.author.id,
+            platform=platform,
+            action=action,
+            scheduled_at=scheduled_at,
+            target_post_ref=target_post_id,
+            route_override=route_override,
+            text=twitter_content,
+            media_hints=downloaded_attachments,
+            source_kind='admin_chat',
+            duplicate_policy={'check_existing': action == 'post'},
             text_only=text_only,
+            announce_policy={
+                'enabled': True,
+                'author_display_name': message.author.display_name,
+                'original_message_jump_url': message.jump_url,
+            },
+            first_share_notification_policy={'enabled': True},
+            legacy_shared_post_policy={'enabled': action == 'post', 'delete_eligible_hours': 6},
+            source_context=PublicationSourceContext(
+                source_kind='admin_chat',
+                metadata={
+                    'user_details': user_details,
+                    'original_content': message.content,
+                    'author_display_name': message.author.display_name,
+                    'original_message_jump_url': message.jump_url,
+                    'guild_id': guild_id,
+                },
+            ),
         )
 
-        if not result or not result.get("success"):
-            return {"success": False, "error": (result or {}).get("error", "Sharing failed")}
+        if scheduled_at is not None:
+            result = await social_publish_service.enqueue(request)
+            if not result.success:
+                return {"success": False, "error": result.error or "Scheduling failed"}
+            return {
+                "success": True,
+                "message": f"Scheduled {action} for {scheduled_at.isoformat()}",
+                "publication_id": result.publication_id,
+                "status": "queued",
+                "already_shared": False,
+            }
 
-        tweet_url = result.get("tweet_url")
-        tweet_id = result.get("tweet_id")
-        already_shared = bool(result.get("already_shared"))
+        try:
+            result = await social_publish_service.publish_now(request)
+        finally:
+            sharer._cleanup_files([
+                att['local_path']
+                for att in downloaded_attachments
+                if att.get('local_path')
+            ])
 
-        if already_shared:
-            response_message = f"Already shared: {tweet_url}"
-        else:
-            response_message = f"Posted tweet: {tweet_url}"
-            if reply_to_tweet_id:
-                response_message += " (reply in thread)"
+        if not result.success:
+            return {"success": False, "error": result.error or "Sharing failed"}
+
+        tweet_url = result.tweet_url
+        tweet_id = result.tweet_id
+        publication_id = result.publication_id
+
+        if tweet_url:
+            await sharer._announce_tweet_url(
+                tweet_url,
+                message.author.display_name,
+                message.jump_url,
+                str(message.id),
+                guild_id=guild_id,
+                is_reply=(action == 'reply'),
+            )
+
+        from src.features.sharing.subfeatures.notify_user import send_post_share_notification
+
+        is_first_share = sharer.db_handler.mark_member_first_shared(message.author.id, guild_id=guild_id)
+        if is_first_share:
+            await send_post_share_notification(
+                bot=bot,
+                user=message.author,
+                discord_message=message,
+                publication_id=publication_id,
+                tweet_id=tweet_id,
+                tweet_url=tweet_url,
+                db_handler=sharer.db_handler,
+            )
+
+        response_message = f"Posted tweet: {tweet_url}"
+        if action == 'reply':
+            response_message += " (reply in thread)"
+        elif action == 'retweet':
+            response_message = f"Retweeted post: {tweet_url}"
 
         return {
             "success": True,
             "message": response_message,
             "tweet_url": tweet_url,
             "tweet_id": tweet_id,
-            "already_shared": already_shared,
+            "publication_id": publication_id,
+            "already_shared": False,
         }
 
     except discord.NotFound:
@@ -1294,6 +2021,481 @@ async def execute_get_member_info(db_handler, params: Dict[str, Any]) -> Dict[st
     except Exception as e:
         logger.error(f"[AdminChat] Error in get_member_info: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
+
+
+async def execute_list_social_routes(params: Dict[str, Any]) -> Dict[str, Any]:
+    """List configured social routes for the active guild."""
+    limit = min(int(params.get('limit', 50)), 100)
+    try:
+        guild_id = _resolve_guild_id(params)
+        platform = _normalize_social_platform(params.get('platform'))
+        channel_id = None
+        if params.get('channel_id') not in (None, ''):
+            channel_id = _parse_optional_channel_id(params.get('channel_id'), allow_clear=False)
+
+        sb = _get_supabase()
+        query = (
+            sb.table('social_channel_routes')
+            .select('*')
+            .eq('guild_id', guild_id)
+            .eq('platform', platform)
+        )
+        if channel_id is None:
+            pass
+        else:
+            query = query.eq('channel_id', channel_id)
+        if 'enabled' in params and params.get('enabled') is not None:
+            query = query.eq('enabled', _coerce_bool(params.get('enabled'), 'enabled'))
+
+        result = query.limit(limit).execute()
+        return {
+            "success": True,
+            "count": len(result.data or []),
+            "data": result.data or [],
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in list_social_routes: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_create_social_route(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a social route row."""
+    try:
+        guild_id = _resolve_guild_id(params)
+        payload = {
+            'guild_id': guild_id,
+            'platform': _normalize_social_platform(params.get('platform')),
+            'channel_id': _parse_optional_channel_id(params.get('channel_id')),
+            'enabled': _coerce_bool(params['enabled'], 'enabled') if 'enabled' in params else True,
+            'route_config': _normalize_route_config(params.get('route_config')),
+        }
+        result = _get_supabase().table('social_channel_routes').insert(payload).execute()
+        return {
+            "success": True,
+            "message": "Social route created",
+            "route": result.data[0] if result.data else payload,
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in create_social_route: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_update_social_route(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Update one social route row."""
+    route_id = str(params.get('route_id') or '').strip()
+    if not route_id:
+        return {"success": False, "error": "route_id is required"}
+
+    try:
+        guild_id = _resolve_guild_id(params)
+        updates: Dict[str, Any] = {}
+        if 'platform' in params:
+            updates['platform'] = _normalize_social_platform(params.get('platform'))
+        if 'channel_id' in params:
+            updates['channel_id'] = _parse_optional_channel_id(params.get('channel_id'))
+        if 'enabled' in params:
+            updates['enabled'] = _coerce_bool(params.get('enabled'), 'enabled')
+        if 'route_config' in params:
+            updates['route_config'] = _normalize_route_config(params.get('route_config'))
+
+        if not updates:
+            return {"success": False, "error": "Provide at least one field to update"}
+
+        result = (
+            _get_supabase().table('social_channel_routes')
+            .update(updates)
+            .eq('guild_id', guild_id)
+            .eq('id', route_id)
+            .execute()
+        )
+        if not result.data:
+            return {"success": False, "error": f"Route {route_id} not found"}
+        return {
+            "success": True,
+            "message": "Social route updated",
+            "route": result.data[0],
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in update_social_route: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_delete_social_route(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Delete one social route row."""
+    route_id = str(params.get('route_id') or '').strip()
+    if not route_id:
+        return {"success": False, "error": "route_id is required"}
+
+    try:
+        guild_id = _resolve_guild_id(params)
+        result = (
+            _get_supabase().table('social_channel_routes')
+            .delete()
+            .eq('guild_id', guild_id)
+            .eq('id', route_id)
+            .execute()
+        )
+        if not result.data:
+            return {"success": False, "error": f"Route {route_id} not found"}
+        return {
+            "success": True,
+            "message": "Social route deleted",
+            "route": result.data[0],
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in delete_social_route: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_list_payment_routes(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """List configured payment routes for the active guild."""
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        channel_id = None
+        if params.get('channel_id') not in (None, ''):
+            channel_id = _parse_optional_channel_id(params.get('channel_id'), allow_clear=False)
+        producer = None
+        if params.get('producer') not in (None, ''):
+            producer = _normalize_payment_producer(params.get('producer'))
+        enabled = params.get('enabled') if 'enabled' in params else None
+        if enabled is not None:
+            enabled = _coerce_bool(enabled, 'enabled')
+
+        rows = db_handler.list_payment_routes(
+            guild_id=guild_id,
+            producer=producer,
+            channel_id=channel_id,
+            enabled=enabled,
+            limit=min(int(params.get('limit', 50)), 100),
+        )
+        return {"success": True, "count": len(rows), "data": rows}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in list_payment_routes: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_create_payment_route(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a payment route row."""
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        route = db_handler.create_payment_route(
+            {
+                'guild_id': guild_id,
+                'producer': _normalize_payment_producer(params.get('producer')),
+                'channel_id': _parse_optional_channel_id(params.get('channel_id')),
+                'enabled': _coerce_bool(params['enabled'], 'enabled') if 'enabled' in params else True,
+                'route_config': _normalize_route_config(params.get('route_config')),
+            },
+            guild_id=guild_id,
+        )
+        if not route:
+            return {"success": False, "error": "Failed to create payment route"}
+        return {"success": True, "message": "Payment route created", "route": route}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in create_payment_route: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_update_payment_route(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Update one payment route row."""
+    route_id = str(params.get('route_id') or '').strip()
+    if not route_id:
+        return {"success": False, "error": "route_id is required"}
+
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        updates: Dict[str, Any] = {}
+        if 'producer' in params:
+            updates['producer'] = _normalize_payment_producer(params.get('producer'))
+        if 'channel_id' in params:
+            updates['channel_id'] = _parse_optional_channel_id(params.get('channel_id'))
+        if 'enabled' in params:
+            updates['enabled'] = _coerce_bool(params.get('enabled'), 'enabled')
+        if 'route_config' in params:
+            updates['route_config'] = _normalize_route_config(params.get('route_config'))
+
+        if not updates:
+            return {"success": False, "error": "Provide at least one field to update"}
+
+        route = db_handler.update_payment_route(route_id, updates, guild_id=guild_id)
+        if not route:
+            return {"success": False, "error": f"Route {route_id} not found"}
+        return {"success": True, "message": "Payment route updated", "route": route}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in update_payment_route: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_delete_payment_route(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Delete one payment route row."""
+    route_id = str(params.get('route_id') or '').strip()
+    if not route_id:
+        return {"success": False, "error": "route_id is required"}
+
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        route = db_handler.delete_payment_route(route_id, guild_id=guild_id)
+        if not route:
+            return {"success": False, "error": f"Route {route_id} not found"}
+        return {"success": True, "message": "Payment route deleted", "route": route}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in delete_payment_route: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_list_wallets(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """List wallet registry rows with redacted addresses."""
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        chain = params.get('chain')
+        discord_user_id = params.get('discord_user_id')
+        if discord_user_id not in (None, ''):
+            discord_user_id = int(discord_user_id)
+        verified = params.get('verified') if 'verified' in params else None
+        if verified is not None:
+            verified = _coerce_bool(verified, 'verified')
+
+        rows = _list_wallet_rows(
+            db_handler,
+            guild_id=guild_id,
+            chain=chain,
+            discord_user_id=discord_user_id,
+            verified=verified,
+            limit=min(int(params.get('limit', 50)), 100),
+        )
+        return {
+            "success": True,
+            "count": len(rows),
+            "data": [_redact_wallet_row(row) for row in rows],
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in list_wallets: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_list_payments(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """List payment ledger rows with redacted wallet addresses."""
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        producer = None
+        if params.get('producer') not in (None, ''):
+            producer = _normalize_payment_producer(params.get('producer'))
+        recipient_discord_id = params.get('recipient_discord_id')
+        if recipient_discord_id not in (None, ''):
+            recipient_discord_id = int(recipient_discord_id)
+        is_test = params.get('is_test') if 'is_test' in params else None
+        if is_test is not None:
+            is_test = _coerce_bool(is_test, 'is_test')
+
+        rows = db_handler.list_payment_requests(
+            guild_id=guild_id,
+            status=params.get('status'),
+            producer=producer,
+            recipient_discord_id=recipient_discord_id,
+            wallet_id=params.get('wallet_id'),
+            is_test=is_test,
+            route_key=params.get('route_key'),
+            limit=min(int(params.get('limit', 50)), 100),
+        )
+        return {
+            "success": True,
+            "count": len(rows),
+            "data": [_redact_payment_row(row) for row in rows],
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in list_payments: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_get_payment_status(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Fetch one payment row by id with redacted wallet details."""
+    payment_id = str(params.get('payment_id') or '').strip()
+    if not payment_id:
+        return {"success": False, "error": "payment_id is required"}
+
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        row = db_handler.get_payment_request(payment_id, guild_id=guild_id)
+        if not row:
+            return {"success": False, "error": f"Payment {payment_id} not found"}
+        return {"success": True, "payment": _redact_payment_row(row)}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in get_payment_status: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_retry_payment(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Retry one failed payment."""
+    payment_id = str(params.get('payment_id') or '').strip()
+    if not payment_id:
+        return {"success": False, "error": "payment_id is required"}
+
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        success = db_handler.requeue_payment(payment_id, guild_id=guild_id)
+        if not success:
+            return {"success": False, "error": "Payment is not in a retryable failed state"}
+        row = db_handler.get_payment_request(payment_id, guild_id=guild_id)
+        return {"success": True, "payment": _redact_payment_row(row or {"payment_id": payment_id})}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in retry_payment: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_hold_payment(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Force one payment into manual_hold."""
+    payment_id = str(params.get('payment_id') or '').strip()
+    reason = str(params.get('reason') or '').strip()
+    if not payment_id or not reason:
+        return {"success": False, "error": "payment_id and reason are required"}
+
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        success = db_handler.mark_payment_manual_hold(payment_id, reason=reason, guild_id=guild_id)
+        if not success:
+            return {"success": False, "error": "Payment could not be moved to manual_hold"}
+        row = db_handler.get_payment_request(payment_id, guild_id=guild_id)
+        return {"success": True, "payment": _redact_payment_row(row or {"payment_id": payment_id})}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in hold_payment: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_release_payment(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Release one manual_hold payment."""
+    payment_id = str(params.get('payment_id') or '').strip()
+    new_status = str(params.get('new_status') or '').strip()
+    if not payment_id or not new_status:
+        return {"success": False, "error": "payment_id and new_status are required"}
+
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        success = db_handler.release_payment_hold(
+            payment_id,
+            new_status=new_status,
+            guild_id=guild_id,
+            reason=params.get('reason'),
+        )
+        if not success:
+            return {"success": False, "error": "Payment could not be released from manual_hold"}
+        row = db_handler.get_payment_request(payment_id, guild_id=guild_id)
+        return {"success": True, "payment": _redact_payment_row(row or {"payment_id": payment_id})}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in release_payment: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_cancel_payment(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Cancel one payment."""
+    payment_id = str(params.get('payment_id') or '').strip()
+    if not payment_id:
+        return {"success": False, "error": "payment_id is required"}
+
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        success = db_handler.cancel_payment(
+            payment_id,
+            guild_id=guild_id,
+            reason=params.get('reason'),
+        )
+        if not success:
+            return {"success": False, "error": "Payment could not be cancelled from its current state"}
+        row = db_handler.get_payment_request(payment_id, guild_id=guild_id)
+        return {"success": True, "payment": _redact_payment_row(row or {"payment_id": payment_id})}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in cancel_payment: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_initiate_payment(bot: discord.Client, db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Create or resume one admin-triggered payment intent."""
+    try:
+        guild_id = int(params.get('guild_id'))
+        source_channel_id = int(params.get('source_channel_id'))
+        recipient_user_id = int(params.get('recipient_user_id'))
+        amount_sol = float(params.get('amount_sol'))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "guild_id, source_channel_id, recipient_user_id, and amount_sol must be valid"}
+    if guild_id <= 0 or source_channel_id <= 0 or recipient_user_id <= 0 or amount_sol <= 0:
+        return {"success": False, "error": "guild_id, source_channel_id, recipient_user_id, and amount_sol must be > 0"}
+    if not getattr(bot, 'payment_service', None):
+        return {"success": False, "error": "payment_service is not configured"}
+
+    existing = db_handler.get_active_intent_for_recipient(guild_id, source_channel_id, recipient_user_id)
+    if existing:
+        return {"success": True, "duplicate": True, "intent": existing}
+
+    channel = bot.get_channel(source_channel_id)
+    if not channel:
+        try:
+            channel = await bot.fetch_channel(source_channel_id)
+        except Exception as e:
+            logger.error(f"[AdminChat] Error fetching initiate_payment channel {source_channel_id}: {e}", exc_info=True)
+            return {"success": False, "error": "Could not access source channel"}
+
+    reason = str(params.get('reason') or '').strip() or None
+    admin_user_id = None
+    if params.get('admin_user_id') is not None:
+        try:
+            parsed_admin_user_id = int(params.get('admin_user_id'))
+            if parsed_admin_user_id > 0:
+                admin_user_id = parsed_admin_user_id
+        except (TypeError, ValueError):
+            return {"success": False, "error": "admin_user_id must be a valid positive integer when provided"}
+    producer_ref = f"{guild_id}_{recipient_user_id}_{int(time.time())}"
+    wallet_record = db_handler.get_wallet(guild_id, recipient_user_id, 'solana')
+    if wallet_record and not wallet_record.get('verified_at'):
+        wallet_record = None
+    intent = db_handler.create_admin_payment_intent(
+        {
+            'guild_id': guild_id,
+            'channel_id': source_channel_id,
+            'admin_user_id': admin_user_id,
+            'recipient_user_id': recipient_user_id,
+            'wallet_id': wallet_record.get('wallet_id') if wallet_record else None,
+            'requested_amount_sol': amount_sol,
+            'producer_ref': producer_ref,
+            'reason': reason,
+            'status': 'awaiting_test' if wallet_record else 'awaiting_wallet',
+        },
+        guild_id=guild_id,
+    )
+    if not intent:
+        return {"success": False, "error": "Failed to create payment intent"}
+
+    if wallet_record:
+        cog = bot.get_cog('AdminChatCog')
+        if not cog or not hasattr(cog, '_start_admin_payment_flow'):
+            db_handler.update_admin_payment_intent(intent['intent_id'], {'status': 'failed'}, guild_id)
+            return {"success": False, "error": "Admin payment flow is not available"}
+        try:
+            await cog._start_admin_payment_flow(channel, intent)
+        except Exception as e:
+            logger.error(f"[AdminChat] Error starting admin payment flow for intent {intent.get('intent_id')}: {e}", exc_info=True)
+            db_handler.update_admin_payment_intent(intent['intent_id'], {'status': 'failed'}, guild_id)
+            return {"success": False, "error": "Failed to start payment flow"}
+        return {"success": True, "intent": intent, "wallet_on_file": True}
+
+    try:
+        prompt = await channel.send(
+            f"<@{recipient_user_id}> — a payment of {amount_sol} SOL has been initiated for you. "
+            "Please reply with your Solana wallet address."
+        )
+    except Exception as e:
+        logger.error(f"[AdminChat] Error sending wallet prompt for intent {intent.get('intent_id')}: {e}", exc_info=True)
+        db_handler.update_admin_payment_intent(intent['intent_id'], {'status': 'failed'}, guild_id)
+        return {"success": False, "error": "Failed to prompt recipient for wallet"}
+
+    intent_id = intent['intent_id']
+    intent = db_handler.update_admin_payment_intent(
+        intent_id,
+        {'prompt_message_id': prompt.id},
+        guild_id,
+    )
+    if not intent:
+        db_handler.update_admin_payment_intent(intent_id, {'status': 'failed'}, guild_id)
+        return {"success": False, "error": "Failed to persist wallet prompt"}
+    return {"success": True, "intent": intent, "wallet_on_file": False}
 
 
 async def execute_update_member_socials(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -1635,7 +2837,8 @@ async def execute_query_table(params: Dict[str, Any]) -> Dict[str, Any]:
         # Auto-scope guild_id for tables that have it
         GUILD_SCOPED_TABLES = {'discord_messages', 'discord_channels', 'daily_summaries',
                                'shared_posts', 'pending_intros', 'discord_reactions',
-                               'discord_reaction_log', 'competitions'}
+                               'discord_reaction_log', 'competitions', 'social_publications',
+                               'social_channel_routes'}
         if table in GUILD_SCOPED_TABLES and 'guild_id' not in filters:
             if resolved_guild_id:
                 query = query.eq('guild_id', resolved_guild_id)
@@ -1865,6 +3068,38 @@ async def execute_tool(
         )
     elif tool_name == "share_to_social":
         return await execute_share_to_social(bot, sharer, trusted_tool_input)
+    elif tool_name == "list_social_routes":
+        return await execute_list_social_routes(trusted_tool_input)
+    elif tool_name == "create_social_route":
+        return await execute_create_social_route(trusted_tool_input)
+    elif tool_name == "update_social_route":
+        return await execute_update_social_route(trusted_tool_input)
+    elif tool_name == "delete_social_route":
+        return await execute_delete_social_route(trusted_tool_input)
+    elif tool_name == "list_payment_routes":
+        return await execute_list_payment_routes(db_handler, trusted_tool_input)
+    elif tool_name == "create_payment_route":
+        return await execute_create_payment_route(db_handler, trusted_tool_input)
+    elif tool_name == "update_payment_route":
+        return await execute_update_payment_route(db_handler, trusted_tool_input)
+    elif tool_name == "delete_payment_route":
+        return await execute_delete_payment_route(db_handler, trusted_tool_input)
+    elif tool_name == "list_wallets":
+        return await execute_list_wallets(db_handler, trusted_tool_input)
+    elif tool_name == "list_payments":
+        return await execute_list_payments(db_handler, trusted_tool_input)
+    elif tool_name == "get_payment_status":
+        return await execute_get_payment_status(db_handler, trusted_tool_input)
+    elif tool_name == "retry_payment":
+        return await execute_retry_payment(db_handler, trusted_tool_input)
+    elif tool_name == "hold_payment":
+        return await execute_hold_payment(db_handler, trusted_tool_input)
+    elif tool_name == "release_payment":
+        return await execute_release_payment(db_handler, trusted_tool_input)
+    elif tool_name == "cancel_payment":
+        return await execute_cancel_payment(db_handler, trusted_tool_input)
+    elif tool_name == "initiate_payment":
+        return await execute_initiate_payment(bot, db_handler, trusted_tool_input)
     elif tool_name == "get_active_channels":
         return await execute_get_active_channels(
             trusted_tool_input,

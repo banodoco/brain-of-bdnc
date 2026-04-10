@@ -23,6 +23,7 @@ class DatabaseHandler:
 
             # Initialize Supabase handlers
             self.storage_handler = None
+            self.supabase = None
             self.query_handler = None
             self.server_config = None
             try:
@@ -30,10 +31,11 @@ class DatabaseHandler:
                 from .supabase_query_handler import SupabaseQueryHandler
                 from .server_config import ServerConfig
                 self.storage_handler = StorageHandler()
+                self.supabase = self.storage_handler.supabase_client
                 # Use the same Supabase client for queries
-                self.query_handler = SupabaseQueryHandler(self.storage_handler.supabase_client)
+                self.query_handler = SupabaseQueryHandler(self.supabase)
                 # ServerConfig shares the same Supabase client
-                self.server_config = ServerConfig(self.storage_handler.supabase_client)
+                self.server_config = ServerConfig(self.supabase)
                 logger.debug(f"Supabase handlers initialized for read/write operations")
             except Exception as e:
                 logger.error(f"Failed to initialize Supabase handlers: {e}", exc_info=True)
@@ -979,7 +981,1213 @@ class DatabaseHandler:
         except Exception as e:
             logger.error(f"Error marking shared post as deleted: {e}", exc_info=True)
             return False
-    
+
+    # ========== Social Publications ==========
+
+    def _serialize_supabase_value(self, value: Any) -> Any:
+        """Convert datetime instances to ISO-8601 strings for Supabase writes."""
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {key: self._serialize_supabase_value(val) for key, val in value.items()}
+        if isinstance(value, list):
+            return [self._serialize_supabase_value(item) for item in value]
+        return value
+
+    def _resolve_social_publication_guild_id(self, publication_id: str) -> Optional[int]:
+        """Resolve guild_id for a publication when callers only have publication_id."""
+        if not self.supabase:
+            return None
+        try:
+            result = (
+                self.supabase.table('social_publications')
+                .select('guild_id')
+                .eq('publication_id', publication_id)
+                .limit(1)
+                .execute()
+            )
+            if result.data:
+                return result.data[0].get('guild_id')
+        except Exception as e:
+            logger.error(f"Error resolving guild for social publication {publication_id}: {e}", exc_info=True)
+        return None
+
+    def create_social_publication(self, data: Dict, guild_id: Optional[int] = None) -> Optional[Dict]:
+        """Insert a canonical social publication row and return the stored record."""
+        effective_guild_id = guild_id or data.get('guild_id')
+        if effective_guild_id is None:
+            logger.error("create_social_publication requires guild_id")
+            return None
+        if not self._gate_check(effective_guild_id):
+            return None
+        if not self.supabase:
+            logger.error("Supabase client not initialized for create_social_publication")
+            return None
+
+        try:
+            payload = self._serialize_supabase_value(dict(data))
+            payload['guild_id'] = effective_guild_id
+            result = self.supabase.table('social_publications').insert(payload).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error creating social publication: {e}", exc_info=True)
+            return None
+
+    def get_social_publication_by_id(self, publication_id: str, guild_id: Optional[int] = None) -> Optional[Dict]:
+        """Lookup a canonical social publication row by publication_id."""
+        if guild_id is not None and not self._gate_check(guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        try:
+            query = (
+                self.supabase.table('social_publications')
+                .select('*')
+                .eq('publication_id', publication_id)
+            )
+            if guild_id is not None:
+                query = query.eq('guild_id', guild_id)
+            result = query.limit(1).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error fetching social publication {publication_id}: {e}", exc_info=True)
+            return None
+
+    def get_social_publications_for_message(
+        self,
+        message_id: int,
+        guild_id: Optional[int] = None,
+        platform: Optional[str] = None,
+        action: Optional[str] = None,
+        status: Optional[str] = None
+    ) -> List[Dict]:
+        """Return canonical social publications linked to a Discord message."""
+        if guild_id is not None and not self._gate_check(guild_id):
+            return []
+        if not self.supabase:
+            return []
+
+        try:
+            query = (
+                self.supabase.table('social_publications')
+                .select('*')
+                .eq('message_id', message_id)
+            )
+            if guild_id is not None:
+                query = query.eq('guild_id', guild_id)
+            if platform:
+                query = query.eq('platform', platform)
+            if action:
+                query = query.eq('action', action)
+            if status:
+                query = query.eq('status', status)
+            result = query.order('created_at', desc=True).execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error fetching social publications for message {message_id}: {e}", exc_info=True)
+            return []
+
+    def list_social_publications(
+        self,
+        guild_id: Optional[int] = None,
+        status: Optional[str] = None,
+        platform: Optional[str] = None,
+        action: Optional[str] = None,
+        channel_id: Optional[int] = None,
+        user_id: Optional[int] = None,
+        source_kind: Optional[str] = None,
+        route_key: Optional[str] = None,
+        limit: int = 100
+    ) -> List[Dict]:
+        """List canonical social publications with optional filters."""
+        if guild_id is not None and not self._gate_check(guild_id):
+            return []
+        if not self.supabase:
+            return []
+
+        try:
+            query = self.supabase.table('social_publications').select('*')
+            if guild_id is not None:
+                query = query.eq('guild_id', guild_id)
+            if status:
+                query = query.eq('status', status)
+            if platform:
+                query = query.eq('platform', platform)
+            if action:
+                query = query.eq('action', action)
+            if channel_id is not None:
+                query = query.eq('channel_id', channel_id)
+            if user_id is not None:
+                query = query.eq('user_id', user_id)
+            if source_kind:
+                query = query.eq('source_kind', source_kind)
+            if route_key:
+                query = query.eq('route_key', route_key)
+            result = query.order('created_at', desc=True).limit(limit).execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error listing social publications: {e}", exc_info=True)
+            return []
+
+    def mark_social_publication_processing(
+        self,
+        publication_id: str,
+        guild_id: Optional[int] = None,
+        attempt_count: Optional[int] = None,
+        retry_after: Optional[datetime] = None
+    ) -> bool:
+        """Mark a publication as processing."""
+        effective_guild_id = guild_id or self._resolve_social_publication_guild_id(publication_id)
+        if not self._gate_check(effective_guild_id):
+            return False
+        if not self.supabase:
+            return False
+
+        try:
+            payload: Dict[str, Any] = {
+                'status': 'processing',
+                'last_error': None,
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }
+            if attempt_count is not None:
+                payload['attempt_count'] = attempt_count
+            if retry_after is not None:
+                payload['retry_after'] = retry_after
+            (
+                self.supabase.table('social_publications')
+                .update(self._serialize_supabase_value(payload))
+                .eq('publication_id', publication_id)
+                .eq('guild_id', effective_guild_id)
+                .execute()
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error marking social publication {publication_id} processing: {e}", exc_info=True)
+            return False
+
+    def mark_social_publication_succeeded(
+        self,
+        publication_id: str,
+        guild_id: Optional[int] = None,
+        provider_ref: Optional[str] = None,
+        provider_url: Optional[str] = None,
+        delete_supported: Optional[bool] = None
+    ) -> bool:
+        """Mark a publication as successfully completed."""
+        effective_guild_id = guild_id or self._resolve_social_publication_guild_id(publication_id)
+        if not self._gate_check(effective_guild_id):
+            return False
+        if not self.supabase:
+            return False
+
+        try:
+            payload: Dict[str, Any] = {
+                'status': 'succeeded',
+                'completed_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+                'last_error': None,
+                'retry_after': None,
+            }
+            if provider_ref is not None:
+                payload['provider_ref'] = provider_ref
+            if provider_url is not None:
+                payload['provider_url'] = provider_url
+            if delete_supported is not None:
+                payload['delete_supported'] = delete_supported
+            (
+                self.supabase.table('social_publications')
+                .update(payload)
+                .eq('publication_id', publication_id)
+                .eq('guild_id', effective_guild_id)
+                .execute()
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error marking social publication {publication_id} succeeded: {e}", exc_info=True)
+            return False
+
+    def mark_social_publication_failed(
+        self,
+        publication_id: str,
+        last_error: str,
+        guild_id: Optional[int] = None,
+        retry_after: Optional[datetime] = None
+    ) -> bool:
+        """Mark a publication as failed."""
+        effective_guild_id = guild_id or self._resolve_social_publication_guild_id(publication_id)
+        if not self._gate_check(effective_guild_id):
+            return False
+        if not self.supabase:
+            return False
+
+        try:
+            payload: Dict[str, Any] = {
+                'status': 'failed',
+                'last_error': last_error,
+                'completed_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }
+            if retry_after is not None:
+                payload['retry_after'] = retry_after
+            (
+                self.supabase.table('social_publications')
+                .update(self._serialize_supabase_value(payload))
+                .eq('publication_id', publication_id)
+                .eq('guild_id', effective_guild_id)
+                .execute()
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error marking social publication {publication_id} failed: {e}", exc_info=True)
+            return False
+
+    def mark_social_publication_cancelled(
+        self,
+        publication_id: str,
+        guild_id: Optional[int] = None,
+        last_error: Optional[str] = None
+    ) -> bool:
+        """Mark a publication as cancelled."""
+        effective_guild_id = guild_id or self._resolve_social_publication_guild_id(publication_id)
+        if not self._gate_check(effective_guild_id):
+            return False
+        if not self.supabase:
+            return False
+
+        try:
+            payload: Dict[str, Any] = {
+                'status': 'cancelled',
+                'completed_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+                'retry_after': None,
+            }
+            if last_error is not None:
+                payload['last_error'] = last_error
+            (
+                self.supabase.table('social_publications')
+                .update(payload)
+                .eq('publication_id', publication_id)
+                .eq('guild_id', effective_guild_id)
+                .execute()
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error marking social publication {publication_id} cancelled: {e}", exc_info=True)
+            return False
+
+    def claim_due_social_publications(
+        self,
+        limit: int = 10,
+        guild_ids: Optional[List[int]] = None
+    ) -> List[Dict]:
+        """Atomically claim due queued publications through the Supabase RPC."""
+        if not self.supabase:
+            return []
+
+        writable_guild_ids = guild_ids
+        if writable_guild_ids is None and self.server_config:
+            writable_guild_ids = [
+                server['guild_id']
+                for server in self.server_config.get_enabled_servers(require_write=True)
+                if server.get('guild_id') is not None
+            ]
+        if writable_guild_ids == []:
+            return []
+
+        try:
+            params: Dict[str, Any] = {'claim_limit': limit}
+            if writable_guild_ids is not None:
+                params['claim_guild_ids'] = writable_guild_ids
+            result = self.supabase.rpc('claim_due_social_publications', params).execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error claiming due social publications: {e}", exc_info=True)
+            return []
+
+    # ========== Payments ==========
+
+    def _get_writable_guild_ids(self, guild_ids: Optional[List[int]] = None) -> Optional[List[int]]:
+        """Resolve writable guild IDs for queue-style payment queries."""
+        writable_guild_ids = guild_ids
+        if writable_guild_ids is None and self.server_config:
+            writable_guild_ids = [
+                server['guild_id']
+                for server in self.server_config.get_enabled_servers(require_write=True)
+                if server.get('guild_id') is not None
+            ]
+        return writable_guild_ids
+
+    def _resolve_payment_request_guild_id(self, payment_id: str) -> Optional[int]:
+        """Resolve guild_id for a payment request when callers only have payment_id."""
+        if not self.supabase:
+            return None
+        try:
+            result = (
+                self.supabase.table('payment_requests')
+                .select('guild_id')
+                .eq('payment_id', payment_id)
+                .limit(1)
+                .execute()
+            )
+            if result.data:
+                return result.data[0].get('guild_id')
+        except Exception as e:
+            logger.error(f"Error resolving guild for payment request {payment_id}: {e}", exc_info=True)
+        return None
+
+    def _resolve_payment_route_guild_id(self, route_id: str) -> Optional[int]:
+        """Resolve guild_id for a payment route when callers only have route_id."""
+        if not self.supabase:
+            return None
+        try:
+            result = (
+                self.supabase.table('payment_channel_routes')
+                .select('guild_id')
+                .eq('id', route_id)
+                .limit(1)
+                .execute()
+            )
+            if result.data:
+                return result.data[0].get('guild_id')
+        except Exception as e:
+            logger.error(f"Error resolving guild for payment route {route_id}: {e}", exc_info=True)
+        return None
+
+    def _resolve_wallet_guild_id(self, wallet_id: str) -> Optional[int]:
+        """Resolve guild_id for a wallet record when callers only have wallet_id."""
+        if not self.supabase:
+            return None
+        try:
+            result = (
+                self.supabase.table('wallet_registry')
+                .select('guild_id')
+                .eq('wallet_id', wallet_id)
+                .limit(1)
+                .execute()
+            )
+            if result.data:
+                return result.data[0].get('guild_id')
+        except Exception as e:
+            logger.error(f"Error resolving guild for wallet {wallet_id}: {e}", exc_info=True)
+        return None
+
+    def _update_payment_request_record(
+        self,
+        payment_id: str,
+        payload: Dict[str, Any],
+        guild_id: Optional[int] = None,
+        allowed_statuses: Optional[List[str]] = None,
+    ) -> bool:
+        """Update a payment request with optional current-status guard."""
+        effective_guild_id = guild_id or self._resolve_payment_request_guild_id(payment_id)
+        if not self._gate_check(effective_guild_id):
+            return False
+        if not self.supabase:
+            return False
+
+        existing = self.get_payment_request(payment_id, guild_id=effective_guild_id)
+        if not existing:
+            return False
+        if allowed_statuses and existing.get('status') not in allowed_statuses:
+            logger.warning(
+                "Blocked payment transition for %s in guild %s: status=%s not in %s",
+                payment_id,
+                effective_guild_id,
+                existing.get('status'),
+                allowed_statuses,
+            )
+            return False
+
+        try:
+            result = (
+                self.supabase.table('payment_requests')
+                .update(self._serialize_supabase_value(payload))
+                .eq('payment_id', payment_id)
+                .eq('guild_id', effective_guild_id)
+                .execute()
+            )
+            return bool(result.data)
+        except Exception as e:
+            logger.error(f"Error updating payment request {payment_id}: {e}", exc_info=True)
+            return False
+
+    def upsert_wallet(
+        self,
+        guild_id: int,
+        discord_user_id: int,
+        chain: str,
+        address: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict]:
+        """Create or update a wallet registry row for one user + chain in a guild."""
+        if not self._gate_check(guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        existing = self.get_wallet(guild_id, discord_user_id, chain)
+        payload: Dict[str, Any] = {
+            'guild_id': guild_id,
+            'discord_user_id': discord_user_id,
+            'chain': chain,
+            'wallet_address': address,
+        }
+        if metadata is not None:
+            payload['metadata'] = metadata
+        if existing and existing.get('wallet_address') != address:
+            # Verification is tied to the specific address that received the test payment.
+            payload['verified_at'] = None
+
+        try:
+            if existing:
+                result = (
+                    self.supabase.table('wallet_registry')
+                    .update(self._serialize_supabase_value(payload))
+                    .eq('wallet_id', existing['wallet_id'])
+                    .eq('guild_id', guild_id)
+                    .execute()
+                )
+            else:
+                result = (
+                    self.supabase.table('wallet_registry')
+                    .insert(self._serialize_supabase_value(payload))
+                    .execute()
+                )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(
+                f"Error upserting wallet for guild {guild_id}, user {discord_user_id}, chain {chain}: {e}",
+                exc_info=True,
+            )
+            return None
+
+    def get_wallet(self, guild_id: int, discord_user_id: int, chain: str) -> Optional[Dict]:
+        """Fetch a wallet registry record for a guild member and chain."""
+        if not self._gate_check(guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        try:
+            result = (
+                self.supabase.table('wallet_registry')
+                .select('*')
+                .eq('guild_id', guild_id)
+                .eq('discord_user_id', discord_user_id)
+                .eq('chain', chain)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(
+                f"Error fetching wallet for guild {guild_id}, user {discord_user_id}, chain {chain}: {e}",
+                exc_info=True,
+            )
+            return None
+
+    def get_wallet_by_id(self, wallet_id: str, guild_id: Optional[int] = None) -> Optional[Dict]:
+        """Fetch a wallet registry record by wallet_id."""
+        effective_guild_id = guild_id or self._resolve_wallet_guild_id(wallet_id)
+        if not self._gate_check(effective_guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        try:
+            result = (
+                self.supabase.table('wallet_registry')
+                .select('*')
+                .eq('wallet_id', wallet_id)
+                .eq('guild_id', effective_guild_id)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error fetching wallet {wallet_id}: {e}", exc_info=True)
+            return None
+
+    def list_wallets(
+        self,
+        guild_id: int,
+        chain: Optional[str] = None,
+        verified_only: bool = False,
+        discord_user_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict]:
+        """List wallet registry rows for one guild."""
+        if not self._gate_check(guild_id):
+            return []
+        if not self.supabase:
+            return []
+
+        try:
+            query = (
+                self.supabase.table('wallet_registry')
+                .select('*')
+                .eq('guild_id', guild_id)
+            )
+            if chain:
+                query = query.eq('chain', chain)
+            if discord_user_id is not None:
+                query = query.eq('discord_user_id', discord_user_id)
+            result = query.order('created_at', desc=True).limit(limit).execute()
+            rows = result.data or []
+            if verified_only:
+                rows = [row for row in rows if row.get('verified_at')]
+            return rows
+        except Exception as e:
+            logger.error(f"Error listing wallets for guild {guild_id}: {e}", exc_info=True)
+            return []
+
+    def mark_wallet_verified(self, wallet_id: str, guild_id: Optional[int] = None) -> bool:
+        """Mark a wallet as verified after a confirmed test payment."""
+        effective_guild_id = guild_id or self._resolve_wallet_guild_id(wallet_id)
+        if not self._gate_check(effective_guild_id):
+            return False
+        if not self.supabase:
+            return False
+
+        try:
+            result = (
+                self.supabase.table('wallet_registry')
+                .update({'verified_at': datetime.now(timezone.utc).isoformat()})
+                .eq('wallet_id', wallet_id)
+                .eq('guild_id', effective_guild_id)
+                .execute()
+            )
+            return bool(result.data)
+        except Exception as e:
+            logger.error(f"Error marking wallet {wallet_id} verified: {e}", exc_info=True)
+            return False
+
+    def create_payment_route(self, data: Dict, guild_id: Optional[int] = None) -> Optional[Dict]:
+        """Create a payment route row for one guild."""
+        effective_guild_id = guild_id or data.get('guild_id')
+        if effective_guild_id is None or not self._gate_check(effective_guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        try:
+            payload = self._serialize_supabase_value(dict(data))
+            payload['guild_id'] = effective_guild_id
+            result = self.supabase.table('payment_channel_routes').insert(payload).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error creating payment route in guild {effective_guild_id}: {e}", exc_info=True)
+            return None
+
+    def get_payment_route_by_id(self, route_id: str, guild_id: Optional[int] = None) -> Optional[Dict]:
+        """Fetch one payment route row by route id."""
+        effective_guild_id = guild_id or self._resolve_payment_route_guild_id(route_id)
+        if not self._gate_check(effective_guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        try:
+            result = (
+                self.supabase.table('payment_channel_routes')
+                .select('*')
+                .eq('id', route_id)
+                .eq('guild_id', effective_guild_id)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error fetching payment route {route_id}: {e}", exc_info=True)
+            return None
+
+    def list_payment_routes(
+        self,
+        guild_id: int,
+        producer: Optional[str] = None,
+        channel_id: Optional[int] = None,
+        enabled: Optional[bool] = None,
+        limit: int = 100,
+    ) -> List[Dict]:
+        """List payment routes for one guild with optional filters."""
+        if not self._gate_check(guild_id):
+            return []
+        if not self.supabase:
+            return []
+
+        try:
+            query = (
+                self.supabase.table('payment_channel_routes')
+                .select('*')
+                .eq('guild_id', guild_id)
+            )
+            if producer:
+                query = query.eq('producer', producer)
+            if channel_id is not None:
+                query = query.eq('channel_id', channel_id)
+            result = query.order('created_at', desc=True).limit(limit).execute()
+            rows = result.data or []
+            if enabled is not None:
+                rows = [row for row in rows if bool(row.get('enabled')) is enabled]
+            return rows
+        except Exception as e:
+            logger.error(f"Error listing payment routes for guild {guild_id}: {e}", exc_info=True)
+            return []
+
+    def get_payment_routes(
+        self,
+        guild_id: int,
+        producer: Optional[str] = None,
+        channel_id: Optional[int] = None,
+        enabled: Optional[bool] = None,
+        limit: int = 100,
+    ) -> List[Dict]:
+        """Compatibility wrapper for payment-route listing."""
+        return self.list_payment_routes(
+            guild_id=guild_id,
+            producer=producer,
+            channel_id=channel_id,
+            enabled=enabled,
+            limit=limit,
+        )
+
+    def update_payment_route(self, route_id: str, data: Dict, guild_id: Optional[int] = None) -> Optional[Dict]:
+        """Update one payment route row and return the stored record."""
+        effective_guild_id = guild_id or self._resolve_payment_route_guild_id(route_id)
+        if not self._gate_check(effective_guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        try:
+            result = (
+                self.supabase.table('payment_channel_routes')
+                .update(self._serialize_supabase_value(dict(data)))
+                .eq('id', route_id)
+                .eq('guild_id', effective_guild_id)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error updating payment route {route_id}: {e}", exc_info=True)
+            return None
+
+    def delete_payment_route(self, route_id: str, guild_id: Optional[int] = None) -> Optional[Dict]:
+        """Delete one payment route row and return the deleted record if possible."""
+        effective_guild_id = guild_id or self._resolve_payment_route_guild_id(route_id)
+        if not self._gate_check(effective_guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        existing = self.get_payment_route_by_id(route_id, guild_id=effective_guild_id)
+        if not existing:
+            return None
+
+        try:
+            (
+                self.supabase.table('payment_channel_routes')
+                .delete()
+                .eq('id', route_id)
+                .eq('guild_id', effective_guild_id)
+                .execute()
+            )
+            return existing
+        except Exception as e:
+            logger.error(f"Error deleting payment route {route_id}: {e}", exc_info=True)
+            return None
+
+    def create_admin_payment_intent(self, record: Dict, guild_id: int) -> Optional[Dict]:
+        """Insert one admin payment intent row and return the stored record."""
+        if not self._gate_check(guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        try:
+            payload = self._serialize_supabase_value(dict(record))
+            payload['guild_id'] = guild_id
+            result = self.supabase.table('admin_payment_intents').insert(payload).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error creating admin payment intent in guild {guild_id}: {e}", exc_info=True)
+            return None
+
+    def get_admin_payment_intent(self, intent_id: str, guild_id: int) -> Optional[Dict]:
+        """Fetch one admin payment intent by intent_id."""
+        if not self._gate_check(guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        try:
+            result = (
+                self.supabase.table('admin_payment_intents')
+                .select('*')
+                .eq('intent_id', intent_id)
+                .eq('guild_id', guild_id)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error fetching admin payment intent {intent_id}: {e}", exc_info=True)
+            return None
+
+    def get_active_intent_for_recipient(self, guild_id: int, channel_id: int, recipient_user_id: int) -> Optional[Dict]:
+        """Fetch the single active admin payment intent for one guild/channel/recipient."""
+        if not self._gate_check(guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        try:
+            result = (
+                self.supabase.table('admin_payment_intents')
+                .select('*')
+                .eq('guild_id', guild_id)
+                .eq('channel_id', channel_id)
+                .eq('recipient_user_id', recipient_user_id)
+                .not_.in_('status', ['completed', 'failed', 'cancelled'])
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(
+                "Error fetching active admin payment intent for guild %s channel %s recipient %s: %s",
+                guild_id,
+                channel_id,
+                recipient_user_id,
+                e,
+                exc_info=True,
+            )
+            return None
+
+    def list_active_intents(self, guild_id: int) -> List[Dict]:
+        """List active admin payment intents for one guild for reconciliation."""
+        if not self._gate_check(guild_id):
+            return []
+        if not self.supabase:
+            return []
+
+        try:
+            result = (
+                self.supabase.table('admin_payment_intents')
+                .select('*')
+                .eq('guild_id', guild_id)
+                .not_.in_('status', ['completed', 'failed', 'cancelled'])
+                .order('created_at')
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error listing active admin payment intents for guild {guild_id}: {e}", exc_info=True)
+            return []
+
+    def update_admin_payment_intent(self, intent_id: str, payload: Dict, guild_id: int) -> Optional[Dict]:
+        """Update one admin payment intent row and return the stored record."""
+        if not self._gate_check(guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        try:
+            result = (
+                self.supabase.table('admin_payment_intents')
+                .update(self._serialize_supabase_value(dict(payload)))
+                .eq('intent_id', intent_id)
+                .eq('guild_id', guild_id)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error updating admin payment intent {intent_id}: {e}", exc_info=True)
+            return None
+
+    def create_payment_request(self, record: Dict, guild_id: Optional[int] = None) -> Optional[Dict]:
+        """Insert one payment request row and return the stored record."""
+        effective_guild_id = guild_id or record.get('guild_id')
+        if effective_guild_id is None:
+            logger.error("create_payment_request requires guild_id")
+            return None
+        if not self._gate_check(effective_guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        try:
+            payload = self._serialize_supabase_value(dict(record))
+            payload['guild_id'] = effective_guild_id
+            result = self.supabase.table('payment_requests').insert(payload).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error creating payment request: {e}", exc_info=True)
+            return None
+
+    def get_payment_request(self, payment_id: str, guild_id: Optional[int] = None) -> Optional[Dict]:
+        """Fetch one payment request by payment_id."""
+        effective_guild_id = guild_id or self._resolve_payment_request_guild_id(payment_id)
+        if not self._gate_check(effective_guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        try:
+            result = (
+                self.supabase.table('payment_requests')
+                .select('*')
+                .eq('payment_id', payment_id)
+                .eq('guild_id', effective_guild_id)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error fetching payment request {payment_id}: {e}", exc_info=True)
+            return None
+
+    def get_payment_requests_by_producer(
+        self,
+        guild_id: int,
+        producer: str,
+        producer_ref: str,
+        is_test: Optional[bool] = None,
+    ) -> List[Dict]:
+        """Fetch payment requests for one producer reference inside a guild."""
+        if not self._gate_check(guild_id):
+            return []
+        if not self.supabase:
+            return []
+
+        try:
+            query = (
+                self.supabase.table('payment_requests')
+                .select('*')
+                .eq('guild_id', guild_id)
+                .eq('producer', producer)
+                .eq('producer_ref', producer_ref)
+            )
+            if is_test is not None:
+                query = query.eq('is_test', is_test)
+            result = query.order('created_at', desc=True).execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(
+                f"Error fetching payment requests for {producer}:{producer_ref} in guild {guild_id}: {e}",
+                exc_info=True,
+            )
+            return []
+
+    def list_payment_requests(
+        self,
+        guild_id: int,
+        status: Optional[str] = None,
+        producer: Optional[str] = None,
+        recipient_discord_id: Optional[int] = None,
+        wallet_id: Optional[str] = None,
+        is_test: Optional[bool] = None,
+        route_key: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict]:
+        """List payment requests for one guild with optional filters."""
+        if not self._gate_check(guild_id):
+            return []
+        if not self.supabase:
+            return []
+
+        try:
+            query = (
+                self.supabase.table('payment_requests')
+                .select('*')
+                .eq('guild_id', guild_id)
+            )
+            if status:
+                query = query.eq('status', status)
+            if producer:
+                query = query.eq('producer', producer)
+            if recipient_discord_id is not None:
+                query = query.eq('recipient_discord_id', recipient_discord_id)
+            if wallet_id is not None:
+                query = query.eq('wallet_id', wallet_id)
+            if is_test is not None:
+                query = query.eq('is_test', is_test)
+            if route_key:
+                query = query.eq('route_key', route_key)
+            result = query.order('created_at', desc=True).limit(limit).execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error listing payment requests for guild {guild_id}: {e}", exc_info=True)
+            return []
+
+    def mark_payment_confirmed_by_user(
+        self,
+        payment_id: str,
+        guild_id: Optional[int] = None,
+        confirmed_by_user_id: Optional[int] = None,
+        confirmed_by: str = 'user',
+        scheduled_at: Optional[datetime] = None,
+    ) -> bool:
+        """Advance a pending confirmation to the queued state."""
+        payload: Dict[str, Any] = {
+            'status': 'queued',
+            'confirmed_by': confirmed_by,
+            'confirmed_by_user_id': confirmed_by_user_id,
+            'confirmed_at': datetime.now(timezone.utc),
+            'scheduled_at': scheduled_at or datetime.now(timezone.utc),
+            'retry_after': None,
+            'completed_at': None,
+            'last_error': None,
+        }
+        return self._update_payment_request_record(
+            payment_id,
+            payload,
+            guild_id=guild_id,
+            allowed_statuses=['pending_confirmation'],
+        )
+
+    def mark_payment_submitted(
+        self,
+        payment_id: str,
+        tx_signature: str,
+        amount_token: Optional[float] = None,
+        token_price_usd: Optional[float] = None,
+        send_phase: str = 'submitted',
+        guild_id: Optional[int] = None,
+    ) -> bool:
+        """Persist submitted tx metadata immediately after broadcast."""
+        payload: Dict[str, Any] = {
+            'status': 'submitted',
+            'tx_signature': tx_signature,
+            'send_phase': send_phase,
+            'submitted_at': datetime.now(timezone.utc),
+            'completed_at': None,
+            'last_error': None,
+            'retry_after': None,
+        }
+        if amount_token is not None:
+            payload['amount_token'] = amount_token
+        if token_price_usd is not None:
+            payload['token_price_usd'] = token_price_usd
+        return self._update_payment_request_record(
+            payment_id,
+            payload,
+            guild_id=guild_id,
+            allowed_statuses=['processing'],
+        )
+
+    def mark_payment_confirmed(self, payment_id: str, guild_id: Optional[int] = None) -> bool:
+        """Mark a submitted payment as confirmed on-chain."""
+        return self._update_payment_request_record(
+            payment_id,
+            {
+                'status': 'confirmed',
+                'completed_at': datetime.now(timezone.utc),
+                'last_error': None,
+                'retry_after': None,
+            },
+            guild_id=guild_id,
+            allowed_statuses=['submitted'],
+        )
+
+    def mark_payment_failed(
+        self,
+        payment_id: str,
+        error: str,
+        send_phase: Optional[str] = None,
+        guild_id: Optional[int] = None,
+    ) -> bool:
+        """Mark a processing or submitted payment as definitively failed."""
+        payload: Dict[str, Any] = {
+            'status': 'failed',
+            'last_error': error,
+            'completed_at': datetime.now(timezone.utc),
+            'retry_after': None,
+        }
+        if send_phase is not None:
+            payload['send_phase'] = send_phase
+        return self._update_payment_request_record(
+            payment_id,
+            payload,
+            guild_id=guild_id,
+            allowed_statuses=['processing', 'submitted'],
+        )
+
+    def mark_payment_manual_hold(
+        self,
+        payment_id: str,
+        reason: str,
+        guild_id: Optional[int] = None,
+    ) -> bool:
+        """Freeze a payment in manual_hold for ambiguous or explicitly held states."""
+        return self._update_payment_request_record(
+            payment_id,
+            {
+                'status': 'manual_hold',
+                'last_error': reason,
+                'retry_after': None,
+                'completed_at': None,
+            },
+            guild_id=guild_id,
+            allowed_statuses=['pending_confirmation', 'queued', 'processing', 'submitted', 'failed'],
+        )
+
+    def requeue_payment(
+        self,
+        payment_id: str,
+        retry_after: Optional[datetime] = None,
+        guild_id: Optional[int] = None,
+    ) -> bool:
+        """Retry only from failed by returning the payment to the queued state."""
+        return self._update_payment_request_record(
+            payment_id,
+            {
+                'status': 'queued',
+                'tx_signature': None,
+                'send_phase': None,
+                'submitted_at': None,
+                'completed_at': None,
+                'retry_after': retry_after,
+                'last_error': None,
+            },
+            guild_id=guild_id,
+            allowed_statuses=['failed'],
+        )
+
+    def release_payment_hold(
+        self,
+        payment_id: str,
+        new_status: str,
+        guild_id: Optional[int] = None,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Release a manual_hold payment only to failed or keep holding."""
+        if new_status not in {'failed', 'manual_hold'}:
+            logger.warning(f"Unsupported release_payment_hold target status: {new_status}")
+            return False
+
+        payload: Dict[str, Any] = {'status': new_status}
+        if new_status == 'failed':
+            payload['completed_at'] = datetime.now(timezone.utc)
+            payload['retry_after'] = None
+        else:
+            payload['completed_at'] = None
+        if reason is not None:
+            payload['last_error'] = reason
+
+        return self._update_payment_request_record(
+            payment_id,
+            payload,
+            guild_id=guild_id,
+            allowed_statuses=['manual_hold'],
+        )
+
+    def cancel_payment(
+        self,
+        payment_id: str,
+        guild_id: Optional[int] = None,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Cancel a payment only from states that have never entered manual_hold or submitted."""
+        payload: Dict[str, Any] = {
+            'status': 'cancelled',
+            'completed_at': datetime.now(timezone.utc),
+            'retry_after': None,
+        }
+        if reason is not None:
+            payload['last_error'] = reason
+        return self._update_payment_request_record(
+            payment_id,
+            payload,
+            guild_id=guild_id,
+            allowed_statuses=['pending_confirmation', 'queued', 'failed'],
+        )
+
+    def claim_due_payment_requests(
+        self,
+        limit: int = 10,
+        guild_ids: Optional[List[int]] = None,
+    ) -> List[Dict]:
+        """Atomically claim due queued payment requests through the Supabase RPC."""
+        if not self.supabase:
+            return []
+
+        writable_guild_ids = self._get_writable_guild_ids(guild_ids)
+        if writable_guild_ids == []:
+            return []
+
+        try:
+            params: Dict[str, Any] = {'claim_limit': limit}
+            if writable_guild_ids is not None:
+                params['claim_guild_ids'] = writable_guild_ids
+            result = self.supabase.rpc('claim_due_payment_requests', params).execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error claiming due payment requests: {e}", exc_info=True)
+            return []
+
+    def get_inflight_payment_requests_for_recovery(
+        self,
+        guild_ids: Optional[List[int]] = None,
+    ) -> List[Dict]:
+        """Fetch processing/submitted payments that need restart-time recovery."""
+        writable_guild_ids = self._get_writable_guild_ids(guild_ids)
+        if writable_guild_ids == [] or not self.supabase:
+            return []
+
+        try:
+            query = (
+                self.supabase.table('payment_requests')
+                .select('*')
+                .in_('status', ['processing', 'submitted'])
+            )
+            if writable_guild_ids:
+                if len(writable_guild_ids) == 1:
+                    query = query.eq('guild_id', writable_guild_ids[0])
+                else:
+                    query = query.in_('guild_id', writable_guild_ids)
+            result = query.order('updated_at').execute()
+            return result.data or []
+        except Exception as e:
+            logger.error("Error fetching inflight payment requests for recovery: %s", e, exc_info=True)
+            return []
+
+    def get_inflight_payments_for_recovery(
+        self,
+        guild_ids: Optional[List[int]] = None,
+    ) -> List[Dict]:
+        """Compatibility wrapper for restart-time payment recovery fetches."""
+        return self.get_inflight_payment_requests_for_recovery(guild_ids=guild_ids)
+
+    def get_pending_confirmation_payments(
+        self,
+        guild_ids: Optional[List[int]] = None,
+    ) -> List[Dict]:
+        """Fetch pending confirmations for persistent Discord view re-registration."""
+        writable_guild_ids = self._get_writable_guild_ids(guild_ids)
+        if writable_guild_ids == [] or not self.supabase:
+            return []
+
+        try:
+            query = (
+                self.supabase.table('payment_requests')
+                .select('*')
+                .eq('status', 'pending_confirmation')
+            )
+            if writable_guild_ids:
+                if len(writable_guild_ids) == 1:
+                    query = query.eq('guild_id', writable_guild_ids[0])
+                else:
+                    query = query.in_('guild_id', writable_guild_ids)
+            result = query.order('created_at').execute()
+            return result.data or []
+        except Exception as e:
+            logger.error("Error fetching pending confirmation payments: %s", e, exc_info=True)
+            return []
+
     def mark_member_first_shared(self, member_id: int, guild_id: Optional[int] = None) -> bool:
         """Set first_shared_at timestamp for a member (only if not already set).
 
@@ -1116,7 +2324,7 @@ class DatabaseHandler:
             logger.error(f"Error setting is_speaker for member {member_id}: {e}", exc_info=True)
             return False
 
-    def get_muted_member_ids(self, guild_id: Optional[int] = None) -> list[int]:
+    def get_muted_member_ids(self, guild_id: Optional[int] = None) -> List[int]:
         """Return member IDs muted in a guild via guild_members.speaker_muted."""
         if not self.storage_handler or not self.storage_handler.supabase_client:
             return []
@@ -1554,7 +2762,7 @@ class DatabaseHandler:
     # ========== Grant Applications ==========
 
     def create_grant_application(self, thread_id: int, applicant_id: int, thread_content: str,
-                                 attachment_urls: list | None = None,
+                                 attachment_urls: Optional[List] = None,
                                  guild_id: Optional[int] = None) -> bool:
         """Insert a new grant application record."""
         if not self._gate_check(guild_id):
@@ -1713,7 +2921,7 @@ class DatabaseHandler:
                 self.storage_handler.supabase_client.table('grant_applications')
                 .select('*')
                 .eq('applicant_id', applicant_id)
-                .in_('status', ['reviewing', 'awaiting_wallet'])
+                .in_('status', ['reviewing', 'awaiting_wallet', 'payment_requested'])
             )
             if guild_id:
                 query = query.eq('guild_id', guild_id)
