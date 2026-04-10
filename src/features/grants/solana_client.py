@@ -89,9 +89,11 @@ class SolanaClient:
             ))
 
             # Prepend ComputeBudget instructions so the tx isn't dropped under congestion.
-            # A plain system-transfer consumes ~150 CU; 200 is a comfortable ceiling with
-            # no CPI. Priority price is a static floor (see SOLANA_PRIORITY_FEE_MICRO_LAMPORTS).
-            compute_unit_limit = 200
+            # Budget must cover: set_compute_unit_limit (~150 CU) + set_compute_unit_price
+            # (~150 CU) + system-program transfer (~150 CU) ≈ 450 CU minimum. 1_000 CU
+            # gives comfortable headroom without materially affecting fees (fee scales
+            # with actually-consumed CU × price, not the requested limit).
+            compute_unit_limit = 1_000
             compute_unit_price = self.priority_fee_micro_lamports
             set_cu_limit_ix = set_compute_unit_limit(compute_unit_limit)
             set_cu_price_ix = set_compute_unit_price(compute_unit_price)
