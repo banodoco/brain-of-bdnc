@@ -9,6 +9,7 @@ import base58
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TxOpts
+from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.system_program import transfer, TransferParams
@@ -44,6 +45,13 @@ class SolanaClient:
         key_bytes = base58.b58decode(private_key)
         self.keypair = Keypair.from_bytes(key_bytes)
         self.rpc_url = os.getenv('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com')
+        # Static priority-fee floor. 10_000 micro-lamports/CU is a reasonable mainnet
+        # floor: cheap (simple transfers burn ~200 CU → ~2_000_000 micro-lamports =
+        # 0.000002 SOL extra fee) but high enough to be included under normal congestion.
+        # TODO: dynamic pricing via getRecentPrioritizationFees is a future improvement.
+        self.priority_fee_micro_lamports = int(
+            os.getenv('SOLANA_PRIORITY_FEE_MICRO_LAMPORTS', '10000')
+        )
 
     @property
     def public_key(self) -> Pubkey:
@@ -74,11 +82,24 @@ class SolanaClient:
                     f"need {amount_sol:.4f} SOL + fees"
                 )
 
-            ix = transfer(TransferParams(
+            transfer_ix = transfer(TransferParams(
                 from_pubkey=self.public_key,
                 to_pubkey=recipient,
                 lamports=lamports,
             ))
+
+            # Prepend ComputeBudget instructions so the tx isn't dropped under congestion.
+            # A plain system-transfer consumes ~150 CU; 200 is a comfortable ceiling with
+            # no CPI. Priority price is a static floor (see SOLANA_PRIORITY_FEE_MICRO_LAMPORTS).
+            compute_unit_limit = 200
+            compute_unit_price = self.priority_fee_micro_lamports
+            set_cu_limit_ix = set_compute_unit_limit(compute_unit_limit)
+            set_cu_price_ix = set_compute_unit_price(compute_unit_price)
+            instructions = [set_cu_limit_ix, set_cu_price_ix, transfer_ix]
+            logger.info(
+                f"SOL transfer priority fee: cu_limit={compute_unit_limit} "
+                f"cu_price={compute_unit_price} micro-lamports/CU"
+            )
 
             # Retry up to 3 times — blockhashes can expire under network load
             last_err = None
@@ -88,7 +109,7 @@ class SolanaClient:
 
                 msg = MessageV0.try_compile(
                     payer=self.public_key,
-                    instructions=[ix],
+                    instructions=instructions,
                     address_lookup_table_accounts=[],
                     recent_blockhash=blockhash,
                 )
@@ -116,10 +137,40 @@ class SolanaClient:
             raise RuntimeError(f"Transaction failed after 3 attempts: {last_err}")
 
     async def confirm_tx(self, signature: str) -> bool:
-        """Wait for a transaction to be confirmed. Returns True if confirmed."""
+        """Wait for a transaction to be confirmed and verify it did not error on chain.
+
+        ``AsyncClient.confirm_transaction`` only waits for the signature to reach
+        the requested commitment level — it does NOT inspect ``status.err``. A
+        finalized-but-errored transaction (e.g. ``InsufficientFundsForRent``)
+        trivially satisfies that call, so we must follow up with
+        ``get_signature_statuses`` and raise on a non-null ``err``.
+
+        Returns True if the transaction was confirmed and had no error.
+        Raises RuntimeError if the transaction errored on chain or the status
+        lookup came back empty/not-found.
+        """
         async with AsyncClient(self.rpc_url) as client:
             sig = Signature.from_string(signature)
             await client.confirm_transaction(sig, commitment=Confirmed)
+
+            # Re-fetch the signature status and inspect ``err`` explicitly.
+            # This mirrors ``check_tx_status`` below but inlined so the
+            # confirm path is a single round-trip after the wait.
+            resp = await client.get_signature_statuses(
+                [sig], search_transaction_history=True
+            )
+            statuses = resp.value
+            if not statuses or statuses[0] is None:
+                raise RuntimeError(
+                    f"SOL transfer {signature} not found after confirmation wait "
+                    "(signature did not land on chain)"
+                )
+            status = statuses[0]
+            if status.err is not None:
+                raise RuntimeError(
+                    f"SOL transfer {signature} failed on chain: err={status.err!r}"
+                )
+
             logger.info(f"SOL transfer confirmed: {signature}")
             return True
 

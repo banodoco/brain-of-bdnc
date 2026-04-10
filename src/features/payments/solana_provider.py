@@ -52,6 +52,21 @@ class SolanaProvider(PaymentProvider):
             )
             return 'confirmed'
         except asyncio.TimeoutError:
+            # Before giving up as 'timeout', reconcile against the chain: a
+            # finalized-but-errored tx may have arrived at confirmation slowly,
+            # and we don't want to lose visibility on failed state just because
+            # our wait budget expired.
+            try:
+                status = await self.check_status(tx_signature)
+            except Exception as lookup_err:
+                logger.warning(
+                    "[SolanaProvider] check_status after timeout failed for %s: %s",
+                    tx_signature,
+                    lookup_err,
+                )
+                return 'timeout'
+            if status in {'confirmed', 'failed'}:
+                return status
             return 'timeout'
         except Exception as e:
             logger.warning("[SolanaProvider] confirm_tx fallback for %s: %s", tx_signature, e)
