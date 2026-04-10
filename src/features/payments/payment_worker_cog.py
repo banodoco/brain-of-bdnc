@@ -145,7 +145,12 @@ class PaymentWorkerCog(commands.Cog):
             await self._handle_terminal_payment(result)
 
     async def _handle_terminal_payment(self, payment: Dict[str, Any]):
-        await self._notify_payment_result(payment)
+        # Only post the result publicly for successful payments. Failures and
+        # manual holds are DM'd to the admin only — recipients shouldn't see
+        # raw failure diagnostics (tx signatures, internal IDs, error details)
+        # in-channel.
+        if payment.get('status') == 'confirmed':
+            await self._notify_payment_result(payment)
         provider_key = str(payment.get('provider') or '').strip().lower()
         if (
             payment.get('status') == 'confirmed'
