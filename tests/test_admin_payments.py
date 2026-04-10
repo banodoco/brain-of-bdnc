@@ -3,8 +3,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.common.db_handler import WalletUpdateBlockedError
 from src.features.admin_chat.admin_chat_cog import AdminChatCog
 from src.features.admin_chat.tools import execute_initiate_payment
+from src.features.grants.grants_cog import GrantsCog
+from src.features.payments.payment_cog import PaymentCog
 from src.features.payments.payment_service import PaymentService
 
 
@@ -99,7 +102,16 @@ class FakeFlowCog:
 
 
 class FakeBot:
-    def __init__(self, channel, *, payment_service=None, payment_cog=None, admin_chat_cog=None, guilds=None):
+    def __init__(
+        self,
+        channel,
+        *,
+        payment_service=None,
+        payment_cog=None,
+        admin_chat_cog=None,
+        guilds=None,
+        db_handler=None,
+    ):
         self.payment_service = payment_service
         self._channel = channel
         self._payment_cog = payment_cog
@@ -109,6 +121,8 @@ class FakeBot:
         self.ready_waits = 0
         self.fetched_users = {}
         self._is_ready = False
+        self.db_handler = db_handler
+        self.claude_client = object()
 
     async def wait_until_ready(self):
         self.ready_waits += 1
@@ -176,6 +190,9 @@ class FakeIntentDB:
         self.intents = {}
         self.active_by_key = {}
         self.payments = {}
+        self.storage_handler = None
+        self.active_payment_or_intent_users = set()
+        self.rolling_24h_usd = {}
         self.created_intents = []
         self.updated_intents = []
         self.upsert_wallet_calls = []
@@ -184,6 +201,7 @@ class FakeIntentDB:
             get_enabled_servers=lambda require_write=False: [{"guild_id": 1, "enabled": True, "write_enabled": True}],
             resolve_payment_destinations=lambda guild_id, channel_id, producer: None,
             is_guild_enabled=lambda guild_id: True,
+            get_first_server_with_field=lambda field, require_write=False: {"guild_id": 1, "grants_channel_id": 55},
         )
 
     def _sync_active_index(self, intent):
@@ -202,6 +220,12 @@ class FakeIntentDB:
             if wallet["wallet_id"] == wallet_id and (guild_id is None or wallet["guild_id"] == guild_id):
                 return dict(wallet)
         return None
+
+    def has_active_payment_or_intent(self, guild_id, user_id):
+        return (int(guild_id), int(user_id)) in self.active_payment_or_intent_users
+
+    def get_rolling_24h_payout_usd(self, guild_id, provider):
+        return float(self.rolling_24h_usd.get((int(guild_id), str(provider).strip().lower()), 0.0))
 
     def create_admin_payment_intent(self, record, guild_id):
         intent_id = f"intent-{len(self.intents) + 1}"
@@ -238,8 +262,16 @@ class FakeIntentDB:
         ]
 
     def upsert_wallet(self, guild_id, discord_user_id, chain, address, metadata=None):
+        key = (guild_id, discord_user_id, chain)
+        existing = self.wallets.get(key)
+        if (
+            existing
+            and existing["wallet_address"] != address
+            and self.has_active_payment_or_intent(guild_id, discord_user_id)
+        ):
+            raise WalletUpdateBlockedError("active payment in flight")
         wallet = {
-            "wallet_id": f"wallet-{len(self.upsert_wallet_calls) + 1}",
+            "wallet_id": existing["wallet_id"] if existing else f"wallet-{len(self.upsert_wallet_calls) + 1}",
             "guild_id": guild_id,
             "discord_user_id": discord_user_id,
             "chain": chain,
@@ -248,7 +280,7 @@ class FakeIntentDB:
             "metadata": metadata,
         }
         self.upsert_wallet_calls.append((guild_id, discord_user_id, chain, address, metadata))
-        self.wallets[(guild_id, discord_user_id, chain)] = wallet
+        self.wallets[key] = wallet
         return dict(wallet)
 
     def get_payment_request(self, payment_id, guild_id=None):
@@ -274,11 +306,17 @@ class FakeProvider:
         self.price_calls += 1
         return 200.0
 
+    def token_name(self):
+        return "SOL"
+
 
 class FakePaymentRequestDB:
     def __init__(self):
         self.created = []
         self.wallets = {"wallet-1": {"wallet_id": "wallet-1", "wallet_address": VALID_SOL_ADDRESS, "guild_id": 1}}
+        self.wallet_registry = {}
+        self.active_payment_or_intent_users = set()
+        self.rolling_24h_usd = {}
 
     def get_payment_requests_by_producer(self, guild_id, producer, producer_ref, is_test):
         return [
@@ -296,10 +334,84 @@ class FakePaymentRequestDB:
             return None
         return dict(wallet) if wallet else None
 
+    def has_active_payment_or_intent(self, guild_id, user_id):
+        return (int(guild_id), int(user_id)) in self.active_payment_or_intent_users
+
+    def get_rolling_24h_payout_usd(self, guild_id, provider):
+        return float(self.rolling_24h_usd.get((int(guild_id), str(provider).strip().lower()), 0.0))
+
+    def upsert_wallet(self, guild_id, discord_user_id, chain, address, metadata=None):
+        key = (guild_id, discord_user_id, chain)
+        existing = self.wallet_registry.get(key)
+        if (
+            existing
+            and existing["wallet_address"] != address
+            and self.has_active_payment_or_intent(guild_id, discord_user_id)
+        ):
+            raise WalletUpdateBlockedError("active payment in flight")
+        wallet = {
+            "wallet_id": existing["wallet_id"] if existing else f"wallet-user-{len(self.wallet_registry) + 1}",
+            "guild_id": guild_id,
+            "discord_user_id": discord_user_id,
+            "chain": chain,
+            "wallet_address": address,
+            "verified_at": "now",
+            "metadata": metadata,
+        }
+        self.wallet_registry[key] = wallet
+        self.wallets[wallet["wallet_id"]] = wallet
+        return dict(wallet)
+
     def create_payment_request(self, record, guild_id=None):
         row = {"payment_id": f"payment-{len(self.created) + 1}", **dict(record), "guild_id": guild_id or record["guild_id"]}
         self.created.append(row)
         return dict(row)
+
+
+class FakeGrantDB:
+    def __init__(self):
+        self.wallets = {}
+        self.upsert_wallet_calls = []
+        self.status_updates = []
+        self.storage_handler = None
+        self.active_payment_or_intent_users = set()
+        self.rolling_24h_usd = {}
+        self.server_config = SimpleNamespace(
+            get_first_server_with_field=lambda field, require_write=False: {"guild_id": 1, "grants_channel_id": 55},
+            resolve_payment_destinations=lambda guild_id, channel_id, producer: None,
+        )
+
+    def has_active_payment_or_intent(self, guild_id, user_id):
+        return (int(guild_id), int(user_id)) in self.active_payment_or_intent_users
+
+    def get_rolling_24h_payout_usd(self, guild_id, provider):
+        return float(self.rolling_24h_usd.get((int(guild_id), str(provider).strip().lower()), 0.0))
+
+    def upsert_wallet(self, guild_id, discord_user_id, chain, address, metadata=None):
+        key = (guild_id, discord_user_id, chain)
+        existing = self.wallets.get(key)
+        if (
+            existing
+            and existing["wallet_address"] != address
+            and self.has_active_payment_or_intent(guild_id, discord_user_id)
+        ):
+            raise WalletUpdateBlockedError("active payment in flight")
+        wallet = {
+            "wallet_id": existing["wallet_id"] if existing else f"wallet-{len(self.upsert_wallet_calls) + 1}",
+            "guild_id": guild_id,
+            "discord_user_id": discord_user_id,
+            "chain": chain,
+            "wallet_address": address,
+            "verified_at": "now",
+            "metadata": metadata,
+        }
+        self.upsert_wallet_calls.append((guild_id, discord_user_id, chain, address, metadata))
+        self.wallets[key] = wallet
+        return dict(wallet)
+
+    def update_grant_status(self, thread_id, status, guild_id=None, **kwargs):
+        self.status_updates.append((thread_id, status, guild_id, kwargs))
+        return True
 
 
 @pytest.fixture(autouse=True)
@@ -380,6 +492,33 @@ async def test_initiate_payment_validation():
 
 
 @pytest.mark.anyio
+async def test_initiate_payment_tool_rejects_wallet_address_arg():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    bot = FakeBot(channel, payment_service=object())
+
+    result = await execute_initiate_payment(
+        bot,
+        db,
+        {
+            "guild_id": 1,
+            "source_channel_id": 55,
+            "recipient_user_id": "42",
+            "amount_sol": 1.0,
+            "wallet_address": "Injected111111111111111111111111111111",
+            "recipient_wallet": "Injected222222222222222222222222222222",
+        },
+    )
+
+    assert result["success"] is True
+    assert result["wallet_on_file"] is False
+    assert db.created_intents[0]["status"] == "awaiting_wallet"
+    assert db.created_intents[0]["wallet_id"] is None
+    assert db.wallets == {}
+
+
+@pytest.mark.anyio
 async def test_initiate_payment_duplicate_intent():
     guild = SimpleNamespace(id=1)
     channel = FakeChannel(guild=guild)
@@ -433,6 +572,148 @@ async def test_wallet_reply_valid():
     assert db.intents[intent["intent_id"]]["status"] == "awaiting_test"
     assert db.intents[intent["intent_id"]]["resolved_by_message_id"] == 1001
     cog._start_admin_payment_flow.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_upsert_wallet_raises_during_active_intent():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    db.wallets[(1, 42, "solana")] = {
+        "wallet_id": "wallet-existing",
+        "guild_id": 1,
+        "discord_user_id": 42,
+        "chain": "solana",
+        "wallet_address": VALID_SOL_ADDRESS,
+        "verified_at": "2026-04-10T00:00:00Z",
+    }
+    db.active_payment_or_intent_users.add((1, 42))
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.25,
+            "producer_ref": "1_42_123",
+            "status": "awaiting_wallet",
+        },
+        guild_id=1,
+    )
+    bot = FakeBot(channel, payment_service=object(), db_handler=db)
+    cog = AdminChatCog(bot, db, sharer=object())
+    cog._start_admin_payment_flow = AsyncMock()
+
+    await cog._handle_wallet_received(
+        FakeMessage(1007, FakeAuthor(42), channel, guild, "Wallet22222222222222222222222222222222"),
+        intent,
+        "Wallet22222222222222222222222222222222",
+    )
+
+    assert "active payment is already in flight" in channel.sent_messages[-1].content
+    assert db.intents[intent["intent_id"]]["status"] == "failed"
+    cog._start_admin_payment_flow.assert_not_awaited()
+
+    grant_thread = FakeChannel(channel_id=1001, guild=guild, parent_id=10)
+    grant_db = FakeGrantDB()
+    grant_db.wallets[(1, 222, "solana")] = {
+        "wallet_id": "wallet-existing",
+        "guild_id": 1,
+        "discord_user_id": 222,
+        "chain": "solana",
+        "wallet_address": VALID_SOL_ADDRESS,
+        "verified_at": "2026-04-10T00:00:00Z",
+    }
+    grant_db.active_payment_or_intent_users.add((1, 222))
+    payment_service = FakeAdminPaymentService()
+    grant_bot = FakeBot(
+        grant_thread,
+        payment_service=payment_service,
+        guilds=[guild],
+        db_handler=grant_db,
+    )
+    grant_cog = GrantsCog(grant_bot)
+
+    await grant_cog._start_payment_flow(
+        grant_thread,
+        {"applicant_id": 222, "thread_id": 1001, "total_cost_usd": 42.5},
+        "Wallet33333333333333333333333333333333",
+    )
+
+    assert "active payment in flight" in grant_thread.sent_messages[-1].content
+    assert payment_service.request_calls == []
+
+
+@pytest.mark.anyio
+async def test_upsert_wallet_unblocked_after_terminal():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    db.wallets[(1, 42, "solana")] = {
+        "wallet_id": "wallet-existing",
+        "guild_id": 1,
+        "discord_user_id": 42,
+        "chain": "solana",
+        "wallet_address": VALID_SOL_ADDRESS,
+        "verified_at": "2026-04-10T00:00:00Z",
+    }
+    db.active_payment_or_intent_users.add((1, 42))
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.25,
+            "producer_ref": "1_42_123",
+            "status": "awaiting_wallet",
+        },
+        guild_id=1,
+    )
+    bot = FakeBot(channel, payment_service=object(), db_handler=db)
+    cog = AdminChatCog(bot, db, sharer=object())
+    cog._start_admin_payment_flow = AsyncMock()
+
+    await cog._handle_wallet_received(
+        FakeMessage(1008, FakeAuthor(42), channel, guild, VALID_SOL_ADDRESS),
+        intent,
+        VALID_SOL_ADDRESS,
+    )
+
+    assert db.intents[intent["intent_id"]]["status"] == "awaiting_test"
+    cog._start_admin_payment_flow.assert_awaited_once()
+
+    grant_thread = FakeChannel(channel_id=1001, guild=guild, parent_id=10)
+    grant_db = FakeGrantDB()
+    grant_db.wallets[(1, 222, "solana")] = {
+        "wallet_id": "wallet-existing",
+        "guild_id": 1,
+        "discord_user_id": 222,
+        "chain": "solana",
+        "wallet_address": VALID_SOL_ADDRESS,
+        "verified_at": "2026-04-10T00:00:00Z",
+    }
+    payment_service = FakeAdminPaymentService(
+        request_result={"payment_id": "pay-test", "status": "pending_confirmation"},
+        confirm_result={"payment_id": "pay-test", "status": "queued"},
+    )
+    grant_bot = FakeBot(
+        grant_thread,
+        payment_service=payment_service,
+        guilds=[guild],
+        db_handler=grant_db,
+    )
+    grant_cog = GrantsCog(grant_bot)
+    grant_cog._apply_tag = AsyncMock()
+
+    await grant_cog._start_payment_flow(
+        grant_thread,
+        {"applicant_id": 222, "thread_id": 1001, "total_cost_usd": 42.5},
+        "Wallet44444444444444444444444444444444",
+    )
+
+    assert grant_db.upsert_wallet_calls[0][3] == "Wallet44444444444444444444444444444444"
+    assert payment_service.request_calls[0]["wallet_id"] == "wallet-existing"
+    assert payment_service.confirm_calls == [
+        ("pay-test", {"guild_id": 1, "confirmed_by": "auto", "confirmed_by_user_id": 222})
+    ]
+    assert grant_db.status_updates[-1][1] == "payment_requested"
 
 
 @pytest.mark.anyio
@@ -707,6 +988,99 @@ async def test_request_payment_amount_token():
     assert result["amount_usd"] is None
     assert result["token_price_usd"] is None
     assert provider.price_calls == 0
+
+
+@pytest.mark.anyio
+async def test_admin_success_dm_over_threshold(monkeypatch, clear_payment_policy_env):
+    monkeypatch.setenv("ADMIN_USER_ID", "999")
+    monkeypatch.setenv("ADMIN_PAYMENT_SUCCESS_DM_THRESHOLD_USD", "100")
+    monkeypatch.setenv("ADMIN_PAYMENT_SUCCESS_DM_PROVIDERS", "solana_payouts")
+    channel = FakeChannel(guild=SimpleNamespace(id=1))
+    payment_service = SimpleNamespace(providers={"solana_payouts": FakeProvider()})
+    bot = FakeBot(channel, payment_service=payment_service)
+    cog = PaymentCog(bot, FakePaymentRequestDB(), payment_service=payment_service)
+    cog._notify_payment_result = AsyncMock()
+    cog._handoff_terminal_result = AsyncMock()
+    cog._dm_admin_payment_success = AsyncMock()
+    cog._dm_admin_payment_failure = AsyncMock()
+
+    await cog._handle_terminal_payment(
+        {
+            "payment_id": "pay-success",
+            "producer": "admin_chat",
+            "producer_ref": "intent-1",
+            "provider": "solana_payouts",
+            "chain": "solana",
+            "is_test": False,
+            "status": "confirmed",
+            "amount_token": 1.0,
+            "amount_usd": 150.0,
+            "recipient_wallet": VALID_SOL_ADDRESS,
+        }
+    )
+    await cog._handle_terminal_payment(
+        {
+            "payment_id": "pay-under",
+            "producer": "admin_chat",
+            "producer_ref": "intent-2",
+            "provider": "solana_payouts",
+            "chain": "solana",
+            "is_test": False,
+            "status": "confirmed",
+            "amount_token": 1.0,
+            "amount_usd": 50.0,
+            "recipient_wallet": VALID_SOL_ADDRESS,
+        }
+    )
+    await cog._handle_terminal_payment(
+        {
+            "payment_id": "pay-failure",
+            "producer": "admin_chat",
+            "producer_ref": "intent-3",
+            "provider": "solana_payouts",
+            "chain": "solana",
+            "is_test": False,
+            "status": "failed",
+            "amount_token": 1.0,
+            "amount_usd": 150.0,
+            "recipient_wallet": VALID_SOL_ADDRESS,
+            "last_error": "manual review",
+        }
+    )
+
+    assert cog._dm_admin_payment_success.await_count == 1
+    assert cog._dm_admin_payment_failure.await_count == 1
+
+
+@pytest.mark.anyio
+async def test_admin_success_dm_sees_derived_usd(monkeypatch, clear_payment_policy_env):
+    monkeypatch.setenv("ADMIN_USER_ID", "999")
+    channel = FakeChannel(guild=SimpleNamespace(id=1))
+    payment_service = SimpleNamespace(providers={"solana_payouts": FakeProvider()})
+    bot = FakeBot(channel, payment_service=payment_service)
+    cog = PaymentCog(bot, FakePaymentRequestDB(), payment_service=payment_service)
+
+    await cog._dm_admin_payment_success(
+        {
+            "payment_id": "pay-success",
+            "producer": "admin_chat",
+            "producer_ref": "intent-1",
+            "provider": "solana_payouts",
+            "chain": "solana",
+            "is_test": False,
+            "status": "confirmed",
+            "amount_token": 1.5,
+            "amount_usd": 321.09,
+            "recipient_wallet": VALID_SOL_ADDRESS,
+            "tx_signature": "sig-123",
+        }
+    )
+
+    message = bot.fetched_users[999].sent_messages[-1].content
+    assert "✅ **Payment Completed**" in message
+    assert "- USD: $321.09" in message
+    assert "- Wallet: `1111...1111`" in message
+    assert "requires manual review" not in message
 
 
 @pytest.mark.anyio

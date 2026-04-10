@@ -14,6 +14,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger('DiscordBot')
 
 
+def _redact_wallet(wallet: Optional[str]) -> str:
+    if not wallet:
+        return 'unknown'
+    wallet = str(wallet)
+    if len(wallet) <= 10:
+        return wallet
+    return f"{wallet[:4]}...{wallet[-4:]}"
+
+
 class PaymentService:
     """Core fail-closed payment orchestration shared by payment producers."""
 
@@ -23,11 +32,23 @@ class PaymentService:
         providers: Dict[str, PaymentProvider],
         test_payment_amount: float,
         logger_instance: Optional[logging.Logger] = None,
+        per_payment_usd_cap: Optional[float] = None,
+        daily_usd_cap: Optional[float] = None,
+        capped_providers=None,
+        on_cap_breach=None,
     ):
         self.db_handler = db_handler
         self.providers = {str(name).lower(): provider for name, provider in (providers or {}).items()}
         self.test_payment_amount = float(test_payment_amount)
         self.logger = logger_instance or logger
+        self.per_payment_usd_cap = float(per_payment_usd_cap) if per_payment_usd_cap is not None else None
+        self.daily_usd_cap = float(daily_usd_cap) if daily_usd_cap is not None else None
+        self.capped_providers = frozenset(
+            str(name).strip().lower()
+            for name in (capped_providers or ())
+            if str(name).strip()
+        )
+        self._on_cap_breach = on_cap_breach
 
     async def request_payment(
         self,
@@ -51,26 +72,58 @@ class PaymentService:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Create one idempotent payment request row."""
-        existing_rows = self.db_handler.get_payment_requests_by_producer(
-            guild_id=guild_id,
-            producer=producer,
-            producer_ref=producer_ref,
-            is_test=is_test,
-        )
-        if existing_rows:
-            return existing_rows[0]
-
-        payment_provider = self._get_provider(provider)
-        if not payment_provider:
-            self.logger.error(f"[PaymentService] Unsupported payment provider: {provider}")
-            return None
-
         normalized_wallet = str(recipient_wallet or '').strip()
         normalized_producer = str(producer or '').strip().lower()
         normalized_producer_ref = str(producer_ref or '').strip()
         normalized_chain = str(chain or '').strip().lower()
         if not normalized_wallet or not normalized_producer or not normalized_producer_ref or not normalized_chain:
             self.logger.error("[PaymentService] request_payment missing required normalized fields")
+            return None
+
+        INDEX_EXCLUDED = {'failed', 'cancelled'}
+        TERMINAL_FOR_RETURN = {'confirmed', 'failed', 'manual_hold', 'cancelled'}
+        collision_error = 'idempotency collision: prior wallet differs'
+        collision_row = None
+        blocking_prior_row = None
+        idempotent_row = None
+        all_prior_rows = self.db_handler.get_payment_requests_by_producer(
+            guild_id=guild_id,
+            producer=normalized_producer,
+            producer_ref=normalized_producer_ref,
+            is_test=is_test,
+        )
+        for prior_row in all_prior_rows:
+            prior_wallet = str(prior_row.get('recipient_wallet') or '').strip()
+            prior_status = str(prior_row.get('status') or '').strip().lower()
+            if prior_wallet != normalized_wallet and collision_row is None:
+                collision_row = prior_row
+            if prior_status not in INDEX_EXCLUDED and blocking_prior_row is None:
+                blocking_prior_row = prior_row
+            # Only an active same-wallet row is safe to return idempotently; terminal rows must
+            # fall through so retries after failure/manual intervention can create a fresh record.
+            if prior_wallet == normalized_wallet and prior_status not in TERMINAL_FOR_RETURN and idempotent_row is None:
+                idempotent_row = prior_row
+
+        if collision_row and blocking_prior_row is not None:
+            self.logger.warning(
+                "[PaymentService] producer_ref collision blocked for %s:%s in guild %s: incoming=%s existing=%s status=%s",
+                normalized_producer,
+                normalized_producer_ref,
+                guild_id,
+                _redact_wallet(normalized_wallet),
+                _redact_wallet(blocking_prior_row.get('recipient_wallet')),
+                blocking_prior_row.get('status'),
+            )
+            await self._emit_cap_breach(blocking_prior_row)
+            return None
+
+        if not collision_row and idempotent_row is not None:
+            return idempotent_row
+
+        provider_key = str(provider).strip().lower()
+        payment_provider = self._get_provider(provider)
+        if not payment_provider:
+            self.logger.error(f"[PaymentService] Unsupported payment provider: {provider}")
             return None
 
         wallet_record = None
@@ -117,6 +170,42 @@ class PaymentService:
                 self.logger.error("[PaymentService] request_payment derived a non-positive amount_token")
                 return None
 
+        cap_breach = None
+        derived_usd_for_record = None
+        derived_price_for_record = None
+        if not is_test and provider_key in self.capped_providers:
+            cap_usd = normalized_amount_usd
+            if normalized_amount_usd is None and (self.per_payment_usd_cap is not None or self.daily_usd_cap is not None):
+                try:
+                    price_result = await payment_provider.get_token_price_usd()
+                    derived_price_for_record = float(price_result) if price_result is not None else None
+                except Exception as e:
+                    self.logger.warning(
+                        "[PaymentService] cap price lookup failed for %s payout in guild %s to %s: %s",
+                        provider_key,
+                        guild_id,
+                        _redact_wallet(normalized_wallet),
+                        e,
+                    )
+                    derived_price_for_record = None
+                if derived_price_for_record and derived_price_for_record > 0:
+                    derived_usd_for_record = float(derived_price_for_record) * amount_token
+                    cap_usd = derived_usd_for_record
+                else:
+                    cap_breach = 'cap check unavailable: token price missing'
+
+            if cap_breach is None and cap_usd is not None:
+                if self.per_payment_usd_cap is not None and cap_usd > self.per_payment_usd_cap:
+                    cap_breach = (
+                        f"per-payment cap exceeded: ${cap_usd:.2f} > ${self.per_payment_usd_cap:.2f}"
+                    )
+                if cap_breach is None and self.daily_usd_cap is not None:
+                    rolling_usd = self.db_handler.get_rolling_24h_payout_usd(guild_id, provider_key)
+                    if rolling_usd + cap_usd > self.daily_usd_cap:
+                        cap_breach = (
+                            f"rolling daily cap exceeded: ${rolling_usd + cap_usd:.2f} > ${self.daily_usd_cap:.2f}"
+                        )
+
         metadata_payload = dict(metadata or {})
         record = {
             'guild_id': guild_id,
@@ -126,7 +215,7 @@ class PaymentService:
             'recipient_discord_id': recipient_discord_id,
             'recipient_wallet': normalized_wallet,
             'chain': normalized_chain,
-            'provider': str(provider).strip().lower(),
+            'provider': provider_key,
             'is_test': bool(is_test),
             'route_key': route_key,
             'confirm_channel_id': int(confirm_channel_id),
@@ -144,7 +233,7 @@ class PaymentService:
                 'guild_id': guild_id,
                 'recipient_wallet': normalized_wallet,
                 'chain': normalized_chain,
-                'provider': str(provider).strip().lower(),
+                'provider': provider_key,
                 'is_test': bool(is_test),
                 'amount_token': amount_token,
                 'amount_usd': normalized_amount_usd,
@@ -159,9 +248,29 @@ class PaymentService:
                 'metadata': metadata_payload,
             },
         }
+        if not is_test and provider_key in self.capped_providers and derived_usd_for_record is not None:
+            record['amount_usd'] = derived_usd_for_record
+            record['token_price_usd'] = derived_price_for_record
+            record['request_payload']['amount_usd'] = derived_usd_for_record
+            record['request_payload']['token_price_usd'] = derived_price_for_record
+        if collision_row and blocking_prior_row is None:
+            record['status'] = 'manual_hold'
+            record['last_error'] = collision_error
+        if cap_breach:
+            self.logger.warning(
+                "[PaymentService] cap breach for %s payout in guild %s to %s: %s",
+                provider_key,
+                guild_id,
+                _redact_wallet(normalized_wallet),
+                cap_breach,
+            )
+            record['status'] = 'manual_hold'
+            record['last_error'] = cap_breach
 
         created = self.db_handler.create_payment_request(record, guild_id=guild_id)
         if created:
+            if cap_breach or (collision_row and blocking_prior_row is None):
+                await self._emit_cap_breach(created)
             return created
 
         # Fail closed under concurrent duplicate requests by re-reading the canonical row.
@@ -171,7 +280,24 @@ class PaymentService:
             producer_ref=normalized_producer_ref,
             is_test=is_test,
         )
-        return existing_rows[0] if existing_rows else None
+        canonical_row = existing_rows[0] if existing_rows else None
+        if not canonical_row:
+            return None
+
+        canonical_wallet = str(canonical_row.get('recipient_wallet') or '').strip()
+        if canonical_wallet != normalized_wallet:
+            self.logger.warning(
+                "[PaymentService] duplicate reread wallet mismatch for %s:%s in guild %s: incoming=%s canonical=%s status=%s",
+                normalized_producer,
+                normalized_producer_ref,
+                guild_id,
+                _redact_wallet(normalized_wallet),
+                _redact_wallet(canonical_wallet),
+                canonical_row.get('status'),
+            )
+            await self._emit_cap_breach(canonical_row)
+            return None
+        return canonical_row
 
     def confirm_payment(
         self,
@@ -191,8 +317,8 @@ class PaymentService:
             return payment
 
         expected_user_id = payment.get('recipient_discord_id')
-        if not privileged_override and expected_user_id is not None:
-            if confirmed_by_user_id is None or int(expected_user_id) != int(confirmed_by_user_id):
+        if not privileged_override:
+            if expected_user_id is None or confirmed_by_user_id is None or int(expected_user_id) != int(confirmed_by_user_id):
                 self.logger.warning(
                     "[PaymentService] rejected confirmation for %s: expected recipient %s, got %s",
                     payment_id,
@@ -415,6 +541,11 @@ class PaymentService:
         if not provider_name:
             return None
         return self.providers.get(str(provider_name).strip().lower())
+
+    async def _emit_cap_breach(self, payment: Optional[Dict[str, Any]]) -> None:
+        callback = getattr(self, '_on_cap_breach', None)
+        if callback and payment:
+            await callback(payment)
 
 
 __all__ = ['PaymentService']

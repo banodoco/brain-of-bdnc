@@ -62,6 +62,7 @@ class PaymentConfirmView(discord.ui.View):
             )
             return
 
+        # interaction.user.id already matches existing_payment['recipient_discord_id'] when present.
         payment = self.payment_cog.payment_service.confirm_payment(
             self.payment_id,
             guild_id=interaction.guild_id,
@@ -122,6 +123,12 @@ class PaymentCog(commands.Cog):
 
         self.claim_batch_size = max(int(os.getenv('PAYMENT_CLAIM_LIMIT', '10')), 1)
         self.worker_interval_seconds = max(int(os.getenv('PAYMENT_WORKER_INTERVAL_SECONDS', '30')), 1)
+        self._admin_success_dm_threshold_usd = float(os.getenv('ADMIN_PAYMENT_SUCCESS_DM_THRESHOLD_USD', '100'))
+        self._admin_success_dm_providers = frozenset(
+            provider.strip().lower()
+            for provider in os.getenv('ADMIN_PAYMENT_SUCCESS_DM_PROVIDERS', 'solana_payouts').split(',')
+            if provider.strip()
+        )
         self._startup_synced = False
 
     async def cog_load(self):
@@ -266,9 +273,75 @@ class PaymentCog(commands.Cog):
 
     async def _handle_terminal_payment(self, payment: Dict[str, Any]):
         await self._notify_payment_result(payment)
+        provider_key = str(payment.get('provider') or '').strip().lower()
+        if (
+            payment.get('status') == 'confirmed'
+            and not payment.get('is_test')
+            and provider_key in self._admin_success_dm_providers
+            and float(payment.get('amount_usd') or 0) >= self._admin_success_dm_threshold_usd
+        ):
+            await self._dm_admin_payment_success(payment)
         if payment.get('status') in {'failed', 'manual_hold'}:
             await self._dm_admin_payment_failure(payment)
         await self._handoff_terminal_result(payment)
+
+    async def _dm_admin_payment_success(self, payment: Dict[str, Any]):
+        admin_id_env = os.getenv('ADMIN_USER_ID')
+        if not admin_id_env:
+            logger.warning(
+                "[PaymentCog] ADMIN_USER_ID not set; cannot DM admin about payment %s",
+                payment.get('payment_id'),
+            )
+            return
+        try:
+            admin_id = int(admin_id_env)
+        except ValueError:
+            logger.error("[PaymentCog] Invalid ADMIN_USER_ID; cannot DM admin.")
+            return
+
+        try:
+            admin_user = await self.bot.fetch_user(admin_id)
+        except Exception as exc:
+            logger.error(
+                "[PaymentCog] Failed to fetch admin user %s for payment DM: %s",
+                admin_id,
+                exc,
+            )
+            return
+
+        amount_token = float(payment.get('amount_token') or 0)
+        amount_usd = float(payment.get('amount_usd') or 0)
+        lines = [
+            "✅ **Payment Completed**",
+            f"- Payment ID: `{payment.get('payment_id')}`",
+            f"- Producer: `{payment.get('producer')}` / `{payment.get('producer_ref')}`",
+            f"- Provider: `{payment.get('provider')}`",
+            f"- Type: {'test payment' if payment.get('is_test') else 'final payment'}",
+            f"- Amount: {amount_token:.8f} {self._token_label(payment)}",
+            f"- USD: ${amount_usd:.2f}",
+            f"- Wallet: `{_redact_wallet(payment.get('recipient_wallet'))}`",
+        ]
+        if payment.get('tx_signature'):
+            lines.append(f"- Transaction: `{payment.get('tx_signature')}`")
+
+        message = "\n".join(lines)
+        if len(message) > 1900:
+            message = message[:1900] + "..."
+
+        try:
+            await admin_user.send(message)
+            logger.info(
+                "[PaymentCog] DM'd admin about confirmed payment %s",
+                payment.get('payment_id'),
+            )
+        except discord.Forbidden:
+            logger.error("[PaymentCog] Bot forbidden from DMing admin about payment success.")
+        except Exception as exc:
+            logger.error(
+                "[PaymentCog] Failed to DM admin about payment %s: %s",
+                payment.get('payment_id'),
+                exc,
+            )
 
     async def _dm_admin_payment_failure(self, payment: Dict[str, Any]):
         admin_id_env = os.getenv('ADMIN_USER_ID')

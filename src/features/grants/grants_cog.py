@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 import discord
 from discord.ext import commands
 
+from src.common.db_handler import WalletUpdateBlockedError
 from src.features.grants.assessor import assess_application, interpret_admin_decision
 from src.features.grants.pricing import GPU_RATES, calculate_grant_cost
 from src.features.grants.solana_client import is_valid_solana_address
@@ -554,13 +555,20 @@ class GrantsCog(commands.Cog):
             return
 
         guild_id = thread.guild.id
-        wallet_record = self.db.upsert_wallet(
-            guild_id=guild_id,
-            discord_user_id=grant['applicant_id'],
-            chain='solana',
-            address=wallet,
-            metadata={'producer': 'grants', 'thread_id': thread.id},
-        )
+        try:
+            wallet_record = self.db.upsert_wallet(
+                guild_id=guild_id,
+                discord_user_id=grant['applicant_id'],
+                chain='solana',
+                address=wallet,
+                metadata={'producer': 'grants', 'thread_id': thread.id},
+            )
+        except WalletUpdateBlockedError:
+            await thread.send(
+                "I couldn't update that wallet because there is already an active payment in flight for you. "
+                "Please wait for the current payment flow to finish or ask an admin for manual review."
+            )
+            return
         if not wallet_record:
             raise RuntimeError("failed to register wallet for payment verification")
 
@@ -593,6 +601,7 @@ class GrantsCog(commands.Cog):
             payment_status='test_requested',
         )
 
+        # grant['applicant_id'] matches the recipient_discord_id passed into request_payment above.
         confirmed_test = self.payment_service.confirm_payment(
             test_payment['payment_id'],
             guild_id=guild_id,

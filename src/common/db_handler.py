@@ -6,6 +6,19 @@ import asyncio
 logger = logging.getLogger('DiscordBot')
 
 
+class WalletUpdateBlockedError(Exception):
+    """Raised when a wallet change is attempted while a payment flow is still active."""
+
+
+def _redact_wallet(wallet: Optional[str]) -> str:
+    if not wallet:
+        return 'unknown'
+    wallet = str(wallet)
+    if len(wallet) <= 10:
+        return wallet
+    return f"{wallet[:4]}...{wallet[-4:]}"
+
+
 def to_aware_utc(dt_str: str) -> Optional[datetime]:
     """Convert an ISO format string to a timezone-aware datetime object in UTC."""
     if not dt_str:
@@ -1438,6 +1451,16 @@ class DatabaseHandler:
         if metadata is not None:
             payload['metadata'] = metadata
         if existing and existing.get('wallet_address') != address:
+            if self.has_active_payment_or_intent(guild_id, discord_user_id):
+                logger.warning(
+                    "Blocked wallet update for guild %s user %s chain %s: existing=%s incoming=%s",
+                    guild_id,
+                    discord_user_id,
+                    chain,
+                    _redact_wallet(existing.get('wallet_address')),
+                    _redact_wallet(address),
+                )
+                raise WalletUpdateBlockedError("active payment in flight")
             # Verification is tied to the specific address that received the test payment.
             payload['verified_at'] = None
 
@@ -1510,6 +1533,46 @@ class DatabaseHandler:
         except Exception as e:
             logger.error(f"Error fetching wallet {wallet_id}: {e}", exc_info=True)
             return None
+
+    def has_active_payment_or_intent(self, guild_id: int, discord_user_id: int) -> bool:
+        """Return True when a user has a non-terminal payment request or admin payment intent."""
+        if not self._gate_check(guild_id):
+            return False
+        if not self.supabase:
+            return False
+
+        try:
+            payment_result = (
+                self.supabase.table('payment_requests')
+                .select('payment_id')
+                .eq('guild_id', guild_id)
+                .eq('recipient_discord_id', discord_user_id)
+                .not_.in_('status', ['confirmed', 'failed', 'manual_hold', 'cancelled'])
+                .limit(1)
+                .execute()
+            )
+            if payment_result.data:
+                return True
+
+            intent_result = (
+                self.supabase.table('admin_payment_intents')
+                .select('intent_id')
+                .eq('guild_id', guild_id)
+                .eq('recipient_user_id', discord_user_id)
+                .not_.in_('status', ['completed', 'failed', 'cancelled'])
+                .limit(1)
+                .execute()
+            )
+            return bool(intent_result.data)
+        except Exception as e:
+            logger.error(
+                "Error checking active payment or intent for guild %s user %s: %s",
+                guild_id,
+                discord_user_id,
+                e,
+                exc_info=True,
+            )
+            return False
 
     def list_wallets(
         self,
@@ -1864,6 +1927,8 @@ class DatabaseHandler:
             return []
 
         try:
+            # Intentionally return every matching row regardless of status; PaymentService's
+            # collision/idempotency logic depends on seeing terminal and non-terminal history.
             query = (
                 self.supabase.table('payment_requests')
                 .select('*')
@@ -1881,6 +1946,45 @@ class DatabaseHandler:
                 exc_info=True,
             )
             return []
+
+    def get_rolling_24h_payout_usd(self, guild_id: int, provider: str) -> float:
+        """Sum stored USD value for recent non-test payouts on one provider."""
+        if not self._gate_check(guild_id):
+            return 0.0
+        if not self.supabase:
+            return 0.0
+
+        provider_key = str(provider or '').strip().lower()
+        if not provider_key:
+            return 0.0
+
+        # Supabase REST has no serializable transaction here, so the residual burst-race window is
+        # roughly one RPC round-trip (about 100-500 ms); manual_hold plus admin DM is the fail-closed
+        # backstop. This helper also depends on upstream request_payment persisting derived amount_usd
+        # for capped amount_token-only callers in T8's cap-enforcement step.
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        try:
+            result = (
+                self.supabase.table('payment_requests')
+                .select('amount_usd')
+                .eq('guild_id', guild_id)
+                .eq('provider', provider_key)
+                .eq('is_test', False)
+                .in_('status', ['pending_confirmation', 'queued', 'processing', 'submitted', 'confirmed'])
+                .gte('created_at', cutoff)
+                .execute()
+            )
+            rows = result.data or []
+            return float(sum(float(row.get('amount_usd') or 0.0) for row in rows))
+        except Exception as e:
+            logger.error(
+                "Error summing rolling 24h payout USD for guild %s provider %s: %s",
+                guild_id,
+                provider_key,
+                e,
+                exc_info=True,
+            )
+            return 0.0
 
     def list_payment_requests(
         self,

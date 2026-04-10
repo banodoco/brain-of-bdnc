@@ -1,3 +1,10 @@
+-- RLS posture:
+-- - RLS is already enabled below on wallet_registry, payment_channel_routes, and payment_requests.
+-- - Access is mediated exclusively via DatabaseHandler using the Supabase service role, which bypasses RLS.
+-- - anon and authenticated roles have all privileges revoked; there is no non-service-role access path.
+-- - Writes are parameterized through supabase-py; there is no raw SQL interpolation in the application path.
+-- - If this posture changes, explicit row-level policies must be written before exposing non-service access.
+
 create extension if not exists pgcrypto;
 
 create or replace function public.set_payment_updated_at()

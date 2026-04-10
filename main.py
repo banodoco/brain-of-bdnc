@@ -61,6 +61,23 @@ def setup_logging(dev_mode=False):
     
     return logger
 
+
+def _bind_cap_breach_dm(bot, logger):
+    async def _notify(payment):
+        payment_cog = bot.get_cog('PaymentCog')
+        if not payment_cog or not hasattr(payment_cog, '_dm_admin_payment_failure'):
+            logger.warning(
+                "PaymentCog is not available to DM admin about manual-review payment %s",
+                payment.get('payment_id'),
+            )
+            return
+        try:
+            await payment_cog._dm_admin_payment_failure(payment)
+        except Exception as e:
+            logger.error("Failed to DM admin about manual-review payment %s: %s", payment.get('payment_id'), e)
+
+    return _notify
+
 async def run_archive_script(days, dev_mode=False, logger=None, in_depth=False,
                              guild_id=None, channels=None):
     """Run the archive_discord.py script with the specified number of days"""
@@ -147,7 +164,26 @@ async def main_async(args):
         logger.info("SocialPublishService initialized and attached to bot.")
 
         try:
-            test_payment_amount = float(os.getenv('PAYMENT_TEST_AMOUNT_SOL', '0.000001'))
+            # The Solana rent-exempt minimum for a zero-data System account is
+            # 890_880 lamports (~0.00089088 SOL). A test payment below this
+            # deterministically fails on chain with InsufficientFundsForRent
+            # when sent to an uninitialized wallet. 2_000_000 lamports
+            # (0.002 SOL) sits comfortably above the rent floor with a buffer
+            # for future fee drift.
+            RENT_EXEMPT_LAMPORTS = 890_880
+            MIN_TEST_LAMPORTS = 2_000_000
+            test_payment_amount = float(os.getenv('PAYMENT_TEST_AMOUNT_SOL', '0.002'))
+            test_payment_lamports = int(test_payment_amount * 1_000_000_000)
+            if test_payment_lamports < MIN_TEST_LAMPORTS:
+                raise RuntimeError(
+                    f"PAYMENT_TEST_AMOUNT_SOL={test_payment_amount} is "
+                    f"{test_payment_lamports} lamports, below the required "
+                    f"minimum of {MIN_TEST_LAMPORTS} lamports "
+                    f"(rent-exempt floor is {RENT_EXEMPT_LAMPORTS}). "
+                    "Raise PAYMENT_TEST_AMOUNT_SOL to at least 0.002."
+                )
+            per_payment_usd_cap = float(os.getenv('ADMIN_PAYOUT_PER_PAYMENT_USD_CAP', '500'))
+            daily_usd_cap = float(os.getenv('ADMIN_PAYOUT_DAILY_USD_CAP', '2000'))
             grants_provider = SolanaProvider(
                 solana_client=SolanaClient(os.getenv('SOLANA_PRIVATE_KEY_GRANTS')),
             )
@@ -162,14 +198,24 @@ async def main_async(args):
                 },
                 test_payment_amount=test_payment_amount,
                 logger_instance=logger,
+                per_payment_usd_cap=per_payment_usd_cap,
+                daily_usd_cap=daily_usd_cap,
+                capped_providers=('solana_payouts',),
+                on_cap_breach=_bind_cap_breach_dm(bot, logger),
             )
             logger.info(
                 "PaymentService initialized with fixed test payment amount of %.8f SOL.",
                 test_payment_amount,
             )
+            logger.info(
+                "Admin payout caps enabled: per_payment_usd_cap=%.2f daily_usd_cap=%.2f capped_providers=%s",
+                per_payment_usd_cap,
+                daily_usd_cap,
+                ('solana_payouts',),
+            )
         except Exception as e:
             bot.payment_service = None
-            logger.warning(f"Failed to initialize payment subsystem (payments disabled): {e}")
+            logger.error(f"Failed to initialize payment subsystem (payments disabled): {e}")
 
         # 2. Claude Client
         claude_client_instance = ClaudeClient()

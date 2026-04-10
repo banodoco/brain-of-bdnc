@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from src.common.db_handler import WalletUpdateBlockedError
 from src.features.sharing.models import PublicationSourceContext, SocialPublishRequest
 from src.features.sharing.social_publish_service import SocialPublishService
 from src.features.payments.payment_service import PaymentService
@@ -322,14 +323,23 @@ async def test_execute_publication_rejects_tampered_row():
 
 
 class FakePaymentProvider:
-    def __init__(self, send_result=None, confirm_result="confirmed", check_status_result="confirmed", price=150.0):
+    def __init__(
+        self,
+        send_result=None,
+        confirm_result="confirmed",
+        check_status_result="confirmed",
+        price=150.0,
+        price_error=None,
+    ):
         self.send_result = send_result or SendResult(signature="sig-1", phase="submitted", error=None)
         self.confirm_result = confirm_result
         self.check_status_result = check_status_result
         self.price = price
+        self.price_error = price_error
         self.send_calls = []
         self.confirm_calls = []
         self.status_calls = []
+        self.price_calls = 0
 
     async def send(self, recipient, amount_token):
         self.send_calls.append((recipient, amount_token))
@@ -344,6 +354,9 @@ class FakePaymentProvider:
         return self.check_status_result
 
     async def get_token_price_usd(self):
+        self.price_calls += 1
+        if self.price_error is not None:
+            raise self.price_error
         return self.price
 
     def token_name(self):
@@ -354,7 +367,11 @@ class FakePaymentDB:
     def __init__(self):
         self.rows = {}
         self.wallets = {}
+        self.wallet_registry = {}
         self.transitions = []
+        self.active_payment_or_intent_users = set()
+        self.rolling_24h_usd = {}
+        self.rolling_24h_calls = []
 
     def get_payment_requests_by_producer(self, guild_id, producer, producer_ref, is_test=None):
         rows = [
@@ -456,6 +473,36 @@ class FakePaymentDB:
             return None
         return wallet
 
+    def has_active_payment_or_intent(self, guild_id, user_id):
+        return (int(guild_id), int(user_id)) in self.active_payment_or_intent_users
+
+    def get_rolling_24h_payout_usd(self, guild_id, provider):
+        key = (int(guild_id), str(provider).strip().lower())
+        self.rolling_24h_calls.append(key)
+        return float(self.rolling_24h_usd.get(key, 0.0))
+
+    def upsert_wallet(self, guild_id, discord_user_id, chain, address, metadata=None):
+        key = (guild_id, discord_user_id, chain)
+        existing = self.wallet_registry.get(key)
+        if (
+            existing
+            and existing["wallet_address"] != address
+            and self.has_active_payment_or_intent(guild_id, discord_user_id)
+        ):
+            raise WalletUpdateBlockedError("active payment in flight")
+        wallet = {
+            "wallet_id": existing["wallet_id"] if existing else "wallet-user-{0}".format(len(self.wallet_registry) + 1),
+            "guild_id": guild_id,
+            "discord_user_id": discord_user_id,
+            "chain": chain,
+            "wallet_address": address,
+            "verified_at": "verified",
+            "metadata": metadata,
+        }
+        self.wallet_registry[key] = wallet
+        self.wallets[wallet["wallet_id"]] = wallet
+        return wallet
+
     def mark_wallet_verified(self, wallet_id, guild_id=None):
         wallet = self.wallets[wallet_id]
         wallet["verified_at"] = "verified"
@@ -548,6 +595,524 @@ async def test_payment_service_confirm_payment_requires_expected_recipient():
     assert accepted["status"] == "queued"
 
 
+async def test_confirm_rejects_null_recipient_discord_id():
+    db_handler = FakePaymentDB()
+    db_handler.rows["pay-null"] = {
+        "payment_id": "pay-null",
+        "guild_id": 3,
+        "producer": "grants",
+        "producer_ref": "thread-null",
+        "recipient_wallet": "recipient-wallet",
+        "recipient_discord_id": None,
+        "provider": "solana_native",
+        "is_test": False,
+        "amount_token": 1.0,
+        "status": "pending_confirmation",
+    }
+    service = PaymentService(
+        db_handler,
+        providers={"solana_native": FakePaymentProvider()},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+    )
+
+    rejected = service.confirm_payment("pay-null", guild_id=3, confirmed_by_user_id=123)
+
+    assert rejected is None
+    assert db_handler.rows["pay-null"]["status"] == "pending_confirmation"
+
+
+async def test_confirm_privileged_override_bypasses_null_check():
+    db_handler = FakePaymentDB()
+    db_handler.rows["pay-null"] = {
+        "payment_id": "pay-null",
+        "guild_id": 3,
+        "producer": "grants",
+        "producer_ref": "thread-null",
+        "recipient_wallet": "recipient-wallet",
+        "recipient_discord_id": None,
+        "provider": "solana_native",
+        "is_test": False,
+        "amount_token": 1.0,
+        "status": "pending_confirmation",
+    }
+    service = PaymentService(
+        db_handler,
+        providers={"solana_native": FakePaymentProvider()},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+    )
+
+    accepted = service.confirm_payment(
+        "pay-null",
+        guild_id=3,
+        confirmed_by="auto",
+        confirmed_by_user_id=None,
+        privileged_override=True,
+    )
+
+    assert accepted["status"] == "queued"
+    assert accepted["confirmed_by"] == "auto"
+
+
+async def test_confirm_rejects_mismatched_user():
+    db_handler = FakePaymentDB()
+    db_handler.rows["pay-mismatch"] = {
+        "payment_id": "pay-mismatch",
+        "guild_id": 3,
+        "producer": "grants",
+        "producer_ref": "thread-mismatch",
+        "recipient_wallet": "recipient-wallet",
+        "recipient_discord_id": 123,
+        "provider": "solana_native",
+        "is_test": False,
+        "amount_token": 1.0,
+        "status": "pending_confirmation",
+    }
+    service = PaymentService(
+        db_handler,
+        providers={"solana_native": FakePaymentProvider()},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+    )
+
+    rejected = service.confirm_payment("pay-mismatch", guild_id=3, confirmed_by_user_id=999)
+
+    assert rejected is None
+    assert db_handler.rows["pay-mismatch"]["status"] == "pending_confirmation"
+
+
+async def test_request_payment_per_payment_cap_manual_holds():
+    db_handler = FakePaymentDB()
+    db_handler.wallets["wallet-1"] = {
+        "wallet_id": "wallet-1",
+        "guild_id": 3,
+        "wallet_address": "recipient-wallet",
+    }
+    provider = FakePaymentProvider(price=200.0)
+    breached = []
+
+    async def on_cap_breach(payment):
+        breached.append(payment["payment_id"])
+
+    service = PaymentService(
+        db_handler,
+        providers={"solana_payouts": provider},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+        per_payment_usd_cap=500,
+        daily_usd_cap=2000,
+        capped_providers=("solana_payouts",),
+        on_cap_breach=on_cap_breach,
+    )
+
+    created = await service.request_payment(
+        producer="admin_chat",
+        producer_ref="intent-cap-usd",
+        guild_id=3,
+        recipient_wallet="recipient-wallet",
+        chain="solana",
+        provider="solana_payouts",
+        is_test=False,
+        amount_usd=600.0,
+        confirm_channel_id=10,
+        notify_channel_id=10,
+        wallet_id="wallet-1",
+        recipient_discord_id=99,
+    )
+
+    assert created["status"] == "manual_hold"
+    assert created["last_error"] == "per-payment cap exceeded: $600.00 > $500.00"
+    assert breached == [created["payment_id"]]
+
+
+async def test_request_payment_amount_token_path_cap_breach():
+    db_handler = FakePaymentDB()
+    provider = FakePaymentProvider(price=150.0)
+    breached = []
+
+    async def on_cap_breach(payment):
+        breached.append(payment["payment_id"])
+
+    service = PaymentService(
+        db_handler,
+        providers={"solana_payouts": provider},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+        per_payment_usd_cap=500,
+        daily_usd_cap=2000,
+        capped_providers=("solana_payouts",),
+        on_cap_breach=on_cap_breach,
+    )
+
+    created = await service.request_payment(
+        producer="admin_chat",
+        producer_ref="intent-cap-token",
+        guild_id=3,
+        recipient_wallet="recipient-wallet",
+        chain="solana",
+        provider="solana_payouts",
+        is_test=False,
+        amount_token=4.0,
+        confirm_channel_id=10,
+        notify_channel_id=10,
+        recipient_discord_id=99,
+    )
+
+    assert created["status"] == "manual_hold"
+    assert created["last_error"] == "per-payment cap exceeded: $600.00 > $500.00"
+    assert created["amount_usd"] == 600.0
+    assert created["token_price_usd"] == 150.0
+    assert created["request_payload"]["amount_usd"] == 600.0
+    assert created["request_payload"]["token_price_usd"] == 150.0
+    assert breached == [created["payment_id"]]
+
+
+async def test_request_payment_amount_token_path_stamps_amount_usd():
+    db_handler = FakePaymentDB()
+    provider = FakePaymentProvider(price=150.0)
+    service = PaymentService(
+        db_handler,
+        providers={"solana_payouts": provider},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+        per_payment_usd_cap=500,
+        daily_usd_cap=2000,
+        capped_providers=("solana_payouts",),
+    )
+
+    created = await service.request_payment(
+        producer="admin_chat",
+        producer_ref="intent-stamp",
+        guild_id=3,
+        recipient_wallet="recipient-wallet",
+        chain="solana",
+        provider="solana_payouts",
+        is_test=False,
+        amount_token=1.5,
+        confirm_channel_id=10,
+        notify_channel_id=10,
+        recipient_discord_id=99,
+    )
+
+    assert created["status"] == "pending_confirmation"
+    assert created["amount_usd"] == 225.0
+    assert created["token_price_usd"] == 150.0
+    assert created["request_payload"]["amount_usd"] == 225.0
+    assert created["request_payload"]["token_price_usd"] == 150.0
+    assert provider.price_calls == 1
+
+
+async def test_request_payment_amount_token_path_missing_price_holds():
+    db_handler = FakePaymentDB()
+    provider = FakePaymentProvider(price=None)
+    breached = []
+
+    async def on_cap_breach(payment):
+        breached.append(payment["payment_id"])
+
+    service = PaymentService(
+        db_handler,
+        providers={"solana_payouts": provider},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+        per_payment_usd_cap=500,
+        daily_usd_cap=2000,
+        capped_providers=("solana_payouts",),
+        on_cap_breach=on_cap_breach,
+    )
+
+    created = await service.request_payment(
+        producer="admin_chat",
+        producer_ref="intent-missing-price",
+        guild_id=3,
+        recipient_wallet="recipient-wallet",
+        chain="solana",
+        provider="solana_payouts",
+        is_test=False,
+        amount_token=1.0,
+        confirm_channel_id=10,
+        notify_channel_id=10,
+        recipient_discord_id=99,
+    )
+
+    assert created["status"] == "manual_hold"
+    assert created["last_error"] == "cap check unavailable: token price missing"
+    assert breached == [created["payment_id"]]
+
+
+async def test_request_payment_amount_token_uncapped_provider_preserves_none():
+    db_handler = FakePaymentDB()
+    provider = FakePaymentProvider(price=150.0)
+    service = PaymentService(
+        db_handler,
+        providers={"solana": provider},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+        per_payment_usd_cap=500,
+        daily_usd_cap=2000,
+        capped_providers=("solana_payouts",),
+    )
+
+    created = await service.request_payment(
+        producer="admin_chat",
+        producer_ref="intent-uncapped",
+        guild_id=3,
+        recipient_wallet="recipient-wallet",
+        chain="solana",
+        provider="solana",
+        is_test=False,
+        amount_token=1.5,
+        confirm_channel_id=10,
+        notify_channel_id=10,
+        recipient_discord_id=99,
+    )
+
+    assert created["amount_usd"] is None
+    assert created["token_price_usd"] is None
+    assert provider.price_calls == 0
+
+
+async def test_request_payment_rolling_daily_cap_manual_holds():
+    db_handler = FakePaymentDB()
+    db_handler.wallets["wallet-1"] = {
+        "wallet_id": "wallet-1",
+        "guild_id": 3,
+        "wallet_address": "recipient-wallet",
+    }
+    db_handler.rolling_24h_usd[(3, "solana_payouts")] = 1900.0
+    provider = FakePaymentProvider(price=200.0)
+    service = PaymentService(
+        db_handler,
+        providers={"solana_payouts": provider},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+        per_payment_usd_cap=500,
+        daily_usd_cap=2000,
+        capped_providers=("solana_payouts",),
+    )
+
+    created = await service.request_payment(
+        producer="admin_chat",
+        producer_ref="intent-daily-usd",
+        guild_id=3,
+        recipient_wallet="recipient-wallet",
+        chain="solana",
+        provider="solana_payouts",
+        is_test=False,
+        amount_usd=150.0,
+        confirm_channel_id=10,
+        notify_channel_id=10,
+        wallet_id="wallet-1",
+        recipient_discord_id=99,
+    )
+
+    assert created["status"] == "manual_hold"
+    assert created["last_error"] == "rolling daily cap exceeded: $2050.00 > $2000.00"
+
+
+async def test_request_payment_rolling_daily_cap_sees_derived_usd():
+    db_handler = FakePaymentDB()
+    db_handler.rolling_24h_usd[(3, "solana_payouts")] = 1900.0
+    provider = FakePaymentProvider(price=150.0)
+    service = PaymentService(
+        db_handler,
+        providers={"solana_payouts": provider},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+        per_payment_usd_cap=500,
+        daily_usd_cap=2000,
+        capped_providers=("solana_payouts",),
+    )
+
+    created = await service.request_payment(
+        producer="admin_chat",
+        producer_ref="intent-daily-token",
+        guild_id=3,
+        recipient_wallet="recipient-wallet",
+        chain="solana",
+        provider="solana_payouts",
+        is_test=False,
+        amount_token=1.0,
+        confirm_channel_id=10,
+        notify_channel_id=10,
+        recipient_discord_id=99,
+    )
+
+    assert created["status"] == "manual_hold"
+    assert created["last_error"] == "rolling daily cap exceeded: $2050.00 > $2000.00"
+    assert created["amount_usd"] == 150.0
+    assert created["token_price_usd"] == 150.0
+
+
+async def test_slot_reuse_collision_detected_after_failure():
+    db_handler = FakePaymentDB()
+    db_handler.rows["pay-old"] = {
+        "payment_id": "pay-old",
+        "guild_id": 3,
+        "producer": "admin_chat",
+        "producer_ref": "intent-collision",
+        "recipient_wallet": "old-wallet",
+        "provider": "solana_payouts",
+        "is_test": False,
+        "amount_token": 1.0,
+        "status": "failed",
+    }
+    notifications = []
+
+    async def on_cap_breach(payment):
+        notifications.append(payment["payment_id"])
+
+    service = PaymentService(
+        db_handler,
+        providers={"solana_payouts": FakePaymentProvider()},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+        on_cap_breach=on_cap_breach,
+    )
+
+    created = await service.request_payment(
+        producer="admin_chat",
+        producer_ref="intent-collision",
+        guild_id=3,
+        recipient_wallet="new-wallet",
+        chain="solana",
+        provider="solana_payouts",
+        is_test=False,
+        amount_usd=150.0,
+        confirm_channel_id=10,
+        notify_channel_id=10,
+        recipient_discord_id=99,
+    )
+
+    assert created["status"] == "manual_hold"
+    assert created["last_error"] == "idempotency collision: prior wallet differs"
+    assert len(db_handler.rows) == 2
+    assert notifications == [created["payment_id"]]
+
+
+async def test_slot_reuse_collision_blocked_when_prior_active():
+    db_handler = FakePaymentDB()
+    db_handler.rows["pay-active"] = {
+        "payment_id": "pay-active",
+        "guild_id": 3,
+        "producer": "admin_chat",
+        "producer_ref": "intent-active-collision",
+        "recipient_wallet": "old-wallet",
+        "provider": "solana_payouts",
+        "is_test": False,
+        "amount_token": 1.0,
+        "status": "pending_confirmation",
+    }
+    notifications = []
+
+    async def on_cap_breach(payment):
+        notifications.append(payment["payment_id"])
+
+    service = PaymentService(
+        db_handler,
+        providers={"solana_payouts": FakePaymentProvider()},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+        on_cap_breach=on_cap_breach,
+    )
+
+    created = await service.request_payment(
+        producer="admin_chat",
+        producer_ref="intent-active-collision",
+        guild_id=3,
+        recipient_wallet="new-wallet",
+        chain="solana",
+        provider="solana_payouts",
+        is_test=False,
+        amount_usd=150.0,
+        confirm_channel_id=10,
+        notify_channel_id=10,
+        recipient_discord_id=99,
+    )
+
+    assert created is None
+    assert len(db_handler.rows) == 1
+    assert notifications == ["pay-active"]
+
+
+async def test_slot_reuse_same_wallet_creates_fresh_row_after_failure():
+    db_handler = FakePaymentDB()
+    db_handler.rows["pay-old"] = {
+        "payment_id": "pay-old",
+        "guild_id": 3,
+        "producer": "admin_chat",
+        "producer_ref": "intent-same-wallet",
+        "recipient_wallet": "recipient-wallet",
+        "provider": "solana_payouts",
+        "is_test": False,
+        "amount_token": 1.0,
+        "status": "failed",
+    }
+    service = PaymentService(
+        db_handler,
+        providers={"solana_payouts": FakePaymentProvider()},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+    )
+
+    created = await service.request_payment(
+        producer="admin_chat",
+        producer_ref="intent-same-wallet",
+        guild_id=3,
+        recipient_wallet="recipient-wallet",
+        chain="solana",
+        provider="solana_payouts",
+        is_test=False,
+        amount_usd=150.0,
+        confirm_channel_id=10,
+        notify_channel_id=10,
+        recipient_discord_id=99,
+    )
+
+    assert created["payment_id"] != "pay-old"
+    assert created["status"] == "pending_confirmation"
+    assert len(db_handler.rows) == 2
+
+
+async def test_idempotent_return_for_nonterminal():
+    db_handler = FakePaymentDB()
+    db_handler.rows["pay-existing"] = {
+        "payment_id": "pay-existing",
+        "guild_id": 3,
+        "producer": "admin_chat",
+        "producer_ref": "intent-existing",
+        "recipient_wallet": "recipient-wallet",
+        "provider": "solana_payouts",
+        "is_test": False,
+        "amount_token": 1.0,
+        "status": "pending_confirmation",
+    }
+    service = PaymentService(
+        db_handler,
+        providers={"solana_payouts": FakePaymentProvider()},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+    )
+
+    duplicate = await service.request_payment(
+        producer="admin_chat",
+        producer_ref="intent-existing",
+        guild_id=3,
+        recipient_wallet="recipient-wallet",
+        chain="solana",
+        provider="solana_payouts",
+        is_test=False,
+        amount_usd=150.0,
+        confirm_channel_id=10,
+        notify_channel_id=10,
+        recipient_discord_id=99,
+    )
+
+    assert duplicate["payment_id"] == "pay-existing"
+    assert len(db_handler.rows) == 1
+
+
 async def test_payment_service_execute_persists_submission_and_confirms_test_wallet():
     db_handler = FakePaymentDB()
     db_handler.wallets["wallet-1"] = {
@@ -587,6 +1152,44 @@ async def test_payment_service_execute_persists_submission_and_confirms_test_wal
     assert provider.confirm_calls == ["sig-123"]
     assert db_handler.transitions[:2] == [("submitted", "pay-1", "sig-123"), ("confirmed", "pay-1")]
     assert ("wallet_verified", "wallet-1") in db_handler.transitions
+
+
+async def test_execute_payment_uses_stored_wallet():
+    db_handler = FakePaymentDB()
+    db_handler.wallets["wallet-1"] = {
+        "wallet_id": "wallet-1",
+        "guild_id": 3,
+        "wallet_address": "registry-wallet",
+        "verified_at": "verified",
+    }
+    provider = FakePaymentProvider(
+        send_result=SendResult(signature="sig-frozen", phase="submitted", error=None),
+        confirm_result="confirmed",
+    )
+    service = PaymentService(
+        db_handler,
+        providers={"solana_native": provider},
+        test_payment_amount=0.000001,
+        logger_instance=None,
+    )
+    db_handler.rows["pay-frozen"] = {
+        "payment_id": "pay-frozen",
+        "guild_id": 3,
+        "producer": "grants",
+        "producer_ref": "thread-frozen",
+        "recipient_wallet": "frozen-wallet",
+        "provider": "solana_native",
+        "wallet_id": "wallet-1",
+        "is_test": False,
+        "amount_token": 0.75,
+        "token_price_usd": 100.0,
+        "status": "processing",
+    }
+
+    result = await service.execute_payment("pay-frozen")
+
+    assert result["status"] == "confirmed"
+    assert provider.send_calls == [("frozen-wallet", 0.75)]
 
 
 async def test_payment_service_execute_fail_closed_on_ambiguous_and_timeout():

@@ -2436,7 +2436,20 @@ async def execute_cancel_payment(db_handler, params: Dict[str, Any]) -> Dict[str
 
 
 async def execute_initiate_payment(bot: discord.Client, db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Create or resume one admin-triggered payment intent."""
+    """Create or resume one admin-triggered payment intent.
+
+    Wallets for initiated payouts must come from wallet_registry keyed by the mentioned Discord
+    user. This executor never accepts an LLM-sourced wallet address override.
+    """
+    params = dict(params or {})
+    popped_wallet_address = params.pop('wallet_address', None)
+    popped_recipient_wallet = params.pop('recipient_wallet', None)
+    if popped_wallet_address not in (None, '') or popped_recipient_wallet not in (None, ''):
+        logger.warning(
+            "[AdminChat] Ignoring injected wallet fields for initiate_payment: wallet_address=%s recipient_wallet=%s",
+            _redact_wallet_address(popped_wallet_address),
+            _redact_wallet_address(popped_recipient_wallet),
+        )
     try:
         guild_id = int(params.get('guild_id'))
         source_channel_id = int(params.get('source_channel_id'))

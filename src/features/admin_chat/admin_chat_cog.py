@@ -10,6 +10,7 @@ import discord
 from anthropic import AsyncAnthropic
 from discord.ext import commands
 
+from src.common.db_handler import WalletUpdateBlockedError
 from .agent import AdminChatAgent
 from src.features.grants.solana_client import is_valid_solana_address
 
@@ -192,13 +193,22 @@ class AdminChatCog(commands.Cog):
 
     async def _handle_wallet_received(self, message: discord.Message, intent: Dict, wallet_address: str):
         """Persist a wallet reply and kick off the test-payment flow."""
-        wallet_record = self.db_handler.upsert_wallet(
-            guild_id=int(intent['guild_id']),
-            discord_user_id=int(intent['recipient_user_id']),
-            chain='solana',
-            address=wallet_address,
-            metadata={'producer': 'admin_chat', 'intent_id': intent['intent_id'], 'channel_id': message.channel.id},
-        )
+        try:
+            wallet_record = self.db_handler.upsert_wallet(
+                guild_id=int(intent['guild_id']),
+                discord_user_id=int(intent['recipient_user_id']),
+                chain='solana',
+                address=wallet_address,
+                metadata={'producer': 'admin_chat', 'intent_id': intent['intent_id'], 'channel_id': message.channel.id},
+            )
+        except WalletUpdateBlockedError:
+            await self._notify_admin_review(
+                message.channel,
+                intent,
+                "I could not update the wallet because an active payment is already in flight for this user.",
+                resolved_by_message_id=message.id,
+            )
+            return
         if not wallet_record:
             await self._notify_admin_review(message.channel, intent, "I could not store the recipient wallet.", resolved_by_message_id=message.id)
             return
@@ -255,6 +265,7 @@ class AdminChatCog(commands.Cog):
             {'test_payment_id': test_payment.get('payment_id')},
             intent['guild_id'],
         ) or intent
+        # recipient_user_id matches the recipient_discord_id passed into request_payment above.
         confirmed = self.payment_service.confirm_payment(
             test_payment['payment_id'],
             guild_id=int(intent['guild_id']),
@@ -276,6 +287,7 @@ class AdminChatCog(commands.Cog):
             await self._notify_admin_review(message.channel, intent, "The final payment record is unavailable, so I can't accept this confirmation.", resolved_by_message_id=message.id)
             return
 
+        # message.author.id must match the intended recipient_discord_id on the final payment row.
         confirmed = self.payment_service.confirm_payment(
             intent['final_payment_id'],
             guild_id=int(intent['guild_id']),
