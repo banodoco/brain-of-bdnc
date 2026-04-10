@@ -36,10 +36,10 @@ def is_valid_solana_address(address: str) -> bool:
 class SolanaClient:
     """Handles SOL transfers from the bot wallet."""
 
-    def __init__(self):
-        private_key = os.getenv('SOLANA_PRIVATE_KEY')
+    def __init__(self, private_key: str | None = None):
+        private_key = private_key or os.getenv('SOLANA_PRIVATE_KEY')
         if not private_key:
-            raise ValueError("SOLANA_PRIVATE_KEY env var not set")
+            raise ValueError("No Solana private key provided and SOLANA_PRIVATE_KEY env var not set")
 
         key_bytes = base58.b58decode(private_key)
         self.keypair = Keypair.from_bytes(key_bytes)

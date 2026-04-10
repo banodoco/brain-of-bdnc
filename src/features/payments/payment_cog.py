@@ -266,7 +266,71 @@ class PaymentCog(commands.Cog):
 
     async def _handle_terminal_payment(self, payment: Dict[str, Any]):
         await self._notify_payment_result(payment)
+        if payment.get('status') in {'failed', 'manual_hold'}:
+            await self._dm_admin_payment_failure(payment)
         await self._handoff_terminal_result(payment)
+
+    async def _dm_admin_payment_failure(self, payment: Dict[str, Any]):
+        admin_id_env = os.getenv('ADMIN_USER_ID')
+        if not admin_id_env:
+            logger.warning(
+                "[PaymentCog] ADMIN_USER_ID not set; cannot DM admin about payment %s",
+                payment.get('payment_id'),
+            )
+            return
+        try:
+            admin_id = int(admin_id_env)
+        except ValueError:
+            logger.error("[PaymentCog] Invalid ADMIN_USER_ID; cannot DM admin.")
+            return
+
+        try:
+            admin_user = await self.bot.fetch_user(admin_id)
+        except Exception as exc:
+            logger.error(
+                "[PaymentCog] Failed to fetch admin user %s for payment DM: %s",
+                admin_id,
+                exc,
+            )
+            return
+
+        status = str(payment.get('status') or 'unknown').replace('_', ' ').title()
+        amount = float(payment.get('amount_token') or 0)
+        lines = [
+            f"🚨 **Payment {status}**",
+            f"- Payment ID: `{payment.get('payment_id')}`",
+            f"- Producer: `{payment.get('producer')}` / `{payment.get('producer_ref')}`",
+            f"- Provider: `{payment.get('provider')}`",
+            f"- Type: {'test payment' if payment.get('is_test') else 'final payment'}",
+            f"- Amount: {amount:.8f} {self._token_label(payment)}",
+            f"- Wallet: `{_redact_wallet(payment.get('recipient_wallet'))}`",
+        ]
+        if payment.get('tx_signature'):
+            lines.append(f"- Transaction: `{payment.get('tx_signature')}`")
+        if payment.get('last_error'):
+            lines.append(f"- Detail: {payment.get('last_error')}")
+        if payment.get('status') == 'manual_hold':
+            lines.append("- ⚠️ Requires manual review — do NOT auto-retry.")
+
+        message = "\n".join(lines)
+        if len(message) > 1900:
+            message = message[:1900] + "..."
+
+        try:
+            await admin_user.send(message)
+            logger.info(
+                "[PaymentCog] DM'd admin about %s payment %s",
+                payment.get('status'),
+                payment.get('payment_id'),
+            )
+        except discord.Forbidden:
+            logger.error("[PaymentCog] Bot forbidden from DMing admin about payment failure.")
+        except Exception as exc:
+            logger.error(
+                "[PaymentCog] Failed to DM admin about payment %s: %s",
+                payment.get('payment_id'),
+                exc,
+            )
 
     async def _notify_payment_result(self, payment: Dict[str, Any]):
         destination = await self._resolve_destination(

@@ -36,6 +36,7 @@ from src.features.archive.archive_cog import ArchiveCog
 from src.features.health.health_check_cog import HealthCheckCog
 from src.features.payments.payment_service import PaymentService
 from src.features.payments.payment_cog import PaymentCog
+from src.features.grants.solana_client import SolanaClient
 from src.features.payments.solana_provider import SolanaProvider
 
 def setup_logging(dev_mode=False):
@@ -147,10 +148,18 @@ async def main_async(args):
 
         try:
             test_payment_amount = float(os.getenv('PAYMENT_TEST_AMOUNT_SOL', '0.000001'))
-            solana_provider = SolanaProvider()
+            grants_provider = SolanaProvider(
+                solana_client=SolanaClient(os.getenv('SOLANA_PRIVATE_KEY_GRANTS')),
+            )
+            payouts_provider = SolanaProvider(
+                solana_client=SolanaClient(os.getenv('SOLANA_PRIVATE_KEY_PAYOUTS')),
+            )
             bot.payment_service = PaymentService(
                 db_handler=bot.db_handler,
-                providers={'solana': solana_provider},
+                providers={
+                    'solana_grants': grants_provider,
+                    'solana_payouts': payouts_provider,
+                },
                 test_payment_amount=test_payment_amount,
                 logger_instance=logger,
             )
