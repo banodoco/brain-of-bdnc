@@ -166,8 +166,8 @@ async def main_async(args):
 
         try:
             test_payment_amount = float(os.getenv('PAYMENT_TEST_AMOUNT_SOL', '0.002'))
-            per_payment_usd_cap = float(os.getenv('ADMIN_PAYOUT_PER_PAYMENT_USD_CAP', '500'))
-            daily_usd_cap = float(os.getenv('ADMIN_PAYOUT_DAILY_USD_CAP', '2000'))
+            per_payment_usd_cap = float(os.getenv('ADMIN_PAYOUT_PER_PAYMENT_USD_CAP', '10000'))
+            daily_usd_cap = float(os.getenv('ADMIN_PAYOUT_DAILY_USD_CAP', '70000'))
             grants_provider = SolanaProvider(
                 solana_client=SolanaClient(os.getenv('SOLANA_PRIVATE_KEY_GRANTS')),
             )
