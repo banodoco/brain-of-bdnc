@@ -1,9 +1,15 @@
+import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import aiohttp
 
 import pytest
 
 from src.common.db_handler import WalletUpdateBlockedError
 from src.features.payments.payment_service import PaymentActor, PaymentActorKind
+from src.features.payments.solana_provider import SolanaProvider
 from src.features.sharing.models import PublicationSourceContext, SocialPublishRequest
 from src.features.sharing.social_publish_service import SocialPublishService
 from src.features.payments.payment_service import PaymentService
@@ -364,6 +370,12 @@ class FakePaymentProvider:
         return "SOL"
 
 
+class FakeSolanaRpcClient:
+    def __init__(self, *, confirm_side_effect=None, check_side_effect=None, check_result="confirmed"):
+        self.confirm_tx = AsyncMock(side_effect=confirm_side_effect)
+        self.check_tx_status = AsyncMock(side_effect=check_side_effect, return_value=check_result)
+
+
 class FakePaymentDB:
     def __init__(self):
         self.rows = {}
@@ -522,7 +534,7 @@ async def test_payment_service_request_is_idempotent_and_test_amount_is_fixed():
     service = PaymentService(
         db_handler,
         providers={"solana_native": provider},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
     )
 
@@ -540,7 +552,7 @@ async def test_payment_service_request_is_idempotent_and_test_amount_is_fixed():
         recipient_discord_id=99,
     )
     assert created["status"] == "pending_confirmation"
-    assert created["amount_token"] == 0.000001
+    assert created["amount_token"] == 0.002
     assert created["amount_usd"] is None
     assert created["token_price_usd"] is None
 
@@ -584,7 +596,7 @@ async def test_payment_service_confirm_payment_requires_expected_recipient():
     service = PaymentService(
         db_handler,
         providers={"solana_native": FakePaymentProvider()},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
     )
 
@@ -620,7 +632,7 @@ async def test_confirm_rejects_null_recipient_discord_id():
     service = PaymentService(
         db_handler,
         providers={"solana_native": FakePaymentProvider()},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
     )
 
@@ -651,7 +663,7 @@ async def test_confirm_rejects_auto_actor_for_non_test_payment():
     service = PaymentService(
         db_handler,
         providers={"solana_native": FakePaymentProvider()},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
     )
 
@@ -682,7 +694,7 @@ async def test_confirm_rejects_mismatched_user():
     service = PaymentService(
         db_handler,
         providers={"solana_native": FakePaymentProvider()},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
     )
 
@@ -712,7 +724,7 @@ async def test_request_payment_per_payment_cap_manual_holds():
     service = PaymentService(
         db_handler,
         providers={"solana_payouts": provider},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
         per_payment_usd_cap=500,
         daily_usd_cap=2000,
@@ -751,7 +763,7 @@ async def test_request_payment_amount_token_path_cap_breach():
     service = PaymentService(
         db_handler,
         providers={"solana_payouts": provider},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
         per_payment_usd_cap=500,
         daily_usd_cap=2000,
@@ -788,7 +800,7 @@ async def test_request_payment_amount_token_path_stamps_amount_usd():
     service = PaymentService(
         db_handler,
         providers={"solana_payouts": provider},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
         per_payment_usd_cap=500,
         daily_usd_cap=2000,
@@ -828,7 +840,7 @@ async def test_request_payment_amount_token_path_missing_price_holds():
     service = PaymentService(
         db_handler,
         providers={"solana_payouts": provider},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
         per_payment_usd_cap=500,
         daily_usd_cap=2000,
@@ -861,7 +873,7 @@ async def test_request_payment_amount_token_uncapped_provider_preserves_none():
     service = PaymentService(
         db_handler,
         providers={"solana": provider},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
         per_payment_usd_cap=500,
         daily_usd_cap=2000,
@@ -899,7 +911,7 @@ async def test_request_payment_rolling_daily_cap_manual_holds():
     service = PaymentService(
         db_handler,
         providers={"solana_payouts": provider},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
         per_payment_usd_cap=500,
         daily_usd_cap=2000,
@@ -932,7 +944,7 @@ async def test_request_payment_rolling_daily_cap_sees_derived_usd():
     service = PaymentService(
         db_handler,
         providers={"solana_payouts": provider},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
         per_payment_usd_cap=500,
         daily_usd_cap=2000,
@@ -980,7 +992,7 @@ async def test_slot_reuse_collision_detected_after_failure():
     service = PaymentService(
         db_handler,
         providers={"solana_payouts": FakePaymentProvider()},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
         on_cap_breach=on_cap_breach,
     )
@@ -1026,7 +1038,7 @@ async def test_slot_reuse_collision_blocked_when_prior_active():
     service = PaymentService(
         db_handler,
         providers={"solana_payouts": FakePaymentProvider()},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
         on_cap_breach=on_cap_breach,
     )
@@ -1066,7 +1078,7 @@ async def test_slot_reuse_same_wallet_creates_fresh_row_after_failure():
     service = PaymentService(
         db_handler,
         providers={"solana_payouts": FakePaymentProvider()},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
     )
 
@@ -1105,7 +1117,7 @@ async def test_idempotent_return_for_nonterminal():
     service = PaymentService(
         db_handler,
         providers={"solana_payouts": FakePaymentProvider()},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
     )
 
@@ -1142,7 +1154,7 @@ async def test_payment_service_execute_persists_submission_and_confirms_test_wal
     service = PaymentService(
         db_handler,
         providers={"solana_native": provider},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
     )
     db_handler.rows["pay-1"] = {
@@ -1183,7 +1195,7 @@ async def test_execute_payment_uses_stored_wallet():
     service = PaymentService(
         db_handler,
         providers={"solana_native": provider},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
     )
     db_handler.rows["pay-frozen"] = {
@@ -1227,7 +1239,7 @@ async def test_payment_service_execute_fail_closed_on_ambiguous_and_timeout():
                 send_result=SendResult(signature=None, phase="ambiguous", error="rpc timeout")
             )
         },
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
     )
 
@@ -1256,7 +1268,7 @@ async def test_payment_service_execute_fail_closed_on_ambiguous_and_timeout():
                 confirm_result="timeout",
             )
         },
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
     )
 
@@ -1264,6 +1276,38 @@ async def test_payment_service_execute_fail_closed_on_ambiguous_and_timeout():
     assert timeout_result["status"] == "manual_hold"
     assert timeout_db.rows["pay-timeout"]["tx_signature"] == "sig-timeout"
     assert timeout_result["last_error"] == "Confirmation timed out after submission"
+
+
+async def test_payment_service_execute_payment_distinguishes_rpc_unreachable():
+    db_handler = FakePaymentDB()
+    db_handler.rows["pay-rpc"] = {
+        "payment_id": "pay-rpc",
+        "guild_id": 3,
+        "producer": "grants",
+        "producer_ref": "thread-rpc",
+        "recipient_wallet": "recipient-wallet",
+        "provider": "solana_native",
+        "is_test": False,
+        "amount_token": 2.0,
+        "token_price_usd": 100.0,
+        "status": "processing",
+    }
+    service = PaymentService(
+        db_handler,
+        providers={
+            "solana_native": FakePaymentProvider(
+                send_result=SendResult(signature="sig-rpc", phase="submitted", error=None),
+                confirm_result="rpc_unreachable",
+            )
+        },
+        test_payment_amount=0.002,
+        logger_instance=None,
+    )
+
+    result = await service.execute_payment("pay-rpc")
+
+    assert result["status"] == "manual_hold"
+    assert result["last_error"] == "rpc_unreachable: confirmation RPC offline"
 
 
 async def test_payment_service_recover_inflight_requeues_or_holds_safely():
@@ -1302,7 +1346,7 @@ async def test_payment_service_recover_inflight_requeues_or_holds_safely():
     service = PaymentService(
         db_handler,
         providers={"solana_native": provider},
-        test_payment_amount=0.000001,
+        test_payment_amount=0.002,
         logger_instance=None,
     )
 
@@ -1313,3 +1357,68 @@ async def test_payment_service_recover_inflight_requeues_or_holds_safely():
     assert by_id["pay-submitted"]["status"] == "confirmed"
     assert by_id["pay-unknown"]["status"] == "manual_hold"
     assert provider.status_calls == ["sig-recovery"]
+
+
+async def test_payment_service_recover_inflight_marks_rpc_unreachable_hold():
+    db_handler = FakePaymentDB()
+    db_handler.rows["pay-rpc"] = {
+        "payment_id": "pay-rpc",
+        "guild_id": 3,
+        "status": "submitted",
+        "provider": "solana_native",
+        "tx_signature": "sig-rpc",
+        "is_test": False,
+    }
+    provider = FakePaymentProvider(check_status_result="rpc_unreachable")
+    service = PaymentService(
+        db_handler,
+        providers={"solana_native": provider},
+        test_payment_amount=0.002,
+        logger_instance=None,
+    )
+
+    recovered = await service.recover_inflight(guild_ids=[3])
+
+    assert recovered[0]["status"] == "manual_hold"
+    assert recovered[0]["last_error"] == "rpc_unreachable: confirmation RPC offline"
+    assert provider.status_calls == ["sig-rpc"]
+
+
+async def test_solana_provider_check_status_returns_rpc_unreachable_on_connection_error():
+    provider = SolanaProvider(
+        solana_client=FakeSolanaRpcClient(
+            check_side_effect=aiohttp.ClientConnectionError("rpc down"),
+        )
+    )
+
+    status = await provider.check_status("sig-rpc")
+
+    assert status == "rpc_unreachable"
+
+
+async def test_solana_provider_confirm_tx_preserves_confirmation_timeout():
+    provider = SolanaProvider(
+        solana_client=FakeSolanaRpcClient(
+            confirm_side_effect=asyncio.TimeoutError(),
+            check_result="not_found",
+        ),
+        confirm_timeout_seconds=0.01,
+    )
+
+    status = await provider.confirm_tx("sig-timeout")
+
+    assert status == "timeout"
+
+
+async def test_solana_provider_confirm_tx_returns_rpc_unreachable_on_lookup_outage():
+    provider = SolanaProvider(
+        solana_client=FakeSolanaRpcClient(
+            confirm_side_effect=asyncio.TimeoutError(),
+            check_side_effect=aiohttp.ClientConnectionError("rpc down"),
+        ),
+        confirm_timeout_seconds=0.01,
+    )
+
+    status = await provider.confirm_tx("sig-rpc")
+
+    assert status == "rpc_unreachable"

@@ -2352,7 +2352,7 @@ async def execute_get_payment_status(db_handler, params: Dict[str, Any]) -> Dict
         return {"success": False, "error": str(e)}
 
 
-async def execute_retry_payment(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+async def execute_retry_payment(bot, db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
     """Retry one failed payment."""
     payment_id = str(params.get('payment_id') or '').strip()
     if not payment_id:
@@ -2360,6 +2360,34 @@ async def execute_retry_payment(db_handler, params: Dict[str, Any]) -> Dict[str,
 
     try:
         guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        payment_service = getattr(bot, 'payment_service', None)
+        if payment_service is None:
+            return {"success": False, "error": "payment_service unavailable"}
+
+        decision = await payment_service.reconcile_with_chain(payment_id, guild_id=guild_id)
+        if decision.decision in {'reconciled_confirmed', 'reconciled_failed'}:
+            row = db_handler.get_payment_request(payment_id, guild_id=guild_id)
+            return {
+                "success": True,
+                "decision": decision.decision,
+                "payment": _redact_payment_row(row or {"payment_id": payment_id}),
+            }
+        if decision.decision == 'keep_in_hold':
+            db_handler.mark_payment_manual_hold(payment_id, reason=decision.reason, guild_id=guild_id)
+            row = db_handler.get_payment_request(payment_id, guild_id=guild_id)
+            return {
+                "success": False,
+                "error": decision.reason,
+                "payment": _redact_payment_row(row or {"payment_id": payment_id}),
+            }
+        if decision.decision == 'not_applicable':
+            row = db_handler.get_payment_request(payment_id, guild_id=guild_id)
+            return {
+                "success": False,
+                "error": decision.reason,
+                "payment": _redact_payment_row(row or {"payment_id": payment_id}),
+            }
+
         success = db_handler.requeue_payment(payment_id, guild_id=guild_id)
         if not success:
             return {"success": False, "error": "Payment is not in a retryable failed state"}
@@ -2389,7 +2417,7 @@ async def execute_hold_payment(db_handler, params: Dict[str, Any]) -> Dict[str, 
         return {"success": False, "error": str(e)}
 
 
-async def execute_release_payment(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+async def execute_release_payment(bot, db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
     """Release one manual_hold payment."""
     payment_id = str(params.get('payment_id') or '').strip()
     new_status = str(params.get('new_status') or '').strip()
@@ -2398,6 +2426,34 @@ async def execute_release_payment(db_handler, params: Dict[str, Any]) -> Dict[st
 
     try:
         guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        payment_service = getattr(bot, 'payment_service', None)
+        if payment_service is None:
+            return {"success": False, "error": "payment_service unavailable"}
+
+        decision = await payment_service.reconcile_with_chain(payment_id, guild_id=guild_id)
+        if decision.decision in {'reconciled_confirmed', 'reconciled_failed'}:
+            row = db_handler.get_payment_request(payment_id, guild_id=guild_id)
+            return {
+                "success": True,
+                "decision": decision.decision,
+                "payment": _redact_payment_row(row or {"payment_id": payment_id}),
+            }
+        if decision.decision == 'keep_in_hold':
+            db_handler.mark_payment_manual_hold(payment_id, reason=decision.reason, guild_id=guild_id)
+            row = db_handler.get_payment_request(payment_id, guild_id=guild_id)
+            return {
+                "success": False,
+                "error": decision.reason,
+                "payment": _redact_payment_row(row or {"payment_id": payment_id}),
+            }
+        if decision.decision == 'not_applicable':
+            row = db_handler.get_payment_request(payment_id, guild_id=guild_id)
+            return {
+                "success": False,
+                "error": decision.reason,
+                "payment": _redact_payment_row(row or {"payment_id": payment_id}),
+            }
+
         success = db_handler.release_payment_hold(
             payment_id,
             new_status=new_status,
@@ -2483,7 +2539,7 @@ async def execute_initiate_payment(bot: discord.Client, db_handler, params: Dict
                 admin_user_id = parsed_admin_user_id
         except (TypeError, ValueError):
             return {"success": False, "error": "admin_user_id must be a valid positive integer when provided"}
-    producer_ref = f"{guild_id}_{recipient_user_id}_{int(time.time())}"
+    producer_ref = f"{guild_id}_{recipient_user_id}_{int(time.time() * 1000)}"
     wallet_record = db_handler.get_wallet(guild_id, recipient_user_id, 'solana')
     if wallet_record and not wallet_record.get('verified_at'):
         wallet_record = None
@@ -3132,11 +3188,11 @@ async def execute_tool(
     elif tool_name == "get_payment_status":
         return await execute_get_payment_status(db_handler, trusted_tool_input)
     elif tool_name == "retry_payment":
-        return await execute_retry_payment(db_handler, trusted_tool_input)
+        return await execute_retry_payment(bot, db_handler, trusted_tool_input)
     elif tool_name == "hold_payment":
         return await execute_hold_payment(db_handler, trusted_tool_input)
     elif tool_name == "release_payment":
-        return await execute_release_payment(db_handler, trusted_tool_input)
+        return await execute_release_payment(bot, db_handler, trusted_tool_input)
     elif tool_name == "cancel_payment":
         return await execute_cancel_payment(db_handler, trusted_tool_input)
     elif tool_name == "initiate_payment":

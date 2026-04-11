@@ -8,20 +8,12 @@ from typing import Any, Dict, List, Optional
 import discord
 from discord.ext import commands, tasks
 
+from src.common.redaction import redact_wallet as _redact_wallet
 from src.common.discord_utils import safe_delete_messages, safe_send_message
 
 from .payment_service import PaymentService
 
 logger = logging.getLogger('DiscordBot')
-
-
-def _redact_wallet(wallet: Optional[str]) -> str:
-    if not wallet:
-        return 'unknown'
-    wallet = str(wallet)
-    if len(wallet) <= 10:
-        return wallet
-    return f"{wallet[:4]}...{wallet[-4:]}"
 
 
 class PaymentWorkerCog(commands.Cog):
@@ -49,6 +41,13 @@ class PaymentWorkerCog(commands.Cog):
             for provider in os.getenv('ADMIN_PAYMENT_SUCCESS_DM_PROVIDERS', 'solana_payouts').split(',')
             if provider.strip()
         )
+        fallback_channel_env = os.getenv('ADMIN_FALLBACK_CHANNEL_ID')
+        self._admin_fallback_channel_id = None
+        if fallback_channel_env:
+            try:
+                self._admin_fallback_channel_id = int(fallback_channel_env)
+            except ValueError:
+                logger.error("[PaymentWorkerCog] Invalid ADMIN_FALLBACK_CHANNEL_ID: %s", fallback_channel_env)
         self._startup_synced = False
 
     async def cog_load(self):
@@ -56,6 +55,9 @@ class PaymentWorkerCog(commands.Cog):
         if not self.payment_worker.is_running():
             self.payment_worker.start()
             logger.info("[PaymentWorkerCog] Payment worker started.")
+        migrate_legacy_rows = getattr(self.payment_service, 'migrate_legacy_provider_rows', None)
+        if callable(migrate_legacy_rows):
+            migrate_legacy_rows(guild_ids=self._get_writable_guild_ids())
         if self._bot_is_ready():
             await self._ensure_startup_sync()
 
@@ -260,19 +262,11 @@ class PaymentWorkerCog(commands.Cog):
         if len(message) > 1900:
             message = message[:1900] + "..."
 
-        try:
-            await admin_user.send(message)
+        delivered = await self._deliver_admin_alert(message, admin_user=admin_user)
+        if delivered:
             logger.info(
-                "[PaymentWorkerCog] DM'd admin about confirmed payment %s",
+                "[PaymentWorkerCog] Delivered admin success alert for payment %s",
                 payment.get('payment_id'),
-            )
-        except discord.Forbidden:
-            logger.error("[PaymentWorkerCog] Bot forbidden from DMing admin about payment success.")
-        except Exception as exc:
-            logger.error(
-                "[PaymentWorkerCog] Failed to DM admin about payment %s: %s",
-                payment.get('payment_id'),
-                exc,
             )
 
     async def _dm_admin_payment_failure(self, payment: Dict[str, Any]):
@@ -330,21 +324,80 @@ class PaymentWorkerCog(commands.Cog):
         if len(message) > 1900:
             message = message[:1900] + "..."
 
-        try:
-            await admin_user.send(message)
+        delivered = await self._deliver_admin_alert(message, admin_user=admin_user)
+        if delivered:
             logger.info(
-                "[PaymentWorkerCog] DM'd admin about %s payment %s",
+                "[PaymentWorkerCog] Delivered admin %s alert for payment %s",
                 payment.get('status'),
                 payment.get('payment_id'),
             )
+
+    async def _deliver_admin_alert(
+        self,
+        message: str,
+        *,
+        admin_user: Optional[discord.User] = None,
+    ) -> bool:
+        fallback_needed = False
+        try:
+            if admin_user is None:
+                admin_id_env = os.getenv('ADMIN_USER_ID')
+                if not admin_id_env:
+                    logger.warning("[PaymentWorkerCog] ADMIN_USER_ID not set; cannot deliver admin alert.")
+                    return False
+                admin_user = await self.bot.fetch_user(int(admin_id_env))
+            await admin_user.send(message)
+            return True
         except discord.Forbidden:
-            logger.error("[PaymentWorkerCog] Bot forbidden from DMing admin about payment failure.")
+            fallback_needed = True
+        except discord.HTTPException as exc:
+            if getattr(exc, 'status', None) == 429:
+                fallback_needed = True
+            else:
+                logger.error(
+                    "[PaymentWorkerCog] Failed to DM admin alert: %s",
+                    exc,
+                )
+                return False
         except Exception as exc:
             logger.error(
-                "[PaymentWorkerCog] Failed to DM admin about payment %s: %s",
-                payment.get('payment_id'),
+                "[PaymentWorkerCog] Failed to DM admin alert: %s",
                 exc,
             )
+            return False
+
+        if not fallback_needed:
+            return False
+        fallback_channel = await self._resolve_admin_fallback_channel()
+        if fallback_channel is None:
+            logger.error(
+                "[PaymentWorkerCog] admin alert undeliverable",
+                extra={'message_preview': message[:120]},
+            )
+            return False
+        try:
+            sent = await safe_send_message(
+                bot=self.bot,
+                channel=fallback_channel,
+                rate_limiter=getattr(self.bot, 'rate_limiter', None),
+                logger=logger,
+                content=message,
+            )
+            if sent is None:
+                raise RuntimeError("safe_send_message returned None")
+            return True
+        except Exception:
+            logger.error(
+                "[PaymentWorkerCog] admin alert undeliverable",
+                extra={'message_preview': message[:120]},
+                exc_info=True,
+            )
+            return False
+
+    async def _resolve_admin_fallback_channel(self) -> Optional[discord.abc.Messageable]:
+        if self._admin_fallback_channel_id is None:
+            return None
+        return await self._resolve_destination(self._admin_fallback_channel_id, None)
 
     async def _notify_payment_result(self, payment: Dict[str, Any]):
         destination = await self._resolve_destination(

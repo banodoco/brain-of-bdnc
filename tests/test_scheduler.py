@@ -125,12 +125,16 @@ class FakePaymentDB:
 
 
 class FakePaymentService:
-    def __init__(self, pending=None, recovered=None, execute_results=None):
+    def __init__(self, pending=None, recovered=None, execute_results=None, reconcile_results=None, db_handler=None):
         self.pending = pending or []
         self.recovered = recovered or []
         self.execute_results = list(execute_results or [])
+        self.reconcile_results = list(reconcile_results or [])
+        self.db_handler = db_handler
         self.execute_calls = []
         self.recover_calls = []
+        self.migrate_calls = []
+        self.reconcile_calls = []
 
     def get_pending_confirmation_payments(self, guild_ids=None):
         return list(self.pending)
@@ -142,6 +146,18 @@ class FakePaymentService:
     async def execute_payment(self, payment_id, guild_id=None):
         self.execute_calls.append((payment_id, guild_id))
         return self.execute_results.pop(0)
+
+    async def reconcile_with_chain(self, payment_id, guild_id=None):
+        self.reconcile_calls.append((payment_id, guild_id))
+        result = self.reconcile_results.pop(0)
+        row = self.db_handler.get_payment_request(payment_id, guild_id=guild_id) if self.db_handler else None
+        if row and hasattr(result, "updated_status") and result.updated_status:
+            row["status"] = result.updated_status
+        return result
+
+    def migrate_legacy_provider_rows(self, guild_ids=None):
+        self.migrate_calls.append(guild_ids)
+        return 0
 
 
 class FakeProducerCog:
@@ -195,9 +211,13 @@ class FakePaymentBot:
 class FakeInteractionResponse:
     def __init__(self):
         self.deferred = False
+        self.messages = []
 
     async def defer(self, ephemeral=False):
         self.deferred = ephemeral
+
+    async def send_message(self, content, ephemeral=False):
+        self.messages.append((content, ephemeral))
 
 
 class FakeInteractionFollowup:
@@ -503,6 +523,28 @@ async def test_payment_worker_cog_load_does_not_block_on_wait_until_ready():
     assert calls == [cog.worker_interval_seconds, "start"]
 
 
+async def test_payment_worker_cog_load_runs_legacy_provider_migration_once():
+    payment_service = FakePaymentService()
+    db_handler = FakePaymentDB()
+    db_handler.server_config = SimpleNamespace(
+        get_enabled_servers=lambda require_write=False: [{"guild_id": 1, "write_enabled": True}],
+    )
+    bot = FakePaymentBot(payment_service)
+    cog = payment_worker_cog_module.PaymentWorkerCog(bot, db_handler, payment_service=payment_service)
+
+    calls = []
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(cog.payment_worker, "is_running", lambda: False)
+    monkeypatch.setattr(cog.payment_worker, "start", lambda: calls.append("start"))
+    monkeypatch.setattr(cog.payment_worker, "change_interval", lambda **kwargs: calls.append(kwargs["seconds"]))
+
+    await cog.cog_load()
+    monkeypatch.undo()
+
+    assert payment_service.migrate_calls == [[1]]
+    assert calls == [cog.worker_interval_seconds, "start"]
+
+
 async def test_payment_confirm_view_rejects_non_recipient():
     payment_service = FakePaymentService()
     db_handler = FakePaymentDB()
@@ -521,6 +563,77 @@ async def test_payment_confirm_view_rejects_non_recipient():
 
     assert interaction.followup.messages == [("Only the intended recipient can confirm this payment.", True)]
     assert payment_service.execute_calls == []
+
+
+async def test_payment_resolve_rejects_non_admin(monkeypatch):
+    monkeypatch.setenv("ADMIN_USER_ID", "999")
+    db_handler = FakePaymentDB()
+    db_handler.payments["pay-1"] = {
+        "payment_id": "pay-1",
+        "guild_id": 1,
+        "status": "manual_hold",
+        "tx_signature": "ABCDEFGH12345678",
+    }
+    payment_service = FakePaymentService(db_handler=db_handler)
+    bot = FakePaymentBot(payment_service)
+    cog = payment_ui_cog_module.PaymentUICog(bot, db_handler, payment_service=payment_service)
+    interaction = FakeInteraction(user_id=123)
+
+    await cog.payment_resolve.callback(cog, interaction, "pay-1")
+
+    assert interaction.response.messages == [("admin-only", True)]
+    assert payment_service.reconcile_calls == []
+
+
+@pytest.mark.parametrize(
+    ("decision", "reason", "updated_status", "initial_status"),
+    [
+        ("reconciled_confirmed", "chain reported confirmed during reconcile", "confirmed", "manual_hold"),
+        ("reconciled_failed", "chain reported failed during reconcile", "failed", "manual_hold"),
+        ("allow_requeue", "beyond 150s blockhash safety window", None, "failed"),
+        ("keep_in_hold", "RPC unreachable during reconcile", None, "manual_hold"),
+        ("not_applicable", "status 'confirmed' does not require chain reconciliation", None, "confirmed"),
+    ],
+)
+async def test_payment_resolve_reports_reconcile_decisions(
+    monkeypatch,
+    decision,
+    reason,
+    updated_status,
+    initial_status,
+):
+    monkeypatch.setenv("ADMIN_USER_ID", "999")
+    db_handler = FakePaymentDB()
+    db_handler.payments["pay-1"] = {
+        "payment_id": "pay-1",
+        "guild_id": 1,
+        "status": initial_status,
+        "tx_signature": "ABCDEFGH12345678",
+    }
+    reconcile_result = SimpleNamespace(
+        decision=decision,
+        reason=reason,
+        tx_signature="ABCDEFGH12345678",
+        updated_status=updated_status,
+    )
+    payment_service = FakePaymentService(
+        reconcile_results=[reconcile_result],
+        db_handler=db_handler,
+    )
+    bot = FakePaymentBot(payment_service)
+    cog = payment_ui_cog_module.PaymentUICog(bot, db_handler, payment_service=payment_service)
+    interaction = FakeInteraction(user_id=999)
+
+    await cog.payment_resolve.callback(cog, interaction, "pay-1")
+
+    assert payment_service.reconcile_calls == [("pay-1", 1)]
+    assert len(interaction.response.messages) == 1
+    content, ephemeral = interaction.response.messages[0]
+    assert ephemeral is True
+    assert f"decision: {decision}" in content
+    assert f"reason: {reason}" in content
+    assert f"status: {updated_status or initial_status}" in content
+    assert "tx_signature: ABCD...5678" in content
 
 
 async def test_grants_wallet_submission_and_test_confirmation_queue_final_payment():

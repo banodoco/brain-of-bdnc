@@ -1,6 +1,7 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
+import discord
 import pytest
 
 from src.common.db_handler import WalletUpdateBlockedError
@@ -12,6 +13,13 @@ from src.features.payments.payment_worker_cog import PaymentWorkerCog
 
 
 VALID_SOL_ADDRESS = "11111111111111111111111111111111"
+
+
+class FakeResponse:
+    def __init__(self, status):
+        self.status = status
+        self.reason = "reason"
+        self.headers = {}
 
 
 class FakeClassifierResponse:
@@ -114,11 +122,20 @@ class FakeBot:
         db_handler=None,
     ):
         self.payment_service = payment_service
-        self._channel = channel
+        if isinstance(channel, dict):
+            self._channels = dict(channel)
+            self._channel = next(iter(self._channels.values()))
+        else:
+            self._channel = channel
+            self._channels = {channel.id: channel}
         self._payment_ui_cog = payment_ui_cog
         self._payment_worker_cog = payment_worker_cog
         self._admin_chat_cog = admin_chat_cog
-        self.guilds = guilds or [channel.guild]
+        default_guilds = []
+        for value in self._channels.values():
+            if all(existing.id != value.guild.id for existing in default_guilds):
+                default_guilds.append(value.guild)
+        self.guilds = guilds or default_guilds
         self.user = SimpleNamespace(id=999)
         self.ready_waits = 0
         self.fetched_users = {}
@@ -133,11 +150,11 @@ class FakeBot:
         return self._is_ready
 
     def get_channel(self, channel_id):
-        return self._channel if channel_id == self._channel.id else None
+        return self._channels.get(channel_id)
 
     async def fetch_channel(self, channel_id):
-        if channel_id == self._channel.id:
-            return self._channel
+        if channel_id in self._channels:
+            return self._channels[channel_id]
         raise RuntimeError("unknown channel")
 
     async def fetch_user(self, user_id):
@@ -224,6 +241,29 @@ class FakeIntentDB:
             if wallet["wallet_id"] == wallet_id and (guild_id is None or wallet["guild_id"] == guild_id):
                 return dict(wallet)
         return None
+
+    def get_payment_requests_by_producer(self, guild_id, producer, producer_ref, is_test=None):
+        rows = [
+            dict(row)
+            for row in self.payments.values()
+            if row.get("guild_id") == guild_id
+            and row.get("producer") == producer
+            and row.get("producer_ref") == producer_ref
+            and (is_test is None or row.get("is_test") == is_test)
+        ]
+        return rows
+
+    def create_payment_request(self, record, guild_id=None):
+        payment_id = f"payment-{len(self.payments) + 1}"
+        row = {"payment_id": payment_id, **dict(record), "guild_id": guild_id or record["guild_id"]}
+        self.payments[payment_id] = row
+        return dict(row)
+
+    def get_payment_request(self, payment_id, guild_id=None):
+        payment = self.payments.get(payment_id)
+        if payment and guild_id is not None and payment.get("guild_id") != guild_id:
+            return None
+        return dict(payment) if payment else None
 
     def has_active_payment_or_intent(self, guild_id, user_id):
         return (int(guild_id), int(user_id)) in self.active_payment_or_intent_users
@@ -547,6 +587,77 @@ async def test_initiate_payment_duplicate_intent():
     assert result["success"] is True
     assert result["duplicate"] is True
     assert db.created_intents == []
+
+
+# VERDICT 2026-04-11: collision reproduced at the downstream admin payment flow
+# because same-second `producer_ref` values collapsed distinct intents onto the same
+# active payment row. Fixed by switching `producer_ref` to millisecond precision.
+@pytest.mark.anyio
+async def test_concurrent_admin_payment_producer_ref_collision(monkeypatch):
+    guild = SimpleNamespace(id=1)
+    channel_one = FakeChannel(channel_id=55, guild=guild)
+    channel_two = FakeChannel(channel_id=56, guild=guild)
+    db = FakeIntentDB()
+    db.wallets[(1, 42, "solana")] = {
+        "wallet_id": "wallet-verified",
+        "guild_id": 1,
+        "discord_user_id": 42,
+        "chain": "solana",
+        "wallet_address": VALID_SOL_ADDRESS,
+        "verified_at": "2026-04-10T00:00:00Z",
+    }
+    payment_service = PaymentService(
+        db_handler=db,
+        providers={"solana_payouts": FakeProvider()},
+        test_payment_amount=0.01,
+    )
+    payment_service.confirm_payment = lambda payment_id, *, actor, guild_id=None: {  # type: ignore[method-assign]
+        "payment_id": payment_id,
+        "status": "queued",
+    }
+    bot = FakeBot(
+        {55: channel_one, 56: channel_two},
+        payment_service=payment_service,
+    )
+    cog = AdminChatCog(bot, db, sharer=object())
+    cog.payment_service = payment_service
+    bot._admin_chat_cog = cog
+
+    time_values = iter([1_700_000_000.001, 1_700_000_000.002])
+    monkeypatch.setattr("src.features.admin_chat.tools.time.time", lambda: next(time_values))
+
+    result_one = await execute_initiate_payment(
+        bot,
+        db,
+        {
+            "guild_id": 1,
+            "source_channel_id": 55,
+            "recipient_user_id": "42",
+            "amount_sol": 1.0,
+            "admin_user_id": 999,
+        },
+    )
+    result_two = await execute_initiate_payment(
+        bot,
+        db,
+        {
+            "guild_id": 1,
+            "source_channel_id": 56,
+            "recipient_user_id": "42",
+            "amount_sol": 2.0,
+            "admin_user_id": 999,
+        },
+    )
+
+    assert result_one["success"] is True
+    assert result_two["success"] is True
+    assert len(db.created_intents) == 2
+    assert db.created_intents[0]["producer_ref"] != db.created_intents[1]["producer_ref"]
+    assert len(db.payments) == 2
+    assert {row["producer_ref"] for row in db.payments.values()} == {
+        db.created_intents[0]["producer_ref"],
+        db.created_intents[1]["producer_ref"],
+    }
 
 
 @pytest.mark.anyio
@@ -1085,6 +1196,109 @@ async def test_admin_success_dm_sees_derived_usd(monkeypatch, clear_payment_poli
     assert "- USD: $321.09" in message
     assert "- Wallet: `1111...1111`" in message
     assert "requires manual review" not in message
+
+
+@pytest.mark.anyio
+async def test_admin_payment_dm_paths_route_through_delivery_helper(monkeypatch):
+    monkeypatch.setenv("ADMIN_USER_ID", "999")
+    channel = FakeChannel(guild=SimpleNamespace(id=1))
+    payment_service = SimpleNamespace(providers={"solana_payouts": FakeProvider()})
+    bot = FakeBot(channel, payment_service=payment_service)
+    cog = PaymentWorkerCog(bot, FakePaymentRequestDB(), payment_service=payment_service)
+    cog._deliver_admin_alert = AsyncMock(return_value=True)
+
+    await cog._dm_admin_payment_success(
+        {
+            "payment_id": "pay-success",
+            "producer": "admin_chat",
+            "producer_ref": "intent-1",
+            "provider": "solana_payouts",
+            "chain": "solana",
+            "is_test": False,
+            "status": "confirmed",
+            "amount_token": 1.5,
+            "amount_usd": 321.09,
+            "recipient_wallet": VALID_SOL_ADDRESS,
+        }
+    )
+    await cog._dm_admin_payment_failure(
+        {
+            "payment_id": "pay-failure",
+            "producer": "admin_chat",
+            "producer_ref": "intent-2",
+            "provider": "solana_payouts",
+            "chain": "solana",
+            "is_test": False,
+            "status": "manual_hold",
+            "amount_token": 1.5,
+            "recipient_wallet": VALID_SOL_ADDRESS,
+            "last_error": "rpc_unreachable",
+        }
+    )
+
+    assert cog._deliver_admin_alert.await_count == 2
+
+
+@pytest.mark.anyio
+async def test_admin_alert_falls_back_to_channel_on_dm_forbidden(monkeypatch):
+    monkeypatch.setenv("ADMIN_USER_ID", "999")
+    monkeypatch.setenv("ADMIN_FALLBACK_CHANNEL_ID", "55")
+    channel = FakeChannel(channel_id=55, guild=SimpleNamespace(id=1))
+    payment_service = SimpleNamespace(providers={"solana_payouts": FakeProvider()})
+    bot = FakeBot(channel, payment_service=payment_service)
+    blocked_admin = FakeAuthor(999)
+    blocked_admin.send = AsyncMock(
+        side_effect=discord.Forbidden(FakeResponse(403), "forbidden")
+    )
+    bot.fetched_users[999] = blocked_admin
+    cog = PaymentWorkerCog(bot, FakePaymentRequestDB(), payment_service=payment_service)
+
+    with patch(
+        "src.features.payments.payment_worker_cog.safe_send_message",
+        new=AsyncMock(return_value=SimpleNamespace(id=123)),
+    ) as mock_safe_send:
+        await cog._dm_admin_payment_success(
+            {
+                "payment_id": "pay-success",
+                "producer": "admin_chat",
+                "producer_ref": "intent-1",
+                "provider": "solana_payouts",
+                "chain": "solana",
+                "is_test": False,
+                "status": "confirmed",
+                "amount_token": 1.5,
+                "amount_usd": 321.09,
+                "recipient_wallet": VALID_SOL_ADDRESS,
+            }
+        )
+
+    mock_safe_send.assert_awaited_once()
+    assert mock_safe_send.await_args.kwargs["channel"] is channel
+
+
+@pytest.mark.anyio
+async def test_admin_alert_logs_error_when_dm_and_fallback_fail(monkeypatch, caplog):
+    monkeypatch.setenv("ADMIN_USER_ID", "999")
+    monkeypatch.setenv("ADMIN_FALLBACK_CHANNEL_ID", "55")
+    channel = FakeChannel(channel_id=55, guild=SimpleNamespace(id=1))
+    payment_service = SimpleNamespace(providers={"solana_payouts": FakeProvider()})
+    bot = FakeBot(channel, payment_service=payment_service)
+    blocked_admin = FakeAuthor(999)
+    blocked_admin.send = AsyncMock(
+        side_effect=discord.HTTPException(FakeResponse(429), "rate limited")
+    )
+    bot.fetched_users[999] = blocked_admin
+    cog = PaymentWorkerCog(bot, FakePaymentRequestDB(), payment_service=payment_service)
+
+    caplog.set_level("ERROR")
+    with patch(
+        "src.features.payments.payment_worker_cog.safe_send_message",
+        new=AsyncMock(side_effect=RuntimeError("fallback down")),
+    ):
+        delivered = await cog._deliver_admin_alert("hello", admin_user=blocked_admin)
+
+    assert delivered is False
+    assert "[PaymentWorkerCog] admin alert undeliverable" in caplog.text
 
 
 @pytest.mark.anyio

@@ -165,24 +165,7 @@ async def main_async(args):
         logger.info("SocialPublishService initialized and attached to bot.")
 
         try:
-            # The Solana rent-exempt minimum for a zero-data System account is
-            # 890_880 lamports (~0.00089088 SOL). A test payment below this
-            # deterministically fails on chain with InsufficientFundsForRent
-            # when sent to an uninitialized wallet. 2_000_000 lamports
-            # (0.002 SOL) sits comfortably above the rent floor with a buffer
-            # for future fee drift.
-            RENT_EXEMPT_LAMPORTS = 890_880
-            MIN_TEST_LAMPORTS = 2_000_000
             test_payment_amount = float(os.getenv('PAYMENT_TEST_AMOUNT_SOL', '0.002'))
-            test_payment_lamports = int(test_payment_amount * 1_000_000_000)
-            if test_payment_lamports < MIN_TEST_LAMPORTS:
-                raise RuntimeError(
-                    f"PAYMENT_TEST_AMOUNT_SOL={test_payment_amount} is "
-                    f"{test_payment_lamports} lamports, below the required "
-                    f"minimum of {MIN_TEST_LAMPORTS} lamports "
-                    f"(rent-exempt floor is {RENT_EXEMPT_LAMPORTS}). "
-                    "Raise PAYMENT_TEST_AMOUNT_SOL to at least 0.002."
-                )
             per_payment_usd_cap = float(os.getenv('ADMIN_PAYOUT_PER_PAYMENT_USD_CAP', '500'))
             daily_usd_cap = float(os.getenv('ADMIN_PAYOUT_DAILY_USD_CAP', '2000'))
             grants_provider = SolanaProvider(

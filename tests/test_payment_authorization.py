@@ -64,7 +64,7 @@ def make_service(db):
     return PaymentService(
         db_handler=db,
         providers={},
-        test_payment_amount=0.001,
+        test_payment_amount=0.002,
         logger_instance=logging.getLogger("test.payment.authorization"),
     )
 

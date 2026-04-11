@@ -3,21 +3,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple
 import asyncio
 
+from .redaction import redact_wallet as _redact_wallet
+
 logger = logging.getLogger('DiscordBot')
 
 
 class WalletUpdateBlockedError(Exception):
     """Raised when a wallet change is attempted while a payment flow is still active."""
-
-
-def _redact_wallet(wallet: Optional[str]) -> str:
-    if not wallet:
-        return 'unknown'
-    wallet = str(wallet)
-    if len(wallet) <= 10:
-        return wallet
-    return f"{wallet[:4]}...{wallet[-4:]}"
-
 
 def to_aware_utc(dt_str: str) -> Optional[datetime]:
     """Convert an ISO format string to a timezone-aware datetime object in UTC."""
@@ -1960,6 +1952,32 @@ class DatabaseHandler:
             logger.error(f"Error fetching payment request {payment_id}: {e}", exc_info=True)
             return None
 
+    def get_legacy_provider_payment_requests(
+        self,
+        guild_ids: Optional[List[int]] = None,
+    ) -> List[Dict]:
+        """Fetch payment requests that still use the pre-split provider name."""
+        if not self.supabase:
+            return []
+
+        writable_guild_ids = self._get_writable_guild_ids(guild_ids)
+        if writable_guild_ids == []:
+            return []
+
+        try:
+            query = (
+                self.supabase.table('payment_requests')
+                .select('*')
+                .eq('provider', 'solana')
+            )
+            if writable_guild_ids is not None:
+                query = query.in_('guild_id', writable_guild_ids)
+            result = query.order('created_at').execute()
+            return result.data or []
+        except Exception as e:
+            logger.error("Error fetching legacy provider payment requests: %s", e, exc_info=True)
+            return []
+
     def get_payment_requests_by_producer(
         self,
         guild_id: int,
@@ -2195,6 +2213,106 @@ class DatabaseHandler:
             payload,
             guild_id=guild_id,
             allowed_statuses=['processing', 'submitted'],
+        )
+
+    def _force_reconcile_payment_status(
+        self,
+        payment_id: str,
+        *,
+        target_status: str,
+        tx_signature: str,
+        reason: str,
+        history_reason: str,
+        guild_id: Optional[int] = None,
+    ) -> bool:
+        """Override the normal transition guards using authoritative on-chain truth."""
+        payment = self.get_payment_request(payment_id, guild_id=guild_id)
+        if not payment:
+            return False
+
+        previous_status = payment.get('status')
+        completed_at = datetime.now(timezone.utc)
+        payload: Dict[str, Any] = {
+            'status': target_status,
+            'tx_signature': tx_signature,
+            'completed_at': completed_at,
+            'retry_after': None,
+        }
+        if target_status == 'confirmed':
+            payload['last_error'] = None
+        else:
+            payload['last_error'] = reason
+
+        updated = self._update_payment_request_record(
+            payment_id,
+            payload,
+            guild_id=guild_id,
+            allowed_statuses=['submitted', 'processing', 'failed', 'manual_hold'],
+        )
+        if not updated:
+            return False
+
+        logger.warning(
+            "Force-reconciled payment %s in guild %s from %s to %s using chain truth: %s",
+            payment_id,
+            guild_id or payment.get('guild_id'),
+            previous_status,
+            target_status,
+            reason,
+        )
+        if not self._append_tx_signature_history(
+            payment_id,
+            {
+                'signature': tx_signature,
+                'status': target_status,
+                'timestamp': completed_at,
+                'reason': history_reason,
+                'send_phase': payment.get('send_phase'),
+                'detail': reason,
+            },
+            guild_id=guild_id,
+        ):
+            logger.warning(
+                "Failed to append tx signature history after %s for %s",
+                history_reason,
+                payment_id,
+            )
+        return True
+
+    def force_reconcile_payment_to_confirmed(
+        self,
+        payment_id: str,
+        *,
+        tx_signature: str,
+        reason: str,
+        guild_id: Optional[int] = None,
+    ) -> bool:
+        """Reconcile a previously submitted payment to confirmed from chain truth."""
+        return self._force_reconcile_payment_status(
+            payment_id,
+            target_status='confirmed',
+            tx_signature=tx_signature,
+            reason=reason,
+            history_reason='reconcile_confirmed',
+            guild_id=guild_id,
+        )
+
+    def force_reconcile_payment_to_failed(
+        self,
+        payment_id: str,
+        *,
+        tx_signature: str,
+        reason: str,
+        guild_id: Optional[int] = None,
+    ) -> bool:
+        """Reconcile a previously submitted payment to failed from chain truth."""
+        return self._force_reconcile_payment_status(
+            payment_id,
+            target_status='failed',
+            tx_signature=tx_signature,
+            reason=reason,
+            history_reason='reconcile_failed',
+            guild_id=guild_id,
         )
 
     def mark_payment_manual_hold(

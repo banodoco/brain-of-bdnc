@@ -1,25 +1,19 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
+from src.common.redaction import redact_wallet as _redact_wallet
 from src.common.discord_utils import safe_send_message
 
 from .payment_service import PaymentActor, PaymentActorKind, PaymentService
 
 logger = logging.getLogger('DiscordBot')
-
-
-def _redact_wallet(wallet: Optional[str]) -> str:
-    if not wallet:
-        return 'unknown'
-    wallet = str(wallet)
-    if len(wallet) <= 10:
-        return wallet
-    return f"{wallet[:4]}...{wallet[-4:]}"
 
 
 class PaymentConfirmView(discord.ui.View):
@@ -160,6 +154,39 @@ class PaymentUICog(commands.Cog):
             destination,
             self._build_confirmation_message(payment),
             view=view,
+        )
+
+    @app_commands.command(
+        name="payment-resolve",
+        description="Reconcile one payment against on-chain truth.",
+    )
+    @app_commands.describe(payment_id="The payment request ID to reconcile")
+    async def payment_resolve(self, interaction: discord.Interaction, payment_id: str):
+        admin_user_id = os.getenv("ADMIN_USER_ID")
+        if str(interaction.user.id) != str(admin_user_id):
+            await interaction.response.send_message("admin-only", ephemeral=True)
+            return
+
+        if not self.payment_service:
+            await interaction.response.send_message("payment_service unavailable", ephemeral=True)
+            return
+
+        decision = await self.payment_service.reconcile_with_chain(
+            payment_id,
+            guild_id=interaction.guild_id,
+        )
+        payment = self.db_handler.get_payment_request(payment_id, guild_id=interaction.guild_id) or {}
+        status = payment.get('status') or 'unknown'
+        tx_signature = _redact_wallet(decision.tx_signature or payment.get('tx_signature'))
+
+        await interaction.response.send_message(
+            "```text\n"
+            f"decision: {decision.decision}\n"
+            f"reason: {decision.reason}\n"
+            f"status: {status}\n"
+            f"tx_signature: {tx_signature}\n"
+            "```",
+            ephemeral=True,
         )
 
     async def _resolve_destination(
