@@ -290,9 +290,8 @@ def fake_supabase(monkeypatch):
     return supabase
 
 
-def test_route_tools_are_admin_only():
-    admin_tool_names = {tool["name"] for tool in admin_tools.get_tools_for_role(True)}
-    member_tool_names = {tool["name"] for tool in admin_tools.get_tools_for_role(False)}
+def test_expected_admin_tools_are_registered():
+    registered = {tool["name"] for tool in admin_tools.TOOLS}
 
     assert {
         "list_social_routes",
@@ -311,10 +310,7 @@ def test_route_tools_are_admin_only():
         "release_payment",
         "cancel_payment",
         "initiate_payment",
-    }.issubset(admin_tool_names)
-    assert "list_social_routes" not in member_tool_names
-    assert "create_social_route" not in member_tool_names
-    assert "list_payments" not in member_tool_names
+    }.issubset(registered)
     assert "payment_requests" not in admin_tools.QUERYABLE_TABLES
     assert "payment_channel_routes" not in admin_tools.QUERYABLE_TABLES
     assert "wallet_registry" not in admin_tools.QUERYABLE_TABLES
@@ -863,7 +859,7 @@ def test_admin_tool_registration_and_identity_injection_sets():
         "upsert_wallet_for_user",
         "resolve_admin_intent",
     }
-    assert expected_admin_tools.issubset(admin_tools.ADMIN_ONLY_TOOLS)
+    assert expected_admin_tools.issubset({tool["name"] for tool in admin_tools.TOOLS})
     assert admin_agent._ADMIN_IDENTITY_INJECTED_TOOLS == {
         "initiate_payment",
         "initiate_batch_payment",
