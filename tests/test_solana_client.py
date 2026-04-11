@@ -77,7 +77,7 @@ def _extract_tx_confirm_decision(mock_logger, expected_decision):
 
 @pytest.mark.anyio
 async def test_dynamic_priority_fee_uses_75th_percentile_from_sdk():
-    # Values chosen above the 100_000 floor so the 75th percentile isn't clamped
+    # Values chosen above the 500_000 floor so the 75th percentile isn't clamped
     # and we actually exercise the percentile calculation.
     client = _make_client()
     fake_rpc = SimpleNamespace(
@@ -85,10 +85,10 @@ async def test_dynamic_priority_fee_uses_75th_percentile_from_sdk():
             return_value=SimpleNamespace(
                 value=[
                     SimpleNamespace(prioritization_fee=0),
-                    SimpleNamespace(prioritization_fee=150_000),
-                    SimpleNamespace(prioritization_fee=200_000),
-                    SimpleNamespace(prioritization_fee=300_000),
-                    SimpleNamespace(prioritization_fee=400_000),
+                    SimpleNamespace(prioritization_fee=1_500_000),
+                    SimpleNamespace(prioritization_fee=2_000_000),
+                    SimpleNamespace(prioritization_fee=3_000_000),
+                    SimpleNamespace(prioritization_fee=4_000_000),
                 ]
             )
         )
@@ -96,7 +96,7 @@ async def test_dynamic_priority_fee_uses_75th_percentile_from_sdk():
 
     fee = await client._get_dynamic_priority_fee(fake_rpc)
 
-    assert fee == 300_000
+    assert fee == 3_000_000
 
 
 @pytest.mark.anyio

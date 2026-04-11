@@ -67,15 +67,14 @@ class SolanaClient:
         key_bytes = base58.b58decode(private_key)
         self.keypair = Keypair.from_bytes(key_bytes)
         self.rpc_url = os.getenv('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com')
-        # Static priority-fee floor. 100_000 micro-lamports/CU: at cu_limit=1000 this
-        # is 100_000_000 micro-lamports ≈ 0.0001 SOL (~$0.008 at $80/SOL) per tx —
-        # cheap, but empirically necessary: the previous 10_000 floor left txs in the
-        # mempool under real mainnet conditions where getRecentPrioritizationFees
-        # returned all zeros, causing rebroadcast loops to burn the full 60s window
-        # without landing. 100_000 is conservative enough to survive flaky dynamic
-        # fee data while still staying well under 0.001 SOL per tx.
+        # Static priority-fee floor. 500_000 micro-lamports/CU: at cu_limit=1000 this
+        # is 500_000_000 micro-lamports = 500_000 lamports ≈ 0.0005 SOL (~$0.04 at
+        # $80/SOL) per tx. Bumped up from 100k after observing real-world inclusion
+        # drops on the prize batch: ``get_recent_prioritization_fees`` is currently
+        # returning empty entries via this SDK version, so the dynamic path always
+        # falls through to the floor. 500k gives honest headroom under congestion.
         self.priority_fee_micro_lamports = int(
-            os.getenv('SOLANA_PRIORITY_FEE_MICRO_LAMPORTS', '100000')
+            os.getenv('SOLANA_PRIORITY_FEE_MICRO_LAMPORTS', '500000')
         )
         # Ceiling scaled up proportionally so the dynamic path has headroom for real
         # congestion spikes without burning 10x the floor.
@@ -361,15 +360,17 @@ class SolanaClient:
                     confirmation_status = getattr(
                         status, 'confirmation_status', None
                     )
-                    # ``confirmation_status`` may be a string or an enum with a
-                    # ``.name`` attribute depending on the SDK version.
-                    cs_name = (
-                        confirmation_status
-                        if isinstance(confirmation_status, str)
-                        else getattr(confirmation_status, 'name', '')
+                    # solders' ``TransactionConfirmationStatus`` is a Rust enum
+                    # whose ``.name`` attribute returns None, so substring-match
+                    # against ``str(cs).lower()`` — that works for both the solders
+                    # enum (str repr is "TransactionConfirmationStatus.Finalized")
+                    # and legacy string responses ("confirmed"/"finalized").
+                    cs_lower = (
+                        str(confirmation_status).lower()
+                        if confirmation_status is not None
+                        else ''
                     )
-                    cs_lower = (cs_name or '').lower()
-                    if cs_lower in ('confirmed', 'finalized'):
+                    if 'confirmed' in cs_lower or 'finalized' in cs_lower:
                         self._log_tx_confirm_decision(
                             signature,
                             decision='confirmed',
