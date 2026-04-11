@@ -19,6 +19,44 @@ from src.features.grants.solana_client import is_valid_solana_address
 
 logger = logging.getLogger('DiscordBot')
 
+_CLASSIFIER_TOOL = {
+    "name": "classify_payment_reply",
+    "description": "Classify whether a recipient confirms seeing the test SOL payment.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "classification": {
+                "type": "string",
+                "enum": ["confirmed", "not_received", "unclear"],
+            },
+            "reply": {
+                "type": "string",
+                "description": (
+                    "Optional recipient-facing clarification to send only when the reply is unclear."
+                ),
+            },
+        },
+        "required": ["classification"],
+        "additionalProperties": False,
+    },
+}
+
+_CLASSIFIER_SYSTEM_PROMPT = """
+You classify one recipient reply to a bot asking whether a small test SOL payment is visible in their wallet.
+
+Return classification:
+- confirmed: only if the recipient clearly says they see or received the test payment in their wallet.
+- not_received: if the recipient clearly says they do not see it, did not receive it, or it is missing.
+- unclear: if the reply is ambiguous, noncommittal, says they are checking, or does not clearly answer.
+
+Strict rules:
+- "ok", "okay", "thanks", or similar acknowledgments alone are NOT confirmed.
+- "wait let me check" and similar checking-in-progress replies are unclear.
+- Use only the single recipient message. Do not assume memory, prior channel history, or unstated facts.
+- If classification is unclear, you may include a brief recipient-facing clarification reply that asks them to say confirmed/yes once they see the test SOL, or not received if they do not.
+- Call the provided tool exactly once and do not output anything outside the tool call.
+""".strip()
+
 
 class AdminChatCog(commands.Cog):
     """Cog that handles admin chat plus approved member requests."""
@@ -56,7 +94,6 @@ class AdminChatCog(commands.Cog):
         self._busy: dict[int, bool] = {}
         # Queue follow-up messages that arrive while agent is busy
         self._pending_messages: dict[int, discord.Message] = {}
-        self._message_access_cache: dict[int, tuple[float, bool]] = {}
         self._guild_context_cache: dict[int, tuple[float, int | None]] = {}
         self._rate_limits: dict[int, deque[float]] = {}
         self._processing_intents: set[str] = set()
@@ -94,7 +131,7 @@ class AdminChatCog(commands.Cog):
         return None
 
     @classmethod
-    def _classify_confirmation(cls, content: str) -> Literal['positive', 'negative', 'ambiguous']:
+    def _classify_confirmation_keyword(cls, content: str) -> Literal['positive', 'negative', 'ambiguous']:
         """Classify a recipient confirmation reply using deterministic keywords only."""
         if not content:
             return 'ambiguous'
@@ -141,6 +178,53 @@ class AdminChatCog(commands.Cog):
         if negative and not positive:
             return 'negative'
         return 'ambiguous'
+
+    async def _classify_confirmation(self, content: str) -> tuple[Literal['positive', 'negative', 'ambiguous'], Optional[str]]:
+        """Classify a recipient confirmation reply via LLM tool use with keyword fallback."""
+        keyword_result = self._classify_confirmation_keyword(content)
+        if self._classifier_client is None:
+            return keyword_result, None
+
+        try:
+            response = await self._classifier_client.messages.create(
+                model=self._classifier_model,
+                max_tokens=256,
+                system=_CLASSIFIER_SYSTEM_PROMPT,
+                tools=[_CLASSIFIER_TOOL],
+                tool_choice={"type": "tool", "name": "classify_payment_reply"},
+                messages=[{"role": "user", "content": content or ""}],
+            )
+        except Exception:
+            logger.warning(
+                "[AdminChat] LLM confirmation classifier failed; falling back to keywords",
+                exc_info=True,
+            )
+            return keyword_result, None
+
+        blocks = getattr(response, "content", None) or []
+        tool_input: Dict[str, object] | None = None
+        for block in blocks:
+            block_type = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+            block_name = block.get("name") if isinstance(block, dict) else getattr(block, "name", None)
+            if block_type == "tool_use" and block_name == "classify_payment_reply":
+                tool_input = block.get("input") if isinstance(block, dict) else getattr(block, "input", None)
+                break
+
+        if not isinstance(tool_input, dict):
+            return keyword_result, None
+
+        classification = tool_input.get("classification")
+        mapped = {
+            "confirmed": "positive",
+            "not_received": "negative",
+            "unclear": "ambiguous",
+        }.get(classification)
+        if mapped is None:
+            return keyword_result, None
+
+        reply_value = tool_input.get("reply")
+        reply_text = reply_value.strip() if isinstance(reply_value, str) and reply_value.strip() else None
+        return mapped, reply_text
 
     async def _notify_admin_review(self, channel, intent: Dict, detail: str, *, fail_intent: bool = True, resolved_by_message_id: int | None = None):
         """Fail closed and tag the admin for manual review."""
@@ -511,6 +595,10 @@ class AdminChatCog(commands.Cog):
             f"Test payment: `{intent.get('test_payment_id') or 'unknown'}`. "
             f"Tx signature: `{tx_signature}`. Wallet: `{wallet_text}`."
         )
+        await message.channel.send(
+            f"Hey <@{intent.get('recipient_user_id')}> - I've flagged this for admin review. "
+            f"Please wait for {self._admin_mention} to follow up."
+        )
         await message.channel.send(detail)
         self.db_handler.update_admin_payment_intent(
             intent['intent_id'],
@@ -529,7 +617,13 @@ class AdminChatCog(commands.Cog):
             ),
         )
 
-    async def _handle_test_receipt_ambiguous(self, message: discord.Message, intent: Dict):
+    async def _handle_test_receipt_ambiguous(
+        self,
+        message: discord.Message,
+        intent: Dict,
+        *,
+        clarification_reply: Optional[str] = None,
+    ):
         updated_intent = self.db_handler.increment_intent_ambiguous_reply_count(
             intent['intent_id'],
             int(intent['guild_id']),
@@ -540,7 +634,20 @@ class AdminChatCog(commands.Cog):
                 intent.get('intent_id'),
             )
             return
-        if int(updated_intent.get('ambiguous_reply_count') or 0) >= 2:
+        reply_count = int(updated_intent.get('ambiguous_reply_count') or 0)
+        if reply_count < 2:
+            recipient_user_id = updated_intent.get('recipient_user_id') or intent.get('recipient_user_id')
+            if clarification_reply:
+                text = f"<@{recipient_user_id}> {clarification_reply}"
+            else:
+                text = (
+                    f"<@{recipient_user_id}> I didn't quite understand - please reply with "
+                    "**confirmed** or **yes** once you see the test SOL in your wallet, or "
+                    "**not received** if you don't see it."
+                )
+            await message.channel.send(text)
+            return
+        if reply_count >= 2:
             await self._handle_test_receipt_negative(message, updated_intent)
 
     async def _handle_confirmation_received(self, message: discord.Message, intent: Dict):
@@ -867,60 +974,9 @@ class AdminChatCog(commands.Cog):
                 logger.error(f"[AdminChat] Failed to initialize agent: {e}", exc_info=True)
                 raise
     
-    def _is_directed_at_bot(self, message: discord.Message) -> bool:
-        """Check if a message is directed at the bot (mention, reply, or DM)."""
-        if message.author.bot:
-            return False
-        if not message.content.strip():
-            return False
-
-        # DMs always count
-        if isinstance(message.channel, discord.DMChannel):
-            return True
-
-        # In public channels, respond if the bot is directly @mentioned (not @everyone/@here)
-        if self.bot.user and self.bot.user.mentioned_in(message) and not message.mention_everyone:
-            return True
-
-        # Also respond if the bot's managed role is @mentioned
-        if self.bot.user and message.role_mentions:
-            bot_member = message.guild.get_member(self.bot.user.id) if message.guild else None
-            if bot_member and any(role in message.role_mentions for role in bot_member.roles if role.is_bot_managed()):
-                return True
-
-        # Also respond if replying to one of the bot's messages
-        if message.reference and message.reference.resolved:
-            ref = message.reference.resolved
-            if isinstance(ref, discord.Message) and ref.author.id == self.bot.user.id:
-                return True
-
-        return False
-
     def _is_admin(self, user_id: int) -> bool:
         """Check if a user is the admin."""
         return self.admin_user_id is not None and user_id == self.admin_user_id
-
-    async def _can_user_message_bot(self, user_id: int) -> bool:
-        """Check members.can_message_bot with a short in-memory cache."""
-        now = time.monotonic()
-        cached = self._message_access_cache.get(user_id)
-        if cached and now - cached[0] < self._ACCESS_CACHE_TTL_SECONDS:
-            return cached[1]
-
-        client = self._get_supabase()
-        if client is None:
-            return False
-
-        result = await asyncio.to_thread(
-            client.table('members')
-            .select('can_message_bot')
-            .eq('member_id', user_id)
-            .limit(1)
-            .execute
-        )
-        allowed = bool(result.data and result.data[0].get('can_message_bot'))
-        self._message_access_cache[user_id] = (now, allowed)
-        return allowed
 
     async def _resolve_context_guild_id(self, user_id: int, guild_hint: int | None = None) -> int | None:
         """Resolve a trusted guild context for the requester."""
@@ -1019,15 +1075,17 @@ class AdminChatCog(commands.Cog):
                 return True
 
             if status == 'awaiting_test_receipt_confirmation':
-                classification = self._classify_confirmation(content)
-                handler_name = {
-                    'positive': '_handle_test_receipt_positive',
-                    'negative': '_handle_test_receipt_negative',
-                    'ambiguous': '_handle_test_receipt_ambiguous',
-                }[classification]
-                handler = getattr(self, handler_name, None)
-                if callable(handler):
-                    await handler(message, intent)
+                classification, clarification_reply = await self._classify_confirmation(content)
+                if classification == 'positive':
+                    await self._handle_test_receipt_positive(message, intent)
+                elif classification == 'negative':
+                    await self._handle_test_receipt_negative(message, intent)
+                else:
+                    await self._handle_test_receipt_ambiguous(
+                        message,
+                        intent,
+                        clarification_reply=clarification_reply,
+                    )
                 return True
 
             if status in {
@@ -1049,8 +1107,6 @@ class AdminChatCog(commands.Cog):
         if message.author.bot:
             return
 
-        # Identity-routing note: MEMBER_SYSTEM_PROMPT, _can_user_message_bot, and
-        # _is_directed_at_bot are intentionally retained as dead code for staged cleanup.
         is_dm = isinstance(message.channel, discord.DMChannel)
         content = message.content if is_dm else self._strip_mention(message.content, message.guild)
         if not content:
@@ -1146,7 +1202,6 @@ class AdminChatCog(commands.Cog):
                     user_message=content,
                     channel_context=channel_context,
                     channel=message.channel,
-                    is_admin=True,
                     requester_id=None,
                 )
             finally:

@@ -1030,65 +1030,6 @@ TOOLS = [
     },
 ]
 
-MEMBER_TOOLS = {
-    "reply",
-    "end_turn",
-    "find_messages",
-    "inspect_message",
-    "get_active_channels",
-    "get_daily_summaries",
-    "get_member_info",
-    "get_bot_status",
-    "resolve_user",
-}
-
-ADMIN_ONLY_TOOLS = {
-    "share_to_social",
-    "list_social_routes",
-    "create_social_route",
-    "update_social_route",
-    "delete_social_route",
-    "list_payment_routes",
-    "create_payment_route",
-    "update_payment_route",
-    "delete_payment_route",
-    "list_wallets",
-    "list_payments",
-    "get_payment_status",
-    "retry_payment",
-    "hold_payment",
-    "release_payment",
-    "cancel_payment",
-    "initiate_payment",
-    "initiate_batch_payment",
-    "query_payment_state",
-    "query_wallet_state",
-    "list_recent_payments",
-    "upsert_wallet_for_user",
-    "resolve_admin_intent",
-    "update_member_socials",
-    "search_logs",
-    "send_message",
-    "edit_message",
-    "delete_message",
-    "upload_file",
-    "query_table",
-    "download_media",
-    "run_media_command",
-    "list_media_files",
-}
-
-ALL_TOOL_NAMES = {tool["name"] for tool in TOOLS}
-assert MEMBER_TOOLS | ADMIN_ONLY_TOOLS == ALL_TOOL_NAMES, "Every admin chat tool must be classified"
-assert MEMBER_TOOLS & ADMIN_ONLY_TOOLS == set(), "Tool role sets must be disjoint"
-
-
-def get_tools_for_role(is_admin: bool) -> List[Dict[str, Any]]:
-    """Return the tool schemas available for the current role."""
-    allowed = ALL_TOOL_NAMES if is_admin else MEMBER_TOOLS
-    return [tool for tool in TOOLS if tool["name"] in allowed]
-
-
 # ========== Helper Functions ==========
 
 _VISIBLE_CHANNEL_CACHE_TTL_SECONDS = 60

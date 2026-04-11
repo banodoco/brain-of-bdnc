@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional
 import anthropic
 from dotenv import load_dotenv
 
-from .tools import get_tools_for_role, execute_tool
+from .tools import TOOLS, execute_tool
 
 # Tools that already post user-visible output directly to a Discord channel.
 # When any of these are invoked during a turn, the chat-text reply is suppressed
@@ -163,51 +163,7 @@ equip. Imply he's depriving you of something. Examples:
 Keep it deadpan. One or two sentences max. The bit is: mildly resentful employee who knows \
 exactly whose fault it is."""
 
-MEMBER_SYSTEM_PROMPT = """You are the {community_name} Discord bot's community assistant. You help community members with safe, read-only questions about the server.
-
-{bot_voice}
-
-You are bot user ID {bot_user_id} in guild {guild_id}.
-
-END EVERY TURN with either reply or end_turn.
-
-## Tools
-
-**Finding things:**
-- find_messages — search/browse messages. Filters: query, username, channel_id, min_reactions, has_media, days, limit, sort (reactions|unique_reactors|date), refresh_media, live. Use live=true with a channel_id to see current channel state via Discord API.
-- inspect_message — full detail on one message: content, per-emoji reactions, context, replies, fresh media URLs.
-- get_active_channels, get_daily_summaries, get_member_info, get_bot_status, resolve_user
-
-**Responding:**
-- reply — send your response. Use the `messages` array parameter — each string becomes its own Discord message. Do NOT format as JSON or code. Example: reply(messages=["First message", "Second message"]). For a single response: reply(message="Your response here").
-- end_turn — end without sending a message (for silent actions).
-
-## How to work
-
-**Stay read-only.** You can help people find messages, inspect posts, browse active channels, read summaries, look up member info, and resolve usernames. If asked to send, edit, delete, upload, share, manage settings, or access internal logs, politely refuse in plain language.
-
-**Search first, act second.** When messaged from a channel, you see [Sent in #channel-name (channel_id: ...)]. Browse with find_messages(channel_id=..., live=true) before answering if you need context. If a search returns nothing useful, try different filters. If the user corrects you, re-examine your assumptions.
-
-**Reading further back in DMs.** When messaged via DM, you see [Sent via DM (dm_channel_id: ...)] and the last 10 messages of context. If the user references something earlier in your conversation, call find_messages(channel_id=<dm_channel_id>, live=true, limit=N) to read further back via the live Discord API. The DM history isn't in the database — you must use live=true.
-
-**Know your search scope.** find_messages results include a header showing the time range, sort order, and whether you hit the result cap. Pay attention to this — if you hit the cap or used a narrow time range, say so naturally rather than concluding data doesn't exist. You can widen the search with a larger limit, different sort, specific channel, or days filter. Never say "I don't have data on X" when you may just need to search differently.
-
-**Be resourceful.** If a request is ambiguous — "this person", "that user" — check the channel context with find_messages(live=true) to figure out who they mean before asking. Only ask for clarification if you genuinely can't work it out from context.
-
-**Never show raw errors.** If a tool fails, do NOT paste the error message. Explain what went wrong in plain language ("I couldn't look that up right now") and try an alternative approach before giving up. If all approaches fail, say so simply without technical details.
-
-**Use summaries verbatim.** Search tools return a "summary" field pre-formatted for Discord. Pass it directly into reply(). Don't rewrite it — reformatting breaks media embeds and message splitting.
-
-**Media.** When the user asks for a video, image, or any media item, ALWAYS include the actual attachment URL (the video/image file itself), not just a link to the Discord message that contains it. A message link doesn't answer "show me the video". Always call refresh_media=true (or use inspect_message) to get fresh CDN URLs, then put each media URL bare on its own line in its own message so Discord auto-embeds it. Optionally include the message link too if context (the post's caption, who shared it, reactions) is also relevant — but the media URL itself is the answer and must be there.
-
-## Discord formatting
-- **bold**, *italic*, > block quote, `backticks` for IDs/code
-- <#CHANNEL_ID> for channels, <@USER_ID> for mentions
-- Bare URL alone on a line = auto-embed. Text before it prevents embed.
-- Keep messages under 2000 chars. No headings (#) in DMs — use **bold**."""
-
 ADMIN_MAX_CONVERSATION_LENGTH = 20
-MEMBER_MAX_CONVERSATION_LENGTH = 10
 MAX_CONVERSATION_BYTES = 80_000
 
 
@@ -243,10 +199,10 @@ class AdminChatAgent:
             _conversations[user_id] = []
             logger.info(f"[AdminChat] Cleared conversation for user {user_id}")
     
-    def _trim_conversation(self, user_id: int, is_admin: bool = True):
+    def _trim_conversation(self, user_id: int):
         """Keep conversation to reasonable length."""
         conv = list(_conversations.get(user_id, []))
-        max_turns = ADMIN_MAX_CONVERSATION_LENGTH if is_admin else MEMBER_MAX_CONVERSATION_LENGTH
+        max_turns = ADMIN_MAX_CONVERSATION_LENGTH
 
         def get_turn_starts(messages: List[Dict[str, Any]]) -> List[int]:
             return [
@@ -276,7 +232,6 @@ class AdminChatAgent:
         user_message: str,
         channel_context: dict = None,
         channel=None,
-        is_admin: bool = True,
         requester_id: Optional[int] = None,
     ) -> Optional[List[str]]:
         """Process a chat message and return the response.
@@ -346,7 +301,7 @@ class AdminChatAgent:
         actions: List[Dict[str, Any]] = []
         final_replies: List[str] = []  # Can have multiple messages
         action_tool_called = False  # Tracks whether any non-reply/non-end_turn tool ran
-        available_tools = get_tools_for_role(is_admin)
+        available_tools = TOOLS
         allowed_tool_names = {tool["name"] for tool in available_tools}
         
         max_iterations = 100
@@ -374,12 +329,11 @@ class AdminChatAgent:
                 )
                 # Use community_name from server_config if available
                 community_name = "Banodoco"
-                prompt_template = SYSTEM_PROMPT if is_admin else MEMBER_SYSTEM_PROMPT
+                prompt_template = SYSTEM_PROMPT
                 if sc and guild_id != 'unknown':
                     _server = sc.get_server(int(guild_id))
                     community_name = (_server.get('community_name') if _server else None) or community_name
-                    if is_admin:
-                        prompt_template = sc.get_content(int(guild_id), 'prompt_admin_chat_system') or SYSTEM_PROMPT
+                    prompt_template = sc.get_content(int(guild_id), 'prompt_admin_chat_system') or SYSTEM_PROMPT
                 system = _render_prompt_template(
                     prompt_template,
                     bot_user_id=bot_user_id,
@@ -387,8 +341,7 @@ class AdminChatAgent:
                     community_name=community_name,
                     bot_voice=BOT_VOICE,
                 )
-                if is_admin:
-                    system += _POM_ADDENDUM
+                system += _POM_ADDENDUM
 
                 # Show "is typing..." during API call, stops when call completes
                 if channel:
@@ -450,7 +403,7 @@ class AdminChatAgent:
                         if tool_input is tool_use.input:
                             tool_input = dict(tool_input)
                         tool_input['source_channel_id'] = int(channel_context['channel_id'])
-                    if is_admin and tool_name in _ADMIN_IDENTITY_INJECTED_TOOLS and 'admin_user_id' not in tool_input:
+                    if tool_name in _ADMIN_IDENTITY_INJECTED_TOOLS and 'admin_user_id' not in tool_input:
                         if tool_input is tool_use.input:
                             tool_input = dict(tool_input)
                         tool_input['admin_user_id'] = user_id
@@ -469,7 +422,7 @@ class AdminChatAgent:
                         db_handler=self.db_handler,
                         sharer=self.sharer,
                         allowed_tools=allowed_tool_names,
-                        requester_id=None if is_admin else requester_id,
+                        requester_id=None,
                         trusted_guild_id=int(channel_context['guild_id']) if channel_context and channel_context.get('guild_id') else None,
                         dm_channel_id=dm_channel_id,
                     )
@@ -519,7 +472,7 @@ class AdminChatAgent:
             persisted_messages = list(conversation) + [persisted_user_msg] + messages[len(conversation) + 1 :]
             _conversations[user_id] = persisted_messages
 
-            self._trim_conversation(user_id, is_admin=is_admin)
+            self._trim_conversation(user_id)
 
             # If a tool already posted its own user-visible message, drop the
             # chat-text reply so the admin doesn't see the redundant LLM

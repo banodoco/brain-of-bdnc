@@ -5,7 +5,9 @@ import discord
 import pytest
 
 from src.common.db_handler import WalletUpdateBlockedError
+from src.features.admin_chat import agent as admin_agent
 from src.features.admin_chat.admin_chat_cog import AdminChatCog
+from src.features.admin_chat import tools as admin_tools
 from src.features.admin_chat.tools import execute_initiate_batch_payment, execute_initiate_payment
 from src.features.grants.grants_cog import GrantsCog
 from src.features.payments.payment_service import PaymentActor, PaymentActorKind, PaymentService
@@ -597,14 +599,125 @@ def test_parse_wallet_from_text_extracts_wrapped_address():
 def test_classify_confirmation_keywords(content, expected):
     cog = AdminChatCog(FakeBot(FakeChannel(), payment_service=object()), FakeIntentDB(), sharer=object())
 
-    assert cog._classify_confirmation(content) == expected
+    assert cog._classify_confirmation_keyword(content) == expected
 
 
 def test_classify_confirmation_negative_phrase_beats_embedded_positive_keyword():
     cog = AdminChatCog(FakeBot(FakeChannel(), payment_service=object()), FakeIntentDB(), sharer=object())
 
-    assert cog._classify_confirmation("not received") == "negative"
-    assert cog._classify_confirmation("not received yet") == "negative"
+    assert cog._classify_confirmation_keyword("not received") == "negative"
+    assert cog._classify_confirmation_keyword("not received yet") == "negative"
+
+
+@pytest.mark.anyio
+async def test_classify_confirmation_llm_confirmed_maps_to_positive(monkeypatch):
+    cog = AdminChatCog(FakeBot(FakeChannel(), payment_service=object()), FakeIntentDB(), sharer=object())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    create_mock = AsyncMock(
+        return_value=SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    name="classify_payment_reply",
+                    input={"classification": "confirmed"},
+                )
+            ]
+        )
+    )
+    cog._classifier_client = SimpleNamespace(messages=SimpleNamespace(create=create_mock))
+
+    result = await cog._classify_confirmation("yes, I see it in my wallet")
+
+    assert result == ("positive", None)
+    assert create_mock.await_args.kwargs["tool_choice"] == {"type": "tool", "name": "classify_payment_reply"}
+
+
+@pytest.mark.anyio
+async def test_classify_confirmation_llm_not_received_maps_to_negative(monkeypatch):
+    cog = AdminChatCog(FakeBot(FakeChannel(), payment_service=object()), FakeIntentDB(), sharer=object())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    create_mock = AsyncMock(
+        return_value=SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    name="classify_payment_reply",
+                    input={"classification": "not_received"},
+                )
+            ]
+        )
+    )
+    cog._classifier_client = SimpleNamespace(messages=SimpleNamespace(create=create_mock))
+
+    result = await cog._classify_confirmation("no, I still do not see it")
+
+    assert result == ("negative", None)
+
+
+@pytest.mark.anyio
+async def test_classify_confirmation_llm_unclear_maps_to_ambiguous_with_reply(monkeypatch):
+    cog = AdminChatCog(FakeBot(FakeChannel(), payment_service=object()), FakeIntentDB(), sharer=object())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    create_mock = AsyncMock(
+        return_value=SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    name="classify_payment_reply",
+                    input={
+                        "classification": "unclear",
+                        "reply": "Please reply yes once you see the test SOL, or not received if you do not.",
+                    },
+                )
+            ]
+        )
+    )
+    cog._classifier_client = SimpleNamespace(messages=SimpleNamespace(create=create_mock))
+
+    result = await cog._classify_confirmation("wait let me check")
+
+    assert result == (
+        "ambiguous",
+        "Please reply yes once you see the test SOL, or not received if you do not.",
+    )
+
+
+@pytest.mark.anyio
+async def test_classify_confirmation_falls_back_to_keywords_when_api_key_missing():
+    cog = AdminChatCog(FakeBot(FakeChannel(), payment_service=object()), FakeIntentDB(), sharer=object())
+
+    assert await cog._classify_confirmation("confirmed, got it") == ("positive", None)
+
+
+@pytest.mark.anyio
+async def test_classify_confirmation_falls_back_to_keywords_on_api_error(monkeypatch):
+    cog = AdminChatCog(FakeBot(FakeChannel(), payment_service=object()), FakeIntentDB(), sharer=object())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    create_mock = AsyncMock(side_effect=RuntimeError("boom"))
+    cog._classifier_client = SimpleNamespace(messages=SimpleNamespace(create=create_mock))
+
+    result = await cog._classify_confirmation("confirmed, got it")
+
+    assert result == ("positive", None)
+    create_mock.assert_awaited_once()
+
+
+def test_dead_code_is_removed():
+    member_system_prompt = "MEMBER_" + "SYSTEM_PROMPT"
+    member_max_conversation_length = "MEMBER_MAX_" + "CONVERSATION_LENGTH"
+    member_tools = "MEMBER_" + "TOOLS"
+    admin_only_tools = "ADMIN_ONLY_" + "TOOLS"
+    role_tool_lookup_name = "get_" + "tools_for_role"
+    can_user_message_bot = "_can_user_" + "message_bot"
+    is_directed_at_bot = "_is_" + "directed_at_bot"
+
+    assert not hasattr(admin_agent, member_system_prompt)
+    assert not hasattr(admin_agent, member_max_conversation_length)
+    assert not hasattr(admin_tools, member_tools)
+    assert not hasattr(admin_tools, admin_only_tools)
+    assert not hasattr(admin_tools, role_tool_lookup_name)
+    assert not hasattr(AdminChatCog, can_user_message_bot)
+    assert not hasattr(AdminChatCog, is_directed_at_bot)
 
 
 @pytest.mark.anyio
@@ -659,13 +772,11 @@ async def test_identity_router_falls_through_for_non_admin_without_intent():
     cog = AdminChatCog(bot, db, sharer=object())
     cog._handle_admin_message = AsyncMock()
     cog._handle_pending_recipient_message = AsyncMock()
-    cog._can_user_message_bot = AsyncMock(return_value=True)
 
     await cog.on_message(FakeMessage(2003, FakeAuthor(77), channel, guild, "hello bot"))
 
     cog._handle_admin_message.assert_not_awaited()
     cog._handle_pending_recipient_message.assert_not_awaited()
-    cog._can_user_message_bot.assert_not_awaited()
 
 
 @pytest.mark.anyio
@@ -691,22 +802,6 @@ async def test_state_machine_silently_ignores_awaiting_admin_init():
 
     cog._handle_wallet_received.assert_not_awaited()
     assert db.intents[intent["intent_id"]]["status"] == "awaiting_admin_init"
-
-
-@pytest.mark.anyio
-async def test_approved_member_no_longer_routed_to_agent():
-    guild = SimpleNamespace(id=1)
-    channel = FakeChannel(guild=guild)
-    bot = FakeBot(channel, payment_service=object())
-    db = FakeIntentDB()
-    cog = AdminChatCog(bot, db, sharer=object())
-    cog._handle_admin_message = AsyncMock()
-    cog._can_user_message_bot = AsyncMock(return_value=True)
-
-    await cog.on_message(FakeMessage(2005, FakeAuthor(1234), channel, guild, "<@999> help"))
-
-    cog._handle_admin_message.assert_not_awaited()
-    cog._can_user_message_bot.assert_not_awaited()
 
 
 @pytest.mark.anyio
@@ -1448,8 +1543,53 @@ async def test_handle_test_receipt_negative_moves_to_manual_review():
     )
 
     assert db.intents[intent["intent_id"]]["status"] == "manual_review"
-    assert "sig-123" in channel.sent_messages[-1].content
-    assert VALID_SOL_ADDRESS in channel.sent_messages[-1].content
+    assert len(channel.sent_messages) == 2
+    assert "<@42>" in channel.sent_messages[0].content
+    assert "admin review" in channel.sent_messages[0].content
+    assert cog._admin_mention in channel.sent_messages[0].content
+    assert "sig-123" in channel.sent_messages[1].content
+    assert VALID_SOL_ADDRESS in channel.sent_messages[1].content
+    admin_user = bot.fetched_users[999]
+    assert "Manual review needed" in admin_user.sent_messages[-1].content
+
+
+@pytest.mark.anyio
+async def test_handle_test_receipt_negative_sends_recipient_facing_notice():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    db.payments["payment-test"] = {
+        "payment_id": "payment-test",
+        "guild_id": 1,
+        "recipient_wallet": VALID_SOL_ADDRESS,
+        "tx_signature": "sig-123",
+    }
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "admin_user_id": 999,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "test_payment_id": "payment-test",
+            "status": "awaiting_test_receipt_confirmation",
+        },
+        guild_id=1,
+    )
+    bot = FakeBot(channel, payment_service=object())
+    cog = AdminChatCog(bot, db, sharer=object())
+
+    await cog._handle_test_receipt_negative(
+        FakeMessage(1015, FakeAuthor(42), channel, guild, "no"),
+        intent,
+    )
+
+    assert len(channel.sent_messages) == 2
+    assert "<@42>" in channel.sent_messages[0].content
+    assert "admin review" in channel.sent_messages[0].content
+    assert cog._admin_mention in channel.sent_messages[0].content
+    assert "sig-123" in channel.sent_messages[1].content
+    assert VALID_SOL_ADDRESS in channel.sent_messages[1].content
     admin_user = bot.fetched_users[999]
     assert "Manual review needed" in admin_user.sent_messages[-1].content
 
@@ -1525,7 +1665,9 @@ async def test_handle_test_receipt_ambiguous_escalates_on_second_reply():
     )
 
     assert db.intents[intent["intent_id"]]["ambiguous_reply_count"] == 1
-    assert channel.sent_messages == []
+    assert len(channel.sent_messages) == 1
+    assert "<@42>" in channel.sent_messages[0].content
+    assert "confirmed" in channel.sent_messages[0].content
 
     await cog._handle_test_receipt_ambiguous(
         FakeMessage(1007, FakeAuthor(42), channel, guild, "not sure"),
@@ -1535,6 +1677,70 @@ async def test_handle_test_receipt_ambiguous_escalates_on_second_reply():
     assert db.intents[intent["intent_id"]]["ambiguous_reply_count"] == 2
     assert db.intents[intent["intent_id"]]["status"] == "manual_review"
     assert "multiple ambiguous receipt replies" in channel.sent_messages[-1].content
+
+
+@pytest.mark.anyio
+async def test_handle_test_receipt_ambiguous_first_reply_posts_default_clarification():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "admin_user_id": 999,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "test_payment_id": "payment-test",
+            "status": "awaiting_test_receipt_confirmation",
+            "ambiguous_reply_count": 0,
+        },
+        guild_id=1,
+    )
+    bot = FakeBot(channel, payment_service=object())
+    cog = AdminChatCog(bot, db, sharer=object())
+
+    await cog._handle_test_receipt_ambiguous(
+        FakeMessage(1016, FakeAuthor(42), channel, guild, "maybe"),
+        intent,
+    )
+
+    assert db.intents[intent["intent_id"]]["ambiguous_reply_count"] == 1
+    assert "<@42>" in channel.sent_messages[-1].content
+    assert "confirmed" in channel.sent_messages[-1].content
+    assert "not received" in channel.sent_messages[-1].content
+
+
+@pytest.mark.anyio
+async def test_handle_test_receipt_ambiguous_first_reply_uses_llm_reply_when_provided():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "admin_user_id": 999,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "test_payment_id": "payment-test",
+            "status": "awaiting_test_receipt_confirmation",
+            "ambiguous_reply_count": 0,
+        },
+        guild_id=1,
+    )
+    bot = FakeBot(channel, payment_service=object())
+    cog = AdminChatCog(bot, db, sharer=object())
+
+    await cog._handle_test_receipt_ambiguous(
+        FakeMessage(1017, FakeAuthor(42), channel, guild, "wait let me check"),
+        intent,
+        clarification_reply="Please say yes once you see 0.01 SOL",
+    )
+
+    assert db.intents[intent["intent_id"]]["ambiguous_reply_count"] == 1
+    assert "<@42>" in channel.sent_messages[-1].content
+    assert "Please say yes once you see 0.01 SOL" in channel.sent_messages[-1].content
 
 
 @pytest.mark.anyio
