@@ -412,18 +412,38 @@ class FakeIntentDB:
             and self.has_active_payment_or_intent(guild_id, discord_user_id)
         ):
             raise WalletUpdateBlockedError("active payment in flight")
+        # Match real db_handler.upsert_wallet semantics:
+        #  - new wallet → verified_at = None
+        #  - existing wallet, same address → preserve existing verified_at
+        #  - existing wallet, different address → verified_at cleared to None
+        if existing is None:
+            verified_at = None
+        elif existing.get("wallet_address") == address:
+            verified_at = existing.get("verified_at")
+        else:
+            verified_at = None
         wallet = {
             "wallet_id": existing["wallet_id"] if existing else f"wallet-{len(self.upsert_wallet_calls) + 1}",
             "guild_id": guild_id,
             "discord_user_id": discord_user_id,
             "chain": chain,
             "wallet_address": address,
-            "verified_at": "now",
+            "verified_at": verified_at,
             "metadata": metadata,
         }
         self.upsert_wallet_calls.append((guild_id, discord_user_id, chain, address, metadata))
         self.wallets[key] = wallet
         return dict(wallet)
+
+    def get_awaiting_wallet_intent_for_user(self, guild_id, recipient_user_id):
+        for intent in self.intents.values():
+            if (
+                intent.get("guild_id") == guild_id
+                and intent.get("recipient_user_id") == recipient_user_id
+                and intent.get("status") == "awaiting_wallet"
+            ):
+                return dict(intent)
+        return None
 
     def get_payment_request(self, payment_id, guild_id=None):
         payment = self.payments.get(payment_id)
@@ -939,7 +959,14 @@ async def test_initiate_payment_validation():
 
 
 @pytest.mark.anyio
-async def test_initiate_payment_tool_rejects_wallet_address_arg():
+async def test_initiate_payment_tool_rejects_invalid_wallet_address_arg():
+    """A malformed inline wallet_address must be rejected with a clear error.
+
+    The identity-routing era rule was 'LLM never sources wallets'. The follow-up
+    relaxes that to 'admin may provide wallet inline, but it must be a valid
+    Solana address and the admin DM approval is still the money-movement gate'.
+    So an obviously-junk string like 'Injected...' must fail validation, not be
+    silently stripped."""
     guild = SimpleNamespace(id=1)
     channel = FakeChannel(guild=guild)
     db = FakeIntentDB()
@@ -954,15 +981,99 @@ async def test_initiate_payment_tool_rejects_wallet_address_arg():
             "recipient_user_id": "42",
             "amount_sol": 1.0,
             "wallet_address": "Injected111111111111111111111111111111",
-            "recipient_wallet": "Injected222222222222222222222222222222",
         },
     )
 
-    assert result["success"] is True
-    assert result["wallet_on_file"] is False
-    assert db.created_intents[0]["status"] == "awaiting_wallet"
-    assert db.created_intents[0]["wallet_id"] is None
+    assert result["success"] is False
+    assert "Solana" in result["error"]
+    # No intent should be created when the inline wallet is rejected
+    assert db.created_intents == []
+    # No wallet should be upserted either
     assert db.wallets == {}
+
+
+@pytest.mark.anyio
+async def test_initiate_payment_tool_accepts_valid_wallet_address_inline():
+    """A valid inline wallet_address is upserted and the flow proceeds through
+    branch 2 (unverified wallet on file) — test payment fires immediately,
+    recipient is not re-asked to post their wallet."""
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    flow_cog = FakeFlowCog()  # records _start_admin_payment_flow calls
+    bot = FakeBot(channel, payment_service=object(), admin_chat_cog=flow_cog)
+
+    result = await execute_initiate_payment(
+        bot,
+        db,
+        {
+            "guild_id": 1,
+            "source_channel_id": 55,
+            "recipient_user_id": "42",
+            "amount_sol": 1.5,
+            "wallet_address": VALID_SOL_ADDRESS,
+        },
+    )
+
+    assert result["success"] is True, result
+    assert result["wallet_on_file"] is True
+    assert result["verified"] is False
+    # The wallet was upserted (unverified) before the flow branch ran
+    assert (1, 42, "solana") in db.wallets
+    assert db.wallets[(1, 42, "solana")]["wallet_address"] == VALID_SOL_ADDRESS
+    assert db.wallets[(1, 42, "solana")].get("verified_at") in (None, "")
+    # The intent was created directly in awaiting_test (skipping awaiting_wallet)
+    assert len(db.created_intents) == 1
+    assert db.created_intents[0]["status"] == "awaiting_test"
+    assert db.created_intents[0]["wallet_id"] is not None
+    # And _start_admin_payment_flow was called to fire the test payment
+    assert len(flow_cog.started) == 1
+    started_channel, started_intent = flow_cog.started[0]
+    assert started_intent["status"] == "awaiting_test"
+
+
+@pytest.mark.anyio
+async def test_initiate_payment_uses_existing_unverified_wallet_on_file():
+    """When an unverified wallet is already on file from a prior attempt,
+    calling initiate_payment without wallet_address still skips awaiting_wallet
+    and goes straight to the test-payment phase using that wallet."""
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    # Pre-seed an UNVERIFIED wallet
+    db.wallets[(1, 42, "solana")] = {
+        "wallet_id": "wallet-existing-unverified",
+        "guild_id": 1,
+        "discord_user_id": 42,
+        "chain": "solana",
+        "wallet_address": VALID_SOL_ADDRESS,
+        "verified_at": None,
+    }
+    flow_cog = FakeFlowCog()
+    bot = FakeBot(channel, payment_service=object(), admin_chat_cog=flow_cog)
+
+    result = await execute_initiate_payment(
+        bot,
+        db,
+        {
+            "guild_id": 1,
+            "source_channel_id": 55,
+            "recipient_user_id": "42",
+            "amount_sol": 1.0,
+        },
+    )
+
+    assert result["success"] is True, result
+    assert result["wallet_on_file"] is True
+    assert result["verified"] is False
+    # Intent created directly in awaiting_test — no awaiting_wallet detour
+    assert len(db.created_intents) == 1
+    assert db.created_intents[0]["status"] == "awaiting_test"
+    assert db.created_intents[0]["wallet_id"] == "wallet-existing-unverified"
+    # And the test-payment flow was kicked off
+    assert len(flow_cog.started) == 1
+    # Crucially, no wallet-prompt message was posted to the channel
+    assert len(channel.sent_messages) == 0
 
 
 @pytest.mark.anyio

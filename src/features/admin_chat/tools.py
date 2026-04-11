@@ -581,7 +581,16 @@ TOOLS = [
     },
     {
         "name": "initiate_payment",
-        "description": "Create an admin-triggered payment request for a Banodoco user.",
+        "description": (
+            "Create an admin-triggered payment request for a Banodoco user. "
+            "The flow branches on the recipient's current wallet state: a verified wallet goes "
+            "straight to admin approval; an unverified wallet already on file (from a prior "
+            "attempt or from the inline wallet_address below) is reused — the bot fires the test "
+            "payment immediately without re-asking the recipient; no wallet on file puts the "
+            "intent in awaiting_wallet and prompts the recipient in-channel. Use wallet_address "
+            "when the admin gives you the address inline ('pay @X Y SOL, wallet is Z') so the "
+            "whole flow happens in one tool call instead of two."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -596,6 +605,16 @@ TOOLS = [
                 "reason": {
                     "type": "string",
                     "description": "Optional reason to store with the payment intent."
+                },
+                "wallet_address": {
+                    "type": "string",
+                    "description": (
+                        "Optional Solana wallet address to register for the recipient inline. "
+                        "If provided, the tool upserts the wallet (unverified) before running "
+                        "the flow, so the recipient skips the awaiting_wallet step and the "
+                        "test payment fires immediately. Only pass this when the admin explicitly "
+                        "provides a wallet address in their command."
+                    )
                 }
             },
             "required": ["recipient_user_id", "amount_sol"]
@@ -693,7 +712,13 @@ TOOLS = [
     },
     {
         "name": "upsert_wallet_for_user",
-        "description": "Admin-only wallet upsert for a user. The wallet remains unverified until a test payment round-trip completes.",
+        "description": (
+            "Admin-only wallet upsert for a user. The wallet remains unverified until a test "
+            "payment round-trip completes. If this user has a pending awaiting_wallet intent, "
+            "this tool also advances it to the test-payment phase automatically — the bot fires "
+            "the test payment and asks the recipient to confirm receipt, just as if they had "
+            "posted the wallet themselves."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2664,10 +2689,20 @@ async def execute_cancel_payment(db_handler, params: Dict[str, Any]) -> Dict[str
 async def execute_initiate_payment(bot: discord.Client, db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
     """Create or resume one admin-triggered payment intent.
 
-    Wallets for initiated payouts must come from wallet_registry keyed by the mentioned Discord
-    user. This executor never accepts an LLM-sourced wallet address override.
+    Flow branches based on the recipient's wallet state, in this order:
+      1. Verified wallet on file → verified fast path: real payment goes
+         directly to admin approval (no test needed).
+      2. Unverified wallet on file → reuse the existing address, skip the
+         awaiting_wallet state entirely, and fire the test payment
+         immediately. The recipient only needs to confirm receipt.
+      3. No wallet → create the intent in awaiting_wallet and prompt
+         the recipient to post their Solana address.
+
+    The optional wallet_address parameter lets the admin provide the address
+    inline. When provided, it is upserted into wallet_registry as unverified
+    and the flow proceeds through branch (2) above. This is the intended
+    shape of 'pay @X Y SOL, wallet is Z' as a single atomic admin command.
     """
-    params = _pop_and_warn_wallet_override(params, tool_name='initiate_payment')
     try:
         guild_id = int(params.get('guild_id'))
         source_channel_id = int(params.get('source_channel_id'))
@@ -2702,11 +2737,50 @@ async def execute_initiate_payment(bot: discord.Client, db_handler, params: Dict
         except (TypeError, ValueError):
             return {"success": False, "error": "admin_user_id must be a valid positive integer when provided"}
     producer_ref = f"{guild_id}_{recipient_user_id}_{int(time.time() * 1000)}"
-    wallet_record = db_handler.get_wallet(guild_id, recipient_user_id, 'solana')
-    if wallet_record and not wallet_record.get('verified_at'):
-        wallet_record = None
 
-    if wallet_record:
+    # Optional: admin provides a wallet address inline. Upsert it (unverified)
+    # before the wallet-state lookup below so branch (2) picks it up.
+    #
+    # Security note: this relaxes the earlier "LLM never sources wallet addresses"
+    # rule. The admin DM approval gate remains the authoritative money-movement
+    # check — the admin sees the target wallet in their approval DM before any
+    # real payment fires. The inline path is an ergonomic shortcut for admins,
+    # not a security bypass. Every use is audit-logged below for traceability.
+    inline_wallet_address = str(params.get('wallet_address') or '').strip()
+    if inline_wallet_address:
+        if not is_valid_solana_address(inline_wallet_address):
+            return {"success": False, "error": "wallet_address is not a valid Solana address"}
+        logger.info(
+            "[AdminChat] initiate_payment inline wallet used: recipient=%s wallet=%s admin=%s",
+            recipient_user_id,
+            _redact_wallet_address(inline_wallet_address),
+            admin_user_id,
+        )
+        try:
+            db_handler.upsert_wallet(
+                guild_id=guild_id,
+                discord_user_id=recipient_user_id,
+                chain='solana',
+                address=inline_wallet_address,
+                metadata={
+                    'producer': 'admin_chat',
+                    'source': 'initiate_payment_inline',
+                    'channel_id': source_channel_id,
+                },
+            )
+        except WalletUpdateBlockedError as exc:
+            return {"success": False, "error": f"Cannot update wallet inline: {exc}"}
+        except Exception as e:
+            logger.error(
+                f"[AdminChat] Error upserting inline wallet for user {recipient_user_id}: {e}",
+                exc_info=True,
+            )
+            return {"success": False, "error": "Failed to persist inline wallet"}
+
+    wallet_record = db_handler.get_wallet(guild_id, recipient_user_id, 'solana')
+
+    # Branch 1: verified wallet → fast path straight to admin approval.
+    if wallet_record and wallet_record.get('verified_at'):
         cog = bot.get_cog('AdminChatCog')
         if not cog or not hasattr(cog, '_gate_fresh_intent_atomic'):
             return {"success": False, "error": "Admin payment flow is not available"}
@@ -2733,19 +2807,70 @@ async def execute_initiate_payment(bot: discord.Client, db_handler, params: Dict
             return {"success": False, "error": "Failed to start payment flow"}
         if gated.get('duplicate'):
             return {"success": True, "duplicate": True, "intent": gated.get('intent')}
-        return {"success": True, "intent": gated.get('intent'), "wallet_on_file": True}
+        return {
+            "success": True,
+            "intent": gated.get('intent'),
+            "wallet_on_file": True,
+            "verified": True,
+        }
 
+    # Branch 2: unverified wallet already on file → use it, skip awaiting_wallet,
+    # fire the test payment immediately. This covers both the "wallet set by a
+    # previous attempt" case and the inline-wallet_address case (because we
+    # just upserted it above).
+    if wallet_record:
+        intent = db_handler.create_admin_payment_intent(
+            {
+                'guild_id': guild_id,
+                'channel_id': source_channel_id,
+                'admin_user_id': admin_user_id,
+                'recipient_user_id': recipient_user_id,
+                'wallet_id': wallet_record.get('wallet_id'),
+                'requested_amount_sol': amount_sol,
+                'producer_ref': producer_ref,
+                'reason': reason,
+                'status': 'awaiting_test',
+            },
+            guild_id=guild_id,
+        )
+        if not intent:
+            return {"success": False, "error": "Failed to create payment intent"}
+
+        cog = bot.get_cog('AdminChatCog')
+        if not cog or not hasattr(cog, '_start_admin_payment_flow'):
+            db_handler.update_admin_payment_intent(intent['intent_id'], {'status': 'failed'}, guild_id)
+            return {"success": False, "error": "Admin payment flow is not available"}
+
+        try:
+            await cog._start_admin_payment_flow(channel, intent)
+        except Exception as e:
+            logger.error(
+                f"[AdminChat] Error starting unverified on-file payment flow for intent {intent.get('intent_id')}: {e}",
+                exc_info=True,
+            )
+            db_handler.update_admin_payment_intent(intent['intent_id'], {'status': 'failed'}, guild_id)
+            return {"success": False, "error": "Failed to start test payment flow"}
+
+        return {
+            "success": True,
+            "intent": intent,
+            "wallet_on_file": True,
+            "verified": False,
+        }
+
+    # Branch 3: no wallet at all → create intent in awaiting_wallet and ask
+    # the recipient to post their address.
     intent = db_handler.create_admin_payment_intent(
         {
             'guild_id': guild_id,
             'channel_id': source_channel_id,
             'admin_user_id': admin_user_id,
             'recipient_user_id': recipient_user_id,
-            'wallet_id': wallet_record.get('wallet_id') if wallet_record else None,
+            'wallet_id': None,
             'requested_amount_sol': amount_sol,
             'producer_ref': producer_ref,
             'reason': reason,
-            'status': 'awaiting_test' if wallet_record else 'awaiting_wallet',
+            'status': 'awaiting_wallet',
         },
         guild_id=guild_id,
     )
@@ -2771,7 +2896,7 @@ async def execute_initiate_payment(bot: discord.Client, db_handler, params: Dict
     if not intent:
         db_handler.update_admin_payment_intent(intent_id, {'status': 'failed'}, guild_id)
         return {"success": False, "error": "Failed to persist wallet prompt"}
-    return {"success": True, "intent": intent, "wallet_on_file": False}
+    return {"success": True, "intent": intent, "wallet_on_file": False, "verified": False}
 
 
 async def execute_initiate_batch_payment(bot: discord.Client, db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -3058,16 +3183,78 @@ async def execute_upsert_wallet_for_user(bot: discord.Client, db_handler, params
 
     wallet_record = _force_wallet_unverified(db_handler, wallet_record, guild_id=guild_id)
     redacted_wallet = _redact_wallet_address(wallet_record.get('wallet_address') or wallet_address)
+
+    # If there's a pending intent blocked on wallet collection for this user,
+    # advance it to the test phase now that the wallet is on file. This is the
+    # "admin provides wallet later" flow: admin says 'pay X Y SOL', recipient
+    # never posts, admin follows up in chat with 'X's wallet is Z' — the
+    # agent calls upsert_wallet_for_user, and this branch unblocks the
+    # pending intent without requiring a separate step.
+    advanced_intent_id: Optional[str] = None
+    pending_intent = None
+    try:
+        pending_intent = db_handler.get_awaiting_wallet_intent_for_user(guild_id, recipient_user_id)
+    except Exception as e:
+        logger.warning(
+            "[AdminChat] Failed to look up awaiting_wallet intent for user %s: %s",
+            recipient_user_id,
+            e,
+        )
+    if pending_intent:
+        cog = bot.get_cog('AdminChatCog')
+        if cog and hasattr(cog, '_advance_intent_to_test_phase'):
+            channel_id = int(pending_intent.get('channel_id') or 0)
+            pending_channel = None
+            if channel_id:
+                pending_channel = bot.get_channel(channel_id)
+                if pending_channel is None:
+                    try:
+                        pending_channel = await bot.fetch_channel(channel_id)
+                    except Exception as fetch_err:
+                        logger.warning(
+                            "[AdminChat] Failed to fetch channel %s while advancing intent %s: %s",
+                            channel_id,
+                            pending_intent.get('intent_id'),
+                            fetch_err,
+                        )
+            if pending_channel is not None:
+                try:
+                    advanced = await cog._advance_intent_to_test_phase(
+                        pending_channel,
+                        pending_intent,
+                        wallet_record,
+                    )
+                    if advanced:
+                        advanced_intent_id = str(pending_intent.get('intent_id'))
+                        logger.info(
+                            "[AdminChat] upsert_wallet_for_user advanced intent %s to awaiting_test",
+                            advanced_intent_id,
+                        )
+                except Exception as e:
+                    logger.error(
+                        "[AdminChat] Failed to advance intent %s after wallet upsert: %s",
+                        pending_intent.get('intent_id'),
+                        e,
+                        exc_info=True,
+                    )
+
+    advance_note = ""
+    if advanced_intent_id:
+        advance_note = f" Pending intent `{advanced_intent_id}` advanced to test phase."
     await _dm_admin_user(
         bot,
         configured_admin_user_id,
-        f"wallet for <@{recipient_user_id}> set to {redacted_wallet}, will be verified on next payment",
+        f"wallet for <@{recipient_user_id}> set to {redacted_wallet}, will be verified on next payment.{advance_note}",
         log_context=f"upsert_wallet_for_user:{recipient_user_id}",
     )
     return {
         "success": True,
         "wallet": _redact_wallet_row(wallet_record),
-        "message": f"wallet for <@{recipient_user_id}> set to {redacted_wallet}, will be verified on next payment",
+        "advanced_intent_id": advanced_intent_id,
+        "message": (
+            f"wallet for <@{recipient_user_id}> set to {redacted_wallet}, "
+            f"will be verified on next payment.{advance_note}"
+        ),
     }
 
 

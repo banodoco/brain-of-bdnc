@@ -306,6 +306,48 @@ class AdminChatCog(commands.Cog):
             return f"https://explorer.solana.com/tx/{tx_sig}?cluster=testnet"
         return f"https://explorer.solana.com/tx/{tx_sig}"
 
+    async def _advance_intent_to_test_phase(
+        self,
+        channel,
+        intent: Dict,
+        wallet_record: Dict,
+        *,
+        resolved_by_message_id: Optional[int] = None,
+    ) -> Optional[Dict]:
+        """Move one existing intent from wallet-collection into the test-payment phase.
+
+        Shared by every path that has a wallet ready for an existing intent:
+          - `_handle_wallet_received`: recipient posts their wallet in the thread.
+          - `execute_upsert_wallet_for_user`: admin upserts a wallet on behalf of
+            a user who has a pending awaiting_wallet intent.
+
+        Updates the intent row to status='awaiting_test' with the wallet_id, then
+        kicks off `_start_admin_payment_flow` which creates the verification
+        test payment and auto-confirms it so the worker can pick it up.
+        Returns the updated intent on success or None on failure.
+        """
+        updates: Dict[str, Any] = {
+            'status': 'awaiting_test',
+            'wallet_id': wallet_record.get('wallet_id'),
+        }
+        if resolved_by_message_id is not None:
+            updates['resolved_by_message_id'] = resolved_by_message_id
+        updated_intent = self.db_handler.update_admin_payment_intent(
+            intent['intent_id'],
+            updates,
+            intent['guild_id'],
+        )
+        if not updated_intent:
+            await self._notify_admin_review(
+                channel,
+                intent,
+                "I could not update the payment intent after receiving the wallet.",
+                resolved_by_message_id=resolved_by_message_id,
+            )
+            return None
+        await self._start_admin_payment_flow(channel, updated_intent)
+        return updated_intent
+
     async def _handle_wallet_received(self, message: discord.Message, intent: Dict, wallet_address: str):
         """Persist a wallet reply and kick off the test-payment flow."""
         try:
@@ -328,19 +370,12 @@ class AdminChatCog(commands.Cog):
             await self._notify_admin_review(message.channel, intent, "I could not store the recipient wallet.", resolved_by_message_id=message.id)
             return
 
-        updated_intent = self.db_handler.update_admin_payment_intent(
-            intent['intent_id'],
-            {
-                'status': 'awaiting_test',
-                'wallet_id': wallet_record.get('wallet_id'),
-                'resolved_by_message_id': message.id,
-            },
-            intent['guild_id'],
+        await self._advance_intent_to_test_phase(
+            message.channel,
+            intent,
+            wallet_record,
+            resolved_by_message_id=message.id,
         )
-        if not updated_intent:
-            await self._notify_admin_review(message.channel, intent, "I could not update the payment intent after receiving the wallet.", resolved_by_message_id=message.id)
-            return
-        await self._start_admin_payment_flow(message.channel, updated_intent)
 
     async def _start_admin_payment_flow(self, channel, intent: Dict):
         """Create and auto-confirm the verification payment for one admin payment intent."""

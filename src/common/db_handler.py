@@ -2049,6 +2049,46 @@ class DatabaseHandler:
             logger.error("Error finding admin payment intent for payment %s: %s", payment_id, e, exc_info=True)
             return None
 
+    def get_awaiting_wallet_intent_for_user(
+        self,
+        guild_id: int,
+        recipient_user_id: int,
+    ) -> Optional[Dict]:
+        """Fetch the single active awaiting_wallet admin payment intent for one user.
+
+        Used by admin-initiated wallet-upsert flow: when an admin sets a wallet for
+        a user who has a pending intent blocked on wallet collection, we need to find
+        that intent across any channel (unique-by-channel invariant already
+        prevents duplicates; we just need the lookup to not require the caller to
+        know which channel it's in).
+        """
+        if not self._gate_check(guild_id):
+            return None
+        if not self.supabase:
+            return None
+
+        try:
+            result = (
+                self.supabase.table('admin_payment_intents')
+                .select('*')
+                .eq('guild_id', guild_id)
+                .eq('recipient_user_id', recipient_user_id)
+                .eq('status', 'awaiting_wallet')
+                .order('created_at', desc=True)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(
+                "Error fetching awaiting_wallet intent for guild %s recipient %s: %s",
+                guild_id,
+                recipient_user_id,
+                e,
+                exc_info=True,
+            )
+            return None
+
     def get_active_intent_for_recipient(self, guild_id: int, channel_id: int, recipient_user_id: int) -> Optional[Dict]:
         """Fetch the single active admin payment intent for one guild/channel/recipient."""
         if not self._gate_check(guild_id):
