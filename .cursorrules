@@ -54,7 +54,7 @@ python main.py --clear-today-summaries --summary-now
 - Then use a single command: `git add . && git commit -m "feat/fix: specific message" && git push`
 
 # Supabase
-- Migrations in `supabase/migrations/` with timestamp prefixes (e.g., `20251210000000_description.sql`).
+- Migrations in ../supabase/migrations/ (workspace-level repo, separate git root from brain-of-bndc/), with YYYYMMDDHHMMSS_ timestamp prefixes.
 - Query routing/translation is handled by `src/common/supabase_query_handler.py` (SQLite has been removed).
 - For OpenMuse media operations, use `src/common/openmuse_interactor.py`.
 

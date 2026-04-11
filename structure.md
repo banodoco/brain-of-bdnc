@@ -95,11 +95,7 @@
 │   ├── logs.py                      # Unified log monitoring tool (health, summary, errors, tail)
 │   └── ...                          # Other utilities (see tree below)
 │
-├── supabase/
-│   ├── config.toml                  # Supabase CLI config
-│   ├── migrations/                  # SQL migrations (timestamped)
-│   └── functions/                   # Supabase Edge Functions (Deno)
-│       └── refresh-media-urls/      # Refresh expired Discord CDN URLs
+├── ../supabase/migrations/       # Workspace-level Supabase repo (separate git root) holds the canonical timestamped SQL migrations
 │
 └── src/
     ├── common/                      # Shared infrastructure

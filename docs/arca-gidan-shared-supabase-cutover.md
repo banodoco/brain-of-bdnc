@@ -12,7 +12,7 @@ This repository change adds the shared-schema side of the Arca Gidan migration. 
 
 ## Live Cutover Order
 
-1. Apply `brain-of-bndc/supabase/migrations/20260322000000_merge_arca_gidan_into_shared_supabase.sql`.
+1. Apply `../supabase/migrations/20260322000000_merge_arca_gidan_into_shared_supabase.sql`.
 2. Enable Discord OAuth on the shared Supabase project `ujlwuvkrxlvoswwkerdf`.
 3. Add the shared Supabase callback URL to the Discord app:
    `https://ujlwuvkrxlvoswwkerdf.supabase.co/auth/v1/callback`

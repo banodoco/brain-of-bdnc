@@ -71,6 +71,15 @@ The bot uses **Supabase** (Cloud PostgreSQL) for data storage:
 
 Ensure you have `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` environment variables set.
 
+#### Database migrations
+
+Canonical Supabase CLI migrations live in `../supabase/migrations/` (workspace-level, a separate git repo sitting next to `brain-of-bndc/`).
+
+- Name every migration `YYYYMMDDHHMMSS_description.sql`.
+- Keep every migration idempotent because production may already contain the schema drift being backfilled: use `IF NOT EXISTS`, `CREATE OR REPLACE`, and guarded backfills that only touch rows still needing updates.
+- Apply migrations with `supabase db push` and validate fresh state with `supabase db reset`.
+- Do not drop ad hoc SQL into a bot-repo `sql/` folder; the workspace-level Supabase repo is the canonical migration source of truth.
+
 ### Running the Bot
 
 Basic operation:

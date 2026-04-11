@@ -33,6 +33,7 @@ wheels/
 
 # Virtual Environment
 venv/
+.venv/
 ENV/
 env/
 .env/
@@ -109,6 +110,7 @@ equity_holders.txt
 # Workflow and Supabase temp files
 supabase/temp/
 bdnc_code.workflow
+/.migrations_staging/
 
 # Downloaded media and temp files (not needed in git)
 downloaded_daily_art/

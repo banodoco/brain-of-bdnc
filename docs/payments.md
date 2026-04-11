@@ -17,7 +17,7 @@ This document describes the current Solana payment subsystem after the worker/UI
   - worker loop: `src/features/payments/payment_worker_cog.py:92-140`
   - UI confirmation and `/payment-resolve`: `src/features/payments/payment_ui_cog.py:19-190`
   - DB transition and reconciliation helpers: `src/common/db_handler.py:1422-1456`, `src/common/db_handler.py:2218-2315`
-  - queue claiming and active uniqueness rules: `sql/payments.sql:134-198`
+  - queue claiming and active uniqueness rules: [`claim_due_payment_requests`](../supabase/migrations/20260411220000_backfill_payments.sql#claim_due_payment_requests), [`uq_payment_requests_active_producer_ref`](../supabase/migrations/20260411220000_backfill_payments.sql#uq_payment_requests_active_producer_ref)
 
 ## High-Level Shape
 
@@ -77,7 +77,7 @@ reconciliation edges
 
 Where this is enforced:
 
-- queue claim atomicity: `sql/payments.sql:166-198`
+- queue claim atomicity: [`claim_due_payment_requests`](../supabase/migrations/20260411220000_backfill_payments.sql#claim_due_payment_requests)
 - confirmation to `queued`: `src/features/payments/payment_service.py:550-581`
 - execution to `submitted` or terminal states: `src/features/payments/payment_service.py:765-836`
 - follow-up confirmation reconciliation from `submitted`: `src/features/payments/payment_service.py:945-987`
@@ -89,7 +89,7 @@ Where this is enforced:
 
 Two different protections work together:
 
-- Only `queued` rows are claimable by the worker RPC, and claiming is an atomic `queued -> processing` transition under `FOR UPDATE SKIP LOCKED`: `sql/payments.sql:166-198`.
+- Only `queued` rows are claimable by the worker RPC, and claiming is an atomic `queued -> processing` transition under `FOR UPDATE SKIP LOCKED`: [`claim_due_payment_requests`](../supabase/migrations/20260411220000_backfill_payments.sql#claim_due_payment_requests).
 - Recovery only revisits `processing` and `submitted` rows, and the startup overlap pass now applies a reclaim-age guard before it takes ownership of recent rows: `src/features/payments/payment_service.py:838-935`.
 
 ## Authorization Model
@@ -123,10 +123,10 @@ Important subcontracts:
 
 The active uniqueness rule is implemented twice on purpose:
 
-- database backstop: `sql/payments.sql:134-136`
+- database backstop: [`uq_payment_requests_active_producer_ref`](../supabase/migrations/20260411220000_backfill_payments.sql#uq_payment_requests_active_producer_ref)
 - application classification of collision versus idempotent replay: `src/features/payments/payment_service.py:278-306`
 
-Non-obvious detail: the unique index explicitly excludes `failed` and `cancelled`, so a terminal write-off does not permanently block a legitimate later retry with the same `(producer, producer_ref, is_test)` tuple. See `sql/payments.sql:134-136`.
+Non-obvious detail: the unique index explicitly excludes `failed` and `cancelled`, so a terminal write-off does not permanently block a legitimate later retry with the same `(producer, producer_ref, is_test)` tuple. See [`uq_payment_requests_active_producer_ref`](../supabase/migrations/20260411220000_backfill_payments.sql#uq_payment_requests_active_producer_ref).
 
 The admin-chat producer-ref format now uses millisecond precision to avoid same-second collisions for the same recipient: `src/features/admin_chat/tools.py:2542-2554`.
 
@@ -163,7 +163,7 @@ Core invariants and where they live:
    - `src/features/payments/producer_flows.py:16-30`
 
 3. Claiming work from the queue is atomic and only touches `queued` rows.
-   - `sql/payments.sql:166-198`
+   - [`claim_due_payment_requests`](../supabase/migrations/20260411220000_backfill_payments.sql#claim_due_payment_requests)
 
 4. A payment that hits execution-time uncertainty is held rather than silently advanced.
    - worker exception guard: `src/features/payments/payment_worker_cog.py:121-140`
@@ -174,7 +174,7 @@ Core invariants and where they live:
    - `rpc_unreachable` handling in recovery and post-submit confirm: `src/features/payments/payment_service.py:838-935`, `src/features/payments/payment_service.py:945-987`
 
 6. Test payments never persist USD-derived amounts.
-   - schema check: `sql/payments.sql:131`
+   - schema check: [`payment_requests` test-USD guard](../supabase/migrations/20260411220000_backfill_payments.sql#payment_requests)
    - request amount derivation path: `src/features/payments/payment_service.py:308-354`
 
 7. Confirmed rows must be backed by a tx signature history trail when status-changing DB helpers run.
@@ -264,7 +264,7 @@ The process boots separate grants and payouts clients/providers and injects them
 
 The DB unique index only protects active rows:
 
-- `sql/payments.sql:134-136`
+- [`uq_payment_requests_active_producer_ref`](../supabase/migrations/20260411220000_backfill_payments.sql#uq_payment_requests_active_producer_ref)
 
 The service mirrors that behavior when classifying collision versus replay:
 
@@ -284,7 +284,7 @@ That fix exists specifically to prevent two operators paying the same recipient 
 
 The schema stores `tx_signature_history` and backfills legacy rows:
 
-- schema column and backfill: `sql/payments.sql:209-220`
+- schema column and backfill: [`tx_signature_history`](../supabase/migrations/20260411220000_backfill_payments.sql#tx_signature_history), [`tx_signature_history backfill`](../supabase/migrations/20260411220000_backfill_payments.sql#tx_signature_history-backfill)
 - append helper: `src/common/db_handler.py:1422-1456`
 
 Reconciliation and normal terminal transitions both append history instead of replacing it.
@@ -298,6 +298,6 @@ If you are new to this subsystem, read in this order:
 3. `src/features/payments/payment_service.py:765-987`
 4. `src/features/payments/payment_worker_cog.py:86-140`
 5. `src/common/db_handler.py:2151-2315`
-6. `sql/payments.sql:134-198`
+6. [`uq_payment_requests_active_producer_ref`](../supabase/migrations/20260411220000_backfill_payments.sql#uq_payment_requests_active_producer_ref), [`claim_due_payment_requests`](../supabase/migrations/20260411220000_backfill_payments.sql#claim_due_payment_requests)
 
 That sequence covers creation, authorization, execution, recovery, reconciliation, and the DB backstops without making you reverse-engineer the entire repo first.
