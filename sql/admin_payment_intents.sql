@@ -57,6 +57,9 @@ alter table public.admin_payment_intents
     add column if not exists receipt_prompt_message_id bigint;
 
 alter table public.admin_payment_intents
+    add column if not exists status_message_id bigint;
+
+alter table public.admin_payment_intents
     drop constraint if exists admin_payment_intents_status_check;
 
 alter table public.admin_payment_intents

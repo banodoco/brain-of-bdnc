@@ -151,7 +151,8 @@ class PaymentWorkerCog(commands.Cog):
         # manual holds are DM'd to the admin only — recipients shouldn't see
         # raw failure diagnostics (tx signatures, internal IDs, error details)
         # in-channel.
-        if payment.get('status') == 'confirmed':
+        producer = str(payment.get('producer') or '').strip().lower()
+        if payment.get('status') == 'confirmed' and producer != 'admin_chat':
             await self._notify_payment_result(payment)
         provider_key = str(payment.get('provider') or '').strip().lower()
         if (

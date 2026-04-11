@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 import discord
 import pytest
 
-from src.common.db_handler import WalletUpdateBlockedError
+from src.common.db_handler import DatabaseHandler, WalletUpdateBlockedError
 from src.features.admin_chat import agent as admin_agent
 from src.features.admin_chat.admin_chat_cog import AdminChatCog
 from src.features.admin_chat import tools as admin_tools
@@ -68,19 +68,57 @@ class FakeMessage:
         self.content = content
 
 
+class FakeChannelMessage:
+    def __init__(self, channel, message_id, content, kwargs=None, *, reference=None):
+        self.id = message_id
+        self.channel = channel
+        self.guild = channel.guild
+        self.content = content
+        self.kwargs = kwargs or {}
+        self.reference = reference
+        self.edits = []
+
+    async def edit(self, *, content=None, suppress=None):
+        self.edits.append({"content": content, "suppress": suppress})
+        if content is not None:
+            self.content = content
+        return self
+
+    async def reply(self, content, **kwargs):
+        return self.channel._record_sent_message(content, kwargs, reference=self.id)
+
+
 class FakeChannel:
     def __init__(self, channel_id=55, guild=None, messages=None, *, parent_id=None):
         self.id = channel_id
         self.guild = guild or SimpleNamespace(id=1)
         self.parent_id = parent_id
         self._messages = list(messages or [])
+        self._sent_messages_by_id = {}
+        self._missing_message_ids = set()
+        self._next_message_id = 900
         self.sent_messages = []
 
-    async def send(self, content, **kwargs):
-        message_id = 900 + len(self.sent_messages)
-        message = SimpleNamespace(id=message_id, content=content, kwargs=kwargs)
+    def _record_sent_message(self, content, kwargs=None, *, reference=None):
+        message = FakeChannelMessage(
+            self,
+            self._next_message_id,
+            content,
+            kwargs or {},
+            reference=reference,
+        )
+        self._next_message_id += 1
         self.sent_messages.append(message)
+        self._sent_messages_by_id[message.id] = message
         return message
+
+    async def send(self, content, **kwargs):
+        return self._record_sent_message(content, kwargs)
+
+    async def fetch_message(self, message_id):
+        if message_id in self._missing_message_ids or message_id not in self._sent_messages_by_id:
+            raise discord.NotFound(FakeResponse(404), "missing")
+        return self._sent_messages_by_id[message_id]
 
     def history(self, limit=100, after=None, oldest_first=False):
         after_id = getattr(after, "id", None)
@@ -295,6 +333,49 @@ class FakeAdminPaymentService:
         return self.confirm_result
 
 
+class FakeIntentSupabaseQuery:
+    def __init__(self, db):
+        self.db = db
+        self.payload = {}
+        self.filters = {}
+
+    def update(self, payload):
+        self.payload = dict(payload)
+        self.db.supabase_calls.append(dict(payload))
+        return self
+
+    def eq(self, field, value):
+        self.filters[field] = value
+        return self
+
+    def execute(self):
+        if self.db.supabase_failures:
+            raise Exception(self.db.supabase_failures.pop(0))
+        if self.db.reject_status_message_id and "status_message_id" in self.payload:
+            self.db.reject_status_message_id = False
+            raise Exception("column status_message_id does not exist")
+
+        intent_id = self.filters.get("intent_id")
+        guild_id = self.filters.get("guild_id")
+        intent = self.db.intents.get(intent_id)
+        if not intent or intent.get("guild_id") != guild_id:
+            return SimpleNamespace(data=[])
+
+        intent.update(dict(self.payload))
+        self.db.updated_intents.append((intent_id, dict(self.payload), guild_id))
+        self.db._sync_active_index(intent)
+        return SimpleNamespace(data=[dict(intent)])
+
+
+class FakeIntentSupabase:
+    def __init__(self, db):
+        self.db = db
+
+    def table(self, name):
+        assert name == "admin_payment_intents"
+        return FakeIntentSupabaseQuery(self.db)
+
+
 class FakeIntentDB:
     TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
@@ -312,12 +393,22 @@ class FakeIntentDB:
         self.upsert_wallet_calls = []
         self.cancel_payment_calls = []
         self.wallet_verified_calls = []
+        self.reject_status_message_id = False
+        self.supabase_failures = []
+        self.supabase_calls = []
+        self.supabase = FakeIntentSupabase(self)
         self.server_config = SimpleNamespace(
             get_enabled_servers=lambda require_write=False: [{"guild_id": 1, "enabled": True, "write_enabled": True}],
             resolve_payment_destinations=lambda guild_id, channel_id, producer: None,
             is_guild_enabled=lambda guild_id: True,
             get_first_server_with_field=lambda field, require_write=False: {"guild_id": 1, "grants_channel_id": 55},
         )
+
+    def _gate_check(self, guild_id):
+        return True
+
+    def _serialize_supabase_value(self, payload):
+        return dict(payload)
 
     def _sync_active_index(self, intent):
         key = (int(intent["guild_id"]), int(intent["channel_id"]), int(intent["recipient_user_id"]))
@@ -1467,6 +1558,7 @@ async def test_handle_payment_result_test_confirmed():
     guild = SimpleNamespace(id=1)
     channel = FakeChannel(guild=guild)
     db = FakeIntentDB()
+    status_message = await channel.send("Verifying wallet with a small test payment…", suppress_embeds=True)
     intent = db.create_admin_payment_intent(
         {
             "channel_id": 55,
@@ -1475,6 +1567,7 @@ async def test_handle_payment_result_test_confirmed():
             "requested_amount_sol": 1.75,
             "producer_ref": "1_42_123",
             "wallet_id": "wallet-1",
+            "status_message_id": status_message.id,
             "status": "awaiting_test",
         },
         guild_id=1,
@@ -1509,8 +1602,12 @@ async def test_handle_payment_result_test_confirmed():
     assert payment_ui_cog.confirmation_requests == []
     assert db.intents[intent["intent_id"]]["status"] == "awaiting_test_receipt_confirmation"
     assert db.intents[intent["intent_id"]].get("final_payment_id") is None
-    assert db.intents[intent["intent_id"]]["receipt_prompt_message_id"] == 900
-    assert "reply confirmed when you see it" in channel.sent_messages[-1].content
+    assert db.intents[intent["intent_id"]]["status_message_id"] == status_message.id
+    assert db.intents[intent["intent_id"]]["receipt_prompt_message_id"] == status_message.id
+    assert len(channel.sent_messages) == 1
+    assert len(status_message.edits) == 1
+    assert "<@42>" in status_message.content
+    assert "Please reply here" in status_message.content
     admin_user = bot.fetched_users[999]
     assert "Test payment confirmed" in admin_user.sent_messages[-1].content
 
@@ -1582,6 +1679,10 @@ async def test_handle_test_receipt_positive_marks_wallet_verified_and_queues_adm
     guild = SimpleNamespace(id=1)
     channel = FakeChannel(guild=guild)
     db = FakeIntentDB()
+    status_message = await channel.send(
+        "<@42> Test payment confirmed. Please reply here with `confirmed` once you see it in your wallet.",
+        suppress_embeds=True,
+    )
     db.wallets[(1, 42, "solana")] = {
         "wallet_id": "wallet-1",
         "guild_id": 1,
@@ -1599,6 +1700,7 @@ async def test_handle_test_receipt_positive_marks_wallet_verified_and_queues_adm
             "producer_ref": "1_42_123",
             "wallet_id": "wallet-1",
             "test_payment_id": "payment-test",
+            "status_message_id": status_message.id,
             "status": "awaiting_test_receipt_confirmation",
         },
         guild_id=1,
@@ -1619,7 +1721,9 @@ async def test_handle_test_receipt_positive_marks_wallet_verified_and_queues_adm
     assert db.intents[intent["intent_id"]]["status"] == "awaiting_admin_approval"
     assert db.intents[intent["intent_id"]]["final_payment_id"] == "payment-final"
     assert payment_ui_cog.admin_approval_requests[0]["payment_id"] == "payment-final"
-    assert "queued for admin approval" in channel.sent_messages[-1].content
+    assert len(channel.sent_messages) == 1
+    assert len(status_message.edits) == 1
+    assert status_message.content == "Confirmation received. Awaiting admin approval for the final payout."
 
 
 @pytest.mark.anyio
@@ -2002,6 +2106,79 @@ async def test_admin_approval_view_click_queues_payment_and_cleans_both_prompts(
 
 
 @pytest.mark.anyio
+async def test_post_admin_approval_thread_update_edits_status_message():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    status_message = await channel.send(
+        "Confirmation received. Awaiting admin approval for the final payout.",
+        suppress_embeds=True,
+    )
+    bot = FakeBot(channel, payment_service=object())
+    db = FakeIntentDB()
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "recipient_user_id": 42,
+            "status_message_id": status_message.id,
+            "final_payment_id": "payment-final",
+            "producer_ref": "1_42_123",
+            "requested_amount_sol": 1.75,
+            "status": "awaiting_admin_approval",
+        },
+        guild_id=1,
+    )
+    db.find_admin_chat_intent_by_payment_id = (
+        lambda payment_id: db.get_admin_payment_intent(intent["intent_id"], 1)
+        if payment_id == "payment-final"
+        else None
+    )
+    ui_cog = PaymentUICog(bot, db, payment_service=object())
+
+    await ui_cog._post_admin_approval_thread_update({"payment_id": "payment-final", "recipient_discord_id": 42})
+
+    assert len(channel.sent_messages) == 1
+    assert status_message.edits == [{"content": "Payout queued for sending.", "suppress": True}]
+
+
+@pytest.mark.anyio
+async def test_cleanup_admin_intent_messages_preserves_status_message_id():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    bot = FakeBot(channel, payment_service=object())
+    db = FakeIntentDB()
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "recipient_user_id": 42,
+            "prompt_message_id": 901,
+            "receipt_prompt_message_id": 900,
+            "status_message_id": 900,
+            "final_payment_id": "payment-final",
+            "producer_ref": "1_42_123",
+            "requested_amount_sol": 1.75,
+            "status": "awaiting_admin_approval",
+        },
+        guild_id=1,
+    )
+    db.find_admin_chat_intent_by_payment_id = (
+        lambda payment_id: db.get_admin_payment_intent(intent["intent_id"], 1)
+        if payment_id == "payment-final"
+        else None
+    )
+    ui_cog = PaymentUICog(bot, db, payment_service=object())
+
+    with patch(
+        "src.features.payments.payment_ui_cog.safe_delete_messages",
+        new=AsyncMock(return_value=None),
+    ) as mock_safe_delete:
+        await ui_cog._cleanup_admin_intent_messages({"payment_id": "payment-final"})
+
+    mock_safe_delete.assert_awaited_once()
+    assert mock_safe_delete.await_args.args[0] is channel
+    assert mock_safe_delete.await_args.args[1] == [901]
+
+
+@pytest.mark.anyio
 async def test_restart_filter_state_aware():
     guild = SimpleNamespace(id=1)
     channel = FakeChannel(guild=guild)
@@ -2080,6 +2257,7 @@ async def test_handle_payment_result_test_failed():
     guild = SimpleNamespace(id=1)
     channel = FakeChannel(guild=guild)
     db = FakeIntentDB()
+    status_message = await channel.send("Verifying wallet with a small test payment…", suppress_embeds=True)
     intent = db.create_admin_payment_intent(
         {
             "channel_id": 55,
@@ -2087,6 +2265,7 @@ async def test_handle_payment_result_test_failed():
             "recipient_user_id": 42,
             "requested_amount_sol": 1.75,
             "producer_ref": "1_42_123",
+            "status_message_id": status_message.id,
             "status": "awaiting_test",
         },
         guild_id=1,
@@ -2109,7 +2288,13 @@ async def test_handle_payment_result_test_failed():
 
     assert payment_service.request_calls == []
     assert db.intents[intent["intent_id"]]["status"] == "failed"
-    assert "review needed" in channel.sent_messages[-1].content
+    assert len(channel.sent_messages) == 1
+    assert status_message.edits == [
+        {
+            "content": "Wallet verification ended in `failed`. An admin will review it manually.",
+            "suppress": True,
+        }
+    ]
 
 
 @pytest.mark.anyio
@@ -2147,6 +2332,7 @@ async def test_handle_payment_result_final_confirmed_notifies_admin():
     guild = SimpleNamespace(id=1)
     channel = FakeChannel(guild=guild)
     db = FakeIntentDB()
+    status_message = await channel.send("Payout queued for sending.", suppress_embeds=True)
     intent = db.create_admin_payment_intent(
         {
             "channel_id": 55,
@@ -2155,6 +2341,7 @@ async def test_handle_payment_result_final_confirmed_notifies_admin():
             "requested_amount_sol": 1.75,
             "producer_ref": "1_42_123",
             "final_payment_id": "payment-final",
+            "status_message_id": status_message.id,
             "status": "confirmed",
         },
         guild_id=1,
@@ -2176,6 +2363,15 @@ async def test_handle_payment_result_final_confirmed_notifies_admin():
     )
 
     assert db.intents[intent["intent_id"]]["status"] == "completed"
+    assert len([message for message in channel.sent_messages if message.reference is None]) == 1
+    assert len(status_message.edits) >= 1
+    assert status_message.edits[-1]["content"] == "Payout sending…"
+    reply_messages = [message for message in channel.sent_messages if message.reference == status_message.id]
+    assert len(reply_messages) == 1
+    assert "<@42>" in reply_messages[0].content
+    assert "Payment sent" in reply_messages[0].content
+    assert reply_messages[0].kwargs["mention_author"] is True
+    assert reply_messages[0].kwargs["suppress_embeds"] is True
     admin_user = bot.fetched_users[999]
     assert "Final payment confirmed" in admin_user.sent_messages[-1].content
 
@@ -2312,6 +2508,192 @@ async def test_admin_success_dm_over_threshold(monkeypatch, clear_payment_policy
 
     assert cog._dm_admin_payment_success.await_count == 1
     assert cog._dm_admin_payment_failure.await_count == 1
+
+
+@pytest.mark.anyio
+async def test_handle_payment_result_suppresses_result_card_for_admin_chat():
+    channel = FakeChannel(guild=SimpleNamespace(id=1))
+    bot = FakeBot(channel, payment_service=SimpleNamespace(providers={}))
+    cog = PaymentWorkerCog(bot, FakePaymentRequestDB(), payment_service=bot.payment_service)
+    cog._notify_payment_result = AsyncMock()
+    cog._handoff_terminal_result = AsyncMock()
+    cog._dm_admin_payment_success = AsyncMock()
+    cog._dm_admin_payment_failure = AsyncMock()
+
+    with patch(
+        "src.features.payments.payment_worker_cog.safe_delete_messages",
+        new=AsyncMock(return_value=None),
+    ):
+        await cog._handle_terminal_payment(
+            {
+                "payment_id": "pay-admin-chat",
+                "producer": "admin_chat",
+                "provider": "solana_payouts",
+                "chain": "solana",
+                "is_test": False,
+                "status": "confirmed",
+                "amount_token": 1.0,
+                "amount_usd": 0.0,
+                "notify_channel_id": 55,
+                "metadata": {"cleanup_message_ids": []},
+            }
+        )
+
+    cog._notify_payment_result.assert_not_awaited()
+    cog._handoff_terminal_result.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_handle_payment_result_still_notifies_non_admin_chat_producers():
+    channel = FakeChannel(guild=SimpleNamespace(id=1))
+    bot = FakeBot(channel, payment_service=SimpleNamespace(providers={}))
+    cog = PaymentWorkerCog(bot, FakePaymentRequestDB(), payment_service=bot.payment_service)
+    cog._notify_payment_result = AsyncMock()
+    cog._handoff_terminal_result = AsyncMock()
+    cog._dm_admin_payment_success = AsyncMock()
+    cog._dm_admin_payment_failure = AsyncMock()
+
+    with patch(
+        "src.features.payments.payment_worker_cog.safe_delete_messages",
+        new=AsyncMock(return_value=None),
+    ):
+        await cog._handle_terminal_payment(
+            {
+                "payment_id": "pay-grants",
+                "producer": "grants",
+                "provider": "solana_payouts",
+                "chain": "solana",
+                "is_test": False,
+                "status": "confirmed",
+                "amount_token": 1.0,
+                "amount_usd": 0.0,
+                "notify_channel_id": 55,
+                "metadata": {"cleanup_message_ids": []},
+            }
+        )
+
+    cog._notify_payment_result.assert_awaited_once()
+    cog._handoff_terminal_result.assert_awaited_once()
+
+
+def test_update_admin_payment_intent_tolerates_missing_status_message_column():
+    db = FakeIntentDB()
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "status": "awaiting_test",
+        },
+        guild_id=1,
+    )
+    db.reject_status_message_id = True
+
+    updated = DatabaseHandler.update_admin_payment_intent(
+        db,
+        intent["intent_id"],
+        {"status": "awaiting_test_receipt_confirmation", "status_message_id": 900},
+        1,
+    )
+
+    assert updated is not None
+    assert updated["status"] == "awaiting_test_receipt_confirmation"
+    assert db.supabase_calls[0]["status_message_id"] == 900
+    assert "status_message_id" not in db.supabase_calls[1]
+
+    error_db = FakeIntentDB()
+    error_intent = error_db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "status": "awaiting_test",
+        },
+        guild_id=1,
+    )
+    error_db.supabase_failures.append("column some_other_field does not exist")
+
+    assert DatabaseHandler.update_admin_payment_intent(
+        error_db,
+        error_intent["intent_id"],
+        {"status": "awaiting_test_receipt_confirmation", "status_message_id": 900},
+        1,
+    ) is None
+
+
+@pytest.mark.anyio
+async def test_admin_chat_status_message_reused_across_transitions():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    db.wallets[(1, 42, "solana")] = {
+        "wallet_id": "wallet-1",
+        "guild_id": 1,
+        "discord_user_id": 42,
+        "chain": "solana",
+        "wallet_address": VALID_SOL_ADDRESS,
+        "verified_at": None,
+    }
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "admin_user_id": 999,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "wallet_id": "wallet-1",
+            "status": "awaiting_test",
+        },
+        guild_id=1,
+    )
+    payment_service = FakeAdminPaymentService()
+    payment_ui_cog = FakePaymentUICog()
+    bot = FakeBot(channel, payment_service=payment_service, payment_ui_cog=payment_ui_cog)
+    cog = AdminChatCog(bot, db, sharer=object())
+    cog.payment_service = payment_service
+
+    await cog._start_admin_payment_flow(channel, intent)
+    await cog.handle_payment_result(
+        {
+            "payment_id": "payment-test",
+            "producer": "admin_chat",
+            "guild_id": 1,
+            "is_test": True,
+            "status": "confirmed",
+            "amount_token": 0.001,
+            "tx_signature": "sig-test",
+            "metadata": {"intent_id": intent["intent_id"]},
+        }
+    )
+    await cog._handle_test_receipt_positive(
+        FakeMessage(1004, FakeAuthor(42), channel, guild, "confirmed"),
+        db.get_admin_payment_intent(intent["intent_id"], 1),
+    )
+    final_intent = db.get_admin_payment_intent(intent["intent_id"], 1)
+    await cog.handle_payment_result(
+        {
+            "payment_id": final_intent["final_payment_id"],
+            "producer": "admin_chat",
+            "guild_id": 1,
+            "is_test": False,
+            "status": "confirmed",
+            "amount_token": 1.75,
+            "tx_signature": "sig-final",
+            "metadata": {"intent_id": intent["intent_id"]},
+        }
+    )
+
+    status_messages = [message for message in channel.sent_messages if message.reference is None]
+    reply_messages = [message for message in channel.sent_messages if message.reference is not None]
+
+    assert [message.id for message in status_messages] == [900]
+    assert len(status_messages[0].edits) == 3
+    assert len(reply_messages) == 1
+    assert reply_messages[0].reference == status_messages[0].id
+    assert db.intents[intent["intent_id"]]["status_message_id"] == status_messages[0].id
+    assert db.intents[intent["intent_id"]]["receipt_prompt_message_id"] == status_messages[0].id
 
 
 @pytest.mark.anyio

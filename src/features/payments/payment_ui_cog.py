@@ -556,6 +556,20 @@ class PaymentUICog(commands.Cog):
             return
         recipient_user_id = intent.get('recipient_user_id') or payment.get('recipient_discord_id')
         try:
+            status_message_id = intent.get('status_message_id')
+            if status_message_id is not None:
+                fetch_message = getattr(channel, 'fetch_message', None)
+                if callable(fetch_message):
+                    try:
+                        status_message = await fetch_message(int(status_message_id))
+                    except (discord.NotFound, discord.HTTPException):
+                        status_message = None
+                    if status_message is not None:
+                        await status_message.edit(
+                            content='Payout queued for sending.',
+                            suppress=True,
+                        )
+                        return
             await channel.send(f"Payment to <@{recipient_user_id}> queued for sending.")
         except Exception as exc:
             logger.warning(
@@ -571,13 +585,15 @@ class PaymentUICog(commands.Cog):
         channel = await self._resolve_destination(intent.get('channel_id'), None)
         if channel is None:
             return
+        status_message_id = intent.get('status_message_id')
+        protected_status_message_id = int(status_message_id) if status_message_id is not None else None
         message_ids = [
             int(message_id)
             for message_id in (
                 intent.get('prompt_message_id'),
                 intent.get('receipt_prompt_message_id'),
             )
-            if message_id is not None
+            if message_id is not None and int(message_id) != protected_status_message_id
         ]
         if not message_ids:
             return

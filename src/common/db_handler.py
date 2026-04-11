@@ -2148,13 +2148,30 @@ class DatabaseHandler:
             return None
 
         try:
-            result = (
-                self.supabase.table('admin_payment_intents')
-                .update(self._serialize_supabase_value(dict(payload)))
-                .eq('intent_id', intent_id)
-                .eq('guild_id', guild_id)
-                .execute()
-            )
+            serialized_payload = self._serialize_supabase_value(dict(payload))
+            try:
+                result = (
+                    self.supabase.table('admin_payment_intents')
+                    .update(serialized_payload)
+                    .eq('intent_id', intent_id)
+                    .eq('guild_id', guild_id)
+                    .execute()
+                )
+            except Exception as exc:
+                if 'status_message_id' not in payload or 'status_message_id' not in str(exc):
+                    raise
+                logger.info(
+                    "Retrying admin payment intent update without status_message_id for intent %s",
+                    intent_id,
+                )
+                serialized_payload.pop('status_message_id', None)
+                result = (
+                    self.supabase.table('admin_payment_intents')
+                    .update(serialized_payload)
+                    .eq('intent_id', intent_id)
+                    .eq('guild_id', guild_id)
+                    .execute()
+                )
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Error updating admin payment intent {intent_id}: {e}", exc_info=True)

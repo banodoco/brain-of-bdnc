@@ -292,6 +292,46 @@ class AdminChatCog(commands.Cog):
         except Exception:
             return None
 
+    async def _set_intent_status_message(self, intent: Dict, channel, content: str, *, _retry_on_missing: bool = True):
+        status_message_id = intent.get('status_message_id')
+        if status_message_id:
+            fetch_message = getattr(channel, 'fetch_message', None)
+            if callable(fetch_message):
+                try:
+                    message = await fetch_message(int(status_message_id))
+                except discord.NotFound:
+                    intent['status_message_id'] = None
+                    if not _retry_on_missing:
+                        raise
+                    return await self._set_intent_status_message(
+                        intent,
+                        channel,
+                        content,
+                        _retry_on_missing=False,
+                    )
+            else:
+                message = None
+
+            if message is not None:
+                edit = getattr(message, 'edit', None)
+                if callable(edit):
+                    await edit(content=content, suppress=True)
+                else:
+                    message.content = content
+                return message
+
+        message = await channel.send(content, suppress_embeds=True)
+        updated_intent = self.db_handler.update_admin_payment_intent(
+            intent['intent_id'],
+            {'status_message_id': message.id},
+            intent['guild_id'],
+        )
+        if updated_intent:
+            intent.update(updated_intent)
+        else:
+            intent['status_message_id'] = message.id
+        return message
+
     def _format_payment_destination(self, payment: Dict) -> str:
         destination_id = payment.get('confirm_thread_id') or payment.get('confirm_channel_id')
         if destination_id:
@@ -424,9 +464,10 @@ class AdminChatCog(commands.Cog):
             await self._notify_admin_review(channel, updated_intent, "I could not queue the wallet verification payment.")
             return
 
-        await channel.send(
-            f"<@{intent['recipient_user_id']}> thanks. I've queued a small test payment to verify your wallet.\n\n"
-            "Once that lands, I'll ask you to confirm the final payout here."
+        await self._set_intent_status_message(
+            updated_intent,
+            channel,
+            "Verifying wallet with a small test payment…",
         )
 
     async def _gate_existing_intent(self, channel, intent: Dict, wallet_record: Dict, amount_sol: float):
@@ -603,8 +644,10 @@ class AdminChatCog(commands.Cog):
         )
         if not gated:
             return
-        await message.channel.send(
-            f"<@{intent['recipient_user_id']}> thanks. Your wallet is verified and the payout is queued for admin approval."
+        await self._set_intent_status_message(
+            gated['intent'],
+            message.channel,
+            "Confirmation received. Awaiting admin approval for the final payout.",
         )
 
     async def _handle_test_receipt_negative(self, message: discord.Message, intent: Dict):
@@ -733,14 +776,20 @@ class AdminChatCog(commands.Cog):
 
         if payment.get('is_test'):
             if status != 'confirmed':
+                updated = self.db_handler.update_admin_payment_intent(intent_id, {'status': 'failed'}, guild_id)
                 if channel:
-                    await self._notify_admin_review(
-                        channel,
+                    await self._set_intent_status_message(
                         intent,
-                        f"The wallet verification payment ended in `{status}`, so no final payout was created.",
+                        channel,
+                        f"Wallet verification ended in `{status}`. An admin will review it manually.",
                     )
-                else:
-                    self.db_handler.update_admin_payment_intent(intent_id, {'status': 'failed'}, guild_id)
+                    if not updated:
+                        await self._notify_admin_review(
+                            channel,
+                            intent,
+                            "The wallet verification payment failed, and I could not update the intent row.",
+                            fail_intent=False,
+                        )
                 return
 
             tx_signature = payment.get('tx_signature')
@@ -756,36 +805,60 @@ class AdminChatCog(commands.Cog):
                 ),
             )
 
-            receipt_prompt_message = None
+            status_message = None
             if channel:
-                receipt_prompt_message = await channel.send(
-                    f"<@{intent['recipient_user_id']}> Please check your wallet and reply confirmed when you see it"
+                status_message = await self._set_intent_status_message(
+                    intent,
+                    channel,
+                    (
+                        f"<@{intent['recipient_user_id']}> Test payment confirmed. "
+                        "Please reply here with `confirmed` once you see it in your wallet."
+                    ),
                 )
 
             payload = {
                 'status': 'awaiting_test_receipt_confirmation',
                 'last_scanned_message_id': None,
             }
-            if receipt_prompt_message is not None:
-                payload['receipt_prompt_message_id'] = receipt_prompt_message.id
+            if intent.get('status_message_id') is not None:
+                payload['receipt_prompt_message_id'] = intent['status_message_id']
             updated = self.db_handler.update_admin_payment_intent(intent_id, payload, guild_id)
+            if updated:
+                intent.update(updated)
+            elif status_message is not None:
+                intent['receipt_prompt_message_id'] = intent.get('status_message_id')
             if not updated and channel:
                 await self._notify_admin_review(channel, intent, "The wallet test was confirmed, but I could not update the receipt-confirmation state.")
             return
 
         if status == 'confirmed':
+            status_message = None
+            if channel:
+                status_message = await self._set_intent_status_message(
+                    intent,
+                    channel,
+                    "Payout sending…",
+                )
             updated = self.db_handler.update_admin_payment_intent(intent_id, {'status': 'completed'}, guild_id)
+            if updated:
+                intent.update(updated)
             amount = float(payment.get('amount_token') or intent.get('requested_amount_sol') or 0)
             tx_signature = payment.get('tx_signature')
             explorer_link = self._explorer_url(tx_signature) if tx_signature else None
-            if channel:
-                explorer_text = f"[View on Explorer]({explorer_link})" if explorer_link else "Transaction signature unavailable"
-                await channel.send(
-                    f"**Payment sent.**\n\n"
-                    f"- Recipient: <@{intent['recipient_user_id']}>\n"
-                    f"- Amount: {amount:.4f} SOL\n"
-                    f"- Transaction: {explorer_text}"
+            if channel and status_message is not None:
+                reply_content = (
+                    f"<@{intent['recipient_user_id']}> Payment sent — {amount:.4f} SOL. "
+                    f"{explorer_link or 'Transaction signature unavailable'}"
                 )
+                reply = getattr(status_message, 'reply', None)
+                if callable(reply):
+                    await reply(
+                        reply_content,
+                        mention_author=True,
+                        suppress_embeds=True,
+                    )
+                else:
+                    await channel.send(reply_content, suppress_embeds=True)
             await self._notify_intent_admin(
                 intent,
                 (
@@ -799,14 +872,20 @@ class AdminChatCog(commands.Cog):
                 await self._notify_admin_review(channel, intent, "The payout completed, but I could not mark the intent as completed.", fail_intent=False)
             return
 
+        updated = self.db_handler.update_admin_payment_intent(intent_id, {'status': 'failed'}, guild_id)
         if channel:
-            await self._notify_admin_review(
-                channel,
+            await self._set_intent_status_message(
                 intent,
-                f"The final payout ended in `{status}`, so I stopped the flow for manual review.",
+                channel,
+                f"Payout ended in `{status}`. An admin will review it manually.",
             )
-        else:
-            self.db_handler.update_admin_payment_intent(intent_id, {'status': 'failed'}, guild_id)
+            if not updated:
+                await self._notify_admin_review(
+                    channel,
+                    intent,
+                    "The payout failed, and I could not update the intent row.",
+                    fail_intent=False,
+                )
 
     async def cog_load(self):
         if not self._sweep_stale_test_receipts.is_running():
