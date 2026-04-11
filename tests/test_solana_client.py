@@ -77,16 +77,18 @@ def _extract_tx_confirm_decision(mock_logger, expected_decision):
 
 @pytest.mark.anyio
 async def test_dynamic_priority_fee_uses_75th_percentile_from_sdk():
+    # Values chosen above the 100_000 floor so the 75th percentile isn't clamped
+    # and we actually exercise the percentile calculation.
     client = _make_client()
     fake_rpc = SimpleNamespace(
         get_recent_prioritization_fees=AsyncMock(
             return_value=SimpleNamespace(
                 value=[
                     SimpleNamespace(prioritization_fee=0),
-                    SimpleNamespace(prioritization_fee=10_000),
-                    SimpleNamespace(prioritization_fee=20_000),
-                    SimpleNamespace(prioritization_fee=30_000),
-                    SimpleNamespace(prioritization_fee=40_000),
+                    SimpleNamespace(prioritization_fee=150_000),
+                    SimpleNamespace(prioritization_fee=200_000),
+                    SimpleNamespace(prioritization_fee=300_000),
+                    SimpleNamespace(prioritization_fee=400_000),
                 ]
             )
         )
@@ -94,7 +96,7 @@ async def test_dynamic_priority_fee_uses_75th_percentile_from_sdk():
 
     fee = await client._get_dynamic_priority_fee(fake_rpc)
 
-    assert fee == 30_000
+    assert fee == 300_000
 
 
 @pytest.mark.anyio
@@ -119,16 +121,19 @@ async def test_dynamic_priority_fee_clamps_to_floor():
 
 @pytest.mark.anyio
 async def test_dynamic_priority_fee_clamps_to_ceiling(monkeypatch):
-    monkeypatch.setenv("SOLANA_PRIORITY_FEE_CEILING_MICRO_LAMPORTS", "25000")
+    # Override both floor and ceiling for this test so we have a window where the
+    # percentile (750_000) exceeds the ceiling (500_000) and gets clamped down.
+    monkeypatch.setenv("SOLANA_PRIORITY_FEE_MICRO_LAMPORTS", "50000")
+    monkeypatch.setenv("SOLANA_PRIORITY_FEE_CEILING_MICRO_LAMPORTS", "500000")
     client = _make_client()
     fake_rpc = SimpleNamespace(
         get_recent_prioritization_fees=AsyncMock(
             return_value=SimpleNamespace(
                 value=[
-                    SimpleNamespace(prioritization_fee=10_000),
-                    SimpleNamespace(prioritization_fee=20_000),
-                    SimpleNamespace(prioritization_fee=50_000),
-                    SimpleNamespace(prioritization_fee=80_000),
+                    SimpleNamespace(prioritization_fee=100_000),
+                    SimpleNamespace(prioritization_fee=200_000),
+                    SimpleNamespace(prioritization_fee=500_000),
+                    SimpleNamespace(prioritization_fee=800_000),
                 ]
             )
         )
@@ -136,7 +141,7 @@ async def test_dynamic_priority_fee_clamps_to_ceiling(monkeypatch):
 
     fee = await client._get_dynamic_priority_fee(fake_rpc)
 
-    assert fee == 25_000
+    assert fee == 500_000
 
 
 @pytest.mark.anyio

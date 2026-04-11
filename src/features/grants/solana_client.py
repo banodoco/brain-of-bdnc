@@ -67,14 +67,20 @@ class SolanaClient:
         key_bytes = base58.b58decode(private_key)
         self.keypair = Keypair.from_bytes(key_bytes)
         self.rpc_url = os.getenv('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com')
-        # Static priority-fee floor. 10_000 micro-lamports/CU is a reasonable mainnet
-        # floor: cheap (simple transfers burn ~200 CU → ~2_000_000 micro-lamports =
-        # 0.000002 SOL extra fee) but high enough to be included under normal congestion.
+        # Static priority-fee floor. 100_000 micro-lamports/CU: at cu_limit=1000 this
+        # is 100_000_000 micro-lamports ≈ 0.0001 SOL (~$0.008 at $80/SOL) per tx —
+        # cheap, but empirically necessary: the previous 10_000 floor left txs in the
+        # mempool under real mainnet conditions where getRecentPrioritizationFees
+        # returned all zeros, causing rebroadcast loops to burn the full 60s window
+        # without landing. 100_000 is conservative enough to survive flaky dynamic
+        # fee data while still staying well under 0.001 SOL per tx.
         self.priority_fee_micro_lamports = int(
-            os.getenv('SOLANA_PRIORITY_FEE_MICRO_LAMPORTS', '10000')
+            os.getenv('SOLANA_PRIORITY_FEE_MICRO_LAMPORTS', '100000')
         )
+        # Ceiling scaled up proportionally so the dynamic path has headroom for real
+        # congestion spikes without burning 10x the floor.
         self.priority_fee_ceiling_micro_lamports = int(
-            os.getenv('SOLANA_PRIORITY_FEE_CEILING_MICRO_LAMPORTS', '1000000')
+            os.getenv('SOLANA_PRIORITY_FEE_CEILING_MICRO_LAMPORTS', '10000000')
         )
 
     @property
