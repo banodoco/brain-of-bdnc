@@ -1818,6 +1818,27 @@ class DatabaseHandler:
             logger.error(f"Error creating admin payment intent in guild {guild_id}: {e}", exc_info=True)
             return None
 
+    def create_admin_payment_intents_batch(self, records: List[Dict], guild_id: int) -> Optional[List[Dict]]:
+        """Insert multiple admin payment intents in a single Supabase request."""
+        if not self._gate_check(guild_id):
+            return None
+        if not self.supabase:
+            return None
+        if not records:
+            return []
+
+        try:
+            payload = []
+            for record in records:
+                serialized = self._serialize_supabase_value(dict(record))
+                serialized['guild_id'] = guild_id
+                payload.append(serialized)
+            result = self.supabase.table('admin_payment_intents').insert(payload).execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error creating admin payment intent batch in guild {guild_id}: {e}", exc_info=True)
+            return None
+
     def get_admin_payment_intent(self, intent_id: str, guild_id: int) -> Optional[Dict]:
         """Fetch one admin payment intent by intent_id."""
         if not self._gate_check(guild_id):
@@ -1837,6 +1858,195 @@ class DatabaseHandler:
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Error fetching admin payment intent {intent_id}: {e}", exc_info=True)
+            return None
+
+    def list_intents_by_status(self, guild_id: int, status: str) -> List[Dict]:
+        """List admin payment intents for one guild filtered by exact status."""
+        if not self._gate_check(guild_id):
+            return []
+        if not self.supabase:
+            return []
+
+        try:
+            result = (
+                self.supabase.table('admin_payment_intents')
+                .select('*')
+                .eq('guild_id', guild_id)
+                .eq('status', status)
+                .order('created_at')
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(
+                "Error listing admin payment intents for guild %s with status %s: %s",
+                guild_id,
+                status,
+                e,
+                exc_info=True,
+            )
+            return []
+
+    def list_stale_test_receipt_intents(self, cutoff_iso: str) -> List[Dict]:
+        """List awaiting_test_receipt_confirmation intents older than the cutoff."""
+        if not self.supabase:
+            return []
+
+        writable_guild_ids = self._get_writable_guild_ids()
+        if writable_guild_ids == []:
+            return []
+
+        try:
+            query = (
+                self.supabase.table('admin_payment_intents')
+                .select('*')
+                .eq('status', 'awaiting_test_receipt_confirmation')
+                .lt('updated_at', cutoff_iso)
+            )
+            if writable_guild_ids:
+                if len(writable_guild_ids) == 1:
+                    query = query.eq('guild_id', writable_guild_ids[0])
+                else:
+                    query = query.in_('guild_id', writable_guild_ids)
+            result = query.order('updated_at').execute()
+            return result.data or []
+        except Exception as e:
+            logger.error("Error listing stale test receipt intents before %s: %s", cutoff_iso, e, exc_info=True)
+            return []
+
+    def list_stale_awaiting_admin_init_intents(self, cutoff_iso: str) -> List[Dict]:
+        """List awaiting_admin_init intents whose updated_at is older than the cutoff."""
+        if not self.supabase:
+            return []
+
+        writable_guild_ids = self._get_writable_guild_ids()
+        if writable_guild_ids == []:
+            return []
+
+        try:
+            query = (
+                self.supabase.table('admin_payment_intents')
+                .select('*')
+                .eq('status', 'awaiting_admin_init')
+                .lt('updated_at', cutoff_iso)
+            )
+            if writable_guild_ids:
+                if len(writable_guild_ids) == 1:
+                    query = query.eq('guild_id', writable_guild_ids[0])
+                else:
+                    query = query.in_('guild_id', writable_guild_ids)
+            result = query.order('updated_at').execute()
+            return result.data or []
+        except Exception as e:
+            logger.error("Error listing stale awaiting_admin_init intents before %s: %s", cutoff_iso, e, exc_info=True)
+            return []
+
+    def increment_intent_ambiguous_reply_count(self, intent_id: str, guild_id: int) -> Optional[Dict]:
+        """Increment ambiguous_reply_count for one admin payment intent."""
+        intent = self.get_admin_payment_intent(intent_id, guild_id)
+        if not intent:
+            return None
+        next_count = int(intent.get('ambiguous_reply_count') or 0) + 1
+        return self.update_admin_payment_intent(
+            intent_id,
+            {'ambiguous_reply_count': next_count},
+            guild_id,
+        )
+
+    def get_pending_confirmation_admin_chat_intents_by_payment(self, payment_ids: List[str]) -> Dict[str, Optional[Dict]]:
+        """Map payment_ids to matching admin payment intents, if any."""
+        normalized_payment_ids = [str(payment_id).strip() for payment_id in payment_ids if str(payment_id).strip()]
+        mapping: Dict[str, Optional[Dict]] = {payment_id: None for payment_id in normalized_payment_ids}
+        if not normalized_payment_ids or not self.supabase:
+            return mapping
+
+        writable_guild_ids = self._get_writable_guild_ids()
+        if writable_guild_ids == []:
+            return mapping
+
+        def _apply_guild_scope(query):
+            if writable_guild_ids:
+                if len(writable_guild_ids) == 1:
+                    return query.eq('guild_id', writable_guild_ids[0])
+                return query.in_('guild_id', writable_guild_ids)
+            return query
+
+        try:
+            final_query = _apply_guild_scope(
+                self.supabase.table('admin_payment_intents').select('*')
+            )
+            if len(normalized_payment_ids) == 1:
+                final_query = final_query.eq('final_payment_id', normalized_payment_ids[0])
+            else:
+                final_query = final_query.in_('final_payment_id', normalized_payment_ids)
+            final_rows = final_query.execute().data or []
+
+            test_query = _apply_guild_scope(
+                self.supabase.table('admin_payment_intents').select('*')
+            )
+            if len(normalized_payment_ids) == 1:
+                test_query = test_query.eq('test_payment_id', normalized_payment_ids[0])
+            else:
+                test_query = test_query.in_('test_payment_id', normalized_payment_ids)
+            test_rows = test_query.execute().data or []
+
+            for row in final_rows:
+                payment_id = row.get('final_payment_id')
+                if payment_id in mapping:
+                    mapping[payment_id] = row
+            for row in test_rows:
+                payment_id = row.get('test_payment_id')
+                if payment_id in mapping and mapping[payment_id] is None:
+                    mapping[payment_id] = row
+            return mapping
+        except Exception as e:
+            logger.error(
+                "Error fetching pending confirmation admin payment intents for payments %s: %s",
+                normalized_payment_ids,
+                e,
+                exc_info=True,
+            )
+            return mapping
+
+    def find_admin_chat_intent_by_payment_id(self, payment_id: str) -> Optional[Dict]:
+        """Find one admin payment intent linked to the given payment_id."""
+        payment_map = self.get_pending_confirmation_admin_chat_intents_by_payment([payment_id])
+        found = payment_map.get(str(payment_id).strip())
+        if found is not None:
+            return found
+        if not self.supabase:
+            return None
+
+        writable_guild_ids = self._get_writable_guild_ids()
+        if writable_guild_ids == []:
+            return None
+
+        def _apply_guild_scope(query):
+            if writable_guild_ids:
+                if len(writable_guild_ids) == 1:
+                    return query.eq('guild_id', writable_guild_ids[0])
+                return query.in_('guild_id', writable_guild_ids)
+            return query
+
+        try:
+            final_result = (
+                _apply_guild_scope(self.supabase.table('admin_payment_intents').select('*'))
+                .eq('final_payment_id', payment_id)
+                .limit(1)
+                .execute()
+            )
+            if final_result.data:
+                return final_result.data[0]
+
+            test_result = (
+                _apply_guild_scope(self.supabase.table('admin_payment_intents').select('*'))
+                .eq('test_payment_id', payment_id)
+                .limit(1)
+                .execute()
+            )
+            return test_result.data[0] if test_result.data else None
+        except Exception as e:
+            logger.error("Error finding admin payment intent for payment %s: %s", payment_id, e, exc_info=True)
             return None
 
     def get_active_intent_for_recipient(self, guild_id: int, channel_id: int, recipient_user_id: int) -> Optional[Dict]:

@@ -22,6 +22,7 @@ PRODUCER_FLOWS: dict[str, ProducerFlow] = {
         test_confirmed_by=frozenset({PaymentActorKind.AUTO}),
         real_confirmed_by=frozenset(
             {
+                PaymentActorKind.ADMIN_DM,
                 PaymentActorKind.RECIPIENT_CLICK,
                 PaymentActorKind.RECIPIENT_MESSAGE,
             }

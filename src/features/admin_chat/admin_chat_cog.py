@@ -1,14 +1,16 @@
 """Discord cog for privileged admin chat and approved member bot access."""
 import asyncio
-import json
 import os
 import logging
+import re
 import time
+from datetime import datetime, timedelta, timezone
 from collections import deque
-from typing import Dict
+from typing import Dict, Literal, Optional
+from uuid import uuid4
 import discord
 from anthropic import AsyncAnthropic
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from src.common.db_handler import WalletUpdateBlockedError
 from src.features.payments.payment_service import PaymentActor, PaymentActorKind
@@ -24,6 +26,24 @@ class AdminChatCog(commands.Cog):
     _ACCESS_CACHE_TTL_SECONDS = 60
     _RATE_LIMIT_WINDOW_SECONDS = 300
     _RATE_LIMIT_MAX_MESSAGES = 10
+    _WALLET_DELIMITER_RE = re.compile(r"[\s`<>\"'(),\[\]{}*_~|]+")
+    _WALLET_TRAILING_PUNCTUATION = ".,!?;:"
+    _CONFIRMATION_POSITIVE_KEYWORDS = (
+        'confirmed',
+        'received',
+        'got it',
+        'yes',
+        'yep',
+        'confirm',
+    )
+    _CONFIRMATION_NEGATIVE_KEYWORDS = (
+        'no',
+        'didnt',
+        'not received',
+        'missing',
+        'nothing',
+    )
+    _CONFIRMATION_POSITIVE_EMOJI = '👍'
 
     def __init__(self, bot: commands.Bot, db_handler, sharer):
         self.bot = bot
@@ -61,59 +81,66 @@ class AdminChatCog(commands.Cog):
         self._admin_mention = f"<@{self.admin_user_id}>" if self.admin_user_id else "the admin"
         self._startup_reconciled = False
 
-    async def _classify_payment_reply(self, stage: str, reply_text: str) -> Dict[str, str | None]:
-        """Classify a wallet/confirmation reply after deterministic intent matching."""
-        if not self._classifier_client:
-            return {"category": "suspicious", "extracted_address": None}
+    @classmethod
+    def _parse_wallet_from_text(cls, content: str) -> Optional[str]:
+        """Extract the first valid Solana wallet-looking token from freeform text."""
+        if not content:
+            return None
 
-        categories = {
-            'awaiting_wallet': [
-                'wallet_provided: the user is giving a wallet address for payout',
-                'declined: the user refuses or asks to cancel',
-                'ambiguous: intent is unclear, mixed, or missing a usable wallet',
-                'suspicious: strange, manipulative, off-topic, or abnormal behavior',
-            ],
-            'awaiting_confirmation': [
-                'positive_confirmation: the user clearly approves the payout',
-                'declined: the user refuses or asks to cancel',
-                'ambiguous: intent is unclear, mixed, or conditional',
-                'suspicious: strange, manipulative, off-topic, or abnormal behavior',
-            ],
-        }
-        system = (
-            "Classify one Discord reply for an admin payment flow. "
-            "Return JSON only with keys category and extracted_address. "
-            f"Allowed categories: {'; '.join(categories.get(stage, []))}."
-        )
-        user_prompt = (
-            f"Stage: {stage}\n"
-            "Reply text:\n"
-            f"{reply_text}"
-        )
-        try:
-            response = await self._classifier_client.messages.create(
-                model=self._classifier_model,
-                max_tokens=120,
-                system=system,
-                messages=[{"role": "user", "content": user_prompt}],
+        for token in cls._WALLET_DELIMITER_RE.split(content):
+            candidate = token.rstrip(cls._WALLET_TRAILING_PUNCTUATION).strip()
+            if candidate and is_valid_solana_address(candidate):
+                return candidate
+        return None
+
+    @classmethod
+    def _classify_confirmation(cls, content: str) -> Literal['positive', 'negative', 'ambiguous']:
+        """Classify a recipient confirmation reply using deterministic keywords only."""
+        if not content:
+            return 'ambiguous'
+
+        lowered = content.casefold()
+
+        def keyword_spans(keyword: str) -> list[tuple[int, int]]:
+            pattern = rf'(?<!\w){re.escape(keyword.casefold())}(?!\w)'
+            return [
+                (match.start(), match.end())
+                for match in re.finditer(pattern, lowered, flags=re.IGNORECASE)
+            ]
+
+        negative_spans = [
+            span
+            for keyword in cls._CONFIRMATION_NEGATIVE_KEYWORDS
+            for span in keyword_spans(keyword)
+        ]
+        positive_keyword_spans = [
+            span
+            for keyword in cls._CONFIRMATION_POSITIVE_KEYWORDS
+            for span in keyword_spans(keyword)
+        ]
+
+        def is_shadowed_by_negative_phrase(span: tuple[int, int]) -> bool:
+            start, end = span
+            return any(
+                max(start, negative_start) < min(end, negative_end)
+                for negative_start, negative_end in negative_spans
             )
-            raw = ''.join(
-                block.text for block in response.content
-                if getattr(block, 'type', None) == 'text'
-            ).strip()
-            start = raw.find('{')
-            end = raw.rfind('}')
-            payload = json.loads(raw[start:end + 1] if start != -1 and end != -1 else raw)
-        except Exception as e:
-            logger.error(f"[AdminChat] Payment reply classification failed: {e}", exc_info=True)
-            return {"category": "suspicious", "extracted_address": None}
 
-        category = str(payload.get('category') or '').strip().lower()
-        extracted = str(payload.get('extracted_address') or '').strip() or None
-        allowed = {item.split(':', 1)[0] for item in categories.get(stage, [])}
-        if category not in allowed:
-            return {"category": "suspicious", "extracted_address": extracted}
-        return {"category": category, "extracted_address": extracted}
+        # Negative phrases such as "not received" should win over the positive
+        # keyword they contain. Only standalone positives outside a negative
+        # phrase span should upgrade the classification to ambiguous.
+        positive_outside_negative_phrase = any(
+            not is_shadowed_by_negative_phrase(span)
+            for span in positive_keyword_spans
+        )
+        positive = cls._CONFIRMATION_POSITIVE_EMOJI in content or positive_outside_negative_phrase
+        negative = bool(negative_spans)
+
+        if positive and not negative:
+            return 'positive'
+        if negative and not positive:
+            return 'negative'
+        return 'ambiguous'
 
     async def _notify_admin_review(self, channel, intent: Dict, detail: str, *, fail_intent: bool = True, resolved_by_message_id: int | None = None):
         """Fail closed and tag the admin for manual review."""
@@ -283,6 +310,239 @@ class AdminChatCog(commands.Cog):
             "Once that lands, I'll ask you to confirm the final payout here."
         )
 
+    async def _gate_existing_intent(self, channel, intent: Dict, wallet_record: Dict, amount_sol: float):
+        """Create the real payment for an existing intent, then move it behind admin DM approval."""
+        if not self.payment_service:
+            await self._notify_admin_review(channel, intent, "The payment service is not configured for the final payout.")
+            return None
+        if not wallet_record or not wallet_record.get('wallet_address'):
+            await self._notify_admin_review(channel, intent, "No wallet record is available for the final payout.")
+            return None
+
+        destinations = self._resolve_payment_destinations(channel)
+        payment = await self.payment_service.request_payment(
+            producer='admin_chat',
+            producer_ref=str(intent['producer_ref']),
+            guild_id=int(intent['guild_id']),
+            recipient_wallet=wallet_record['wallet_address'],
+            chain='solana',
+            provider='solana_payouts',
+            is_test=False,
+            amount_token=float(amount_sol),
+            confirm_channel_id=destinations['confirm_channel_id'],
+            confirm_thread_id=destinations['confirm_thread_id'],
+            notify_channel_id=destinations['notify_channel_id'],
+            notify_thread_id=destinations['notify_thread_id'],
+            recipient_discord_id=int(intent['recipient_user_id']),
+            wallet_id=wallet_record.get('wallet_id'),
+            route_key=destinations.get('route_key'),
+            metadata={'intent_id': intent['intent_id']},
+        )
+        if not payment:
+            await self._notify_admin_review(channel, intent, "I could not create the final payout request.")
+            return None
+
+        updated_intent = self.db_handler.update_admin_payment_intent(
+            intent['intent_id'],
+            {
+                'status': 'awaiting_admin_approval',
+                'final_payment_id': payment.get('payment_id'),
+            },
+            int(intent['guild_id']),
+        )
+        if not updated_intent:
+            await self._notify_admin_review(
+                channel,
+                intent,
+                "The final payout was created, but I could not update the intent row.",
+                fail_intent=False,
+            )
+            return None
+
+        payment_ui_cog = self._get_payment_ui_cog()
+        if payment_ui_cog and hasattr(payment_ui_cog, '_send_admin_approval_dm'):
+            await payment_ui_cog._send_admin_approval_dm(payment)
+        else:
+            logger.warning(
+                "[AdminChat] PaymentUICog admin approval DM handler unavailable for intent %s",
+                intent.get('intent_id'),
+            )
+
+        return {'intent': updated_intent, 'payment': payment}
+
+    async def _gate_fresh_intent_atomic(
+        self,
+        channel,
+        guild_id: int,
+        recipient_user_id: int,
+        amount_sol: float,
+        source_channel_id: int,
+        wallet_record: Dict,
+        admin_user_id: int | None,
+        reason: str | None,
+        producer_ref: str,
+    ):
+        """Create a real-payment intent atomically for the verified-wallet fast path."""
+        existing = self.db_handler.get_active_intent_for_recipient(guild_id, source_channel_id, recipient_user_id)
+        if existing:
+            return {'duplicate': True, 'intent': existing}
+        if not self.payment_service:
+            logger.error("[AdminChat] Payment service unavailable for verified fast-path initiate")
+            return None
+        if not wallet_record or not wallet_record.get('wallet_address'):
+            logger.error("[AdminChat] Wallet record missing for verified fast-path initiate")
+            return None
+
+        intent_id = str(uuid4())
+        destinations = self._resolve_payment_destinations(channel)
+        payment = await self.payment_service.request_payment(
+            producer='admin_chat',
+            producer_ref=str(producer_ref),
+            guild_id=int(guild_id),
+            recipient_wallet=wallet_record['wallet_address'],
+            chain='solana',
+            provider='solana_payouts',
+            is_test=False,
+            amount_token=float(amount_sol),
+            confirm_channel_id=destinations['confirm_channel_id'],
+            confirm_thread_id=destinations['confirm_thread_id'],
+            notify_channel_id=destinations['notify_channel_id'],
+            notify_thread_id=destinations['notify_thread_id'],
+            recipient_discord_id=int(recipient_user_id),
+            wallet_id=wallet_record.get('wallet_id'),
+            route_key=destinations.get('route_key'),
+            metadata={'intent_id': intent_id},
+        )
+        if not payment:
+            return None
+
+        intent = self.db_handler.create_admin_payment_intent(
+            {
+                'intent_id': intent_id,
+                'channel_id': source_channel_id,
+                'admin_user_id': admin_user_id,
+                'recipient_user_id': recipient_user_id,
+                'wallet_id': wallet_record.get('wallet_id'),
+                'requested_amount_sol': amount_sol,
+                'producer_ref': producer_ref,
+                'reason': reason,
+                'status': 'awaiting_admin_approval',
+                'final_payment_id': payment.get('payment_id'),
+            },
+            guild_id=int(guild_id),
+        )
+        if not intent:
+            logger.error(
+                "[AdminChat] Failed to create verified fast-path intent for payment %s; orphan sweep will recover",
+                payment.get('payment_id'),
+            )
+            try:
+                await channel.send(
+                    f"{self._admin_mention} review needed: I created payment `{payment.get('payment_id')}` "
+                    "but could not persist the linked intent row."
+                )
+            except Exception:
+                logger.warning(
+                    "[AdminChat] Failed to send fast-path intent creation failure notice for payment %s",
+                    payment.get('payment_id'),
+                )
+            return None
+
+        payment_ui_cog = self._get_payment_ui_cog()
+        if payment_ui_cog and hasattr(payment_ui_cog, '_send_admin_approval_dm'):
+            await payment_ui_cog._send_admin_approval_dm(payment)
+        else:
+            logger.warning(
+                "[AdminChat] PaymentUICog admin approval DM handler unavailable for new intent %s",
+                intent_id,
+            )
+
+        return {'intent': intent, 'payment': payment}
+
+    async def _handle_test_receipt_positive(self, message: discord.Message, intent: Dict):
+        wallet_id = intent.get('wallet_id')
+        wallet_record = self.db_handler.get_wallet_by_id(wallet_id, guild_id=int(intent['guild_id'])) if wallet_id else None
+        if not wallet_record:
+            await self._notify_admin_review(
+                message.channel,
+                intent,
+                "The wallet record is missing, so I could not finish verification.",
+            )
+            return
+        if not self.db_handler.mark_wallet_verified(wallet_record['wallet_id'], guild_id=int(intent['guild_id'])):
+            await self._notify_admin_review(
+                message.channel,
+                intent,
+                "The wallet test was acknowledged, but I could not mark the wallet as verified.",
+            )
+            return
+        gated = await self._gate_existing_intent(
+            message.channel,
+            intent,
+            wallet_record,
+            float(intent.get('requested_amount_sol') or 0),
+        )
+        if not gated:
+            return
+        await message.channel.send(
+            f"<@{intent['recipient_user_id']}> thanks. Your wallet is verified and the payout is queued for admin approval."
+        )
+
+    async def _handle_test_receipt_negative(self, message: discord.Message, intent: Dict):
+        test_payment = None
+        if intent.get('test_payment_id'):
+            test_payment = self.db_handler.get_payment_request(
+                intent['test_payment_id'],
+                guild_id=int(intent['guild_id']),
+            )
+
+        wallet_text = (
+            str((test_payment or {}).get('recipient_wallet') or 'unknown')
+        )
+        tx_signature = str((test_payment or {}).get('tx_signature') or 'unknown')
+        escalation_reason = (
+            "Recipient sent multiple ambiguous receipt replies."
+            if int(intent.get('ambiguous_reply_count') or 0) >= 2
+            else "Recipient reported the test payment was not received."
+        )
+        detail = (
+            f"{self._admin_mention} manual review needed for intent `{intent.get('intent_id')}` "
+            f"for <@{intent.get('recipient_user_id')}>. {escalation_reason} "
+            f"Test payment: `{intent.get('test_payment_id') or 'unknown'}`. "
+            f"Tx signature: `{tx_signature}`. Wallet: `{wallet_text}`."
+        )
+        await message.channel.send(detail)
+        self.db_handler.update_admin_payment_intent(
+            intent['intent_id'],
+            {'status': 'manual_review'},
+            int(intent['guild_id']),
+        )
+        await self._notify_intent_admin(
+            intent,
+            (
+                f"Manual review needed for intent `{intent.get('intent_id')}`.\n"
+                f"Recipient: <@{intent.get('recipient_user_id')}>\n"
+                f"Reason: {escalation_reason}\n"
+                f"Test payment: `{intent.get('test_payment_id') or 'unknown'}`\n"
+                f"Tx signature: `{tx_signature}`\n"
+                f"Wallet: `{wallet_text}`"
+            ),
+        )
+
+    async def _handle_test_receipt_ambiguous(self, message: discord.Message, intent: Dict):
+        updated_intent = self.db_handler.increment_intent_ambiguous_reply_count(
+            intent['intent_id'],
+            int(intent['guild_id']),
+        )
+        if not updated_intent:
+            logger.warning(
+                "[AdminChat] Failed to increment ambiguous reply count for intent %s",
+                intent.get('intent_id'),
+            )
+            return
+        if int(updated_intent.get('ambiguous_reply_count') or 0) >= 2:
+            await self._handle_test_receipt_negative(message, updated_intent)
+
     async def _handle_confirmation_received(self, message: discord.Message, intent: Dict):
         """Persist a free-text final payout confirmation."""
         if not self.payment_service or not intent.get('final_payment_id'):
@@ -354,63 +614,21 @@ class AdminChatCog(commands.Cog):
                 ),
             )
 
-            if not self.payment_service:
-                if channel:
-                    await self._notify_admin_review(channel, intent, "The payment service is not configured for the final payout.")
-                else:
-                    self.db_handler.update_admin_payment_intent(intent_id, {'status': 'failed'}, guild_id)
-                return
-
-            final_payment = await self.payment_service.request_payment(
-                producer='admin_chat',
-                producer_ref=str(intent['producer_ref']),
-                guild_id=int(guild_id),
-                recipient_wallet=payment['recipient_wallet'],
-                chain=str(payment.get('chain') or 'solana'),
-                provider=str(payment.get('provider') or 'solana_payouts'),
-                is_test=False,
-                amount_token=float(intent['requested_amount_sol']),
-                confirm_channel_id=int(payment['confirm_channel_id']),
-                confirm_thread_id=payment.get('confirm_thread_id'),
-                notify_channel_id=int(payment['notify_channel_id']),
-                notify_thread_id=payment.get('notify_thread_id'),
-                recipient_discord_id=int(intent['recipient_user_id']),
-                wallet_id=payment.get('wallet_id') or intent.get('wallet_id'),
-                route_key=payment.get('route_key'),
-                metadata={'intent_id': intent_id},
-            )
-            if not final_payment:
-                if channel:
-                    await self._notify_admin_review(channel, intent, "The wallet test succeeded, but I could not create the final payout request.")
-                else:
-                    self.db_handler.update_admin_payment_intent(intent_id, {'status': 'failed'}, guild_id)
-                return
-
-            prompt_message = None
-            payment_ui_cog = self._get_payment_ui_cog()
-            if payment_ui_cog and final_payment.get('status') == 'pending_confirmation':
-                try:
-                    await payment_ui_cog.send_confirmation_request(final_payment['payment_id'])
-                except Exception as e:
-                    logger.error(f"[AdminChat] Failed to send payment confirmation request for {final_payment.get('payment_id')}: {e}", exc_info=True)
-
+            receipt_prompt_message = None
             if channel:
-                prompt_message = await channel.send(
-                    f"<@{intent['recipient_user_id']}> the wallet test payment confirmed.\n\n"
-                    f"Please confirm the full payout using the payment prompt in {self._format_payment_destination(final_payment)} "
-                    "or reply here with a clear confirmation message."
+                receipt_prompt_message = await channel.send(
+                    f"<@{intent['recipient_user_id']}> Please check your wallet and reply confirmed when you see it"
                 )
 
             payload = {
-                'status': 'awaiting_confirmation',
-                'final_payment_id': final_payment.get('payment_id'),
+                'status': 'awaiting_test_receipt_confirmation',
                 'last_scanned_message_id': None,
             }
-            if prompt_message is not None:
-                payload['prompt_message_id'] = prompt_message.id
+            if receipt_prompt_message is not None:
+                payload['receipt_prompt_message_id'] = receipt_prompt_message.id
             updated = self.db_handler.update_admin_payment_intent(intent_id, payload, guild_id)
             if not updated and channel:
-                await self._notify_admin_review(channel, intent, "The final payout was created, but I could not update the intent row.")
+                await self._notify_admin_review(channel, intent, "The wallet test was confirmed, but I could not update the receipt-confirmation state.")
             return
 
         if status == 'confirmed':
@@ -449,12 +667,63 @@ class AdminChatCog(commands.Cog):
             self.db_handler.update_admin_payment_intent(intent_id, {'status': 'failed'}, guild_id)
 
     async def cog_load(self):
+        if not self._sweep_stale_test_receipts.is_running():
+            self._sweep_stale_test_receipts.start()
         if self._bot_is_ready():
             await self._ensure_startup_reconciled()
+
+    def cog_unload(self):
+        if self._sweep_stale_test_receipts.is_running():
+            self._sweep_stale_test_receipts.cancel()
 
     @commands.Cog.listener()
     async def on_ready(self):
         await self._ensure_startup_reconciled()
+
+    @tasks.loop(minutes=15)
+    async def _sweep_stale_test_receipts(self):
+        try:
+            if not self._bot_is_ready():
+                return
+
+            cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+            intents = self.db_handler.list_stale_test_receipt_intents(cutoff_iso)
+            for intent in intents:
+                try:
+                    updated = self.db_handler.update_admin_payment_intent(
+                        intent['intent_id'],
+                        {'status': 'manual_review'},
+                        int(intent['guild_id']),
+                    )
+                    if not updated:
+                        continue
+
+                    test_payment = None
+                    if intent.get('test_payment_id'):
+                        test_payment = self.db_handler.get_payment_request(
+                            intent['test_payment_id'],
+                            guild_id=int(intent['guild_id']),
+                        )
+
+                    await self._notify_intent_admin(
+                        intent,
+                        (
+                            "Stale test receipt confirmation requires manual review.\n"
+                            f"Intent: `{intent.get('intent_id')}`\n"
+                            f"Recipient: <@{intent.get('recipient_user_id')}>\n"
+                            f"Wallet: {test_payment.get('recipient_wallet') if test_payment else 'unavailable'}\n"
+                            f"Tx signature: {test_payment.get('tx_signature') if test_payment else 'unavailable'}"
+                        ),
+                    )
+                except Exception as intent_exc:
+                    logger.error(
+                        "[AdminChat] Error processing stale test receipt intent %s: %s",
+                        intent.get('intent_id'),
+                        intent_exc,
+                        exc_info=True,
+                    )
+        except Exception as e:
+            logger.error(f"[AdminChat] Stale test receipt sweep failed: {e}", exc_info=True)
 
     def _bot_is_ready(self) -> bool:
         checker = getattr(self.bot, 'is_ready', None)
@@ -529,7 +798,10 @@ class AdminChatCog(commands.Cog):
             last_seen_message_id = message.id
             if getattr(message.author, 'id', None) != recipient_user_id:
                 continue
-            await self._check_pending_payment_reply(message)
+            refreshed_intent = self.db_handler.get_admin_payment_intent(intent['intent_id'], int(intent['guild_id']))
+            if refreshed_intent is None:
+                break
+            await self._handle_pending_recipient_message(message, refreshed_intent)
             refreshed = self.db_handler.get_admin_payment_intent(intent['intent_id'], int(intent['guild_id']))
             refreshed_status = str((refreshed or {}).get('status') or '').strip().lower()
             if refreshed is None or refreshed_status != original_status:
@@ -546,98 +818,35 @@ class AdminChatCog(commands.Cog):
     async def _reconcile_active_intents(self):
         for guild_id in self._get_reconciliation_guild_ids():
             intents = self.db_handler.list_active_intents(guild_id)
+            deferred_counts = {
+                'awaiting_admin_approval': 0,
+                'awaiting_admin_init': 0,
+                'manual_review': 0,
+            }
             for intent in intents:
                 status = str(intent.get('status') or '').strip().lower()
-                if status in {'awaiting_wallet', 'awaiting_confirmation'}:
+                if status in {'awaiting_wallet', 'awaiting_test_receipt_confirmation'}:
                     await self._reconcile_intent_history(intent)
-                    refreshed = self.db_handler.get_admin_payment_intent(intent['intent_id'], int(intent['guild_id']))
-                    if refreshed and str(refreshed.get('status') or '').strip().lower() == 'awaiting_confirmation':
-                        await self._reconcile_payment_status(refreshed, 'final_payment_id')
+                    continue
+                if status == 'awaiting_confirmation':
+                    await self._reconcile_payment_status(intent, 'final_payment_id')
                     continue
                 if status == 'awaiting_test':
                     await self._reconcile_payment_status(intent, 'test_payment_id')
                     continue
                 if status == 'confirmed':
                     await self._reconcile_payment_status(intent, 'final_payment_id')
-
-    async def _check_pending_payment_reply(self, message: discord.Message) -> bool:
-        """Intercept recipient replies for active admin payment intents before normal bot routing."""
-        if message.author.bot or message.guild is None:
-            return False
-
-        intent = self.db_handler.get_active_intent_for_recipient(message.guild.id, message.channel.id, message.author.id)
-        if not intent:
-            return False
-
-        intent_id = str(intent.get('intent_id') or '')
-        if not intent_id:
-            return False
-        if intent_id in self._processing_intents:
-            return True
-
-        self._processing_intents.add(intent_id)
-        try:
-            content = (message.content or '').strip()
-            if not content:
-                return False
-
-            status = str(intent.get('status') or '').strip().lower()
-            if status == 'awaiting_wallet':
-                if is_valid_solana_address(content):
-                    await self._handle_wallet_received(message, intent, content)
-                    return True
-                verdict = await self._classify_payment_reply('awaiting_wallet', content)
-                category = verdict.get('category')
-                extracted = verdict.get('extracted_address')
-                if category == 'wallet_provided' and extracted and is_valid_solana_address(extracted):
-                    await self._handle_wallet_received(message, intent, extracted)
-                elif category == 'declined':
-                    self.db_handler.update_admin_payment_intent(
-                        intent_id,
-                        {'status': 'cancelled', 'resolved_by_message_id': message.id},
-                        intent['guild_id'],
-                    )
-                    await message.channel.send(f"<@{intent['recipient_user_id']}> understood. This payment request is cancelled.")
-                else:
-                    await self._notify_admin_review(
-                        message.channel,
-                        intent,
-                        "The wallet reply was ambiguous or suspicious, so I did not continue the payout.",
-                        resolved_by_message_id=message.id,
-                    )
-                return True
-
-            if status == 'awaiting_confirmation':
-                verdict = await self._classify_payment_reply('awaiting_confirmation', content)
-                category = verdict.get('category')
-                if category == 'positive_confirmation':
-                    await self._handle_confirmation_received(message, intent)
-                elif category == 'declined':
-                    final_payment_id = intent.get('final_payment_id')
-                    if final_payment_id:
-                        self.db_handler.cancel_payment(
-                            final_payment_id,
-                            guild_id=int(intent['guild_id']),
-                            reason='Recipient declined final payout in channel',
-                        )
-                    self.db_handler.update_admin_payment_intent(
-                        intent_id,
-                        {'status': 'cancelled', 'resolved_by_message_id': message.id},
-                        intent['guild_id'],
-                    )
-                    await message.channel.send(f"<@{intent['recipient_user_id']}> understood. This payout is cancelled.")
-                else:
-                    await self._notify_admin_review(
-                        message.channel,
-                        intent,
-                        "The final payout reply was ambiguous or suspicious, so I did not advance the payout.",
-                        resolved_by_message_id=message.id,
-                    )
-                return True
-
-            return False
-        finally:
-            self._processing_intents.discard(intent_id)
+                    continue
+                if status in deferred_counts:
+                    deferred_counts[status] += 1
+            if any(deferred_counts.values()):
+                logger.info(
+                    "[AdminChat] Active intent backlog for guild %s: awaiting_admin_approval=%s awaiting_admin_init=%s manual_review=%s",
+                    guild_id,
+                    deferred_counts['awaiting_admin_approval'],
+                    deferred_counts['awaiting_admin_init'],
+                    deferred_counts['manual_review'],
+                )
 
     def _get_supabase(self):
         """Get the shared Supabase client if available."""
@@ -787,58 +996,84 @@ class AdminChatCog(commands.Cog):
         normalised = content.strip().lower().rstrip('!.')
         return normalised in self._ABORT_PHRASES
 
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        """Handle admin chat and approved member bot requests."""
+    async def _handle_pending_recipient_message(self, message: discord.Message, intent: Dict) -> bool:
+        """Deterministic state-machine router for pending admin payment recipients."""
+        if message.author.bot or message.guild is None:
+            return False
 
-        if await self._check_pending_payment_reply(message):
+        intent_id = str(intent.get('intent_id') or '')
+        if not intent_id:
+            return False
+        if intent_id in self._processing_intents:
+            return True
+
+        self._processing_intents.add(intent_id)
+        try:
+            content = (message.content or '').strip()
+            status = str(intent.get('status') or '').strip().lower()
+
+            if status == 'awaiting_wallet':
+                wallet_address = self._parse_wallet_from_text(content)
+                if wallet_address:
+                    await self._handle_wallet_received(message, intent, wallet_address)
+                return True
+
+            if status == 'awaiting_test_receipt_confirmation':
+                classification = self._classify_confirmation(content)
+                handler_name = {
+                    'positive': '_handle_test_receipt_positive',
+                    'negative': '_handle_test_receipt_negative',
+                    'ambiguous': '_handle_test_receipt_ambiguous',
+                }[classification]
+                handler = getattr(self, handler_name, None)
+                if callable(handler):
+                    await handler(message, intent)
+                return True
+
+            if status in {
+                'awaiting_test',
+                'awaiting_admin_init',
+                'awaiting_admin_approval',
+                'manual_review',
+                'awaiting_confirmation',
+                'confirmed',
+            }:
+                return True
+
+            return False
+        finally:
+            self._processing_intents.discard(intent_id)
+
+    async def _handle_admin_message(self, message: discord.Message):
+        """Process admin messages without mention or approved-member gating."""
+        if message.author.bot:
             return
 
-        if not self._is_directed_at_bot(message):
-            return
-
+        # Identity-routing note: MEMBER_SYSTEM_PROMPT, _can_user_message_bot, and
+        # _is_directed_at_bot are intentionally retained as dead code for staged cleanup.
         is_dm = isinstance(message.channel, discord.DMChannel)
-        is_admin = self._is_admin(message.author.id)
         content = message.content if is_dm else self._strip_mention(message.content, message.guild)
-
         if not content:
             return
 
-        resolved_guild_id = message.guild.id if message.guild else None
-        if not is_admin:
-            if not await self._can_user_message_bot(message.author.id):
-                return
-            resolved_guild_id = await self._resolve_context_guild_id(message.author.id, resolved_guild_id)
-            if resolved_guild_id is None:
-                logger.info(f"[AdminChat] No guild context for approved member {message.author.id}")
-                return
-            if self._is_rate_limited(message.author.id):
-                await message.reply("Slow down a bit. Try again in a few minutes.")
-                return
-
         user_id = message.author.id
+        resolved_guild_id = message.guild.id if message.guild else None
         source = "DM" if is_dm else f"#{getattr(message.channel, 'name', 'unknown')}"
-        role = "admin" if is_admin else "member"
-        logger.info(f"[AdminChat] Received from {role} in {source}: {content[:50]}...")
+        logger.info(f"[AdminChat] Received from admin in {source}: {content[:50]}...")
 
-        # If agent is busy, check if this is an abort or queue it
         if self._busy.get(user_id):
             if self._is_abort(content):
                 if self.agent:
                     self.agent.request_abort(user_id)
                     logger.info(f"[AdminChat] Abort requested by user {user_id}")
-                await message.add_reaction("\u23f9\ufe0f")  # stop button emoji
+                await message.add_reaction("\u23f9\ufe0f")
                 return
-            else:
-                # Queue the message to process after current run finishes
-                self._pending_messages[user_id] = message
-                return
+            self._pending_messages[user_id] = message
+            return
 
         try:
-            # Initialize agent if needed
             self._ensure_agent()
 
-            # Build channel context for non-DM messages
             channel_context = None
             if is_dm:
                 ch = message.channel
@@ -878,13 +1113,11 @@ class AdminChatCog(commands.Cog):
                     "channel_id": str(ch.id),
                     "channel_name": getattr(ch, 'name', 'unknown'),
                 }
-                # If it's a thread, include parent info
                 if isinstance(ch, discord.Thread) and ch.parent:
                     channel_context["is_thread"] = True
                     channel_context["parent_channel_id"] = str(ch.parent_id)
                     channel_context["parent_channel_name"] = ch.parent.name
 
-                # If replying to a message, include it
                 if message.reference and message.reference.resolved:
                     ref = message.reference.resolved
                     if isinstance(ref, discord.Message):
@@ -895,7 +1128,6 @@ class AdminChatCog(commands.Cog):
                         }
                         channel_context["replied_to_anchor_note"] = "USER IS REPLYING TO THIS MESSAGE — treat it as the primary referent."
 
-                # Grab recent messages for surrounding context
                 try:
                     recent = []
                     async for msg in ch.history(limit=10):
@@ -907,7 +1139,6 @@ class AdminChatCog(commands.Cog):
                 except Exception:
                     pass
 
-            # Mark busy and run agent
             self._busy[user_id] = True
             try:
                 responses = await self.agent.chat(
@@ -915,22 +1146,18 @@ class AdminChatCog(commands.Cog):
                     user_message=content,
                     channel_context=channel_context,
                     channel=message.channel,
-                    is_admin=is_admin,
-                    requester_id=None if is_admin else user_id,
+                    is_admin=True,
+                    requester_id=None,
                 )
             finally:
                 self._busy[user_id] = False
 
-            # responses is a list of messages, or None if ended without reply
             if responses is None:
                 logger.info("[AdminChat] Turn ended without reply (silent action)")
                 return
 
-            # Send each response message
             total_chars = 0
             messages_sent = 0
-
-            # In public channels, reply to the original message for the first response
             reply_ref = message if not is_dm else None
 
             async def _send_with_retry(channel, content_to_send: str, reference=None):
@@ -944,38 +1171,28 @@ class AdminChatCog(commands.Cog):
                         await asyncio.sleep(backoffs[attempt])
 
             for response in responses:
-                # Skip empty responses
                 if not response or not response.strip():
                     continue
 
-                # Split on ---SPLIT--- marker for proper media embedding
-                # Each part becomes a separate Discord message
                 parts = response.split('\n---SPLIT---\n')
-
                 for part in parts:
                     part = part.strip()
                     if not part:
                         continue
 
                     total_chars += len(part)
-
-                    # Handle long messages by splitting
                     if len(part) <= 2000:
                         await _send_with_retry(message.channel, part, reference=reply_ref)
                         messages_sent += 1
                     else:
-                        # Split into chunks
-                        chunks = [part[i:i+1990] for i in range(0, len(part), 1990)]
+                        chunks = [part[i:i + 1990] for i in range(0, len(part), 1990)]
                         for chunk in chunks:
                             if chunk.strip():
                                 await _send_with_retry(message.channel, chunk, reference=reply_ref)
                                 messages_sent += 1
-
-                    # Only reply-thread the first message
                     reply_ref = None
 
             logger.info(f"[AdminChat] Sent {messages_sent} message(s) ({total_chars} chars total)")
-
         except Exception:
             logger.exception("[AdminChat] Error processing message")
             try:
@@ -983,11 +1200,32 @@ class AdminChatCog(commands.Cog):
             except Exception:
                 logger.exception("[AdminChat] Failed to send neutral error message")
 
-        # Process any message that arrived while we were busy
         pending = self._pending_messages.pop(user_id, None)
         if pending:
             logger.info(f"[AdminChat] Processing queued message from {user_id}")
             await self.on_message(pending)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Handle admin chat via identity routing only."""
+        if message.author.bot:
+            return
+
+        if self._is_admin(message.author.id):
+            await self._handle_admin_message(message)
+            return
+
+        if message.guild is None:
+            return
+
+        intent = self.db_handler.get_active_intent_for_recipient(
+            message.guild.id,
+            message.channel.id,
+            message.author.id,
+        )
+        if intent:
+            await self._handle_pending_recipient_message(message, intent)
+            return
     
     @commands.command(name='adminchat_clear')
     @commands.is_owner()

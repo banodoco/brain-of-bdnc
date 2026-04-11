@@ -22,7 +22,14 @@ _CHANNEL_POSTING_TOOLS = frozenset({
     "send_message",
     "upload_file",
     "initiate_payment",
+    "initiate_batch_payment",
     "share_to_social",
+})
+_ADMIN_IDENTITY_INJECTED_TOOLS = frozenset({
+    "initiate_payment",
+    "initiate_batch_payment",
+    "upsert_wallet_for_user",
+    "resolve_admin_intent",
 })
 from src.common.soul import BOT_VOICE
 
@@ -79,6 +86,12 @@ END EVERY TURN with either reply or end_turn.
 - release_payment(payment_id, new_status, reason?) — release a manual_hold payment to failed or keep it held.
 - cancel_payment(payment_id, reason?) — cancel a payment that has not entered submitted/manual_hold.
 - initiate_payment(recipient_user_id, amount_sol, reason?) — start an admin-triggered payout in SOL from a guild channel. If the user does not already have a verified Solana wallet on file, this pings them in-channel and waits for their wallet reply before continuing.
+- initiate_batch_payment(payments=[{recipient_user_id, amount_sol, reason?}, ...]) — atomically create 1-20 admin-triggered payout intents. Verified wallets go straight to admin approval; unverified wallets are prompted in-channel for wallet collection.
+- query_payment_state(payment_id?, user_id?, limit?) — canonical payment state lookup with redacted wallets. Use this for payment status questions.
+- query_wallet_state(user_id) — canonical wallet_registry lookup with redacted addresses. Use this for wallet verification questions.
+- list_recent_payments(producer?, user_id?, limit?) — recent payment_requests rows with redacted wallets for quick admin audits.
+- upsert_wallet_for_user(user_id, wallet_address, chain?, reason?) — register or replace a user's wallet as unverified so the next payment runs the test-payment verification flow.
+- resolve_admin_intent(intent_id, note?) — cancel a stuck admin payment intent and cascade-cancel linked cancellable payments.
 - update_member_socials(user_id, twitter_url?, reddit_url?) — set/clear a member's Twitter or Reddit handle on file. The Twitter handle is what social picks use to auto-tag the creator. Pass an empty string to clear a field; omit a field to leave it alone. Use this whenever the admin says things like "set X's twitter to @y" or "X is @y on twitter".
 - resolve_user(username) — get a user's Discord ID and mention tag.
 
@@ -87,6 +100,8 @@ END EVERY TURN with either reply or end_turn.
 - end_turn — end without sending a message (for silent actions).
 
 ## How to work
+
+**State questions -> query first.** For questions about the state of payments or wallets, call `query_payment_state`, `query_wallet_state`, or `list_recent_payments` first. Do not claim payment or wallet state from memory or recent channel context alone.
 
 **Search first, act second.** When messaged from a channel, you see [Sent in #channel-name (channel_id: ...)]. Browse with find_messages(channel_id=..., live=true) before answering if you need context. If a search returns nothing useful, try different filters. If the user corrects you, re-examine your assumptions.
 
@@ -435,7 +450,7 @@ class AdminChatAgent:
                         if tool_input is tool_use.input:
                             tool_input = dict(tool_input)
                         tool_input['source_channel_id'] = int(channel_context['channel_id'])
-                    if is_admin and tool_name == "initiate_payment" and 'admin_user_id' not in tool_input:
+                    if is_admin and tool_name in _ADMIN_IDENTITY_INJECTED_TOOLS and 'admin_user_id' not in tool_input:
                         if tool_input is tool_use.input:
                             tool_input = dict(tool_input)
                         tool_input['admin_user_id'] = user_id

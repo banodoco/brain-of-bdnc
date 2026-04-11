@@ -20,8 +20,10 @@ create table if not exists public.admin_payment_intents (
     test_payment_id uuid references public.payment_requests(payment_id) on delete set null,
     final_payment_id uuid references public.payment_requests(payment_id) on delete set null,
     prompt_message_id bigint,
+    receipt_prompt_message_id bigint,
     last_scanned_message_id bigint,
     resolved_by_message_id bigint,
+    ambiguous_reply_count integer not null default 0,
     requested_amount_sol numeric(38, 18) not null check (requested_amount_sol > 0),
     producer_ref text not null,
     reason text,
@@ -29,7 +31,11 @@ create table if not exists public.admin_payment_intents (
         check (status in (
             'awaiting_wallet',
             'awaiting_test',
+            'awaiting_test_receipt_confirmation',
             'awaiting_confirmation',
+            'awaiting_admin_approval',
+            'awaiting_admin_init',
+            'manual_review',
             'confirmed',
             'completed',
             'failed',
@@ -43,6 +49,31 @@ create table if not exists public.admin_payment_intents (
 
 alter table public.admin_payment_intents
     add column if not exists admin_user_id bigint;
+
+alter table public.admin_payment_intents
+    add column if not exists ambiguous_reply_count integer not null default 0;
+
+alter table public.admin_payment_intents
+    add column if not exists receipt_prompt_message_id bigint;
+
+alter table public.admin_payment_intents
+    drop constraint if exists admin_payment_intents_status_check;
+
+alter table public.admin_payment_intents
+    add constraint admin_payment_intents_status_check
+    check (status in (
+        'awaiting_wallet',
+        'awaiting_test',
+        'awaiting_test_receipt_confirmation',
+        'awaiting_confirmation',
+        'awaiting_admin_approval',
+        'awaiting_admin_init',
+        'manual_review',
+        'confirmed',
+        'completed',
+        'failed',
+        'cancelled'
+    ));
 
 create unique index if not exists uq_admin_payment_intents_active_recipient_channel
     on public.admin_payment_intents (guild_id, channel_id, recipient_user_id)

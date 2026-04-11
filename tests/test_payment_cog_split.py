@@ -77,3 +77,281 @@ async def test_split_cogs_preserve_view_registration_and_cap_breach_routing(monk
     await notify(payment)
 
     worker_cog._dm_admin_payment_failure.assert_awaited_once_with(payment)
+
+
+async def test_payment_ui_cog_loads_without_admin_chat_cog():
+    class LocalPaymentService:
+        def get_pending_confirmation_payments(self, guild_ids=None):
+            return []
+
+    class LocalDB:
+        def __init__(self):
+            self.server_config = SimpleNamespace(
+                get_enabled_servers=lambda require_write=False: [{"guild_id": 1, "write_enabled": True}],
+            )
+
+        def list_stale_awaiting_admin_init_intents(self, cutoff_iso):
+            return []
+
+        def list_intents_by_status(self, guild_id, status):
+            return []
+
+    bot = FakeBot(LocalPaymentService())
+    cog = PaymentUICog(bot, LocalDB(), payment_service=bot.payment_service)
+
+    await cog.cog_load()
+
+    assert bot.ready_waits == 0
+
+
+async def test_orphan_sweep_auto_skip_crash_cancels_payment():
+    class LocalPaymentService:
+        def get_pending_confirmation_payments(self, guild_ids=None):
+            return [
+                {
+                    "payment_id": "pay-orphan",
+                    "guild_id": 1,
+                    "producer": "admin_chat",
+                    "is_test": False,
+                    "status": "pending_confirmation",
+                }
+            ]
+
+    class LocalDB:
+        def __init__(self):
+            self.server_config = SimpleNamespace(
+                get_enabled_servers=lambda require_write=False: [{"guild_id": 1, "write_enabled": True}],
+            )
+            self.cancel_calls = []
+
+        def find_admin_chat_intent_by_payment_id(self, payment_id):
+            return None
+
+        def cancel_payment(self, payment_id, guild_id=None, reason=None):
+            self.cancel_calls.append((payment_id, guild_id, reason))
+            return True
+
+        def list_stale_awaiting_admin_init_intents(self, cutoff_iso):
+            return []
+
+        def list_intents_by_status(self, guild_id, status):
+            return []
+
+    bot = FakeBot(LocalPaymentService())
+    db = LocalDB()
+    cog = PaymentUICog(bot, db, payment_service=bot.payment_service)
+
+    await cog._reconcile_admin_chat_orphans()
+
+    assert db.cancel_calls == [
+        ("pay-orphan", 1, "admin_chat pending_confirmation payment missing linked intent")
+    ]
+
+
+async def test_orphan_sweep_test_receipt_crash_completes_recovery():
+    class LocalPaymentService:
+        def get_pending_confirmation_payments(self, guild_ids=None):
+            return [
+                {
+                    "payment_id": "pay-final",
+                    "guild_id": 1,
+                    "producer": "admin_chat",
+                    "is_test": False,
+                    "status": "pending_confirmation",
+                    "recipient_discord_id": 42,
+                    "recipient_wallet": "Wallet1111111111111111111111111111111",
+                }
+            ]
+
+    class LocalDB:
+        def __init__(self):
+            self.server_config = SimpleNamespace(
+                get_enabled_servers=lambda require_write=False: [{"guild_id": 1, "write_enabled": True}],
+            )
+            self.intent = {
+                "intent_id": "intent-1",
+                "guild_id": 1,
+                "channel_id": 55,
+                "recipient_user_id": 42,
+                "status": "awaiting_test_receipt_confirmation",
+                "final_payment_id": None,
+            }
+            self.updated = []
+
+        def find_admin_chat_intent_by_payment_id(self, payment_id):
+            return dict(self.intent)
+
+        def update_admin_payment_intent(self, intent_id, payload, guild_id):
+            self.intent.update(dict(payload))
+            self.updated.append((intent_id, dict(payload), guild_id))
+            return dict(self.intent)
+
+        def list_stale_awaiting_admin_init_intents(self, cutoff_iso):
+            return []
+
+        def list_intents_by_status(self, guild_id, status):
+            return []
+
+    bot = FakeBot(LocalPaymentService())
+    bot.fetch_user = AsyncMock(return_value=SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=1))))
+    db = LocalDB()
+    cog = PaymentUICog(bot, db, payment_service=bot.payment_service)
+    cog._send_admin_approval_dm = AsyncMock(return_value=SimpleNamespace(id=1))
+
+    await cog._reconcile_admin_chat_orphans()
+
+    assert db.updated == [
+        ("intent-1", {"status": "awaiting_admin_approval", "final_payment_id": "pay-final"}, 1)
+    ]
+    cog._send_admin_approval_dm.assert_awaited_once()
+
+
+async def test_initiate_batch_payment_fan_out_crash_leaves_awaiting_admin_init_for_sweep():
+    class LocalPaymentService:
+        def get_pending_confirmation_payments(self, guild_ids=None):
+            return []
+
+    class LocalDB:
+        def __init__(self):
+            self.server_config = SimpleNamespace(
+                get_enabled_servers=lambda require_write=False: [{"guild_id": 1, "write_enabled": True}],
+            )
+            self.intent = {
+                "intent_id": "intent-batch",
+                "guild_id": 1,
+                "channel_id": 55,
+                "recipient_user_id": 42,
+                "status": "awaiting_admin_init",
+                "final_payment_id": None,
+            }
+            self.updated = []
+
+        def list_stale_awaiting_admin_init_intents(self, cutoff_iso):
+            return [dict(self.intent)]
+
+        def update_admin_payment_intent(self, intent_id, payload, guild_id):
+            self.intent.update(dict(payload))
+            self.updated.append((intent_id, dict(payload), guild_id))
+            return dict(self.intent)
+
+        def list_intents_by_status(self, guild_id, status):
+            return []
+
+    bot = FakeBot(LocalPaymentService())
+    db = LocalDB()
+    cog = PaymentUICog(bot, db, payment_service=bot.payment_service)
+
+    await cog._reconcile_admin_chat_orphans()
+
+    assert db.updated == [("intent-batch", {"status": "cancelled"}, 1)]
+
+
+async def test_orphan_sweep_leaves_legacy_awaiting_confirmation_alone():
+    class LocalPaymentService:
+        def get_pending_confirmation_payments(self, guild_ids=None):
+            return [
+                {
+                    "payment_id": "pay-legacy",
+                    "guild_id": 1,
+                    "producer": "admin_chat",
+                    "is_test": False,
+                    "status": "pending_confirmation",
+                }
+            ]
+
+    class LocalDB:
+        def __init__(self):
+            self.server_config = SimpleNamespace(
+                get_enabled_servers=lambda require_write=False: [{"guild_id": 1, "write_enabled": True}],
+            )
+            self.cancel_calls = []
+
+        def find_admin_chat_intent_by_payment_id(self, payment_id):
+            return {
+                "intent_id": "intent-legacy",
+                "guild_id": 1,
+                "channel_id": 55,
+                "recipient_user_id": 42,
+                "status": "awaiting_confirmation",
+                "final_payment_id": "pay-legacy",
+            }
+
+        def cancel_payment(self, payment_id, guild_id=None, reason=None):
+            self.cancel_calls.append((payment_id, guild_id, reason))
+            return True
+
+        def list_stale_awaiting_admin_init_intents(self, cutoff_iso):
+            return []
+
+        def list_intents_by_status(self, guild_id, status):
+            return []
+
+    bot = FakeBot(LocalPaymentService())
+    db = LocalDB()
+    cog = PaymentUICog(bot, db, payment_service=bot.payment_service)
+
+    await cog._reconcile_admin_chat_orphans()
+
+    assert db.cancel_calls == []
+
+
+async def test_orphan_sweep_runs_before_view_registration(monkeypatch):
+    bot = FakeBot(FakePaymentService())
+    db = FakeDB()
+    cog = PaymentUICog(bot, db, payment_service=bot.payment_service)
+    order = []
+
+    async def record_reconcile():
+        order.append("reconcile")
+
+    async def record_pending():
+        order.append("pending")
+
+    async def record_admin():
+        order.append("admin")
+
+    monkeypatch.setattr(cog, "_reconcile_admin_chat_orphans", record_reconcile)
+    monkeypatch.setattr(cog, "_register_pending_confirmation_views", record_pending)
+    monkeypatch.setattr(cog, "_register_pending_admin_approval_views", record_admin)
+
+    await cog.cog_load()
+
+    assert order[:3] == ["reconcile", "pending", "admin"]
+
+
+async def test_orphan_sweep_loop_cancels_stale_awaiting_admin_init_during_uptime():
+    class LocalPaymentService:
+        def get_pending_confirmation_payments(self, guild_ids=None):
+            return []
+
+    class LocalDB:
+        def __init__(self):
+            self.server_config = SimpleNamespace(
+                get_enabled_servers=lambda require_write=False: [{"guild_id": 1, "write_enabled": True}],
+            )
+            self.intent = {
+                "intent_id": "intent-loop",
+                "guild_id": 1,
+                "channel_id": 55,
+                "recipient_user_id": 42,
+                "status": "awaiting_admin_init",
+                "final_payment_id": None,
+            }
+
+        def list_stale_awaiting_admin_init_intents(self, cutoff_iso):
+            return [dict(self.intent)]
+
+        def update_admin_payment_intent(self, intent_id, payload, guild_id):
+            self.intent.update(dict(payload))
+            return dict(self.intent)
+
+        def list_intents_by_status(self, guild_id, status):
+            return []
+
+    bot = FakeBot(LocalPaymentService())
+    db = LocalDB()
+    cog = PaymentUICog(bot, db, payment_service=bot.payment_service)
+
+    await cog._orphan_sweep_loop.coro(cog)
+
+    assert db.intent["status"] == "cancelled"

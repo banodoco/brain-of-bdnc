@@ -6,9 +6,10 @@ import pytest
 
 from src.common.db_handler import WalletUpdateBlockedError
 from src.features.admin_chat.admin_chat_cog import AdminChatCog
-from src.features.admin_chat.tools import execute_initiate_payment
+from src.features.admin_chat.tools import execute_initiate_batch_payment, execute_initiate_payment
 from src.features.grants.grants_cog import GrantsCog
 from src.features.payments.payment_service import PaymentActor, PaymentActorKind, PaymentService
+from src.features.payments.payment_ui_cog import AdminApprovalView, PaymentConfirmView, PaymentUICog
 from src.features.payments.payment_worker_cog import PaymentWorkerCog
 
 
@@ -95,18 +96,78 @@ class FakeChannel:
 class FakePaymentUICog:
     def __init__(self):
         self.confirmation_requests = []
+        self.admin_approval_requests = []
 
     async def send_confirmation_request(self, payment_id):
         self.confirmation_requests.append(payment_id)
         return SimpleNamespace(id=f"confirm-{payment_id}")
 
+    async def _send_admin_approval_dm(self, payment):
+        self.admin_approval_requests.append(dict(payment))
+        return SimpleNamespace(id=f"admin-{payment['payment_id']}")
+
 
 class FakeFlowCog:
     def __init__(self):
         self.started = []
+        self.fresh = []
+        self.existing = []
 
     async def _start_admin_payment_flow(self, channel, intent):
         self.started.append((channel, dict(intent)))
+
+    async def _gate_fresh_intent_atomic(
+        self,
+        channel,
+        guild_id,
+        recipient_user_id,
+        amount_sol,
+        source_channel_id,
+        wallet_record,
+        admin_user_id,
+        reason,
+        producer_ref,
+    ):
+        self.fresh.append(
+            {
+                "channel": channel,
+                "guild_id": guild_id,
+                "recipient_user_id": recipient_user_id,
+                "amount_sol": amount_sol,
+                "source_channel_id": source_channel_id,
+                "wallet_record": dict(wallet_record),
+                "admin_user_id": admin_user_id,
+                "reason": reason,
+                "producer_ref": producer_ref,
+            }
+        )
+        return {
+            "intent": {
+                "intent_id": f"fresh-intent-{recipient_user_id}",
+                "guild_id": guild_id,
+                "channel_id": source_channel_id,
+                "recipient_user_id": recipient_user_id,
+                "wallet_id": wallet_record.get("wallet_id"),
+                "requested_amount_sol": amount_sol,
+                "producer_ref": producer_ref,
+                "status": "awaiting_admin_approval",
+            },
+            "payment": {"payment_id": f"payment-{recipient_user_id}", "status": "pending_confirmation"},
+        }
+
+    async def _gate_existing_intent(self, channel, intent, wallet_record, amount_sol):
+        self.existing.append(
+            {
+                "channel": channel,
+                "intent": dict(intent),
+                "wallet_record": dict(wallet_record),
+                "amount_sol": amount_sol,
+            }
+        )
+        return {
+            "intent": dict(intent),
+            "payment": {"payment_id": f"existing-{intent['intent_id']}", "status": "pending_confirmation"},
+        }
 
 
 class FakeBot:
@@ -139,6 +200,7 @@ class FakeBot:
         self.user = SimpleNamespace(id=999)
         self.ready_waits = 0
         self.fetched_users = {}
+        self.added_views = []
         self._is_ready = False
         self.db_handler = db_handler
         self.claude_client = object()
@@ -180,6 +242,34 @@ class FakeBot:
                 return guild
         return None
 
+    def add_view(self, view, message_id=None):
+        self.added_views.append((view, message_id))
+
+
+class FakeInteractionResponse:
+    def __init__(self):
+        self.calls = []
+
+    async def defer(self, *, ephemeral=False):
+        self.calls.append({"ephemeral": ephemeral})
+
+
+class FakeInteractionFollowup:
+    def __init__(self):
+        self.messages = []
+
+    async def send(self, content, ephemeral=False):
+        self.messages.append({"content": content, "ephemeral": ephemeral})
+
+
+class FakeInteraction:
+    def __init__(self, user_id, *, guild_id=1, message=None):
+        self.user = SimpleNamespace(id=user_id)
+        self.guild_id = guild_id
+        self.message = message
+        self.response = FakeInteractionResponse()
+        self.followup = FakeInteractionFollowup()
+
 
 class FakeAdminPaymentService:
     def __init__(self, *, request_result=None, confirm_result=None):
@@ -215,9 +305,11 @@ class FakeIntentDB:
         self.active_payment_or_intent_users = set()
         self.rolling_24h_usd = {}
         self.created_intents = []
+        self.batch_create_calls = []
         self.updated_intents = []
         self.upsert_wallet_calls = []
         self.cancel_payment_calls = []
+        self.wallet_verified_calls = []
         self.server_config = SimpleNamespace(
             get_enabled_servers=lambda require_write=False: [{"guild_id": 1, "enabled": True, "write_enabled": True}],
             resolve_payment_destinations=lambda guild_id, channel_id, producer: None,
@@ -272,12 +364,16 @@ class FakeIntentDB:
         return float(self.rolling_24h_usd.get((int(guild_id), str(provider).strip().lower()), 0.0))
 
     def create_admin_payment_intent(self, record, guild_id):
-        intent_id = f"intent-{len(self.intents) + 1}"
+        intent_id = record.get("intent_id") or f"intent-{len(self.intents) + 1}"
         intent = {"intent_id": intent_id, **dict(record), "guild_id": guild_id}
         self.intents[intent_id] = intent
         self.created_intents.append(dict(intent))
         self._sync_active_index(intent)
         return dict(intent)
+
+    def create_admin_payment_intents_batch(self, records, guild_id):
+        self.batch_create_calls.append((guild_id, [dict(record) for record in records]))
+        return [self.create_admin_payment_intent(record, guild_id) for record in records]
 
     def get_active_intent_for_recipient(self, guild_id, channel_id, recipient_user_id):
         intent = self.active_by_key.get((guild_id, channel_id, recipient_user_id))
@@ -340,6 +436,22 @@ class FakeIntentDB:
             payment["status"] = "cancelled"
             payment["last_error"] = reason
         return True
+
+    def mark_wallet_verified(self, wallet_id, guild_id=None):
+        self.wallet_verified_calls.append((wallet_id, guild_id))
+        for wallet in self.wallets.values():
+            if wallet["wallet_id"] == wallet_id and (guild_id is None or wallet["guild_id"] == guild_id):
+                wallet["verified_at"] = "verified-now"
+                return True
+        return False
+
+    def increment_intent_ambiguous_reply_count(self, intent_id, guild_id):
+        intent = self.intents.get(intent_id)
+        if not intent or intent["guild_id"] != guild_id:
+            return None
+        intent["ambiguous_reply_count"] = int(intent.get("ambiguous_reply_count") or 0) + 1
+        self._sync_active_index(intent)
+        return dict(intent)
 
 
 class FakeProvider:
@@ -464,6 +576,201 @@ def admin_chat_env(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
 
+def test_parse_wallet_from_text_extracts_wrapped_address():
+    cog = AdminChatCog(FakeBot(FakeChannel(), payment_service=object()), FakeIntentDB(), sharer=object())
+
+    assert cog._parse_wallet_from_text(f"wallet is `<{VALID_SOL_ADDRESS}>`") == VALID_SOL_ADDRESS
+    assert cog._parse_wallet_from_text(f"not-a-wallet {VALID_SOL_ADDRESS}.") == VALID_SOL_ADDRESS
+    assert cog._parse_wallet_from_text("definitely not a wallet") is None
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("confirmed, got it", "positive"),
+        ("no", "negative"),
+        ("confirmed but not received", "ambiguous"),
+        ("👍 thanks", "positive"),
+        ("maybe later", "ambiguous"),
+    ],
+)
+def test_classify_confirmation_keywords(content, expected):
+    cog = AdminChatCog(FakeBot(FakeChannel(), payment_service=object()), FakeIntentDB(), sharer=object())
+
+    assert cog._classify_confirmation(content) == expected
+
+
+def test_classify_confirmation_negative_phrase_beats_embedded_positive_keyword():
+    cog = AdminChatCog(FakeBot(FakeChannel(), payment_service=object()), FakeIntentDB(), sharer=object())
+
+    assert cog._classify_confirmation("not received") == "negative"
+    assert cog._classify_confirmation("not received yet") == "negative"
+
+
+@pytest.mark.anyio
+async def test_identity_router_routes_admin_to_agent_without_direction_gate():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    bot = FakeBot(channel, payment_service=object())
+    db = FakeIntentDB()
+    cog = AdminChatCog(bot, db, sharer=object())
+    cog._handle_admin_message = AsyncMock()
+    cog._handle_pending_recipient_message = AsyncMock()
+
+    await cog.on_message(FakeMessage(2001, FakeAuthor(999), channel, guild, "plain text"))
+
+    cog._handle_admin_message.assert_awaited_once()
+    cog._handle_pending_recipient_message.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_identity_router_routes_pending_recipient_without_agent_calls():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    bot = FakeBot(channel, payment_service=object())
+    db = FakeIntentDB()
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.25,
+            "producer_ref": "1_42_123",
+            "status": "awaiting_wallet",
+        },
+        guild_id=1,
+    )
+    cog = AdminChatCog(bot, db, sharer=object())
+    cog.agent = SimpleNamespace(chat=AsyncMock(side_effect=RuntimeError("agent chat should not be used")))
+    cog._ensure_agent = lambda: (_ for _ in ()).throw(RuntimeError("agent init should not be used"))
+    cog._handle_wallet_received = AsyncMock()
+
+    await cog.on_message(FakeMessage(2002, FakeAuthor(42), channel, guild, VALID_SOL_ADDRESS))
+
+    cog._handle_wallet_received.assert_awaited_once()
+    cog.agent.chat.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_identity_router_falls_through_for_non_admin_without_intent():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    bot = FakeBot(channel, payment_service=object())
+    db = FakeIntentDB()
+    cog = AdminChatCog(bot, db, sharer=object())
+    cog._handle_admin_message = AsyncMock()
+    cog._handle_pending_recipient_message = AsyncMock()
+    cog._can_user_message_bot = AsyncMock(return_value=True)
+
+    await cog.on_message(FakeMessage(2003, FakeAuthor(77), channel, guild, "hello bot"))
+
+    cog._handle_admin_message.assert_not_awaited()
+    cog._handle_pending_recipient_message.assert_not_awaited()
+    cog._can_user_message_bot.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_state_machine_silently_ignores_awaiting_admin_init():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    bot = FakeBot(channel, payment_service=object())
+    db = FakeIntentDB()
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.25,
+            "producer_ref": "1_42_123",
+            "status": "awaiting_admin_init",
+        },
+        guild_id=1,
+    )
+    cog = AdminChatCog(bot, db, sharer=object())
+    cog._handle_wallet_received = AsyncMock()
+
+    await cog.on_message(FakeMessage(2004, FakeAuthor(42), channel, guild, VALID_SOL_ADDRESS))
+
+    cog._handle_wallet_received.assert_not_awaited()
+    assert db.intents[intent["intent_id"]]["status"] == "awaiting_admin_init"
+
+
+@pytest.mark.anyio
+async def test_approved_member_no_longer_routed_to_agent():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    bot = FakeBot(channel, payment_service=object())
+    db = FakeIntentDB()
+    cog = AdminChatCog(bot, db, sharer=object())
+    cog._handle_admin_message = AsyncMock()
+    cog._can_user_message_bot = AsyncMock(return_value=True)
+
+    await cog.on_message(FakeMessage(2005, FakeAuthor(1234), channel, guild, "<@999> help"))
+
+    cog._handle_admin_message.assert_not_awaited()
+    cog._can_user_message_bot.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_24h_timeout_sweep_escalates_stuck_test_receipt():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "admin_user_id": 999,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "test_payment_id": "payment-test",
+            "status": "awaiting_test_receipt_confirmation",
+        },
+        guild_id=1,
+    )
+    db.payments["payment-test"] = {
+        "payment_id": "payment-test",
+        "guild_id": 1,
+        "recipient_wallet": VALID_SOL_ADDRESS,
+        "tx_signature": "sig-stale",
+    }
+    db.list_stale_test_receipt_intents = lambda cutoff_iso: [db.get_admin_payment_intent(intent["intent_id"], 1)]
+    bot = FakeBot(channel, payment_service=object())
+    bot._is_ready = True
+    cog = AdminChatCog(bot, db, sharer=object())
+
+    await cog._sweep_stale_test_receipts.coro(cog)
+
+    assert db.intents[intent["intent_id"]]["status"] == "manual_review"
+    admin_user = bot.fetched_users[999]
+    assert "Stale test receipt confirmation requires manual review" in admin_user.sent_messages[-1].content
+
+
+@pytest.mark.anyio
+async def test_manual_review_blocks_new_intents():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.0,
+            "producer_ref": "1_42_123",
+            "status": "manual_review",
+        },
+        guild_id=1,
+    )
+    bot = FakeBot(channel, payment_service=object())
+
+    result = await execute_initiate_payment(
+        bot,
+        db,
+        {"guild_id": 1, "source_channel_id": 55, "recipient_user_id": "42", "amount_sol": 1.0},
+    )
+
+    assert result["success"] is True
+    assert result["duplicate"] is True
+
+
 @pytest.mark.anyio
 async def test_initiate_payment_wallet_on_file():
     guild = SimpleNamespace(id=1)
@@ -488,11 +795,12 @@ async def test_initiate_payment_wallet_on_file():
 
     assert result["success"] is True
     assert result["wallet_on_file"] is True
-    assert db.created_intents[0]["status"] == "awaiting_test"
-    assert db.created_intents[0]["wallet_id"] == "wallet-verified"
-    assert db.created_intents[0]["admin_user_id"] == 999
-    assert len(flow_cog.started) == 1
-    assert flow_cog.started[0][1]["producer_ref"].startswith("1_42_")
+    assert db.created_intents == []
+    assert len(flow_cog.started) == 0
+    assert len(flow_cog.fresh) == 1
+    assert flow_cog.fresh[0]["wallet_record"]["wallet_id"] == "wallet-verified"
+    assert flow_cog.fresh[0]["admin_user_id"] == 999
+    assert flow_cog.fresh[0]["producer_ref"].startswith("1_42_")
 
 
 @pytest.mark.anyio
@@ -589,6 +897,85 @@ async def test_initiate_payment_duplicate_intent():
     assert db.created_intents == []
 
 
+@pytest.mark.anyio
+async def test_initiate_batch_payment_atomic_all_or_none():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    bot = FakeBot(channel, payment_service=object())
+
+    result = await execute_initiate_batch_payment(
+        bot,
+        db,
+        {
+            "guild_id": 1,
+            "source_channel_id": 55,
+            "payments": [
+                {"recipient_user_id": "42", "amount_sol": 1.5},
+                {"recipient_user_id": "43", "amount_sol": 0},
+            ],
+        },
+    )
+
+    assert result["success"] is False
+    assert db.batch_create_calls == []
+    assert db.created_intents == []
+
+
+@pytest.mark.anyio
+async def test_initiate_batch_payment_verified_fan_out_uses_gate_existing_intent():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    db.wallets[(1, 42, "solana")] = {
+        "wallet_id": "wallet-verified",
+        "guild_id": 1,
+        "discord_user_id": 42,
+        "chain": "solana",
+        "wallet_address": VALID_SOL_ADDRESS,
+        "verified_at": "2026-04-10T00:00:00Z",
+    }
+    db.wallets[(1, 43, "solana")] = {
+        "wallet_id": "wallet-unverified",
+        "guild_id": 1,
+        "discord_user_id": 43,
+        "chain": "solana",
+        "wallet_address": VALID_SOL_ADDRESS,
+        "verified_at": None,
+    }
+    flow_cog = FakeFlowCog()
+    bot = FakeBot(channel, payment_service=object(), admin_chat_cog=flow_cog)
+
+    result = await execute_initiate_batch_payment(
+        bot,
+        db,
+        {
+            "guild_id": 1,
+            "source_channel_id": 55,
+            "admin_user_id": 999,
+            "payments": [
+                {"recipient_user_id": "42", "amount_sol": 1.5, "reason": "verified"},
+                {"recipient_user_id": "43", "amount_sol": 2.25, "reason": "needs wallet"},
+            ],
+        },
+    )
+
+    assert result["success"] is True
+    assert result["count"] == 2
+    assert len(db.batch_create_calls) == 1
+    batch_guild_id, batch_records = db.batch_create_calls[0]
+    assert batch_guild_id == 1
+    assert [record["status"] for record in batch_records] == ["awaiting_admin_init", "awaiting_wallet"]
+    assert batch_records[0]["wallet_id"] == "wallet-verified"
+    assert batch_records[1]["wallet_id"] is None
+    assert len(flow_cog.existing) == 1
+    assert flow_cog.existing[0]["intent"]["recipient_user_id"] == 42
+    assert flow_cog.existing[0]["wallet_record"]["wallet_id"] == "wallet-verified"
+    assert flow_cog.fresh == []
+    assert db.updated_intents[-1][1]["prompt_message_id"] == 900
+    assert "<@43>" in channel.sent_messages[0].content
+
+
 # VERDICT 2026-04-11: collision reproduced at the downstream admin payment flow
 # because same-second `producer_ref` values collapsed distinct intents onto the same
 # active payment row. Fixed by switching `producer_ref` to millisecond precision.
@@ -623,7 +1010,7 @@ async def test_concurrent_admin_payment_producer_ref_collision(monkeypatch):
     cog.payment_service = payment_service
     bot._admin_chat_cog = cog
 
-    time_values = iter([1_700_000_000.001, 1_700_000_000.002])
+    time_values = iter([1_700_000_000.001, 1_700_000_000.002, 1_700_000_000.003, 1_700_000_000.004])
     monkeypatch.setattr("src.features.admin_chat.tools.time.time", lambda: next(time_values))
 
     result_one = await execute_initiate_payment(
@@ -680,9 +1067,8 @@ async def test_wallet_reply_valid():
     cog._start_admin_payment_flow = AsyncMock()
     message = FakeMessage(1001, FakeAuthor(42), channel, guild, VALID_SOL_ADDRESS)
 
-    handled = await cog._check_pending_payment_reply(message)
+    await cog.on_message(message)
 
-    assert handled is True
     assert db.upsert_wallet_calls[0][3] == VALID_SOL_ADDRESS
     assert db.intents[intent["intent_id"]]["status"] == "awaiting_test"
     assert db.intents[intent["intent_id"]]["resolved_by_message_id"] == 1001
@@ -848,14 +1234,12 @@ async def test_wallet_reply_invalid_then_classified():
     )
     bot = FakeBot(channel, payment_service=object())
     cog = AdminChatCog(bot, db, sharer=object())
-    cog._classifier_client = FakeClassifierClient('{"category":"ambiguous","extracted_address":null}')
     message = FakeMessage(1002, FakeAuthor(42), channel, guild, "not a wallet")
 
-    handled = await cog._check_pending_payment_reply(message)
+    await cog.on_message(message)
 
-    assert handled is True
-    assert db.intents[intent["intent_id"]]["status"] == "failed"
-    assert "review needed" in channel.sent_messages[-1].content
+    assert db.intents[intent["intent_id"]]["status"] == "awaiting_wallet"
+    assert channel.sent_messages == []
 
 
 @pytest.mark.anyio
@@ -867,9 +1251,8 @@ async def test_wallet_reply_no_intent():
     cog = AdminChatCog(bot, db, sharer=object())
     message = FakeMessage(1003, FakeAuthor(42), channel, guild, VALID_SOL_ADDRESS)
 
-    handled = await cog._check_pending_payment_reply(message)
+    await cog.on_message(message)
 
-    assert handled is False
     assert db.updated_intents == []
 
 
@@ -916,14 +1299,463 @@ async def test_handle_payment_result_test_confirmed():
         }
     )
 
-    assert payment_service.request_calls[0]["amount_token"] == 1.75
-    assert payment_service.request_calls[0]["amount_usd"] is None if "amount_usd" in payment_service.request_calls[0] else True
-    assert payment_ui_cog.confirmation_requests == ["payment-final"]
-    assert db.intents[intent["intent_id"]]["status"] == "awaiting_confirmation"
-    assert db.intents[intent["intent_id"]]["final_payment_id"] == "payment-final"
-    assert db.intents[intent["intent_id"]]["prompt_message_id"] == 900
+    assert payment_service.request_calls == []
+    assert payment_ui_cog.confirmation_requests == []
+    assert db.intents[intent["intent_id"]]["status"] == "awaiting_test_receipt_confirmation"
+    assert db.intents[intent["intent_id"]].get("final_payment_id") is None
+    assert db.intents[intent["intent_id"]]["receipt_prompt_message_id"] == 900
+    assert "reply confirmed when you see it" in channel.sent_messages[-1].content
     admin_user = bot.fetched_users[999]
     assert "Test payment confirmed" in admin_user.sent_messages[-1].content
+
+
+@pytest.mark.anyio
+async def test_gate_existing_intent_updates_before_admin_dm():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "admin_user_id": 999,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "wallet_id": "wallet-1",
+            "status": "awaiting_test_receipt_confirmation",
+        },
+        guild_id=1,
+    )
+    wallet_record = {
+        "wallet_id": "wallet-1",
+        "guild_id": 1,
+        "discord_user_id": 42,
+        "chain": "solana",
+        "wallet_address": VALID_SOL_ADDRESS,
+        "verified_at": None,
+    }
+    db.wallets[(1, 42, "solana")] = dict(wallet_record)
+    payment_service = FakeAdminPaymentService()
+    payment_ui_cog = FakePaymentUICog()
+    snapshots = []
+
+    async def capture_admin_dm(payment):
+        snapshots.append(
+            {
+                "payment_id": payment["payment_id"],
+                "status": db.intents[intent["intent_id"]]["status"],
+                "final_payment_id": db.intents[intent["intent_id"]].get("final_payment_id"),
+            }
+        )
+        return SimpleNamespace(id=f"admin-{payment['payment_id']}")
+
+    payment_ui_cog._send_admin_approval_dm = capture_admin_dm
+    bot = FakeBot(channel, payment_service=payment_service, payment_ui_cog=payment_ui_cog)
+    cog = AdminChatCog(bot, db, sharer=object())
+    cog.payment_service = payment_service
+
+    result = await cog._gate_existing_intent(channel, intent, wallet_record, 1.75)
+
+    assert result["payment"]["payment_id"] == "payment-final"
+    assert payment_service.request_calls[0]["is_test"] is False
+    assert db.updated_intents[-1][1] == {
+        "status": "awaiting_admin_approval",
+        "final_payment_id": "payment-final",
+    }
+    assert snapshots == [
+        {
+            "payment_id": "payment-final",
+            "status": "awaiting_admin_approval",
+            "final_payment_id": "payment-final",
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_handle_test_receipt_positive_marks_wallet_verified_and_queues_admin_approval():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    db.wallets[(1, 42, "solana")] = {
+        "wallet_id": "wallet-1",
+        "guild_id": 1,
+        "discord_user_id": 42,
+        "chain": "solana",
+        "wallet_address": VALID_SOL_ADDRESS,
+        "verified_at": None,
+    }
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "admin_user_id": 999,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "wallet_id": "wallet-1",
+            "test_payment_id": "payment-test",
+            "status": "awaiting_test_receipt_confirmation",
+        },
+        guild_id=1,
+    )
+    payment_service = FakeAdminPaymentService()
+    payment_ui_cog = FakePaymentUICog()
+    bot = FakeBot(channel, payment_service=payment_service, payment_ui_cog=payment_ui_cog)
+    cog = AdminChatCog(bot, db, sharer=object())
+    cog.payment_service = payment_service
+
+    await cog._handle_test_receipt_positive(
+        FakeMessage(1004, FakeAuthor(42), channel, guild, "confirmed"),
+        intent,
+    )
+
+    assert db.wallet_verified_calls == [("wallet-1", 1)]
+    assert payment_service.request_calls[0]["is_test"] is False
+    assert db.intents[intent["intent_id"]]["status"] == "awaiting_admin_approval"
+    assert db.intents[intent["intent_id"]]["final_payment_id"] == "payment-final"
+    assert payment_ui_cog.admin_approval_requests[0]["payment_id"] == "payment-final"
+    assert "queued for admin approval" in channel.sent_messages[-1].content
+
+
+@pytest.mark.anyio
+async def test_handle_test_receipt_negative_moves_to_manual_review():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    db.payments["payment-test"] = {
+        "payment_id": "payment-test",
+        "guild_id": 1,
+        "recipient_wallet": VALID_SOL_ADDRESS,
+        "tx_signature": "sig-123",
+    }
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "admin_user_id": 999,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "test_payment_id": "payment-test",
+            "status": "awaiting_test_receipt_confirmation",
+        },
+        guild_id=1,
+    )
+    bot = FakeBot(channel, payment_service=object())
+    cog = AdminChatCog(bot, db, sharer=object())
+
+    await cog._handle_test_receipt_negative(
+        FakeMessage(1005, FakeAuthor(42), channel, guild, "no"),
+        intent,
+    )
+
+    assert db.intents[intent["intent_id"]]["status"] == "manual_review"
+    assert "sig-123" in channel.sent_messages[-1].content
+    assert VALID_SOL_ADDRESS in channel.sent_messages[-1].content
+    admin_user = bot.fetched_users[999]
+    assert "Manual review needed" in admin_user.sent_messages[-1].content
+
+
+@pytest.mark.anyio
+async def test_pending_recipient_not_received_escalates_immediately():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    db.payments["payment-test"] = {
+        "payment_id": "payment-test",
+        "guild_id": 1,
+        "recipient_wallet": VALID_SOL_ADDRESS,
+        "tx_signature": "sig-789",
+    }
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "admin_user_id": 999,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "test_payment_id": "payment-test",
+            "status": "awaiting_test_receipt_confirmation",
+            "ambiguous_reply_count": 0,
+        },
+        guild_id=1,
+    )
+    bot = FakeBot(channel, payment_service=object())
+    cog = AdminChatCog(bot, db, sharer=object())
+
+    handled = await cog._handle_pending_recipient_message(
+        FakeMessage(1008, FakeAuthor(42), channel, guild, "not received"),
+        intent,
+    )
+
+    assert handled is True
+    assert db.intents[intent["intent_id"]]["status"] == "manual_review"
+    assert db.intents[intent["intent_id"]]["ambiguous_reply_count"] == 0
+    assert "Recipient reported the test payment was not received." in channel.sent_messages[-1].content
+
+
+@pytest.mark.anyio
+async def test_handle_test_receipt_ambiguous_escalates_on_second_reply():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    db.payments["payment-test"] = {
+        "payment_id": "payment-test",
+        "guild_id": 1,
+        "recipient_wallet": VALID_SOL_ADDRESS,
+        "tx_signature": "sig-456",
+    }
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "admin_user_id": 999,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "test_payment_id": "payment-test",
+            "status": "awaiting_test_receipt_confirmation",
+            "ambiguous_reply_count": 0,
+        },
+        guild_id=1,
+    )
+    bot = FakeBot(channel, payment_service=object())
+    cog = AdminChatCog(bot, db, sharer=object())
+
+    await cog._handle_test_receipt_ambiguous(
+        FakeMessage(1006, FakeAuthor(42), channel, guild, "maybe"),
+        intent,
+    )
+
+    assert db.intents[intent["intent_id"]]["ambiguous_reply_count"] == 1
+    assert channel.sent_messages == []
+
+    await cog._handle_test_receipt_ambiguous(
+        FakeMessage(1007, FakeAuthor(42), channel, guild, "not sure"),
+        db.get_admin_payment_intent(intent["intent_id"], 1),
+    )
+
+    assert db.intents[intent["intent_id"]]["ambiguous_reply_count"] == 2
+    assert db.intents[intent["intent_id"]]["status"] == "manual_review"
+    assert "multiple ambiguous receipt replies" in channel.sent_messages[-1].content
+
+
+@pytest.mark.anyio
+async def test_gate_fresh_intent_atomic_creates_awaiting_admin_approval_intent():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    wallet_record = {
+        "wallet_id": "wallet-1",
+        "guild_id": 1,
+        "discord_user_id": 42,
+        "chain": "solana",
+        "wallet_address": VALID_SOL_ADDRESS,
+        "verified_at": "2026-04-10T00:00:00Z",
+    }
+    db.wallets[(1, 42, "solana")] = dict(wallet_record)
+    payment_service = FakeAdminPaymentService()
+    payment_ui_cog = FakePaymentUICog()
+    bot = FakeBot(channel, payment_service=payment_service, payment_ui_cog=payment_ui_cog)
+    cog = AdminChatCog(bot, db, sharer=object())
+    cog.payment_service = payment_service
+
+    result = await cog._gate_fresh_intent_atomic(
+        channel=channel,
+        guild_id=1,
+        recipient_user_id=42,
+        amount_sol=2.25,
+        source_channel_id=55,
+        wallet_record=wallet_record,
+        admin_user_id=999,
+        reason="verified fast path",
+        producer_ref="1_42_999999",
+    )
+
+    assert result["payment"]["payment_id"] == "payment-final"
+    assert payment_service.request_calls[0]["metadata"]["intent_id"] == result["intent"]["intent_id"]
+    assert result["intent"]["status"] == "awaiting_admin_approval"
+    assert result["intent"]["final_payment_id"] == "payment-final"
+    assert payment_ui_cog.admin_approval_requests[0]["payment_id"] == "payment-final"
+
+
+@pytest.mark.anyio
+async def test_admin_approval_view_re_registers_pending_admin_approval_intents():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    bot = FakeBot(channel, payment_service=object())
+    db = FakeIntentDB()
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "admin_user_id": 999,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "final_payment_id": "payment-final",
+            "status": "awaiting_admin_approval",
+        },
+        guild_id=1,
+    )
+    db.list_intents_by_status = lambda guild_id, status: [dict(intent)] if status == "awaiting_admin_approval" else []
+    ui_cog = PaymentUICog(bot, db, payment_service=object())
+
+    await ui_cog._register_pending_admin_approval_views()
+
+    assert len(bot.added_views) == 1
+    view, message_id = bot.added_views[0]
+    assert message_id is None
+    assert isinstance(view, AdminApprovalView)
+    assert view.payment_id == "payment-final"
+    assert view.timeout is None
+    assert view.children[0].custom_id == "payment_admin_approve:payment-final"
+
+
+@pytest.mark.anyio
+async def test_admin_approval_view_only_admin_can_click():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    payment_service = FakeAdminPaymentService(confirm_result={"payment_id": "payment-final", "status": "queued"})
+    bot = FakeBot(channel, payment_service=payment_service)
+    ui_cog = PaymentUICog(bot, FakeIntentDB(), payment_service=payment_service)
+    view = AdminApprovalView(ui_cog, "payment-final")
+    interaction = FakeInteraction(123, message=SimpleNamespace(edit=AsyncMock()))
+
+    await view._confirm_button_pressed(interaction)
+
+    assert interaction.response.calls == [{"ephemeral": True}]
+    assert interaction.followup.messages == [{"content": "admin-only", "ephemeral": True}]
+    assert payment_service.confirm_calls == []
+
+
+@pytest.mark.anyio
+async def test_admin_approval_view_click_queues_payment_and_cleans_both_prompts():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    payment_service = FakeAdminPaymentService(confirm_result={"payment_id": "payment-final", "status": "queued"})
+    bot = FakeBot(channel, payment_service=payment_service)
+    db = FakeIntentDB()
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "admin_user_id": 999,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "prompt_message_id": 900,
+            "receipt_prompt_message_id": 901,
+            "final_payment_id": "payment-final",
+            "status": "awaiting_admin_approval",
+        },
+        guild_id=1,
+    )
+    db.find_admin_chat_intent_by_payment_id = (
+        lambda payment_id: db.get_admin_payment_intent(intent["intent_id"], 1)
+        if payment_id == "payment-final"
+        else None
+    )
+    ui_cog = PaymentUICog(bot, db, payment_service=payment_service)
+    view = AdminApprovalView(ui_cog, "payment-final")
+    interaction_message = SimpleNamespace(edit=AsyncMock())
+    interaction = FakeInteraction(999, message=interaction_message)
+
+    with patch(
+        "src.features.payments.payment_ui_cog.safe_delete_messages",
+        new=AsyncMock(return_value=None),
+    ) as mock_safe_delete:
+        await view._confirm_button_pressed(interaction)
+
+    assert interaction.response.calls == [{"ephemeral": True}]
+    assert interaction.followup.messages == [{"content": "payment confirmed, sending", "ephemeral": False}]
+    assert payment_service.confirm_calls == [
+        (
+            "payment-final",
+            {
+                "guild_id": 1,
+                "actor": PaymentActor(PaymentActorKind.ADMIN_DM, 999),
+            },
+        )
+    ]
+    interaction_message.edit.assert_awaited_once_with(
+        content="✅ approved — queued for sending",
+        view=view,
+    )
+    assert view.children[0].disabled is True
+    assert channel.sent_messages[-1].content == "Payment to <@42> queued for sending."
+    mock_safe_delete.assert_awaited_once()
+    assert mock_safe_delete.await_args.args[0] is channel
+    assert mock_safe_delete.await_args.args[1] == [900, 901]
+
+
+@pytest.mark.anyio
+async def test_restart_filter_state_aware():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    pending = [
+        {"payment_id": "pay-skip-approval", "guild_id": 1, "producer": "admin_chat", "is_test": False, "status": "pending_confirmation"},
+        {"payment_id": "pay-skip-init", "guild_id": 1, "producer": "admin_chat", "is_test": False, "status": "pending_confirmation"},
+        {"payment_id": "pay-legacy", "guild_id": 1, "producer": "admin_chat", "is_test": False, "status": "pending_confirmation"},
+        {"payment_id": "pay-grants", "guild_id": 1, "producer": "grants", "is_test": False, "status": "pending_confirmation"},
+    ]
+
+    class LocalPaymentService:
+        def get_pending_confirmation_payments(self, guild_ids=None):
+            if guild_ids is None:
+                return list(pending)
+            return [row for row in pending if row["guild_id"] in guild_ids]
+
+    bot = FakeBot(channel, payment_service=LocalPaymentService())
+    db = FakeIntentDB()
+    db.get_pending_confirmation_admin_chat_intents_by_payment = lambda payment_ids: {
+        "pay-skip-approval": {"intent_id": "intent-1", "status": "awaiting_admin_approval"},
+        "pay-skip-init": {"intent_id": "intent-2", "status": "awaiting_admin_init"},
+        "pay-legacy": {"intent_id": "intent-3", "status": "awaiting_confirmation"},
+    }
+    ui_cog = PaymentUICog(bot, db, payment_service=bot.payment_service)
+
+    await ui_cog._register_pending_confirmation_views()
+
+    registered_payment_ids = [view.payment_id for view, _message_id in bot.added_views]
+    assert registered_payment_ids == ["pay-legacy", "pay-grants"]
+    assert all(isinstance(view, PaymentConfirmView) for view, _message_id in bot.added_views)
+
+
+@pytest.mark.anyio
+async def test_payment_confirm_view_not_sent_for_admin_chat_real_payments():
+    guild = SimpleNamespace(id=1)
+    channel = FakeChannel(guild=guild)
+    db = FakeIntentDB()
+    db.wallets[(1, 42, "solana")] = {
+        "wallet_id": "wallet-1",
+        "guild_id": 1,
+        "discord_user_id": 42,
+        "chain": "solana",
+        "wallet_address": VALID_SOL_ADDRESS,
+        "verified_at": None,
+    }
+    intent = db.create_admin_payment_intent(
+        {
+            "channel_id": 55,
+            "admin_user_id": 999,
+            "recipient_user_id": 42,
+            "requested_amount_sol": 1.75,
+            "producer_ref": "1_42_123",
+            "wallet_id": "wallet-1",
+            "test_payment_id": "payment-test",
+            "status": "awaiting_test_receipt_confirmation",
+        },
+        guild_id=1,
+    )
+    payment_service = FakeAdminPaymentService()
+    payment_ui_cog = FakePaymentUICog()
+    bot = FakeBot(channel, payment_service=payment_service, payment_ui_cog=payment_ui_cog)
+    cog = AdminChatCog(bot, db, sharer=object())
+    cog.payment_service = payment_service
+
+    await cog._handle_test_receipt_positive(
+        FakeMessage(1009, FakeAuthor(42), channel, guild, "confirmed"),
+        intent,
+    )
+
+    assert payment_ui_cog.confirmation_requests == []
+    assert payment_ui_cog.admin_approval_requests[0]["payment_id"] == "payment-final"
 
 
 @pytest.mark.anyio
@@ -983,12 +1815,10 @@ async def test_confirmation_reply():
     bot = FakeBot(channel, payment_service=payment_service)
     cog = AdminChatCog(bot, db, sharer=object())
     cog.payment_service = payment_service
-    cog._classifier_client = FakeClassifierClient('{"category":"positive_confirmation","extracted_address":null}')
     message = FakeMessage(1004, FakeAuthor(42), channel, guild, "yes, send it")
 
-    handled = await cog._check_pending_payment_reply(message)
+    await cog._handle_confirmation_received(message, intent)
 
-    assert handled is True
     assert payment_service.confirm_calls == [
         ("payment-final", {"guild_id": 1, "actor": PaymentActor(PaymentActorKind.RECIPIENT_MESSAGE, 42)})
     ]
@@ -1067,8 +1897,8 @@ async def test_concurrent_intents_same_channel():
 
     cog._handle_wallet_received = record_wallet
 
-    await cog._check_pending_payment_reply(FakeMessage(1005, FakeAuthor(42), channel, guild, VALID_SOL_ADDRESS))
-    await cog._check_pending_payment_reply(FakeMessage(1006, FakeAuthor(43), channel, guild, VALID_SOL_ADDRESS))
+    await cog.on_message(FakeMessage(1005, FakeAuthor(42), channel, guild, VALID_SOL_ADDRESS))
+    await cog.on_message(FakeMessage(1006, FakeAuthor(43), channel, guild, VALID_SOL_ADDRESS))
 
     assert matched == [
         (42, intent_one["intent_id"], VALID_SOL_ADDRESS),
@@ -1312,9 +2142,8 @@ async def test_startup_reconciliation():
             "recipient_user_id": 42,
             "requested_amount_sol": 1.75,
             "producer_ref": "1_42_123",
-            "final_payment_id": "payment-final",
             "prompt_message_id": 1000,
-            "status": "awaiting_confirmation",
+            "status": "awaiting_wallet",
         },
         guild_id=1,
     )
@@ -1322,19 +2151,16 @@ async def test_startup_reconciliation():
     bot = FakeBot(channel, payment_service=payment_service)
     cog = AdminChatCog(bot, db, sharer=object())
     cog.payment_service = payment_service
-    cog._classifier_client = FakeClassifierClient('{"category":"positive_confirmation","extracted_address":null}')
     message = FakeMessage(1001, FakeAuthor(42), channel, guild, "yes")
-    channel._messages = [message]
+    channel._messages = [FakeMessage(1001, FakeAuthor(42), channel, guild, VALID_SOL_ADDRESS)]
+    cog._handle_wallet_received = AsyncMock()
 
     await cog.cog_load()
     assert bot.ready_waits == 0
     await cog.on_ready()
 
-    assert db.intents[intent["intent_id"]]["status"] == "confirmed"
+    cog._handle_wallet_received.assert_awaited_once()
     assert db.intents[intent["intent_id"]]["last_scanned_message_id"] == 1001
-    assert payment_service.confirm_calls == [
-        ("payment-final", {"guild_id": 1, "actor": PaymentActor(PaymentActorKind.RECIPIENT_MESSAGE, 42)})
-    ]
 
 
 @pytest.mark.anyio

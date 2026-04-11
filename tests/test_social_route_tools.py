@@ -1,9 +1,13 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.features.admin_chat import agent as admin_agent
 from src.features.admin_chat import tools as admin_tools
+
+
+VALID_SOL_ADDRESS = "11111111111111111111111111111111"
 
 
 class FakeResult:
@@ -624,8 +628,246 @@ async def test_execute_tool_dispatches_payment_control_tools_with_bot():
     assert payment_service.calls == [("pay-1", 1), ("pay-1", 1)]
 
 
+@pytest.mark.anyio
+async def test_query_payment_state_reads_canonical_db_rows():
+    db_handler = FakePaymentDB()
+
+    result = await admin_tools.execute_query_payment_state(
+        db_handler,
+        {
+            "guild_id": 1,
+            "payment_id": "pay-1",
+            "user_id": 42,
+            "wallet_address": "Injected111111111111111111111111111111",
+        },
+    )
+
+    assert result["success"] is True
+    assert result["payment"]["payment_id"] == "pay-1"
+    assert result["payment"]["recipient_wallet"] == "ABCD...7890"
+    assert result["user_id"] == 42
+    assert result["count"] == 1
+    assert result["payments"][0]["recipient_wallet"] == "ABCD...7890"
+
+
+@pytest.mark.anyio
+async def test_query_wallet_state_reads_wallet_registry_rows():
+    db_handler = FakePaymentDB()
+    db_handler.wallets[0]["verified_at"] = "2026-04-10T00:00:00Z"
+    db_handler.wallets[0]["created_at"] = "2026-04-01T00:00:00Z"
+
+    result = await admin_tools.execute_query_wallet_state(
+        db_handler,
+        {
+            "guild_id": 1,
+            "user_id": 42,
+            "recipient_wallet": "Injected222222222222222222222222222222",
+        },
+    )
+
+    assert result["success"] is True
+    assert result["user_id"] == 42
+    assert result["count"] == 1
+    assert result["wallets"][0]["wallet_address"] == "ABCD...7890"
+    assert result["wallets"][0]["verified_at"] == "2026-04-10T00:00:00Z"
+    assert result["wallets"][0]["created_at"] == "2026-04-01T00:00:00Z"
+
+
+@pytest.mark.anyio
+async def test_list_recent_payments_reads_recent_rows_with_redaction():
+    db_handler = FakePaymentDB()
+
+    result = await admin_tools.execute_list_recent_payments(
+        db_handler,
+        {
+            "guild_id": 1,
+            "producer": "grants",
+            "user_id": 42,
+            "wallet_address": "Injected333333333333333333333333333333",
+        },
+    )
+
+    assert result["success"] is True
+    assert result["count"] == 1
+    assert result["payments"][0]["payment_id"] == "pay-1"
+    assert result["payments"][0]["recipient_wallet"] == "ABCD...7890"
+
+
+@pytest.mark.anyio
+async def test_upsert_wallet_for_user_requires_admin_identity(monkeypatch):
+    monkeypatch.setenv("ADMIN_USER_ID", "999")
+
+    class LocalWalletDB:
+        def upsert_wallet(self, **kwargs):
+            raise AssertionError("upsert should not run without admin identity")
+
+    bot = SimpleNamespace(fetch_user=AsyncMock())
+
+    result = await admin_tools.execute_upsert_wallet_for_user(
+        bot,
+        LocalWalletDB(),
+        {
+            "guild_id": 1,
+            "admin_user_id": 123,
+            "user_id": 42,
+            "wallet_address": VALID_SOL_ADDRESS,
+        },
+    )
+
+    assert result == {"success": False, "error": "Permission denied"}
+    bot.fetch_user.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_upsert_wallet_for_user_dms_admin_and_leaves_wallet_unverified(monkeypatch):
+    monkeypatch.setenv("ADMIN_USER_ID", "999")
+
+    class LocalWalletDB:
+        def __init__(self):
+            self.calls = []
+
+        def upsert_wallet(self, guild_id, discord_user_id, chain, address, metadata=None):
+            self.calls.append((guild_id, discord_user_id, chain, address, metadata))
+            return {
+                "wallet_id": "wallet-1",
+                "guild_id": guild_id,
+                "discord_user_id": discord_user_id,
+                "chain": chain,
+                "wallet_address": address,
+                "verified_at": "2026-04-10T00:00:00Z",
+                "created_at": "2026-04-01T00:00:00Z",
+            }
+
+    admin_user = SimpleNamespace(send=AsyncMock())
+    bot = SimpleNamespace(fetch_user=AsyncMock(return_value=admin_user))
+    db_handler = LocalWalletDB()
+
+    result = await admin_tools.execute_upsert_wallet_for_user(
+        bot,
+        db_handler,
+        {
+            "guild_id": 1,
+            "admin_user_id": 999,
+            "user_id": 42,
+            "wallet_address": VALID_SOL_ADDRESS,
+            "reason": "seed wallet",
+        },
+    )
+
+    assert result["success"] is True
+    assert db_handler.calls == [
+        (
+            1,
+            42,
+            "solana",
+            VALID_SOL_ADDRESS,
+            {"producer": "admin_chat", "source": "upsert_wallet_for_user", "reason": "seed wallet"},
+        )
+    ]
+    assert result["wallet"]["verified_at"] is None
+    bot.fetch_user.assert_awaited_once_with(999)
+    admin_user.send.assert_awaited_once()
+    assert "will be verified on next payment" in admin_user.send.await_args.args[0]
+
+
+@pytest.mark.anyio
+async def test_resolve_admin_intent_cascade_cancels_linked_payments(monkeypatch):
+    monkeypatch.setenv("ADMIN_USER_ID", "999")
+
+    class LocalIntentDB:
+        def __init__(self):
+            self.intent = {
+                "intent_id": "intent-1",
+                "guild_id": 1,
+                "recipient_user_id": 42,
+                "status": "awaiting_admin_approval",
+                "test_payment_id": "pay-test",
+                "final_payment_id": "pay-final",
+            }
+            self.payments = {
+                "pay-test": {"payment_id": "pay-test", "guild_id": 1, "status": "pending_confirmation"},
+                "pay-final": {"payment_id": "pay-final", "guild_id": 1, "status": "queued"},
+            }
+            self.cancel_calls = []
+            self.updated = []
+
+        def get_admin_payment_intent(self, intent_id, guild_id):
+            if intent_id == self.intent["intent_id"] and guild_id == self.intent["guild_id"]:
+                return dict(self.intent)
+            return None
+
+        def get_payment_request(self, payment_id, guild_id=None):
+            row = self.payments.get(payment_id)
+            if row and guild_id is not None and row["guild_id"] != guild_id:
+                return None
+            return dict(row) if row else None
+
+        def cancel_payment(self, payment_id, guild_id=None, reason=None):
+            self.cancel_calls.append((payment_id, guild_id, reason))
+            self.payments[payment_id]["status"] = "cancelled"
+            self.payments[payment_id]["last_error"] = reason
+            return True
+
+        def update_admin_payment_intent(self, intent_id, payload, guild_id):
+            self.intent.update(dict(payload))
+            self.updated.append((intent_id, dict(payload), guild_id))
+            return dict(self.intent)
+
+    admin_user = SimpleNamespace(send=AsyncMock())
+    bot = SimpleNamespace(fetch_user=AsyncMock(return_value=admin_user))
+    db_handler = LocalIntentDB()
+
+    result = await admin_tools.execute_resolve_admin_intent(
+        bot,
+        db_handler,
+        {
+            "guild_id": 1,
+            "admin_user_id": 999,
+            "intent_id": "intent-1",
+            "note": "operator cancel",
+        },
+    )
+
+    assert result["success"] is True
+    assert db_handler.cancel_calls == [
+        ("pay-test", 1, "operator cancel"),
+        ("pay-final", 1, "operator cancel"),
+    ]
+    assert db_handler.updated == [("intent-1", {"status": "cancelled"}, 1)]
+    assert [payment["status"] for payment in result["payments"]] == ["cancelled", "cancelled"]
+    bot.fetch_user.assert_awaited_once_with(999)
+    admin_user.send.assert_awaited_once()
+    assert "intent `intent-1` cancelled" in admin_user.send.await_args.args[0]
+
+
 def test_agent_prompt_mentions_payment_tools():
     assert "initiate_payment" in admin_agent.SYSTEM_PROMPT
+    assert "initiate_batch_payment" in admin_agent.SYSTEM_PROMPT
     assert "list_payment_routes" in admin_agent.SYSTEM_PROMPT
     assert "list_payments" in admin_agent.SYSTEM_PROMPT
     assert "release_payment" in admin_agent.SYSTEM_PROMPT
+    assert "query_payment_state" in admin_agent.SYSTEM_PROMPT
+    assert "query_wallet_state" in admin_agent.SYSTEM_PROMPT
+    assert "list_recent_payments" in admin_agent.SYSTEM_PROMPT
+    assert "upsert_wallet_for_user" in admin_agent.SYSTEM_PROMPT
+    assert "resolve_admin_intent" in admin_agent.SYSTEM_PROMPT
+    assert "State questions -> query first" in admin_agent.SYSTEM_PROMPT
+
+
+def test_admin_tool_registration_and_identity_injection_sets():
+    expected_admin_tools = {
+        "query_payment_state",
+        "query_wallet_state",
+        "list_recent_payments",
+        "initiate_batch_payment",
+        "upsert_wallet_for_user",
+        "resolve_admin_intent",
+    }
+    assert expected_admin_tools.issubset(admin_tools.ADMIN_ONLY_TOOLS)
+    assert admin_agent._ADMIN_IDENTITY_INJECTED_TOOLS == {
+        "initiate_payment",
+        "initiate_batch_payment",
+        "upsert_wallet_for_user",
+        "resolve_admin_intent",
+    }
+    assert "initiate_batch_payment" in admin_agent._CHANNEL_POSTING_TOOLS

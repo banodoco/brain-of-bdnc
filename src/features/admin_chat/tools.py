@@ -12,8 +12,11 @@ import logging
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
+from uuid import uuid4
 import discord
 from dotenv import load_dotenv
+from src.common.db_handler import WalletUpdateBlockedError
+from src.features.grants.solana_client import is_valid_solana_address
 from src.features.sharing.models import PublicationSourceContext, SocialPublishRequest
 
 load_dotenv()
@@ -599,6 +602,140 @@ TOOLS = [
         }
     },
     {
+        "name": "initiate_batch_payment",
+        "description": "Create 1-20 admin-triggered payment intents atomically for multiple Banodoco users.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "payments": {
+                    "type": "array",
+                    "description": "Batch of intended recipients and SOL amounts.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "recipient_user_id": {
+                                "type": "string",
+                                "description": "Discord user ID of the intended payment recipient."
+                            },
+                            "amount_sol": {
+                                "type": "number",
+                                "description": "SOL amount requested by the admin."
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "Optional reason to store with this payment intent."
+                            }
+                        },
+                        "required": ["recipient_user_id", "amount_sol"]
+                    }
+                }
+            },
+            "required": ["payments"]
+        }
+    },
+    {
+        "name": "query_payment_state",
+        "description": "Read-only payment state lookup by payment_id or by recipient user_id. Wallets are redacted.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "payment_id": {
+                    "type": "string",
+                    "description": "Optional payment_requests.payment_id to inspect."
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "Optional Discord user ID to list recent payments for."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max recent rows when querying by user_id (default 20, max 100)."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "query_wallet_state",
+        "description": "Read-only wallet_registry lookup for a Discord user with redacted wallet addresses.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "Discord user ID whose wallets should be listed."
+                }
+            },
+            "required": ["user_id"]
+        }
+    },
+    {
+        "name": "list_recent_payments",
+        "description": "Read-only list of recent payment_requests rows with redacted wallet addresses.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "producer": {
+                    "type": "string",
+                    "description": "Optional producer filter, for example admin_chat."
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "Optional recipient Discord user ID filter."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows to return (default 20, max 100)."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "upsert_wallet_for_user",
+        "description": "Admin-only wallet upsert for a user. The wallet remains unverified until a test payment round-trip completes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "Discord user ID whose wallet should be created or updated."
+                },
+                "wallet_address": {
+                    "type": "string",
+                    "description": "Solana wallet address to register."
+                },
+                "chain": {
+                    "type": "string",
+                    "description": "Blockchain identifier. Only solana is supported."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional reason to store in wallet metadata."
+                }
+            },
+            "required": ["user_id", "wallet_address"]
+        }
+    },
+    {
+        "name": "resolve_admin_intent",
+        "description": "Admin-only cancel path for one admin payment intent. Cancels linked payments when they are still cancellable.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "intent_id": {
+                    "type": "string",
+                    "description": "admin_payment_intents.intent_id to cancel."
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional operator note to include in the cancellation reason."
+                }
+            },
+            "required": ["intent_id"]
+        }
+    },
+    {
         "name": "get_active_channels",
         "description": "List channels that have been active recently, sorted by message count. Use this to find where the activity is.",
         "input_schema": {
@@ -923,6 +1060,12 @@ ADMIN_ONLY_TOOLS = {
     "release_payment",
     "cancel_payment",
     "initiate_payment",
+    "initiate_batch_payment",
+    "query_payment_state",
+    "query_wallet_state",
+    "list_recent_payments",
+    "upsert_wallet_for_user",
+    "resolve_admin_intent",
     "update_member_socials",
     "search_logs",
     "send_message",
@@ -1126,6 +1269,92 @@ def _redact_wallet_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
+
+
+def _pop_and_warn_wallet_override(params: Dict[str, Any], *, tool_name: str) -> Dict[str, Any]:
+    trusted = dict(params or {})
+    popped_wallet_address = trusted.pop('wallet_address', None)
+    popped_recipient_wallet = trusted.pop('recipient_wallet', None)
+    if popped_wallet_address not in (None, '') or popped_recipient_wallet not in (None, ''):
+        logger.warning(
+            "[AdminChat] Ignoring injected wallet fields for %s: wallet_address=%s recipient_wallet=%s",
+            tool_name,
+            _redact_wallet_address(popped_wallet_address),
+            _redact_wallet_address(popped_recipient_wallet),
+        )
+    return trusted
+
+
+def _get_configured_admin_user_id() -> Optional[int]:
+    raw_admin_user_id = os.getenv('ADMIN_USER_ID')
+    if raw_admin_user_id in (None, ''):
+        return None
+    try:
+        return int(raw_admin_user_id)
+    except (TypeError, ValueError):
+        logger.error("[AdminChat] Invalid ADMIN_USER_ID value: %r", raw_admin_user_id)
+        return None
+
+
+def _require_injected_admin_user_id(params: Dict[str, Any]) -> tuple[Optional[int], Optional[str]]:
+    configured_admin_user_id = _get_configured_admin_user_id()
+    if configured_admin_user_id is None:
+        return None, "ADMIN_USER_ID is not configured"
+
+    try:
+        injected_admin_user_id = int(params.get('admin_user_id'))
+    except (TypeError, ValueError):
+        return None, "Permission denied"
+
+    if injected_admin_user_id != configured_admin_user_id:
+        return None, "Permission denied"
+    return configured_admin_user_id, None
+
+
+async def _dm_admin_user(
+    bot: discord.Client,
+    admin_user_id: int,
+    message: str,
+    *,
+    log_context: str,
+) -> bool:
+    if bot is None:
+        return False
+    try:
+        admin_user = await bot.fetch_user(admin_user_id)
+        await admin_user.send(message)
+        return True
+    except (discord.Forbidden, discord.HTTPException) as e:
+        logger.warning("[AdminChat] Failed to DM admin for %s: %s", log_context, e)
+        return False
+
+
+def _force_wallet_unverified(db_handler: Any, wallet_record: Dict[str, Any], *, guild_id: int) -> Dict[str, Any]:
+    if not wallet_record:
+        return wallet_record
+    wallet_id = wallet_record.get('wallet_id')
+    if wallet_id and getattr(db_handler, 'supabase', None):
+        try:
+            result = (
+                db_handler.supabase.table('wallet_registry')
+                .update({'verified_at': None})
+                .eq('wallet_id', wallet_id)
+                .eq('guild_id', guild_id)
+                .execute()
+            )
+            if result.data:
+                return result.data[0]
+        except Exception as e:
+            logger.error(
+                "[AdminChat] Error clearing verification for wallet %s in guild %s: %s",
+                wallet_id,
+                guild_id,
+                e,
+                exc_info=True,
+            )
+    updated_wallet = dict(wallet_record)
+    updated_wallet['verified_at'] = None
+    return updated_wallet
 
 
 def _coerce_bool(value: Any, field_name: str) -> bool:
@@ -2497,15 +2726,7 @@ async def execute_initiate_payment(bot: discord.Client, db_handler, params: Dict
     Wallets for initiated payouts must come from wallet_registry keyed by the mentioned Discord
     user. This executor never accepts an LLM-sourced wallet address override.
     """
-    params = dict(params or {})
-    popped_wallet_address = params.pop('wallet_address', None)
-    popped_recipient_wallet = params.pop('recipient_wallet', None)
-    if popped_wallet_address not in (None, '') or popped_recipient_wallet not in (None, ''):
-        logger.warning(
-            "[AdminChat] Ignoring injected wallet fields for initiate_payment: wallet_address=%s recipient_wallet=%s",
-            _redact_wallet_address(popped_wallet_address),
-            _redact_wallet_address(popped_recipient_wallet),
-        )
+    params = _pop_and_warn_wallet_override(params, tool_name='initiate_payment')
     try:
         guild_id = int(params.get('guild_id'))
         source_channel_id = int(params.get('source_channel_id'))
@@ -2543,6 +2764,36 @@ async def execute_initiate_payment(bot: discord.Client, db_handler, params: Dict
     wallet_record = db_handler.get_wallet(guild_id, recipient_user_id, 'solana')
     if wallet_record and not wallet_record.get('verified_at'):
         wallet_record = None
+
+    if wallet_record:
+        cog = bot.get_cog('AdminChatCog')
+        if not cog or not hasattr(cog, '_gate_fresh_intent_atomic'):
+            return {"success": False, "error": "Admin payment flow is not available"}
+        try:
+            gated = await cog._gate_fresh_intent_atomic(
+                channel,
+                guild_id,
+                recipient_user_id,
+                amount_sol,
+                source_channel_id,
+                wallet_record,
+                admin_user_id,
+                reason,
+                producer_ref,
+            )
+        except Exception as e:
+            logger.error(
+                f"[AdminChat] Error starting verified fast-path payment flow for user {recipient_user_id}: {e}",
+                exc_info=True,
+            )
+            return {"success": False, "error": "Failed to start payment flow"}
+
+        if not gated:
+            return {"success": False, "error": "Failed to start payment flow"}
+        if gated.get('duplicate'):
+            return {"success": True, "duplicate": True, "intent": gated.get('intent')}
+        return {"success": True, "intent": gated.get('intent'), "wallet_on_file": True}
+
     intent = db_handler.create_admin_payment_intent(
         {
             'guild_id': guild_id,
@@ -2559,19 +2810,6 @@ async def execute_initiate_payment(bot: discord.Client, db_handler, params: Dict
     )
     if not intent:
         return {"success": False, "error": "Failed to create payment intent"}
-
-    if wallet_record:
-        cog = bot.get_cog('AdminChatCog')
-        if not cog or not hasattr(cog, '_start_admin_payment_flow'):
-            db_handler.update_admin_payment_intent(intent['intent_id'], {'status': 'failed'}, guild_id)
-            return {"success": False, "error": "Admin payment flow is not available"}
-        try:
-            await cog._start_admin_payment_flow(channel, intent)
-        except Exception as e:
-            logger.error(f"[AdminChat] Error starting admin payment flow for intent {intent.get('intent_id')}: {e}", exc_info=True)
-            db_handler.update_admin_payment_intent(intent['intent_id'], {'status': 'failed'}, guild_id)
-            return {"success": False, "error": "Failed to start payment flow"}
-        return {"success": True, "intent": intent, "wallet_on_file": True}
 
     try:
         prompt = await channel.send(
@@ -2593,6 +2831,386 @@ async def execute_initiate_payment(bot: discord.Client, db_handler, params: Dict
         db_handler.update_admin_payment_intent(intent_id, {'status': 'failed'}, guild_id)
         return {"success": False, "error": "Failed to persist wallet prompt"}
     return {"success": True, "intent": intent, "wallet_on_file": False}
+
+
+async def execute_initiate_batch_payment(bot: discord.Client, db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Create multiple admin payment intents atomically, then fan out per-recipient flow."""
+    params = _pop_and_warn_wallet_override(params, tool_name='initiate_batch_payment')
+    if not getattr(bot, 'payment_service', None):
+        return {"success": False, "error": "payment_service is not configured"}
+
+    try:
+        guild_id = int(params.get('guild_id'))
+        source_channel_id = int(params.get('source_channel_id'))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "guild_id and source_channel_id must be valid"}
+    if guild_id <= 0 or source_channel_id <= 0:
+        return {"success": False, "error": "guild_id and source_channel_id must be > 0"}
+
+    raw_payments = params.get('payments')
+    if not isinstance(raw_payments, list):
+        return {"success": False, "error": "payments must be an array"}
+    if not 1 <= len(raw_payments) <= 20:
+        return {"success": False, "error": "payments must contain between 1 and 20 entries"}
+
+    amount_by_user_id: Dict[int, float] = {}
+    wallet_by_user_id: Dict[int, Optional[Dict[str, Any]]] = {}
+    prepared_records: List[Dict[str, Any]] = []
+    seen_recipients: Set[int] = set()
+
+    admin_user_id = None
+    if params.get('admin_user_id') is not None:
+        try:
+            parsed_admin_user_id = int(params.get('admin_user_id'))
+            if parsed_admin_user_id > 0:
+                admin_user_id = parsed_admin_user_id
+        except (TypeError, ValueError):
+            return {"success": False, "error": "admin_user_id must be a valid positive integer when provided"}
+
+    for index, raw_payment in enumerate(raw_payments):
+        if not isinstance(raw_payment, dict):
+            return {"success": False, "error": f"payments[{index}] must be an object"}
+
+        payment_params = _pop_and_warn_wallet_override(raw_payment, tool_name=f'initiate_batch_payment[{index}]')
+        try:
+            recipient_user_id = int(payment_params.get('recipient_user_id'))
+            amount_sol = float(payment_params.get('amount_sol'))
+        except (TypeError, ValueError):
+            return {
+                "success": False,
+                "error": f"payments[{index}].recipient_user_id and payments[{index}].amount_sol must be valid",
+            }
+        if recipient_user_id <= 0 or amount_sol <= 0:
+            return {
+                "success": False,
+                "error": f"payments[{index}].recipient_user_id and payments[{index}].amount_sol must be > 0",
+            }
+        if recipient_user_id in seen_recipients:
+            return {"success": False, "error": f"Duplicate recipient_user_id in batch: {recipient_user_id}"}
+        seen_recipients.add(recipient_user_id)
+
+        existing = db_handler.get_active_intent_for_recipient(guild_id, source_channel_id, recipient_user_id)
+        if existing:
+            return {
+                "success": False,
+                "error": f"Recipient {recipient_user_id} already has an active payment intent in this channel",
+            }
+
+        reason = str(payment_params.get('reason') or '').strip() or None
+        producer_ref = f"{guild_id}_{recipient_user_id}_{int(time.time() * 1000)}_{index}"
+        wallet_record = db_handler.get_wallet(guild_id, recipient_user_id, 'solana')
+        if wallet_record and not wallet_record.get('verified_at'):
+            wallet_record = None
+
+        wallet_by_user_id[recipient_user_id] = wallet_record
+        amount_by_user_id[recipient_user_id] = amount_sol
+        prepared_records.append(
+            {
+                'intent_id': str(uuid4()),
+                'channel_id': source_channel_id,
+                'admin_user_id': admin_user_id,
+                'recipient_user_id': recipient_user_id,
+                'wallet_id': wallet_record.get('wallet_id') if wallet_record else None,
+                'requested_amount_sol': amount_sol,
+                'producer_ref': producer_ref,
+                'reason': reason,
+                'status': 'awaiting_admin_init' if wallet_record else 'awaiting_wallet',
+                'final_payment_id': None,
+            }
+        )
+
+    channel = bot.get_channel(source_channel_id)
+    if not channel:
+        try:
+            channel = await bot.fetch_channel(source_channel_id)
+        except Exception as e:
+            logger.error(f"[AdminChat] Error fetching initiate_batch_payment channel {source_channel_id}: {e}", exc_info=True)
+            return {"success": False, "error": "Could not access source channel"}
+
+    created_intents = db_handler.create_admin_payment_intents_batch(prepared_records, guild_id=guild_id)
+    if created_intents is None:
+        return {"success": False, "error": "Failed to create payment intents"}
+
+    cog = bot.get_cog('AdminChatCog')
+    if any(wallet_by_user_id.get(int(intent['recipient_user_id'])) for intent in created_intents):
+        if not cog or not hasattr(cog, '_gate_existing_intent'):
+            return {"success": False, "error": "Admin payment flow is not available"}
+
+    try:
+        for intent in created_intents:
+            recipient_user_id = int(intent['recipient_user_id'])
+            wallet_record = wallet_by_user_id.get(recipient_user_id)
+            if wallet_record:
+                gated = await cog._gate_existing_intent(
+                    channel,
+                    intent,
+                    wallet_record,
+                    amount_by_user_id[recipient_user_id],
+                )
+                if not gated:
+                    raise RuntimeError(f"Failed to gate verified intent {intent['intent_id']}")
+                continue
+
+            prompt = await channel.send(
+                f"<@{recipient_user_id}> — a payment of {amount_by_user_id[recipient_user_id]} SOL has been initiated for you. "
+                "Please reply with your Solana wallet address."
+            )
+            updated_intent = db_handler.update_admin_payment_intent(
+                intent['intent_id'],
+                {'prompt_message_id': prompt.id},
+                guild_id,
+            )
+            if not updated_intent:
+                raise RuntimeError(f"Failed to persist wallet prompt for intent {intent['intent_id']}")
+        return {
+            "success": True,
+            "count": len(created_intents),
+            "intents": created_intents,
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error during initiate_batch_payment fan-out: {e}", exc_info=True)
+        return {"success": False, "error": "Failed to fan out payment intents", "count": len(created_intents)}
+
+
+async def execute_query_payment_state(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Read-only payment lookup by id or recipient user."""
+    trusted_params = _pop_and_warn_wallet_override(params, tool_name='query_payment_state')
+    payment_id = str(trusted_params.get('payment_id') or '').strip()
+    user_id = trusted_params.get('user_id')
+    limit = min(int(trusted_params.get('limit', 20)), 100)
+
+    if not payment_id and user_id in (None, ''):
+        return {"success": False, "error": "payment_id or user_id is required"}
+
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, trusted_params)
+        response: Dict[str, Any] = {"success": True}
+
+        if payment_id:
+            row = db_handler.get_payment_request(payment_id, guild_id=guild_id)
+            if not row:
+                return {"success": False, "error": f"Payment {payment_id} not found"}
+            response["payment"] = _redact_payment_row(row)
+
+        if user_id not in (None, ''):
+            recipient_user_id = int(user_id)
+            rows = db_handler.list_payment_requests(
+                guild_id=guild_id,
+                recipient_discord_id=recipient_user_id,
+                limit=limit,
+            )
+            response["user_id"] = recipient_user_id
+            response["count"] = len(rows)
+            response["payments"] = [_redact_payment_row(row) for row in rows]
+
+        return response
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in query_payment_state: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_query_wallet_state(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Read-only wallet lookup for one user."""
+    trusted_params = _pop_and_warn_wallet_override(params, tool_name='query_wallet_state')
+    user_id = trusted_params.get('user_id')
+    if user_id in (None, ''):
+        return {"success": False, "error": "user_id is required"}
+
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, trusted_params)
+        discord_user_id = int(user_id)
+        rows = _list_wallet_rows(
+            db_handler,
+            guild_id=guild_id,
+            chain=None,
+            discord_user_id=discord_user_id,
+            verified=None,
+            limit=100,
+        )
+        return {
+            "success": True,
+            "user_id": discord_user_id,
+            "count": len(rows),
+            "wallets": [_redact_wallet_row(row) for row in rows],
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in query_wallet_state: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_list_recent_payments(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Read-only recent payment listing."""
+    trusted_params = _pop_and_warn_wallet_override(params, tool_name='list_recent_payments')
+
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, trusted_params)
+        producer = None
+        if trusted_params.get('producer') not in (None, ''):
+            producer = _normalize_payment_producer(trusted_params.get('producer'))
+
+        recipient_discord_id = trusted_params.get('user_id')
+        if recipient_discord_id not in (None, ''):
+            recipient_discord_id = int(recipient_discord_id)
+
+        rows = db_handler.list_payment_requests(
+            guild_id=guild_id,
+            producer=producer,
+            recipient_discord_id=recipient_discord_id,
+            limit=min(int(trusted_params.get('limit', 20)), 100),
+        )
+        return {
+            "success": True,
+            "count": len(rows),
+            "payments": [_redact_payment_row(row) for row in rows],
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in list_recent_payments: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_upsert_wallet_for_user(bot: discord.Client, db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Admin-only wallet upsert that always leaves the wallet unverified."""
+    configured_admin_user_id, admin_error = _require_injected_admin_user_id(params)
+    if admin_error:
+        return {"success": False, "error": admin_error}
+
+    user_id = params.get('user_id')
+    wallet_address = str(params.get('wallet_address') or '').strip()
+    chain = str(params.get('chain') or 'solana').strip().lower()
+    reason = str(params.get('reason') or '').strip() or None
+
+    if user_id in (None, ''):
+        return {"success": False, "error": "user_id is required"}
+    try:
+        recipient_user_id = int(user_id)
+    except (TypeError, ValueError):
+        return {"success": False, "error": "user_id must be a valid positive integer"}
+    if recipient_user_id <= 0:
+        return {"success": False, "error": "user_id must be a valid positive integer"}
+    if chain != 'solana':
+        return {"success": False, "error": "Only chain='solana' is supported"}
+    if not wallet_address:
+        return {"success": False, "error": "wallet_address is required"}
+    if not is_valid_solana_address(wallet_address):
+        return {"success": False, "error": "wallet_address must be a valid Solana address"}
+
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        metadata: Dict[str, Any] = {'producer': 'admin_chat', 'source': 'upsert_wallet_for_user'}
+        if reason:
+            metadata['reason'] = reason
+        wallet_record = db_handler.upsert_wallet(
+            guild_id=guild_id,
+            discord_user_id=recipient_user_id,
+            chain=chain,
+            address=wallet_address,
+            metadata=metadata,
+        )
+    except WalletUpdateBlockedError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in upsert_wallet_for_user: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+    if not wallet_record:
+        return {"success": False, "error": "Failed to upsert wallet"}
+
+    wallet_record = _force_wallet_unverified(db_handler, wallet_record, guild_id=guild_id)
+    redacted_wallet = _redact_wallet_address(wallet_record.get('wallet_address') or wallet_address)
+    await _dm_admin_user(
+        bot,
+        configured_admin_user_id,
+        f"wallet for <@{recipient_user_id}> set to {redacted_wallet}, will be verified on next payment",
+        log_context=f"upsert_wallet_for_user:{recipient_user_id}",
+    )
+    return {
+        "success": True,
+        "wallet": _redact_wallet_row(wallet_record),
+        "message": f"wallet for <@{recipient_user_id}> set to {redacted_wallet}, will be verified on next payment",
+    }
+
+
+async def execute_resolve_admin_intent(bot: discord.Client, db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Cancel one admin payment intent and any linked cancellable payments."""
+    configured_admin_user_id, admin_error = _require_injected_admin_user_id(params)
+    if admin_error:
+        return {"success": False, "error": admin_error}
+    if 'resolution' in params:
+        return {
+            "success": False,
+            "error": "resolve_admin_intent is cancel-only. Use /payment-resolve if you need to mark a payment completed.",
+        }
+
+    intent_id = str(params.get('intent_id') or '').strip()
+    note = str(params.get('note') or '').strip() or None
+    if not intent_id:
+        return {"success": False, "error": "intent_id is required"}
+
+    try:
+        guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        intent = db_handler.get_admin_payment_intent(intent_id, guild_id)
+        if not intent:
+            return {"success": False, "error": f"Intent {intent_id} not found"}
+
+        intent_status = str(intent.get('status') or '').strip().lower()
+        if intent_status in {'completed', 'failed', 'cancelled'}:
+            return {"success": False, "error": f"Intent {intent_id} is already terminal ({intent_status})"}
+
+        linked_payments: List[Dict[str, Any]] = []
+        cancel_reason = note or "Admin cancelled payment intent"
+        for payment_field in ('test_payment_id', 'final_payment_id'):
+            payment_id = intent.get(payment_field)
+            if not payment_id:
+                continue
+
+            payment_row = db_handler.get_payment_request(payment_id, guild_id=guild_id)
+            if not payment_row:
+                continue
+
+            payment_status = str(payment_row.get('status') or '').strip().lower()
+            if payment_status in {'submitted', 'confirmed', 'manual_hold'}:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Linked payment {payment_id} is {payment_status}. "
+                        "Use /payment-resolve for submitted, confirmed, or manual_hold payments."
+                    ),
+                }
+
+            if payment_status != 'cancelled':
+                cancelled = db_handler.cancel_payment(payment_id, guild_id=guild_id, reason=cancel_reason)
+                if not cancelled:
+                    return {
+                        "success": False,
+                        "error": f"Linked payment {payment_id} could not be cancelled from status {payment_status}",
+                    }
+                payment_row = db_handler.get_payment_request(payment_id, guild_id=guild_id) or payment_row
+
+            linked_payments.append(_redact_payment_row(payment_row))
+
+        updated_intent = db_handler.update_admin_payment_intent(
+            intent_id,
+            {'status': 'cancelled'},
+            guild_id,
+        )
+        if not updated_intent:
+            return {"success": False, "error": f"Failed to cancel intent {intent_id}"}
+
+        await _dm_admin_user(
+            bot,
+            configured_admin_user_id,
+            f"admin payment intent `{intent_id}` cancelled for <@{intent.get('recipient_user_id')}>",
+            log_context=f"resolve_admin_intent:{intent_id}",
+        )
+        return {
+            "success": True,
+            "intent": updated_intent,
+            "payments": linked_payments,
+            "note": note,
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in resolve_admin_intent: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
 
 
 async def execute_update_member_socials(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -3145,6 +3763,8 @@ async def execute_tool(
                     visible_channels = {dm_channel_id}
                 else:
                     visible_channels = set(visible_channels) | {dm_channel_id}
+    if requester_id is not None and tool_name in {"upsert_wallet_for_user", "resolve_admin_intent"}:
+        trusted_tool_input['admin_user_id'] = requester_id
 
     if tool_name == "reply":
         return execute_reply(trusted_tool_input)
@@ -3197,6 +3817,18 @@ async def execute_tool(
         return await execute_cancel_payment(db_handler, trusted_tool_input)
     elif tool_name == "initiate_payment":
         return await execute_initiate_payment(bot, db_handler, trusted_tool_input)
+    elif tool_name == "initiate_batch_payment":
+        return await execute_initiate_batch_payment(bot, db_handler, trusted_tool_input)
+    elif tool_name == "query_payment_state":
+        return await execute_query_payment_state(db_handler, trusted_tool_input)
+    elif tool_name == "query_wallet_state":
+        return await execute_query_wallet_state(db_handler, trusted_tool_input)
+    elif tool_name == "list_recent_payments":
+        return await execute_list_recent_payments(db_handler, trusted_tool_input)
+    elif tool_name == "upsert_wallet_for_user":
+        return await execute_upsert_wallet_for_user(bot, db_handler, trusted_tool_input)
+    elif tool_name == "resolve_admin_intent":
+        return await execute_resolve_admin_intent(bot, db_handler, trusted_tool_input)
     elif tool_name == "get_active_channels":
         return await execute_get_active_channels(
             trusted_tool_input,
