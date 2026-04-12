@@ -2549,6 +2549,10 @@ async def execute_get_payment_status(db_handler, params: Dict[str, Any]) -> Dict
 
 async def execute_retry_payment(bot, db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
     """Retry one failed payment."""
+    configured_admin_user_id, admin_error = _require_injected_admin_user_id(params)
+    if admin_error:
+        return {"success": False, "error": admin_error}
+
     payment_id = str(params.get('payment_id') or '').strip()
     if not payment_id:
         return {"success": False, "error": "payment_id is required"}
@@ -2595,6 +2599,10 @@ async def execute_retry_payment(bot, db_handler, params: Dict[str, Any]) -> Dict
 
 async def execute_hold_payment(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
     """Force one payment into manual_hold."""
+    configured_admin_user_id, admin_error = _require_injected_admin_user_id(params)
+    if admin_error:
+        return {"success": False, "error": admin_error}
+
     payment_id = str(params.get('payment_id') or '').strip()
     reason = str(params.get('reason') or '').strip()
     if not payment_id or not reason:
@@ -2614,6 +2622,10 @@ async def execute_hold_payment(db_handler, params: Dict[str, Any]) -> Dict[str, 
 
 async def execute_release_payment(bot, db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
     """Release one manual_hold payment."""
+    configured_admin_user_id, admin_error = _require_injected_admin_user_id(params)
+    if admin_error:
+        return {"success": False, "error": admin_error}
+
     payment_id = str(params.get('payment_id') or '').strip()
     new_status = str(params.get('new_status') or '').strip()
     if not payment_id or not new_status:
@@ -2666,6 +2678,10 @@ async def execute_release_payment(bot, db_handler, params: Dict[str, Any]) -> Di
 
 async def execute_cancel_payment(db_handler, params: Dict[str, Any]) -> Dict[str, Any]:
     """Cancel one payment."""
+    configured_admin_user_id, admin_error = _require_injected_admin_user_id(params)
+    if admin_error:
+        return {"success": False, "error": admin_error}
+
     payment_id = str(params.get('payment_id') or '').strip()
     if not payment_id:
         return {"success": False, "error": "payment_id is required"}

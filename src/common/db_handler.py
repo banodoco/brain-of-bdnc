@@ -1611,7 +1611,12 @@ class DatabaseHandler:
                 e,
                 exc_info=True,
             )
-            return False
+            logger.warning(
+                "Failing closed: assuming active payment/intent for guild %s user %s due to error",
+                guild_id,
+                discord_user_id,
+            )
+            return True
 
     def list_wallets(
         self,

@@ -417,7 +417,8 @@ def test_prompt_renderer_preserves_literal_json_braces():
 
 
 @pytest.mark.anyio
-async def test_payment_route_wallet_and_control_tools_are_redacted():
+async def test_payment_route_wallet_and_control_tools_are_redacted(monkeypatch):
+    monkeypatch.setenv("ADMIN_USER_ID", "99999")
     db_handler = FakePaymentDB()
     bot = SimpleNamespace(
         payment_service=FakeReconcileService(db_handler, decision="allow_requeue"),
@@ -456,13 +457,13 @@ async def test_payment_route_wallet_and_control_tools_are_redacted():
     assert status["success"] is True
     assert status["payment"]["recipient_wallet"] == "ABCD...7890"
 
-    retried = await admin_tools.execute_retry_payment(bot, db_handler, {"payment_id": "pay-1"})
+    retried = await admin_tools.execute_retry_payment(bot, db_handler, {"payment_id": "pay-1", "admin_user_id": "99999"})
     assert retried["success"] is True
     assert retried["payment"]["status"] == "queued"
 
     held = await admin_tools.execute_hold_payment(
         db_handler,
-        {"payment_id": "pay-1", "reason": "needs review"},
+        {"payment_id": "pay-1", "reason": "needs review", "admin_user_id": "99999"},
     )
     assert held["success"] is True
     assert held["payment"]["status"] == "manual_hold"
@@ -470,7 +471,7 @@ async def test_payment_route_wallet_and_control_tools_are_redacted():
     released = await admin_tools.execute_release_payment(
         bot,
         db_handler,
-        {"payment_id": "pay-1", "new_status": "failed", "reason": "chain rejected"},
+        {"payment_id": "pay-1", "new_status": "failed", "reason": "chain rejected", "admin_user_id": "99999"},
     )
     assert released["success"] is True
     assert released["payment"]["status"] == "failed"
@@ -478,13 +479,13 @@ async def test_payment_route_wallet_and_control_tools_are_redacted():
     disallowed_release = await admin_tools.execute_release_payment(
         bot,
         db_handler,
-        {"payment_id": "pay-1", "new_status": "confirmed"},
+        {"payment_id": "pay-1", "new_status": "confirmed", "admin_user_id": "99999"},
     )
     assert disallowed_release["success"] is False
 
     cancelled = await admin_tools.execute_cancel_payment(
         db_handler,
-        {"payment_id": "pay-1", "reason": "operator cancelled"},
+        {"payment_id": "pay-1", "reason": "operator cancelled", "admin_user_id": "99999"},
     )
     assert cancelled["success"] is True
     assert cancelled["payment"]["status"] == "cancelled"
@@ -500,7 +501,8 @@ async def test_payment_route_wallet_and_control_tools_are_redacted():
         ("keep_in_hold", None, False, "manual_hold"),
     ],
 )
-async def test_retry_payment_reconcile_gate(decision, updated_status, expected_success, expected_status):
+async def test_retry_payment_reconcile_gate(decision, updated_status, expected_success, expected_status, monkeypatch):
+    monkeypatch.setenv("ADMIN_USER_ID", "99999")
     db_handler = FakePaymentDB()
     payment_service = FakeReconcileService(
         db_handler,
@@ -510,7 +512,7 @@ async def test_retry_payment_reconcile_gate(decision, updated_status, expected_s
     )
     bot = SimpleNamespace(payment_service=payment_service)
 
-    result = await admin_tools.execute_retry_payment(bot, db_handler, {"payment_id": "pay-1"})
+    result = await admin_tools.execute_retry_payment(bot, db_handler, {"payment_id": "pay-1", "admin_user_id": "99999"})
 
     assert payment_service.calls == [("pay-1", 1)]
     assert result["success"] is expected_success
@@ -527,11 +529,12 @@ async def test_retry_payment_reconcile_gate(decision, updated_status, expected_s
 
 
 @pytest.mark.anyio
-async def test_retry_payment_fails_closed_when_payment_service_missing():
+async def test_retry_payment_fails_closed_when_payment_service_missing(monkeypatch):
+    monkeypatch.setenv("ADMIN_USER_ID", "99999")
     db_handler = FakePaymentDB()
     bot = SimpleNamespace()
 
-    result = await admin_tools.execute_retry_payment(bot, db_handler, {"payment_id": "pay-1"})
+    result = await admin_tools.execute_retry_payment(bot, db_handler, {"payment_id": "pay-1", "admin_user_id": "99999"})
 
     assert result == {"success": False, "error": "payment_service unavailable"}
     assert db_handler.requeue_calls == []
@@ -548,7 +551,8 @@ async def test_retry_payment_fails_closed_when_payment_service_missing():
         ("keep_in_hold", None, False, "manual_hold"),
     ],
 )
-async def test_release_payment_reconcile_gate(decision, updated_status, expected_success, expected_status):
+async def test_release_payment_reconcile_gate(decision, updated_status, expected_success, expected_status, monkeypatch):
+    monkeypatch.setenv("ADMIN_USER_ID", "99999")
     db_handler = FakePaymentDB()
     db_handler.payments[0]["status"] = "manual_hold"
     payment_service = FakeReconcileService(
@@ -562,7 +566,7 @@ async def test_release_payment_reconcile_gate(decision, updated_status, expected
     result = await admin_tools.execute_release_payment(
         bot,
         db_handler,
-        {"payment_id": "pay-1", "new_status": "failed", "reason": "released"},
+        {"payment_id": "pay-1", "new_status": "failed", "reason": "released", "admin_user_id": "99999"},
     )
 
     assert payment_service.calls == [("pay-1", 1)]
@@ -580,7 +584,8 @@ async def test_release_payment_reconcile_gate(decision, updated_status, expected
 
 
 @pytest.mark.anyio
-async def test_release_payment_fails_closed_when_payment_service_missing():
+async def test_release_payment_fails_closed_when_payment_service_missing(monkeypatch):
+    monkeypatch.setenv("ADMIN_USER_ID", "99999")
     db_handler = FakePaymentDB()
     db_handler.payments[0]["status"] = "manual_hold"
     bot = SimpleNamespace()
@@ -588,7 +593,7 @@ async def test_release_payment_fails_closed_when_payment_service_missing():
     result = await admin_tools.execute_release_payment(
         bot,
         db_handler,
-        {"payment_id": "pay-1", "new_status": "failed", "reason": "released"},
+        {"payment_id": "pay-1", "new_status": "failed", "reason": "released", "admin_user_id": "99999"},
     )
 
     assert result == {"success": False, "error": "payment_service unavailable"}
@@ -597,14 +602,15 @@ async def test_release_payment_fails_closed_when_payment_service_missing():
 
 
 @pytest.mark.anyio
-async def test_execute_tool_dispatches_payment_control_tools_with_bot():
+async def test_execute_tool_dispatches_payment_control_tools_with_bot(monkeypatch):
+    monkeypatch.setenv("ADMIN_USER_ID", "99999")
     db_handler = FakePaymentDB()
     payment_service = FakeReconcileService(db_handler, decision="allow_requeue")
     bot = SimpleNamespace(payment_service=payment_service)
 
     retry_result = await admin_tools.execute_tool(
         "retry_payment",
-        {"payment_id": "pay-1"},
+        {"payment_id": "pay-1", "admin_user_id": "99999"},
         bot,
         db_handler,
         sharer=None,
@@ -613,7 +619,7 @@ async def test_execute_tool_dispatches_payment_control_tools_with_bot():
     db_handler.payments[0]["status"] = "manual_hold"
     release_result = await admin_tools.execute_tool(
         "release_payment",
-        {"payment_id": "pay-1", "new_status": "failed", "reason": "released"},
+        {"payment_id": "pay-1", "new_status": "failed", "reason": "released", "admin_user_id": "99999"},
         bot,
         db_handler,
         sharer=None,
@@ -865,5 +871,9 @@ def test_admin_tool_registration_and_identity_injection_sets():
         "initiate_batch_payment",
         "upsert_wallet_for_user",
         "resolve_admin_intent",
+        "cancel_payment",
+        "hold_payment",
+        "retry_payment",
+        "release_payment",
     }
     assert "initiate_batch_payment" in admin_agent._CHANNEL_POSTING_TOOLS

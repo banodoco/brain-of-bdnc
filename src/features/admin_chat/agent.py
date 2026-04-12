@@ -30,6 +30,10 @@ _ADMIN_IDENTITY_INJECTED_TOOLS = frozenset({
     "initiate_batch_payment",
     "upsert_wallet_for_user",
     "resolve_admin_intent",
+    "cancel_payment",
+    "hold_payment",
+    "retry_payment",
+    "release_payment",
 })
 from src.common.soul import BOT_VOICE
 
@@ -403,7 +407,7 @@ class AdminChatAgent:
                         if tool_input is tool_use.input:
                             tool_input = dict(tool_input)
                         tool_input['source_channel_id'] = int(channel_context['channel_id'])
-                    if tool_name in _ADMIN_IDENTITY_INJECTED_TOOLS and 'admin_user_id' not in tool_input:
+                    if tool_name in _ADMIN_IDENTITY_INJECTED_TOOLS:
                         if tool_input is tool_use.input:
                             tool_input = dict(tool_input)
                         tool_input['admin_user_id'] = user_id

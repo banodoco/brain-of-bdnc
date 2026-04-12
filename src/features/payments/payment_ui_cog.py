@@ -48,7 +48,13 @@ class PaymentConfirmView(discord.ui.View):
             return
 
         expected_user_id = existing_payment.get('recipient_discord_id')
-        if expected_user_id is not None and int(expected_user_id) != interaction.user.id:
+        if expected_user_id is None:
+            await interaction.followup.send(
+                "This payment has no designated recipient and cannot be confirmed via button.",
+                ephemeral=True,
+            )
+            return
+        if int(expected_user_id) != interaction.user.id:
             await interaction.followup.send(
                 "Only the intended recipient can confirm this payment.",
                 ephemeral=True,
