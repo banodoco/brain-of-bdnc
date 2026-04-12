@@ -388,7 +388,8 @@ async def post_tweet(
     user_details: Dict,
     attachments: Optional[List[Dict]],
     original_content: Optional[str],
-    in_reply_to_tweet_id: Optional[str] = None
+    in_reply_to_tweet_id: Optional[str] = None,
+    quote_tweet_id: Optional[str] = None
 ) -> Optional[Dict[str, str]]:
     """Uploads media and posts a tweet with a generated caption.
     
@@ -458,7 +459,8 @@ async def post_tweet(
         logger.info("Creating tweet...")
         create_tweet_kwargs = {
             'text': final_caption,
-            'in_reply_to_tweet_id': in_reply_to_tweet_id
+            'in_reply_to_tweet_id': in_reply_to_tweet_id,
+            'quote_tweet_id': quote_tweet_id,
         }
         if media_id:
             create_tweet_kwargs['media_ids'] = [media_id]

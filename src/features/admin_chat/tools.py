@@ -187,7 +187,7 @@ TOOLS = [
     },
     {
         "name": "share_to_social",
-        "description": "Share or schedule a Discord message to social media (currently X/Twitter). Supports standalone posts, thread replies, and retweets. Use schedule_for for queued publishing with an ISO-8601 timestamp. Use action plus target_post for replies/retweets. reply_to_tweet remains supported as a reply-only alias and replies still default to text_only=true unless you explicitly set text_only=false. Publishing resolves the configured social route for the message channel unless you supply route_key to force a specific route. Immediate success returns tweet_url/tweet_id/publication_id; scheduled success returns publication_id with queued status.",
+        "description": "Share or schedule a Discord message to social media (currently X/Twitter). Supports standalone posts, thread replies, and retweets. Use schedule_for for queued publishing with an ISO-8601 timestamp. Use action plus target_post for replies/retweets. reply_to_tweet remains supported as a reply-only alias and replies still default to text_only=true unless you explicitly set text_only=false. Publishing resolves the configured social route for the message channel unless you supply route_key to force a specific route. Also supports direct posting with media_urls + tweet_text, bypassing Discord message lookup. Immediate success returns tweet_url/tweet_id/publication_id; scheduled success returns publication_id with queued status.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -203,10 +203,17 @@ TOOLS = [
                     "type": "string",
                     "description": "Custom tweet text (max 280 chars). If provided, this exact text is used as the tweet instead of auto-generating."
                 },
+                "media_urls": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Direct media URLs to post (e.g. Supabase video links). Use instead of message_link/message_id for external media. tweet_text is required when using media_urls."
+                },
                 "action": {
                     "type": "string",
-                    "enum": ["post", "reply", "retweet"],
-                    "description": "Publish action. Defaults to post. If omitted but target_post/reply_to_tweet is provided, reply is assumed."
+                    "enum": ["post", "reply", "retweet", "quote"],
+                    "description": "Publish action. Defaults to post. If omitted but target_post/reply_to_tweet is provided, reply is assumed. Use quote to quote-tweet a target_post."
                 },
                 "target_post": {
                     "type": "string",
@@ -1799,12 +1806,14 @@ async def execute_inspect_message(
 async def execute_share_to_social(
     bot: discord.Client,
     sharer,
-    params: Dict[str, Any]
+    params: Dict[str, Any],
+    guild_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Execute the share_to_social tool through the unified social publish service."""
 
     message_link = params.get('message_link', '')
     message_id = params.get('message_id', '')
+    media_urls = params.get('media_urls') or []
     target_post_input = params.get('target_post')
     raw_reply_to_tweet = params.get('reply_to_tweet')
     raw_action = str(params.get('action', '') or '').strip().lower()
@@ -1829,8 +1838,8 @@ async def execute_share_to_social(
                 "error": "target_post/reply_to_tweet must be a Tweet ID or a tweet URL containing status/<digits>"
             }
 
-    if raw_action and raw_action not in {"post", "reply", "retweet"}:
-        return {"success": False, "error": "action must be one of: post, reply, retweet"}
+    if raw_action and raw_action not in {"post", "reply", "retweet", "quote"}:
+        return {"success": False, "error": "action must be one of: post, reply, retweet, quote"}
 
     if raw_action:
         action = raw_action
@@ -1839,10 +1848,10 @@ async def execute_share_to_social(
     else:
         action = 'post'
 
-    if action in {'reply', 'retweet'} and not target_post_id:
+    if action in {'reply', 'retweet', 'quote'} and not target_post_id:
         return {"success": False, "error": f"action={action} requires target_post or reply_to_tweet"}
     if action == 'post' and target_post_id:
-        return {"success": False, "error": "target_post/reply_to_tweet is only valid for reply or retweet actions"}
+        return {"success": False, "error": "target_post/reply_to_tweet is only valid for reply, retweet, or quote actions"}
 
     reply_to_tweet_id = target_post_id if action == 'reply' else None
 
@@ -1876,6 +1885,8 @@ async def execute_share_to_social(
             return {"success": False, "error": "schedule_for must include a timezone offset or Z suffix"}
         scheduled_at = scheduled_at.astimezone(timezone.utc)
 
+    tweet_text = params.get('tweet_text', '').strip() or None
+
     # Parse link or use direct ID
     if message_link:
         parsed = parse_message_link(message_link)
@@ -1892,7 +1903,110 @@ async def execute_share_to_social(
         channel_id = msg_data['channel_id']
         message_id = int(message_id)
     else:
-        return {"success": False, "error": "Provide either message_link or message_id"}
+        if not isinstance(media_urls, list):
+            return {"success": False, "error": "media_urls must be an array of URL strings"}
+
+        direct_media_urls = [str(url).strip() for url in media_urls if str(url).strip()]
+        if action == 'retweet':
+            if tweet_text:
+                return {"success": False, "error": "tweet_text is not supported for retweet actions"}
+            if direct_media_urls:
+                return {"success": False, "error": "media_urls is not supported for retweet actions"}
+        elif not tweet_text:
+            return {
+                "success": False,
+                "error": "tweet_text is required for post or reply actions without message_link or message_id",
+            }
+
+        if guild_id is None:
+            return {"success": False, "error": "guild_id is required for direct social posts"}
+
+        social_publish_service = getattr(sharer, 'social_publish_service', None)
+        if social_publish_service is None:
+            return {"success": False, "error": "Social publish service is not available"}
+
+        downloaded_attachments = []
+        preserve_downloads = False
+        try:
+            for index, url in enumerate(direct_media_urls):
+                downloaded_item = await sharer._download_media_from_url(url, 'direct', index)
+                if not downloaded_item or not downloaded_item.get('local_path'):
+                    return {"success": False, "error": f"Failed to download media from URL: {url}"}
+                downloaded_attachments.append(downloaded_item)
+
+            request = SocialPublishRequest(
+                message_id=0,
+                channel_id=0,
+                guild_id=guild_id,
+                user_id=0,
+                platform=platform,
+                action=action,
+                scheduled_at=scheduled_at,
+                target_post_ref=target_post_id,
+                route_override=route_override,
+                text=tweet_text if action != 'retweet' else None,
+                media_hints=downloaded_attachments,
+                source_kind='admin_chat',
+                duplicate_policy={'check_existing': False},
+                text_only=not downloaded_attachments,
+                announce_policy={'enabled': False},
+                first_share_notification_policy={'enabled': False},
+                legacy_shared_post_policy={'enabled': False},
+                source_context=PublicationSourceContext(
+                    source_kind='admin_chat',
+                    metadata={
+                        'user_details': {'direct_post': True},
+                        'guild_id': guild_id,
+                    },
+                ),
+            )
+
+            if scheduled_at is not None:
+                result = await social_publish_service.enqueue(request)
+                if not result.success:
+                    return {"success": False, "error": result.error or "Scheduling failed"}
+                preserve_downloads = True
+                return {
+                    "success": True,
+                    "message": f"Scheduled {action} for {scheduled_at.isoformat()}",
+                    "tweet_url": None,
+                    "tweet_id": None,
+                    "publication_id": result.publication_id,
+                    "status": "queued",
+                    "already_shared": False,
+                }
+
+            result = await social_publish_service.publish_now(request)
+            if not result.success:
+                return {"success": False, "error": result.error or "Sharing failed"}
+
+            tweet_url = result.tweet_url
+            tweet_id = result.tweet_id
+            publication_id = result.publication_id
+
+            response_message = f"Posted tweet: {tweet_url}"
+            if action == 'reply':
+                response_message += " (reply in thread)"
+            elif action == 'retweet':
+                response_message = f"Retweeted post: {tweet_url}"
+            elif action == 'quote':
+                response_message = f"Quote tweeted: {tweet_url}"
+
+            return {
+                "success": True,
+                "message": response_message,
+                "tweet_url": tweet_url,
+                "tweet_id": tweet_id,
+                "publication_id": publication_id,
+                "already_shared": False,
+            }
+        finally:
+            if not preserve_downloads:
+                sharer._cleanup_files([
+                    att['local_path']
+                    for att in downloaded_attachments
+                    if att.get('local_path')
+                ])
 
     try:
         social_publish_service = getattr(sharer, 'social_publish_service', None)
@@ -1931,7 +2045,6 @@ async def execute_share_to_social(
         if guild_id is None:
             return {"success": False, "error": "This message is not in a server-backed channel"}
 
-        tweet_text = params.get('tweet_text', '').strip() or None
         if action == 'retweet' and tweet_text:
             return {"success": False, "error": "tweet_text is not supported for retweet actions"}
         logger.info(
@@ -2070,6 +2183,8 @@ async def execute_share_to_social(
             response_message += " (reply in thread)"
         elif action == 'retweet':
             response_message = f"Retweeted post: {tweet_url}"
+        elif action == 'quote':
+            response_message = f"Quote tweeted: {tweet_url}"
 
         return {
             "success": True,
@@ -3954,7 +4069,12 @@ async def execute_tool(
             visible_channels=visible_channels,
         )
     elif tool_name == "share_to_social":
-        return await execute_share_to_social(bot, sharer, trusted_tool_input)
+        return await execute_share_to_social(
+            bot,
+            sharer,
+            trusted_tool_input,
+            guild_id=trusted_guild_id,
+        )
     elif tool_name == "list_social_routes":
         return await execute_list_social_routes(trusted_tool_input)
     elif tool_name == "create_social_route":

@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Union
 
 
-SocialAction = Literal['post', 'reply', 'retweet']
+SocialAction = Literal['post', 'reply', 'retweet', 'quote']
 SocialSourceKind = Literal['admin_chat', 'reaction_bridge', 'summary', 'reaction_auto']
 RouteOverride = Union[str, Dict[str, Any]]
 

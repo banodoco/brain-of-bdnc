@@ -41,8 +41,8 @@ class XProvider(SocialPublishProvider):
                 return None
             return await self._retweet(target_ref)
 
-        if request.action == 'reply' and not target_ref:
-            logger.error("[XProvider] Reply requested without target_post_ref")
+        if request.action in ('reply', 'quote') and not target_ref:
+            logger.error(f"[XProvider] {request.action} requested without target_post_ref")
             return None
 
         tweet_result = await post_tweet(
@@ -51,6 +51,7 @@ class XProvider(SocialPublishProvider):
             attachments=request.media_hints,
             original_content=metadata.get('original_content'),
             in_reply_to_tweet_id=target_ref if request.action == 'reply' else None,
+            quote_tweet_id=target_ref if request.action == 'quote' else None,
         )
         if not tweet_result:
             return None
