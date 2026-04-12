@@ -61,7 +61,7 @@ class SolanaProvider(PaymentProvider):
     def __init__(
         self,
         solana_client: Optional[SolanaClient] = None,
-        confirm_timeout_seconds: float = 60.0,
+        confirm_timeout_seconds: float = 180.0,
     ):
         self.solana_client = solana_client or SolanaClient()
         self.confirm_timeout_seconds = confirm_timeout_seconds
