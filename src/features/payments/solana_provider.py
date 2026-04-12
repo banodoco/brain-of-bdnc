@@ -116,6 +116,7 @@ class SolanaProvider(PaymentProvider):
                     self.solana_client.confirm_tx_with_rebroadcast(
                         cached,
                         max_wait_seconds=self.confirm_timeout_seconds,
+                        instructions=cached.instructions,
                     ),
                     timeout=self.confirm_timeout_seconds + 10,
                 )

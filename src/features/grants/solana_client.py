@@ -54,6 +54,7 @@ class SendResult:
     signature: str
     signed_tx: VersionedTransaction
     last_valid_block_height: int
+    instructions: list = None
 
 
 class SolanaClient:
@@ -215,6 +216,7 @@ class SolanaClient:
                         signature=signature,
                         signed_tx=tx,
                         last_valid_block_height=last_valid_block_height,
+                        instructions=instructions,
                     )
                 except Exception as e:
                     last_err = e
@@ -290,13 +292,15 @@ class SolanaClient:
         send_result: "SendResult",
         *,
         rebroadcast_interval: float = 2.0,
-        max_wait_seconds: float = 60.0,
+        max_wait_seconds: float = 180.0,
+        instructions: list = None,
     ) -> bool:
         """Confirm a signed tx by repeatedly rebroadcasting + polling status.
 
-        This is the standard Solana production pattern. Each iteration:
+        This is the standard Solana production pattern with blockhash rotation.
+        Each iteration:
 
-        1. Re-sends the exact signed ``VersionedTransaction`` via
+        1. Re-sends the signed ``VersionedTransaction`` via
            ``send_transaction(skip_preflight=True)``. Once the tx has been
            included on chain the node no-ops on duplicate sends, so this is
            safe to repeat as many times as the confirmation window allows.
@@ -309,15 +313,19 @@ class SolanaClient:
              returns True.
         3. Sleeps ``rebroadcast_interval`` seconds, then loops.
 
+        When the blockhash expires and ``instructions`` are provided, the loop
+        re-signs the transaction with a fresh blockhash and continues
+        rebroadcasting (blockhash rotation). Without ``instructions``, it raises
+        on blockhash expiry as before.
+
         Raises ``RuntimeError`` when the wall-clock elapsed exceeds
-        ``max_wait_seconds`` or the current block height has passed
-        ``last_valid_block_height`` (blockhash expired → the tx can no longer
-        land, retry is pointless).
+        ``max_wait_seconds``.
         """
         signature = send_result.signature
         signed_tx = send_result.signed_tx
         last_valid_block_height = send_result.last_valid_block_height
         sig = Signature.from_string(signature)
+        rotation_count = 0
 
         opts = TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
         start = time.monotonic()
@@ -325,10 +333,7 @@ class SolanaClient:
 
         async with AsyncClient(self.rpc_url) as client:
             while True:
-                # (1) Rebroadcast the signed tx. Failures here are non-fatal:
-                # the next poll may still reveal the tx landed from a previous
-                # send. Only truly catastrophic conditions (expired blockhash,
-                # timeout) end the loop.
+                # (1) Rebroadcast the signed tx.
                 try:
                     await client.send_transaction(signed_tx, opts=opts)
                     broadcast_count += 1
@@ -346,7 +351,6 @@ class SolanaClient:
 
                 if status is not None:
                     if status.err is not None:
-                        # P0: finalized-but-errored must raise, not swallow.
                         self._log_tx_confirm_decision(
                             signature,
                             decision='errored',
@@ -360,11 +364,6 @@ class SolanaClient:
                     confirmation_status = getattr(
                         status, 'confirmation_status', None
                     )
-                    # solders' ``TransactionConfirmationStatus`` is a Rust enum
-                    # whose ``.name`` attribute returns None, so substring-match
-                    # against ``str(cs).lower()`` — that works for both the solders
-                    # enum (str repr is "TransactionConfirmationStatus.Finalized")
-                    # and legacy string responses ("confirmed"/"finalized").
                     cs_lower = (
                         str(confirmation_status).lower()
                         if confirmation_status is not None
@@ -380,13 +379,12 @@ class SolanaClient:
                         logger.info(
                             f"SOL transfer confirmed: {signature} "
                             f"(rebroadcasts={broadcast_count}, "
+                            f"rotations={rotation_count}, "
                             f"status={cs_lower})"
                         )
                         return True
 
-                # (3) Check blockhash expiry. If the blockhash is no longer
-                # valid the tx can never land regardless of how many times we
-                # rebroadcast — bail out now.
+                # (3) Check blockhash expiry.
                 if last_valid_block_height > 0:
                     try:
                         bh_resp = await client.get_block_height(
@@ -404,6 +402,41 @@ class SolanaClient:
                         current_block_height
                         and current_block_height > last_valid_block_height
                     ):
+                        if instructions is not None:
+                            # Blockhash rotation: re-sign with a fresh blockhash
+                            # and keep trying within the wall-clock budget.
+                            try:
+                                blockhash_resp = await client.get_latest_blockhash(
+                                    commitment=Confirmed
+                                )
+                                new_blockhash = blockhash_resp.value.blockhash
+                                last_valid_block_height = int(
+                                    getattr(blockhash_resp.value, 'last_valid_block_height', 0) or 0
+                                )
+                                msg = MessageV0.try_compile(
+                                    payer=self.public_key,
+                                    instructions=instructions,
+                                    address_lookup_table_accounts=[],
+                                    recent_blockhash=new_blockhash,
+                                )
+                                signed_tx = VersionedTransaction(msg, [self.keypair])
+                                result = await client.send_transaction(signed_tx, opts=opts)
+                                signature = str(result.value)
+                                sig = Signature.from_string(signature)
+                                rotation_count += 1
+                                broadcast_count += 1
+                                logger.info(
+                                    f"SOL blockhash rotation #{rotation_count}: "
+                                    f"new sig={signature} "
+                                    f"(elapsed={time.monotonic() - start:.1f}s)"
+                                )
+                                await asyncio.sleep(rebroadcast_interval)
+                                continue
+                            except Exception as rot_err:
+                                logger.warning(
+                                    f"SOL blockhash rotation failed: {rot_err}"
+                                )
+                                # Fall through to the raise below
                         raise RuntimeError(
                             f"SOL transfer {signature} confirmation timed out: "
                             f"blockhash expired "
@@ -416,7 +449,8 @@ class SolanaClient:
                 if elapsed >= max_wait_seconds:
                     raise RuntimeError(
                         f"SOL transfer {signature} confirmation timed out after "
-                        f"{elapsed:.1f}s (rebroadcasts={broadcast_count})"
+                        f"{elapsed:.1f}s (rebroadcasts={broadcast_count}, "
+                        f"rotations={rotation_count})"
                     )
 
                 await asyncio.sleep(rebroadcast_interval)
