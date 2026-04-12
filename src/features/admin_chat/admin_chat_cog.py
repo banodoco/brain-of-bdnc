@@ -991,7 +991,12 @@ class AdminChatCog(commands.Cog):
             logger.warning("[AdminChat] Reconciliation skipped missing channel %s for intent %s", intent.get('channel_id'), intent.get('intent_id'))
             return
 
-        cursor_id = intent.get('last_scanned_message_id') or intent.get('prompt_message_id')
+        cursor_id = (
+            intent.get('last_scanned_message_id')
+            or intent.get('receipt_prompt_message_id')
+            or intent.get('status_message_id')
+            or intent.get('prompt_message_id')
+        )
         messages = []
         try:
             if cursor_id:
