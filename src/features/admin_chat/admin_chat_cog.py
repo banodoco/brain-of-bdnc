@@ -1222,11 +1222,15 @@ class AdminChatCog(commands.Cog):
             self._processing_intents.discard(intent_id)
 
     async def _handle_admin_message(self, message: discord.Message):
-        """Process admin messages without mention or approved-member gating."""
+        """Process admin messages — DMs always, guild channels only when the bot is @mentioned."""
         if message.author.bot:
             return
 
         is_dm = isinstance(message.channel, discord.DMChannel)
+        if not is_dm and not self.bot.user:
+            return
+        if not is_dm and self.bot.user.id not in [m.id for m in message.mentions]:
+            return
         content = message.content if is_dm else self._strip_mention(message.content, message.guild)
         if not content:
             return
