@@ -1061,20 +1061,25 @@
 </ul>
 </div></details>
 <script>
-// Fully unload videos: remove and restore src to free memory
+// Fully unload videos: save src to data attr then strip it
 function unloadVideos(container) {
     container.querySelectorAll('video').forEach(v => {
         v.pause();
         const source = v.querySelector('source');
-        if (source && !v.dataset.src) {
-            v.dataset.src = source.getAttribute('src');
-            v.dataset.type = source.getAttribute('type') || '';
+        if (source) {
+            const currentSrc = source.getAttribute('src');
+            if (currentSrc) {
+                v.dataset.src = currentSrc;
+                v.dataset.type = source.getAttribute('type') || '';
+            }
             source.removeAttribute('src');
-            v.load(); // forces the browser to release the buffered data
+            v.removeAttribute('src');
+            v.load();
         }
     });
 }
 
+// Reload videos: restore src from data attr and trigger load
 function loadVideos(container) {
     container.querySelectorAll('video').forEach(v => {
         const source = v.querySelector('source');
@@ -1082,6 +1087,7 @@ function loadVideos(container) {
             source.setAttribute('src', v.dataset.src);
             if (v.dataset.type) source.setAttribute('type', v.dataset.type);
             v.preload = 'metadata';
+            v.load();
         }
     });
 }
