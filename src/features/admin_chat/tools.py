@@ -3162,6 +3162,32 @@ async def execute_upsert_wallet_for_user(bot: discord.Client, db_handler, params
 
     try:
         guild_id = _resolve_db_handler_guild_id(db_handler, params)
+        # When called from a DM, the resolver defaults to the "home" guild which
+        # may differ from the guild where the recipient's intent lives. Check all
+        # writable guilds for a pending awaiting_wallet intent and prefer that
+        # guild so the wallet and intent stay in sync.
+        server_config = getattr(db_handler, 'server_config', None)
+        if server_config is not None:
+            try:
+                writable_guilds = [
+                    int(s['guild_id'])
+                    for s in server_config.get_enabled_servers(require_write=True)
+                    if s.get('guild_id') is not None
+                ]
+            except Exception:
+                writable_guilds = []
+            for candidate_guild_id in writable_guilds:
+                if candidate_guild_id == guild_id:
+                    continue
+                try:
+                    pending = db_handler.get_awaiting_wallet_intent_for_user(
+                        candidate_guild_id, recipient_user_id,
+                    )
+                    if pending:
+                        guild_id = candidate_guild_id
+                        break
+                except Exception:
+                    pass
         metadata: Dict[str, Any] = {'producer': 'admin_chat', 'source': 'upsert_wallet_for_user'}
         if reason:
             metadata['reason'] = reason
