@@ -265,10 +265,10 @@
     </style>
 </head>
 <body>
-<nav class="toc"><h2>Contents</h2><ul><li><a href="#1-ic-loras-extending-the-models-capabilities">1. IC-LoRAs: Extending the Model's Capabilities</a></li><li><a href="#2-style-loras-bending-the-aesthetic">2. Style LoRAs: Bending the Aesthetic</a></li><li><a href="#3-audio-visual-generation-the-killer-feature">3. Audio-Visual Generation: The Killer Feature</a></li><li><a href="#4-long-form-video-breaking-the-15-second-barrier">4. Long-Form Video: Breaking the 15-Second Barrier</a></li><li><a href="#5-music-video-production">5. Music Video Production</a></li><li><a href="#6-training-innovation">6. Training Innovation</a></li><li><a href="#7-speed-and-efficiency">7. Speed and Efficiency</a></li><li><a href="#8-cross-model-pipelines">8. Cross-Model Pipelines</a></li><li><a href="#9-the-arca-gidan-prize-art-at-the-frontier">9. The Arca Gidan Prize: Art at the Frontier</a></li><li><a href="#10-fun-viral-the-silly-stuff">10. Fun & Viral: The Silly Stuff</a></li><li><a href="#community-context">Community Context</a></li></ul></nav>
+<nav class="toc"><h2>Contents</h2><ul><li><a href="#1-ic-loras-extending-the-model-to-state-of-the-art-at-specific-tasks">1. IC-LoRAs: Extending the Model to State-of-the-Art at Specific Tasks</a></li><li><a href="#2-style-loras-bending-aesthetics-to-production-quality">2. Style LoRAs: Bending Aesthetics to Production Quality</a></li><li><a href="#3-audio-visual-generation-pioneering-a-new-mode-of-control">3. Audio-Visual Generation: Pioneering a New Mode of Control</a></li><li><a href="#4-long-form-video-breaking-the-15-second-barrier">4. Long-Form Video: Breaking the 15-Second Barrier</a></li><li><a href="#5-music-video-production-pushing-the-boundaries-of-whats-possible-locally">5. Music Video Production: Pushing the Boundaries of What's Possible Locally</a></li><li><a href="#6-training-innovation-making-lora-training-accessible-to-everyone">6. Training Innovation: Making LoRA Training Accessible to Everyone</a></li><li><a href="#7-speed-and-efficiency-the-fastest-open-source-video-model-pushed-further">7. Speed and Efficiency: The Fastest Open-Source Video Model, Pushed Further</a></li><li><a href="#8-cross-model-pipelines-ltx-as-the-backbone-of-multi-model-workflows">8. Cross-Model Pipelines: LTX as the Backbone of Multi-Model Workflows</a></li><li><a href="#9-the-arca-gidan-prize-art-competition-at-the-frontier-of-ai-video">9. The Arca Gidan Prize: Art Competition at the Frontier of AI Video</a></li><li><a href="#10-fun-viral-the-videos-that-made-everyone-lose-it">10. Fun & Viral: The Videos That Made Everyone Lose It</a></li><li><a href="#the-community-members-who-push-things-forward">The Community Members Who Push Things Forward</a></li></ul></nav>
 <h1 id="cool-stuff-people-have-done-with-ltx-2">Cool Stuff People Have Done with LTX 2</h1>
 <p>A community-sourced roundup of the most impressive, creative, and technically interesting things the Banodoco community has pulled off with LTX Video 2.x (primarily LTX 2.3).</p>
-<details class="section" id="1-ic-loras-extending-the-models-capabilities"><summary><h2>1. IC-LoRAs: Extending the Model's Capabilities</h2></summary><div class="section-content">
+<details class="section" id="1-ic-loras-extending-the-model-to-state-of-the-art-at-specific-tasks"><summary><h2>1. IC-LoRAs: Extending the Model to State-of-the-Art at Specific Tasks</h2></summary><div class="section-content">
 <p>LTX's IC-LoRA (Image-Conditioned LoRA) architecture has become one of the most powerful extension mechanisms in open-source video generation. The community hasn't just used IC-LoRAs for style -- they've invented entirely new capabilities for the base model.</p>
 <h3 id="outpainting----oumoumad">Outpainting -- oumoumad</h3>
 <p><strong>oumoumad</strong> trained an Outpaint IC-LoRA that extends the canvas of any input video by generating new content in regions marked as pure black. Sides, top, bottom, any combination -- the model fills it in with temporally consistent content. Trained on 111 videos with 324 references (same videos with random crops masked black). 16 reactions -- the top-reacted generation the day it dropped.</p>
@@ -409,7 +409,7 @@
              <span class="reactions">5 reactions</span></li>
 </ul>
 </div></details>
-<details class="section" id="2-style-loras-bending-the-aesthetic"><summary><h2>2. Style LoRAs: Bending the Aesthetic</h2></summary><div class="section-content">
+<details class="section" id="2-style-loras-bending-aesthetics-to-production-quality"><summary><h2>2. Style LoRAs: Bending Aesthetics to Production Quality</h2></summary><div class="section-content">
 <p>The community has trained LTX to faithfully reproduce a strikingly wide range of visual styles, often to a degree that surprised even experienced practitioners.</p>
 <h3 id="pixarcgi-toon----vrgamedevgirl84">Pixar/CGI Toon -- VRGameDevGirl84</h3>
 <p><strong>VRGameDevGirl84</strong> released a Pixar-style LoRA for LTX 2.3 with step-by-step XYZ comparison showing quality at different training stages. More detailed prompts with trigger words like "pixar style character", "pixar-style animation", and "stylized CGI character" produce better results. <strong>el marzocco</strong> confirmed adding just "Pixar like" to a basic prompt activated the style.</p>
@@ -638,7 +638,7 @@
 </ul>
 <p>Key insight from <strong>oumoumad</strong>: he trains at <strong>rank 128</strong> even for normal LoRAs because lower ranks showed a big gap in concept capture.</p>
 </div></details>
-<details class="section" id="3-audio-visual-generation-the-killer-feature"><summary><h2>3. Audio-Visual Generation: The Killer Feature</h2></summary><div class="section-content">
+<details class="section" id="3-audio-visual-generation-pioneering-a-new-mode-of-control"><summary><h2>3. Audio-Visual Generation: Pioneering a New Mode of Control</h2></summary><div class="section-content">
 <p>LTX 2.3's native audio generation sets it apart from every other open-source video model. The community has pushed this in remarkable directions.</p>
 <h3 id="native-audio-to-video-with-lipsync----fredbliss">Native Audio-to-Video with Lipsync -- fredbliss</h3>
 <p><strong>fredbliss</strong> described the magic: "just tell ltx2 'both people sing' and pass the audio/video latents together and it figures the fuckin thing out. wild." After his first week with LTX 2.3 he called it "what a wild time to be alive" and described music videos "that just can't be done with anything else" running on his 4090.</p>
@@ -739,7 +739,7 @@
 <h3 id="multi-minute-chaining">Multi-Minute Chaining</h3>
 <p>Community members reported achieving ~2 minutes by chaining first-frame/last-frame continuations. <strong>Duckers McQuack</strong> was "flabbergasted" by the technique: "extending videos practically to unlimited lengths, where it uses x amount of existing frames as the buffer to resume for further extending."</p>
 </div></details>
-<details class="section" id="5-music-video-production"><summary><h2>5. Music Video Production</h2></summary><div class="section-content">
+<details class="section" id="5-music-video-production-pushing-the-boundaries-of-whats-possible-locally"><summary><h2>5. Music Video Production: Pushing the Boundaries of What's Possible Locally</h2></summary><div class="section-content">
 <p>LTX's combination of speed, audio awareness, and LoRA flexibility has made it a music video powerhouse.</p>
 <h3 id="music-videos-on-a-4090----fredbliss">Music Videos on a 4090 -- fredbliss</h3>
 <p><strong>fredbliss</strong> used a modified version of ckinpdx's looping workflow to create a music video from a "failed" 3D print that became a character in a Silence of the Lambs pastiche. Music made from a 15s Sora clip turned into a full song with Lyria 3. "love the music videos you can create with local that just can't be done with anything else."</p>
@@ -791,7 +791,7 @@
             </li>
 </ul>
 </div></details>
-<details class="section" id="6-training-innovation"><summary><h2>6. Training Innovation</h2></summary><div class="section-content">
+<details class="section" id="6-training-innovation-making-lora-training-accessible-to-everyone"><summary><h2>6. Training Innovation: Making LoRA Training Accessible to Everyone</h2></summary><div class="section-content">
 <p>The community hasn't just <em>used</em> LTX -- they've pushed the boundaries of how to train it.</p>
 <h3 id="in-comfyui-lora-training----vrgamedevgirl84">In-ComfyUI LoRA Training -- VRGameDevGirl84</h3>
 <p><strong>VRGameDevGirl84</strong> built a workflow that trains LoRAs step-by-step right inside ComfyUI: auto-resumes from latest saved state, creates preview videos at each save point, and builds a final labeled XYZ comparison video when training completes. Dataset prep, cache reuse, config generation, training, and LoRA loading all in one graph. 41 reactions -- one of the most-reacted technical posts ever.</p>
@@ -799,7 +799,7 @@
 <li>
                 <div class="media-item">
                     <video controls preload="none" playsinline loading="lazy">
-                        <source src="https://cdn.discordapp.com/attachments/1483092931651965071/1483092944775807036/Recording_2026-03-16_081450.mp4?ex=69b95570&is=69b803f0&hm=5d656280da67290365bbf73ba5ccad654b940511ad8b619e47451d82a2ca63e6&" type="video/mp4">
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/Recording_2026-03-16_081450.mp4" type="video/mp4">
                     </video>
                     <span class="media-label">In-ComfyUI training workflow demo</span>
                 </div>
@@ -829,7 +829,7 @@
 <li><strong>JonkoXL</strong> discovered image-only training kills motion, but pruning the overtrained LoRA with uniform 0.5 successfully restores video generation</li>
 </ul>
 </div></details>
-<details class="section" id="7-speed-and-efficiency"><summary><h2>7. Speed and Efficiency</h2></summary><div class="section-content">
+<details class="section" id="7-speed-and-efficiency-the-fastest-open-source-video-model-pushed-further"><summary><h2>7. Speed and Efficiency: The Fastest Open-Source Video Model, Pushed Further</h2></summary><div class="section-content">
 <p>LTX's speed advantage is structural, not marginal, and the community has exploited it aggressively.</p>
 <h3 id="64-fps-native----protector131090">64 FPS Native -- protector131090</h3>
 <p><strong>protector131090</strong> pushed LTX2 to 64fps generation. Pom featured it in his weekly update (32 reactions). Higher fps was found to actually reduce motion artifacts and smudge -- a 50fps native render showed reduced smudge compared to lower framerates.</p>
@@ -890,7 +890,7 @@
             </li>
 </ul>
 </div></details>
-<details class="section" id="8-cross-model-pipelines"><summary><h2>8. Cross-Model Pipelines</h2></summary><div class="section-content">
+<details class="section" id="8-cross-model-pipelines-ltx-as-the-backbone-of-multi-model-workflows"><summary><h2>8. Cross-Model Pipelines: LTX as the Backbone of Multi-Model Workflows</h2></summary><div class="section-content">
 <p>LTX has become a key piece in multi-model workflows, and the community's pipeline innovation is arguably as impressive as any single generation.</p>
 <h3 id="multi-pass-quality-stacking----ckinpdx">Multi-Pass Quality Stacking -- ckinpdx</h3>
 <p><strong>ckinpdx</strong> described a sophisticated pipeline for production-quality output: "upscale to 4k in precise 2.5, do a 1080p upscale in one of the faster starlight models that scrubs all the texture details, then do a blend between the base gen, the scrubbed textureless upscale at a lower percent and the precise 2.5 at ~60% ish, shot depending, basically a mixed blend of 3 versions." Sometimes a 4th layer using edge detection as a mask to overlay only the sharp edges from the high-quality upscale.</p>
@@ -911,7 +911,7 @@
              <span class="reactions">19 reactions</span></li>
 </ul>
 </div></details>
-<details class="section" id="9-the-arca-gidan-prize-art-at-the-frontier"><summary><h2>9. The Arca Gidan Prize: Art at the Frontier</h2></summary><div class="section-content">
+<details class="section" id="9-the-arca-gidan-prize-art-competition-at-the-frontier-of-ai-video"><summary><h2>9. The Arca Gidan Prize: Art Competition at the Frontier of AI Video</h2></summary><div class="section-content">
 <p>The Arca Gidan Prize (Edition II) showcased LTX and other tools pushed to their artistic limits -- 95 entries, 7,285 votes, on the theme of "Time."</p>
 <h3 id="everyone-all-at-once----visualfrisson">Everyone All at Once -- visualfrisson</h3>
 <p><strong>visualfrisson</strong> used technical tricks to address the theme of time powerfully, showing the "endless, timeless quality to hip-hop lyrics that we might not always appreciate." Pom called it "typically incredibly impressive - not just technically, but also how it uses the technical trick to address the theme really powerfully" (39 reactions).</p>
@@ -972,7 +972,7 @@
             </li>
 </ul>
 </div></details>
-<details class="section" id="10-fun-viral-the-silly-stuff"><summary><h2>10. Fun & Viral: The Silly Stuff</h2></summary><div class="section-content">
+<details class="section" id="10-fun-viral-the-videos-that-made-everyone-lose-it"><summary><h2>10. Fun & Viral: The Videos That Made Everyone Lose It</h2></summary><div class="section-content">
 <p>Not everything has to be a technical breakthrough. Some of the most-reacted content in the community has been just... fun.</p>
 <h3 id="the-danger-feat-inflated-loras----ingi-systms">"THE DANGER" feat. Inflated LoRAs -- ingi // SYSTMS</h3>
 <p><strong>ingi // SYSTMS</strong> created "THE DANGER" using inflated LoRAs and it became one of the most iconic community videos. Pom featured it in an Art Appreciation Tuesday to 78 reactions.</p>
@@ -1035,7 +1035,7 @@
              <span class="reactions">28 reactions</span></li>
 </ul>
 </div></details>
-<details class="section" id="community-context"><summary><h2>Community Context</h2></summary><div class="section-content">
+<details class="section" id="the-community-members-who-push-things-forward"><summary><h2>The Community Members Who Push Things Forward</h2></summary><div class="section-content">
 <p>All of this is happening on consumer hardware. People are training LoRAs on 3060s and 5090s, generating music videos on 4090s, and building feature-film production pipelines in ComfyUI. LTX's position as the fastest open-source video model, combined with its native audio support and IC-LoRA extensibility, has created an ecosystem where individual creators are pushing capabilities that didn't exist months ago.</p>
 <p>As <strong>oumoumad</strong> put it: "LTX is just so good at context, I've been constantly impressed with things I've seen, like respecting depth of field, FOV etc... And I'm genuinely impressed some people got to do anime with it, another thing I didn't have in my dataset lol."</p>
 <p>Or as <strong>fredbliss</strong> said after his first week with LTX 2.3: "what a wild time to be alive."</p>
