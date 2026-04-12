@@ -265,9 +265,9 @@
     </style>
 </head>
 <body>
-<nav class="toc"><h2>Contents</h2><ul><li><a href="#1-ic-loras-extending-the-model-to-state-of-the-art-at-specific-tasks">1. IC-LoRAs: Extending the Model to State-of-the-Art at Specific Tasks</a></li><li><a href="#2-style-loras-bending-aesthetics-to-production-quality">2. Style LoRAs: Bending Aesthetics to Production Quality</a></li><li><a href="#3-audio-visual-generation-pioneering-a-new-mode-of-control">3. Audio-Visual Generation: Pioneering a New Mode of Control</a></li><li><a href="#4-long-form-video-breaking-the-15-second-barrier">4. Long-Form Video: Breaking the 15-Second Barrier</a></li><li><a href="#5-music-video-production-pushing-the-boundaries-of-whats-possible-locally">5. Music Video Production: Pushing the Boundaries of What's Possible Locally</a></li><li><a href="#6-training-innovation-making-lora-training-accessible-to-everyone">6. Training Innovation: Making LoRA Training Accessible to Everyone</a></li><li><a href="#7-speed-and-efficiency-the-fastest-open-source-video-model-pushed-further">7. Speed and Efficiency: The Fastest Open-Source Video Model, Pushed Further</a></li><li><a href="#8-cross-model-pipelines-ltx-as-the-backbone-of-multi-model-workflows">8. Cross-Model Pipelines: LTX as the Backbone of Multi-Model Workflows</a></li><li><a href="#9-the-arca-gidan-prize-art-competition-at-the-frontier-of-ai-video">9. The Arca Gidan Prize: Art Competition at the Frontier of AI Video</a></li><li><a href="#10-fun-viral-the-videos-that-made-everyone-lose-it">10. Fun & Viral: The Videos That Made Everyone Lose It</a></li><li><a href="#the-community-members-who-push-things-forward">The Community Members Who Push Things Forward</a></li></ul></nav>
 <h1 id="cool-stuff-people-have-done-with-ltx-2">Cool Stuff People Have Done with LTX 2</h1>
 <p>A community-sourced roundup of the most impressive, creative, and technically interesting things the Banodoco community has pulled off with LTX Video 2.x (primarily LTX 2.3).</p>
+<nav class="toc"><h2>Contents</h2><ul><li><a href="#1-ic-loras-extending-the-model-to-state-of-the-art-at-specific-tasks">1. IC-LoRAs: Extending the Model to State-of-the-Art at Specific Tasks</a></li><li><a href="#2-style-loras-bending-aesthetics-to-production-quality">2. Style LoRAs: Bending Aesthetics to Production Quality</a></li><li><a href="#3-audio-visual-generation-pioneering-a-new-mode-of-control">3. Audio-Visual Generation: Pioneering a New Mode of Control</a></li><li><a href="#4-long-form-video-breaking-the-15-second-barrier">4. Long-Form Video: Breaking the 15-Second Barrier</a></li><li><a href="#5-music-video-production-pushing-the-boundaries-of-whats-possible-locally">5. Music Video Production: Pushing the Boundaries of What's Possible Locally</a></li><li><a href="#6-training-innovation-making-lora-training-accessible-to-everyone">6. Training Innovation: Making LoRA Training Accessible to Everyone</a></li><li><a href="#7-speed-and-efficiency-the-fastest-open-source-video-model-pushed-further">7. Speed and Efficiency: The Fastest Open-Source Video Model, Pushed Further</a></li><li><a href="#8-cross-model-pipelines-ltx-as-the-backbone-of-multi-model-workflows">8. Cross-Model Pipelines: LTX as the Backbone of Multi-Model Workflows</a></li><li><a href="#9-the-arca-gidan-prize-art-competition-at-the-frontier-of-ai-video">9. The Arca Gidan Prize: Art Competition at the Frontier of AI Video</a></li><li><a href="#10-fun-viral-the-videos-that-made-everyone-lose-it">10. Fun & Viral: The Videos That Made Everyone Lose It</a></li><li><a href="#the-community-members-who-push-things-forward">The Community Members Who Push Things Forward</a></li></ul></nav>
 <details class="section" id="1-ic-loras-extending-the-model-to-state-of-the-art-at-specific-tasks"><summary><h2>1. IC-LoRAs: Extending the Model to State-of-the-Art at Specific Tasks</h2></summary><div class="section-content">
 <p>LTX's IC-LoRA (Image-Conditioned LoRA) architecture has become one of the most powerful extension mechanisms in open-source video generation. The community hasn't just used IC-LoRAs for style -- they've invented entirely new capabilities for the base model.</p>
 <h3 id="outpainting----oumoumad">Outpainting -- oumoumad</h3>
@@ -1061,27 +1061,55 @@
 </ul>
 </div></details>
 <script>
+// Fully unload videos: remove and restore src to free memory
+function unloadVideos(container) {
+    container.querySelectorAll('video').forEach(v => {
+        v.pause();
+        const source = v.querySelector('source');
+        if (source && !v.dataset.src) {
+            v.dataset.src = source.getAttribute('src');
+            v.dataset.type = source.getAttribute('type') || '';
+            source.removeAttribute('src');
+            v.load(); // forces the browser to release the buffered data
+        }
+    });
+}
+
+function loadVideos(container) {
+    container.querySelectorAll('video').forEach(v => {
+        const source = v.querySelector('source');
+        if (v.dataset.src && source) {
+            source.setAttribute('src', v.dataset.src);
+            if (v.dataset.type) source.setAttribute('type', v.dataset.type);
+            v.preload = 'metadata';
+        }
+    });
+}
+
 // Accordion: close other sections when one opens
+let isToggling = false;
 document.querySelectorAll('details.section').forEach(detail => {
     detail.addEventListener('toggle', () => {
+        if (isToggling) return;
         if (detail.open) {
-            // Close all other sections
+            isToggling = true;
+            // Close all other sections and unload their videos
             document.querySelectorAll('details.section').forEach(other => {
                 if (other !== detail && other.open) {
                     other.open = false;
-                    // Pause videos in closed sections
-                    other.querySelectorAll('video').forEach(v => {
-                        v.pause();
-                        v.preload = 'none';
-                    });
+                    unloadVideos(other);
                 }
             });
             // Load videos in the opened section
-            detail.querySelectorAll('video').forEach(v => {
-                v.preload = 'metadata';
+            loadVideos(detail);
+            // Anchor scroll to the opened section
+            requestAnimationFrame(() => {
+                detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                isToggling = false;
             });
-            // Scroll to the section
-            detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+            // Unload videos when manually closed
+            unloadVideos(detail);
         }
     });
 });
@@ -1094,10 +1122,12 @@ document.querySelectorAll('.toc a').forEach(link => {
         const detail = document.getElementById(id);
         if (detail && detail.tagName === 'DETAILS') {
             detail.open = true;
-            // The toggle event will handle closing others
         }
     });
 });
+
+// On load: strip all video sources so nothing loads until a section is opened
+document.querySelectorAll('details.section').forEach(d => unloadVideos(d));
 </script>
 </body>
 </html>
