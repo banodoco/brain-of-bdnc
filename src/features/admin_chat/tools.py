@@ -1919,6 +1919,8 @@ async def execute_share_to_social(
             }
 
         if guild_id is None:
+            guild_id = int(os.getenv('GUILD_ID', 0)) or None
+        if guild_id is None:
             return {"success": False, "error": "guild_id is required for direct social posts"}
 
         social_publish_service = getattr(sharer, 'social_publish_service', None)
