@@ -1943,7 +1943,7 @@ async def execute_share_to_social(
                 action=action,
                 scheduled_at=scheduled_at,
                 target_post_ref=target_post_id,
-                route_override=route_override,
+                route_override=route_override or {'route_key': 'direct'},
                 text=tweet_text if action != 'retweet' else None,
                 media_hints=downloaded_attachments,
                 source_kind='admin_chat',
