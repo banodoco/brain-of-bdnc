@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cool Stuff People Have Done with LTX 2</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --text: #e6edf3;
+            --text-muted: #8b949e;
+            --accent: #58a6ff;
+            --accent-subtle: #1f6feb33;
+            --reactions-bg: #da3633;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 2rem 1.5rem;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin: 2rem 0 0.5rem;
+            background: linear-gradient(135deg, #58a6ff, #bc8cff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        h2 {
+            font-size: 1.6rem;
+            font-weight: 600;
+            margin: 3rem 0 1rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--border);
+            color: var(--accent);
+        }
+
+        h3 {
+            font-size: 1.15rem;
+            font-weight: 600;
+            margin: 2rem 0 0.75rem;
+            color: var(--text);
+        }
+
+        p {
+            margin: 0.75rem 0;
+            color: var(--text-muted);
+        }
+
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+        a:hover { text-decoration: underline; }
+
+        strong { color: var(--text); }
+
+        code {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 0.15em 0.4em;
+            font-size: 0.9em;
+        }
+
+        hr {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 2.5rem 0;
+        }
+
+        ul {
+            list-style: none;
+            padding: 0;
+            margin: 0.75rem 0;
+        }
+
+        li {
+            margin: 0.5rem 0;
+            padding-left: 1.2rem;
+            position: relative;
+            color: var(--text-muted);
+        }
+
+        li::before {
+            content: "\2022";
+            color: var(--accent);
+            position: absolute;
+            left: 0;
+        }
+
+        .media-item {
+            display: inline-block;
+            margin: 0.75rem 0;
+            width: 100%;
+        }
+
+        .media-item video {
+            width: 100%;
+            max-height: 500px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: #000;
+        }
+
+        .media-item img {
+            width: 100%;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+
+        .media-label {
+            display: block;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-top: 0.35rem;
+        }
+
+        .comparison {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            gap: 0.75rem;
+            align-items: start;
+            margin: 0.75rem 0;
+        }
+
+        .comparison .media-item {
+            margin: 0;
+        }
+
+        .vs-label {
+            display: flex;
+            align-items: center;
+            font-weight: 700;
+            color: var(--accent);
+            font-size: 0.9rem;
+            padding-top: 30%;
+        }
+
+        .reactions {
+            display: inline-block;
+            background: var(--reactions-bg);
+            color: white;
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.15em 0.5em;
+            border-radius: 10px;
+            vertical-align: middle;
+        }
+
+        .model-link {
+            display: inline-block;
+            font-size: 0.85rem;
+            background: var(--accent-subtle);
+            border: 1px solid var(--accent);
+            border-radius: 6px;
+            padding: 0.2em 0.6em;
+            margin-top: 0.35rem;
+        }
+
+        .avatar-thumb {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            vertical-align: middle;
+            margin-right: 0.5rem;
+            border: 2px solid var(--border);
+        }
+
+        .inline-img {
+            max-width: 100%;
+            border-radius: 8px;
+        }
+
+        @media (max-width: 600px) {
+            body { padding: 1rem; }
+            h1 { font-size: 1.8rem; }
+            .comparison {
+                grid-template-columns: 1fr;
+            }
+            .vs-label {
+                padding: 0;
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+<body>
+<h1>Cool Stuff People Have Done with LTX 2</h1>
+<p>A community-sourced roundup of the most impressive, creative, and technically interesting things the Banodoco community has pulled off with LTX Video 2.x (primarily LTX 2.3).</p>
+<hr>
+<h2>1. IC-LoRAs: Extending the Model's Capabilities</h2>
+<p>LTX's IC-LoRA (Image-Conditioned LoRA) architecture has become one of the most powerful extension mechanisms in open-source video generation. The community hasn't just used IC-LoRAs for style -- they've invented entirely new capabilities for the base model.</p>
+<h3>Outpainting -- oumoumad</h3>
+<p><strong>oumoumad</strong> trained an Outpaint IC-LoRA that extends the canvas of any input video by generating new content in regions marked as pure black. Sides, top, bottom, any combination -- the model fills it in with temporally consistent content. Trained on 111 videos with 324 references (same videos with random crops masked black). 16 reactions -- the top-reacted generation the day it dropped.</p>
+<p>oumoumad explained the key insight behind training: "working in reverse is easier. Take normal videos as targets, randomly crop/mask them to create references." He also noted IC-LoRAs are easier to train than many think -- "like training an image edit model: instead of image/caption pairs, you use video/video before/after pairs, and the training process is the same as regular LoRAs." He never needed to go beyond 5000 steps, and often saw the desired effect by ~1500.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/comparison_input_vs_output.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Outpaint comparison: input vs output</span>
+                </div>
+             <span class="reactions">16 reactions</span></li>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/showcase_gamma_roundtrip.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Outpaint gamma roundtrip showcase</span>
+                </div>
+            </li>
+<li><a href="https://huggingface.co/oumoumad/LTX-2.3-22b-IC-LoRA-Outpaint">huggingface.co/oumoumad/LTX-2.3-22b-IC-LoRA-Outpaint</a> <a href="https://huggingface.co/oumoumad/LTX-2.3-22b-IC-LoRA-Outpaint" class="model-link">Model: huggingface.co/oumoumad/LTX-2.3-22b-IC-LoRA-Outpaint</a></li>
+</ul>
+<h3>Camera Motion Transfer -- Cseti</h3>
+<p><strong>Cseti</strong> released an IC-LoRA that replicates camera movements from reference videos in new scenes. Trained on 77 video pairs from Pexels over 20-24 hours. It opens up precise camera control that LTX typically resists. Cseti noted limitations with more dynamic movements and cases where the reference becomes "too strong," sometimes just reproducing the reference video rather than just its camera motion.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1138865343314530324/1491233359110602853/cseti_camera_lora_3stack.mp4?ex=69d6f2ca&is=69d5a14a&hm=f34cefc4d379025e068f24c06b345dbc11c975100e928e8afac67a6d6906b2da&" type="video/mp4">
+                    </video>
+                    <span class="media-label">Camera motion transfer: 3 examples stacked, reference (left) vs generated (right)</span>
+                </div>
+            </li>
+<li><a href="https://huggingface.co/Cseti/LTX2.3-22B_IC-LoRA-Cameraman_v1">huggingface.co/Cseti/LTX2.3-22B_IC-LoRA-Cameraman_v1</a> <a href="https://huggingface.co/Cseti/LTX2.3-22B_IC-LoRA-Cameraman_v1" class="model-link">Model: huggingface.co/Cseti/LTX2.3-22B_IC-LoRA-Cameraman_v1</a></li>
+</ul>
+<h3>Face/Head Swapping -- Alisson Pereira</h3>
+<p><strong>Alisson Pereira</strong> built BFS (Best Face Swap), described as the first open-source head-swap solution for video. Pom called it "probably state of the art for this with just a few weeks worth of compute" (27 reactions on that post). Multiple versions evolved from face-only to full head swap, with Klein integration for image-level swaps. Alisson defended a maskless approach as being less likely to break than masked alternatives, and spent extensive time building paired datasets for training.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/side_by_side_sequence.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Face swap side-by-side comparison</span>
+                </div>
+             <span class="reactions">27 reactions</span></li>
+<li><a href="https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap">huggingface.co/Alissonerdx/BFS-Best-Face-Swap</a></li>
+</ul>
+<h3>Video Detailing -- Ablejones</h3>
+<p><strong>Ablejones</strong> pushed the official LTX detailer IC-LoRA to its limits, calling it "pretty magical." The breakthrough: using the original video as a guide eliminates subtle detail drift between context windows -- "There's no longer any subtle drifting of details between context windows" (4 reactions).</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/LTX2_Stage2_00009-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Detailer IC-LoRA result</span>
+                </div>
+             <span class="reactions">2 reactions</span></li>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/LTX2_Stage2_00014-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Detailer with original video as guide -- no drift</span>
+                </div>
+             <span class="reactions">4 reactions</span></li>
+</ul>
+<h3>Depth Control Before Official ControlNets -- oumoumad</h3>
+<p><strong>oumoumad</strong> trained his own depth IC-LoRA for car animation <em>before</em> Lightricks released any official controlnets, and had it working at just 1000 steps. As he later explained: "The controlnets (depth, pose, canny) in LTX are all IC LoRAs." This insight enabled the entire community IC-LoRA ecosystem.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/2026-01-05_21-24-54.mkv" type="video/x-matroska">
+                    </video>
+                    <span class="media-label">oumoumad's depth IC-LoRA car animation (Jan 2026)</span>
+                </div>
+            </li>
+</ul>
+<h3>Scene Transitions -- siraxe</h3>
+<p><strong>siraxe</strong> released MergeGreen IC-LoRA for smooth transitions between start and end frames using green-frame markers. He also developed a TTM (text-to-motion) IC-LoRA at <a href="https://huggingface.co/siraxe/TTM_IC-lora_ltx2.3">huggingface.co/siraxe/TTM_IC-lora_ltx2.3</a>.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/AnimateDiff_00013-audio_1.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">MergeGreen scene transition demo</span>
+                </div>
+            </li>
+</ul>
+<h3>Post-Production Focus Changes -- oumoumad</h3>
+<p><strong>oumoumad</strong> previewed ReFocus IC-LoRA enabling post-production depth-of-field changes without reshooting -- a capability that doesn't exist in any other open model. "Shot a video only to find the wrong subject in focus? Usually, that's a mandatory re-shoot, but LTX IC LoRA is blurring (pun unintended) the lines" (7 reactions).</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1309520535012638740/1491853959646810192/stacked_output_reFocus.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">ReFocus IC-LoRA: stacked before/after focus change</span>
+                </div>
+             <span class="reactions">7 reactions</span></li>
+</ul>
+<h3>Masked Reference-to-Video Inpainting -- Alisson Pereira</h3>
+<p><strong>Alisson Pereira</strong> released MR2V (Masked Reference-to-Video), allowing users to place reference objects into videos using masks with a specific green/magenta template. He found rank 64 was too tied to the mask format, so he reduced to rank 32 to make it more general-purpose (7 reactions on release).</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/alisson_mr2v_combined_small.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">MR2V comparison reel: 4 side-by-side reference inpainting demos</span>
+                </div>
+            </li>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/comparison_01565-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">MR2V comparison: reference-based inpainting result</span>
+                </div>
+             <span class="reactions">7 reactions</span></li>
+</ul>
+<h3>Style Transfer via IC-LoRA -- oumoumad</h3>
+<p><strong>oumoumad</strong> demonstrated using IC-LoRA for style transfer by feeding source video frames directly into the guide node without preprocessing, combining IC-LoRA with regular style LoRAs. A game-changing v2v technique that's simpler than anyone expected.</p>
+<h3>Cinema4D Depth Maps for Camera Control -- N0NSens</h3>
+<p><strong>N0NSens</strong> demonstrated IC-LoRA Union Control with Cinema4D depth maps (rendered via Cinema4D playblast > AIO Aux Preprocessor > depth map), achieving precise camera movements that LTX typically resists. Combined IC-LoRA with FLF (first/last frame) using LTXVImgToVideoInplaceKJ (5 reactions).</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1309520535012638740/1490704191243419748/Comp_00001-audio.mp4?ex=69d505f7&is=69d3b477&hm=96b0c320a7030d9d8adb856f8af7206a8505bfec4c89779635768563ad91b2f5&" type="video/mp4">
+                    </video>
+                    <span class="media-label">N0NSens Cinema4D depth-driven camera control</span>
+                </div>
+             <span class="reactions">5 reactions</span></li>
+</ul>
+<hr>
+<h2>2. Style LoRAs: Bending the Aesthetic</h2>
+<p>The community has trained LTX to faithfully reproduce a strikingly wide range of visual styles, often to a degree that surprised even experienced practitioners.</p>
+<h3>Pixar/CGI Toon -- VRGameDevGirl84</h3>
+<p><strong>VRGameDevGirl84</strong> released a Pixar-style LoRA for LTX 2.3 with step-by-step XYZ comparison showing quality at different training stages. More detailed prompts with trigger words like "pixar style character", "pixar-style animation", and "stylized CGI character" produce better results. <strong>el marzocco</strong> confirmed adding just "Pixar like" to a basic prompt activated the style.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/Pixar_XYZ_COMPARE_step9000.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Pixar LoRA XYZ comparison across training steps</span>
+                </div>
+            </li>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/video_00033-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Pixar LoRA example generation</span>
+                </div>
+             <span class="reactions">2 reactions</span></li>
+<li><a href="https://civitai.com/models/2536130">civitai.com/models/2536130</a> <a href="https://civitai.com/models/2536130" class="model-link">Model: civitai.com/models/2536130</a></li>
+</ul>
+<h3>Golden Age Comics -- VRGameDevGirl84</h3>
+<p><strong>VRGameDevGirl84</strong> trained a Golden Age Comic LoRA overnight and released it to 7 reactions -- the top generation of its day. The retro comic aesthetic transferred cleanly to video with audio.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1458032975982755861/1492171431084294164/video_00005-audio.mp4?ex=69da5c70&is=69d90af0&hm=2962171481e83561fcce5a9083a35873f6615ea71fd298206f8ddda30556f71d&" type="video/mp4">
+                    </video>
+                    <span class="media-label">Golden Age Comic LoRA generation</span>
+                </div>
+             <span class="reactions">7 reactions</span></li>
+<li><a href="https://civitai.com/models/2532516/ltx-23-golden-age-comic">civitai.com/models/2532516/ltx-23-golden-age-comic</a> <a href="https://civitai.com/models/2532516/ltx-23-golden-age-comic" class="model-link">Model: civitai.com/models/2532516/ltx-23-golden-age-comic</a></li>
+</ul>
+<h3>Anime -- crinklypaper & Fill</h3>
+<p><strong>crinklypaper's</strong> anime LoRA (Gurren Lagann style) reached 34,000 steps after 70+ hours of training. Key finding: LTX picks up style quickly but needs extended training for fine character details like pupil sizes ("Not perfect, but it knows simon's pupil should be smaller, yoko's bigger"). <strong>U-ra-be-we</strong> was showing off crinklypaper's LoRAs in other communities, earning them new fans (5 reactions).</p>
+<p>Meanwhile, <strong>Fill</strong> confirmed work on a full anime finetune with 50k captioned anime clips ready for training -- a community-scale effort.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/LTX_2.3_t2v_01131_.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">crinklypaper anime LoRA at 45k steps</span>
+                </div>
+             <span class="reactions">3 reactions</span></li>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/LTX_2.3_t2v_01095_.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">crinklypaper Gurren Lagann LoRA release</span>
+                </div>
+            </li>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/LTX-2_00286_.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">U-ra-be-we showcasing VRGameDevGirl's LoRAs</span>
+                </div>
+             <span class="reactions">5 reactions</span></li>
+<li><a href="https://civitai.com/models/2537530/anime-style-gurren-lagann-lora-ltx-23">civitai.com/models/2537530/anime-style-gurren-lagann-lora-ltx-23</a> <a href="https://civitai.com/models/2537530/anime-style-gurren-lagann-lora-ltx-23" class="model-link">Model: civitai.com/models/2537530/anime-style-gurren-lagann-lora-ltx-23</a></li>
+</ul>
+<h3>Anime-to-Realism -- Alisson Pereira</h3>
+<p><strong>Alisson Pereira's</strong> anime2half-realism IC-LoRA was designed to convert anime footage to photorealism, but the community discovered it unexpectedly also works as a general detail enhancer on realistic footage at 1x resolution with no upscaling. <strong>patientx</strong> got good results in just 1-2 steps. Alisson is now training v2 with 500-1000 paired video samples, inverting real-to-anime pairs for better mouth movement/lipsync fidelity.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/anime2half_compilation_v2.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Anime2Half-Real IC-LoRA compilation: 3 side-by-side comparisons</span>
+                </div>
+            </li>
+</ul>
+<h3>Realism Enhancement with LoRAs Only -- protector131090</h3>
+<p><strong>protector131090</strong> demonstrated a dramatic before/after comparison -- no LoRA vs. a LoRA trained on just 4 Seedance 2.0 videos for only 1000 steps. "Already big difference. I wonder if LTX 2 just lacks proper training on all of the good movies..." (19 reactions).</p>
+<ul>
+<li><div class="comparison">
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/output_00071_.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">No LoRA</span>
+                </div>
+            <span class="vs-label">vs</span>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/output_00077_.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">With LoRA (1000 steps, 4 videos)</span>
+                </div>
+            </div> <span class="reactions">19 reactions</span></li>
+</ul>
+<h3>Fantasy Puppet -- VRGameDevGirl84</h3>
+<p><strong>VRGameDevGirl84</strong> trained and released a fantasy puppet style LoRA (5 reactions), with <strong>lapaing2186</strong> testing it to great results (3 reactions).</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1457981700817817620/1491882310214225950/video_00002-audio.mp4?ex=69d94f2c&is=69d7fdac&hm=6e8b55e233ffed4d9a7a6b027499d78ec47dc572bd360ca366969a33129567bb&" type="video/mp4">
+                    </video>
+                    <span class="media-label">Fantasy Puppet LoRA sample</span>
+                </div>
+             <span class="reactions">5 reactions</span></li>
+<li><a href="https://civitai.com/models/2530764/ltx-23-fantasy-puppet">civitai.com/models/2530764/ltx-23-fantasy-puppet</a> <a href="https://civitai.com/models/2530764/ltx-23-fantasy-puppet" class="model-link">Model: civitai.com/models/2530764/ltx-23-fantasy-puppet</a></li>
+</ul>
+<h3>Realism Enhancer LoRAs -- VRGameDevGirl84</h3>
+<p><strong>VRGameDevGirl84</strong> trained separate enhancer LoRAs for close-up faces and upper body shots -- no trigger words needed, just apply and quality goes up. "Testing my new enhancer lora finally, even included strange ones. No cherry picking." (6 reactions on the release).</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1458032975982755861/1492311350624387283/video_00007-audio.mp4?ex=69dadebf&is=69d98d3f&hm=72f0ca2806093b3537e1a8b38a53ecbd4b9905d0a83eb92beb086b87c71a9102&" type="video/mp4">
+                    </video>
+                    <span class="media-label">Enhancer LoRA samples (no cherry picking)</span>
+                </div>
+             <span class="reactions">4 reactions</span></li>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1458032975982755861/1492311351379365919/video_00001-audio.mp4?ex=69dadebf&is=69d98d3f&hm=73889a893bf5485eda65d09e083d7b1adb749360e3edbc767501cb42ac405ecc&" type="video/mp4">
+                    </video>
+                    <span class="media-label">Enhancer sample 2</span>
+                </div>
+            </li>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1458032975982755861/1492311352302375003/video_00002-audio.mp4?ex=69dadec0&is=69d98d40&hm=fd8b4ab3809fa4d4e073c1cdee83032c0d6e3b6c9047dd4080b84a3fd91863d3&" type="video/mp4">
+                    </video>
+                    <span class="media-label">Enhancer sample 3</span>
+                </div>
+            </li>
+<li><a href="https://civitai.com/models/2535622?modelVersionId=2849716">civitai.com/models/2535622</a> <a href="https://civitai.com/models/2535622?modelVersionId=2849716" class="model-link">Model: civitai.com/models/2535622</a></li>
+</ul>
+<h3>2D Cel Animation -- The Shadow (NYC)</h3>
+<p><strong>The Shadow (NYC)</strong> developed a custom 2D LoRA for traditional western cel animation style, and also shared powerful prompt engineering for achieving 2D looks without a LoRA: "cellinework, traditional western 2d cel animation, hand-inked outlines, painted cel fills, medium line weight, subtle contour wobble..."</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/2d_test_00008-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">The Shadow's 2D cel animation test</span>
+                </div>
+            </li>
+</ul>
+<h3>Color Grading Removal -- oumoumad</h3>
+<p><strong>oumoumad</strong> trained an IC-LoRA specifically to <em>remove</em> color grading from footage. Compared LTX 2.0 (looked good at ~1500 steps) vs LTX 2.3 (better convergence at higher steps with Prodigy optimizer). "My latest test worked well, performs even better than LTX2.0 at times -- look at the Blade Runner, Batman, The Grand Budapest elevator scenes."</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/all_comparisons.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Color grading removal: all comparisons reel</span>
+                </div>
+             <span class="reactions">2 reactions</span></li>
+</ul>
+<h3>Paper Cut-Out -- VRGameDevGirl84</h3>
+<p><strong>VRGameDevGirl84</strong> completed a paper cut-out style LoRA at 9000 steps.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/papercutout_00005-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Paper cutout LoRA sample 1</span>
+                </div>
+            </li>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/papercutout_00004-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Paper cutout sample 2</span>
+                </div>
+            </li>
+</ul>
+<h3>Dark Fantasy -- VRGameDevGirl84</h3>
+<p><strong>VRGameDevGirl84</strong> trained a dark fantasy painterly LoRA.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/AnimateDiff_00283-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Dark fantasy LoRA generation</span>
+                </div>
+            </li>
+</ul>
+<h3>Golden Age Comics: No Lora vs With Lora -- VRGameDevGirl84</h3>
+<p>Before/after of the Golden Age Comic LoRA -- "Just testing my new Golden Age Comic LoRa i trained overnight" (5 reactions on the first batch of 10 samples).</p>
+<ul>
+<li><div class="comparison">
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/NoLora.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">No LoRA baseline</span>
+                </div>
+            <span class="vs-label">vs</span>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1457981700817817620/1492134500778508482/video_00001-audio.mp4?ex=69da3a0b&is=69d8e88b&hm=1ed8705f21d1d8a0c5fd485408b28a3f15fca5b57bfd61d3dfb70d845e8f6a35&" type="video/mp4">
+                    </video>
+                    <span class="media-label">Golden Age Comic LoRA applied</span>
+                </div>
+            </div></li>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/video_00001-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Golden Age test batch: 10 samples, no cherry picking</span>
+                </div>
+             <span class="reactions">5 reactions</span></li>
+</ul>
+<h3>Other Notable Style LoRAs</h3>
+<ul>
+<li><strong>VRGameDevGirl84</strong> -- also trained felt cutout animation and marionette style LoRAs</li>
+<li><strong>David Snow</strong> -- quality improvement LoRAs trained on high-quality datasets</li>
+</ul>
+<p>Key insight from <strong>oumoumad</strong>: he trains at <strong>rank 128</strong> even for normal LoRAs because lower ranks showed a big gap in concept capture.</p>
+<hr>
+<h2>3. Audio-Visual Generation: The Killer Feature</h2>
+<p>LTX 2.3's native audio generation sets it apart from every other open-source video model. The community has pushed this in remarkable directions.</p>
+<h3>Native Audio-to-Video with Lipsync -- fredbliss</h3>
+<p><strong>fredbliss</strong> described the magic: "just tell ltx2 'both people sing' and pass the audio/video latents together and it figures the fuckin thing out. wild." After his first week with LTX 2.3 he called it "what a wild time to be alive" and described music videos "that just can't be done with anything else" running on his 4090.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/dirkvid.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">fredbliss music video made entirely with LTX 2.3 audio-visual pipeline</span>
+                </div>
+            </li>
+</ul>
+<h3>Precision Lipsync via Inpainting -- Nekodificador</h3>
+<p><strong>Nekodificador</strong> developed a workflow for high-quality lipsyncing using DaVinci Resolve for precise mouth and chin masking, combined with native LTX inpainting. The crop-and-stitch approach processes the mouth region at 1024 resolution then pastes back onto the stabilized original.</p>
+<p>The critical discovery: <strong>the exponential scheduler significantly outperforms all others for lipsync</strong>. Nekodificador explained that LTX averages motion at high sigmas, especially in the last steps -- "schedulers with high sigmas along the last steps stabilize the motion so much that [they] erase the lipsync movement." Using high sigmas only at generation start preserves mouth motion without creating detail blobs.</p>
+<ul>
+<li><div class="comparison">
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/LTX2_NKD__00185-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Nekodificador LTX generation: no LoRA vs reasoning LoRA comparison</span>
+                </div>
+            <span class="vs-label">vs</span>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/LTX2_NKD__00304-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">with reasoning LoRA</span>
+                </div>
+            </div></li>
+</ul>
+<h3>Audio Looping and Tooling -- ckinpdx & fredbliss</h3>
+<p><strong>ckinpdx</strong> adapted Kijai's latent flow looping workflows to handle audio, building custom LTX utility nodes for trimming audio latents (noting "I couldn't find another node that trims LTX audio latents"). <strong>fredbliss</strong> released ComfyUI-AudioLoopHelper for automated timing calculations in audio/video looping.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/FADE_Director_example.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">ckinpdx FADE Director: agentic music video pipeline demo</span>
+                </div>
+             <span class="reactions">3 reactions</span></li>
+</ul>
+<h3>Cross-Model Lipsync Preservation -- ckinpdx</h3>
+<p><strong>ckinpdx</strong> demonstrated that Wan 2.2 can refine LTX outputs while maintaining lipsync: "you can refine with wan 2.2 and not lose lipsync." This opens up multi-model pipelines where LTX handles audio generation and other models enhance visuals.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/AnimateDiff_00014-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">LTX generation refined with Wan 2.2, lipsync preserved</span>
+                </div>
+             <span class="reactions">2 reactions</span></li>
+</ul>
+<hr>
+<h2>4. Long-Form Video: Breaking the 15-Second Barrier</h2>
+<p>LTX natively generates ~5-15 second clips, but the community has built sophisticated systems for much longer content.</p>
+<h3>Unlimited-Length Automation -- VRGameDevGirl84</h3>
+<p><strong>VRGameDevGirl84</strong> created the NanoBanana workflow suite that chains LTX generations for arbitrary-length videos with her custom nodes: "I have custom nodes that chain vids together. Unlimited length." <strong>A_Poet</strong> used it for a full music video and reported: "It seems NanoBanana and LTX collaborate well."</p>
+<p><strong>WackyWindsurfer</strong> used it to create a full-length music video -- "No remakes, no edits. Straight from WF" (6 reactions):</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/Bananas_and_APIs.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Full music video, straight from workflow</span>
+                </div>
+             <span class="reactions">6 reactions</span></li>
+</ul>
+<h3>Latent-Space Looping -- Kijai, Jonathan & ckinpdx</h3>
+<p><strong>Kijai</strong> and others developed looping samplers that keep generations in latent space end-to-end, avoiding decode/re-encode quality loss. <strong>Jonathan</strong> found the fix for loop artifacts: adding LTXVCropGuides before the LTXVConcatAVLatent node eliminates the "jump to first frame" issue at loop boundaries. <strong>ckinpdx</strong> discovered IC-LoRAs work through the looping sampler, making "the length limit the cap of the load video node" (4 reactions).</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/ComfyUI_00048_.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">IC-LoRA applied through looping sampler for extended video</span>
+                </div>
+             <span class="reactions">4 reactions</span></li>
+</ul>
+<h3>Context Windows -- Ablejones</h3>
+<p><strong>Ablejones</strong> built native context window support with controllable sizing and overlap, demonstrating T2V with canny control across 4-5 windows showing "better consistency than most other video models."</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/LTX2_Stage2_00021-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Ablejones context window demo: T2V with canny across multiple windows</span>
+                </div>
+            </li>
+</ul>
+<h3>Multi-Minute Chaining</h3>
+<p>Community members reported achieving ~2 minutes by chaining first-frame/last-frame continuations. <strong>Duckers McQuack</strong> was "flabbergasted" by the technique: "extending videos practically to unlimited lengths, where it uses x amount of existing frames as the buffer to resume for further extending."</p>
+<hr>
+<h2>5. Music Video Production</h2>
+<p>LTX's combination of speed, audio awareness, and LoRA flexibility has made it a music video powerhouse.</p>
+<h3>Music Videos on a 4090 -- fredbliss</h3>
+<p><strong>fredbliss</strong> used a modified version of ckinpdx's looping workflow to create a music video from a "failed" 3D print that became a character in a Silence of the Lambs pastiche. Music made from a 15s Sora clip turned into a full song with Lyria 3. "love the music videos you can create with local that just can't be done with anything else."</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/dirkvid.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Music video: Big Head Man in Silence of the Lambs</span>
+                </div>
+            </li>
+</ul>
+<h3>Agentic Music Video Director -- ckinpdx</h3>
+<p><strong>ckinpdx</strong> built an agentic app (FADE Director) for automated music video creation. Takes a song, lyrics, and reference image as input -- an LLM directs image and prompt generation. Full pipeline running on his 5090 + 96GB setup, with HuMo integration for motion (9 reactions on his workflow suite).</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/FADE_Director_example.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">FADE Director agentic pipeline demo</span>
+                </div>
+             <span class="reactions">3 reactions</span></li>
+</ul>
+<h3>VRGameDevGirl84's Music Video Production Pipeline</h3>
+<p><strong>VRGameDevGirl84</strong> is the architect behind much of the community's music video tooling. She maintains a ComfyUI workflow that automates music video generation end-to-end, using LLM API nodes to interpret prompts and produce structured outputs controlling downstream nodes. She applied for a microgrant to replace the API models with a locally fine-tuned open-source model.</p>
+<p>Her NanoBanana/Zimage-LTX workflow suite chains generations for unlimited-length videos. All her workflows are publicly available at <a href="https://github.com/vrgamegirl19/comfyui-vrgamedevgirl/tree/main/Workflows">github.com/vrgamegirl19/comfyui-vrgamedevgirl</a>. She also trained a LoRA on herself (43 photos, overnight, 7500 steps) to test likeness preservation -- <strong>Quality_Control</strong> said he was "shocked how fast it learns an input likeness."</p>
+<p><strong>WackyWindsurfer</strong> used her workflows to create a full-length music video -- "No remakes, no edits. Straight from WF" (6 reactions):</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/Bananas_and_APIs.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Full music video, straight from workflow</span>
+                </div>
+             <span class="reactions">6 reactions</span></li>
+</ul>
+<p>Pom highlighted another "single-shot music video gen using LTX + NBP" as "extremely impressive" (21 reactions):</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1458032975982755861/1472357874058530866/finalvideo.mp4?ex=699e2520&is=699cd3a0&hm=40f7e0803db38fe26db8f2d03aefb294e09fe576f902363b7a51005e3673dcc4&" type="video/mp4">
+                    </video>
+                    <span class="media-label">Single-shot LTX music video</span>
+                </div>
+            </li>
+</ul>
+<hr>
+<h2>6. Training Innovation</h2>
+<p>The community hasn't just <em>used</em> LTX -- they've pushed the boundaries of how to train it.</p>
+<h3>In-ComfyUI LoRA Training -- VRGameDevGirl84</h3>
+<p><strong>VRGameDevGirl84</strong> built a workflow that trains LoRAs step-by-step right inside ComfyUI: auto-resumes from latest saved state, creates preview videos at each save point, and builds a final labeled XYZ comparison video when training completes. Dataset prep, cache reuse, config generation, training, and LoRA loading all in one graph. 41 reactions -- one of the most-reacted technical posts ever.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/Recording_2026-03-16_081450.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">In-ComfyUI training workflow demo</span>
+                </div>
+            </li>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/Elven_XYZ_COMPARE_step4000_v2.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">XYZ comparison output at step 4000</span>
+                </div>
+             <span class="reactions">41 reactions combined</span></li>
+</ul>
+<h3>LLM-Driven Dataset Generation -- VRGameDevGirl84</h3>
+<p><strong>VRGameDevGirl84</strong> created a workflow using LLM nodes and custom instructions to generate consistent-style datasets without reference images. "I use this workflow I created. It uses an LLM node and custom LLM instructions to create the same style. You would just give chat gpt the current LLM instructions and tell it to swap out the art style with one you want."</p>
+<h3>IC-LoRA Training Pipeline -- Community Effort</h3>
+<p>The community collectively worked out the full IC-LoRA training pipeline. Key contributors: <strong>oumoumad</strong> (training methodology and reverse-pair insight), <strong>Alisson Pereira</strong> (shared example configs, explained lower LoRA ranks prevent learning unwanted patterns), <strong>JonkoXL</strong> (testing and integration).</p>
+<p>Key parameters: <code>control_directory</code> in dataset.toml, <code>training_strategy: name: "video_to_video"</code> in config, <code>--lora_target_preset v2v</code> flag.</p>
+<h3>Consumer Hardware Training -- SmaX & Community</h3>
+<p><strong>SmaX</strong> documented efficient training setups: 1-2 iterations/second on RTX Pro 6000 (96GB) at $1.89/hour for rank 64 LoRAs at 768x512 @ 97 frames. <strong>siraxe</strong> identified 97-frame clips at 512/768 as the sweet spot for video-only training on 5090s. The community mapped VRAM tiers from 3060 to 5090, making training accessible at every level. <strong>SmaX</strong> recommended disabling sampling during training to save time, instead using loss graphs and manual testing.</p>
+<h3>Audio Training Discoveries -- Community</h3>
+<p>Critical findings about audio-video LoRA training:</p>
+<ul>
+<li>Audio training slows iteration speed from 11s to 30s per step</li>
+<li>Separate audio learning rates at 1/5 to 1/2 of video rates prevent audio overtraining</li>
+<li>Image-only training on audio-video checkpoints causes <strong>complete loss of audio knowledge</strong></li>
+<li><strong>JonkoXL</strong> discovered image-only training kills motion, but pruning the overtrained LoRA with uniform 0.5 successfully restores video generation</li>
+</ul>
+<hr>
+<h2>7. Speed and Efficiency</h2>
+<p>LTX's speed advantage is structural, not marginal, and the community has exploited it aggressively.</p>
+<h3>64 FPS Native -- protector131090</h3>
+<p><strong>protector131090</strong> pushed LTX2 to 64fps generation. Pom featured it in his weekly update (32 reactions). Higher fps was found to actually reduce motion artifacts and smudge -- a 50fps native render showed reduced smudge compared to lower framerates.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1309520535012638740/1473614204467679282/LTX-2_00364_.mp4?ex=69997cac&is=69982b2c&hm=df07bb6a5992d5a50fb4acc0cdffce253fc7151450a800c03aa1cb05c6854484&" type="video/mp4">
+                    </video>
+                    <span class="media-label">protector131090's 64fps LTX2 generation</span>
+                </div>
+            </li>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/24FPSLIONLOWQ.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">protector131090 lion generation, #Waiting4LTX3</span>
+                </div>
+             <span class="reactions">21 reactions</span></li>
+</ul>
+<h3>Kijai's 262-Second Generation</h3>
+<p><strong>Kijai</strong> shared a generation that ran in 262.62 seconds -- and the result spoke for itself (19 reactions, 15 unique):</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/LTX-2_00010-audio1.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Kijai LTX2 generation</span>
+                </div>
+             <span class="reactions">19 reactions</span></li>
+</ul>
+<h3>Three-Pass Optimization -- garbus & mdkb</h3>
+<p><strong>garbus</strong> and <strong>mdkb</strong> refined three-pass LTX 2.3 workflows achieving 25-minute end-to-end renders on a <strong>3060 GPU</strong> for 241 frames at 24fps. Starting at 0.25 resolution and adding upscale passes gave ~3x speed improvements and faster detection of bad generations, with some noting improved motion fluidity as a bonus.</p>
+<h3>8-Step Generation -- hicho</h3>
+<p><strong>hicho</strong> demonstrated using LTX with a simple single-KSampler workflow at just 8 steps, getting usable output:</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/ComfyUI_00081_.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">8-step LTX generation</span>
+                </div>
+            </li>
+</ul>
+<h3>AnimateDiff-Style V2V at Speed -- hicho</h3>
+<p><strong>hicho</strong> used LTX 2.3's v2v latent pipeline to produce "modern AnimateDiff-like video" -- achieving the aesthetic people loved from AnimateDiff but with LTX's speed and quality:</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/AnimateDiff_00064-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">AnimateDiff-style v2v with LTX 2.3</span>
+                </div>
+            </li>
+</ul>
+<hr>
+<h2>8. Cross-Model Pipelines</h2>
+<p>LTX has become a key piece in multi-model workflows, and the community's pipeline innovation is arguably as impressive as any single generation.</p>
+<h3>Multi-Pass Quality Stacking -- ckinpdx</h3>
+<p><strong>ckinpdx</strong> described a sophisticated pipeline for production-quality output: "upscale to 4k in precise 2.5, do a 1080p upscale in one of the faster starlight models that scrubs all the texture details, then do a blend between the base gen, the scrubbed textureless upscale at a lower percent and the precise 2.5 at ~60% ish, shot depending, basically a mixed blend of 3 versions." Sometimes a 4th layer using edge detection as a mask to overlay only the sharp edges from the high-quality upscale.</p>
+<h3>LTX + Seedance 2 Outpainting -- Purz</h3>
+<p><strong>Purz</strong> demonstrated using LTX 2.3 to outpaint Seedance 2 outputs: "using ltx2.3 to outpaint seedance 2 is funny" -- leveraging LTX's canvas extension IC-LoRA on another model's output.</p>
+<h3>BIM-VFI for Cross-Model FPS Matching -- Ethanfel & Gleb Tretyak</h3>
+<p><strong>Ethanfel</strong> shipped ComfyUI-Tween with BIM-VFI interpolation. <strong>Gleb Tretyak</strong> used it specifically to convert Wan output to LTX's 25fps: "yooo yep it worked quite well! I needed to convert wan output to ltx. worked." <strong>patientx</strong> reported speed improvements from 380s to 320s with torch.compile.</p>
+<h3>Custom ComfyUI Nodes for LTX Workflows -- Jonathan</h3>
+<p><strong>Jonathan</strong> built a custom node pack (WhatDreamsCost Nodes) including a Multi Image Loader with gallery, auto-resize, and LTXVPreprocess integration -- specifically designed to streamline LTX multi-image workflows (19 reactions):</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/WhatDreamsCost_Nodes_Trailer.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">WhatDreamsCost Nodes trailer</span>
+                </div>
+             <span class="reactions">19 reactions</span></li>
+</ul>
+<hr>
+<h2>9. The Arca Gidan Prize: Art at the Frontier</h2>
+<p>The Arca Gidan Prize (Edition II) showcased LTX and other tools pushed to their artistic limits -- 95 entries, 7,285 votes, on the theme of "Time."</p>
+<h3>Everyone All at Once -- visualfrisson</h3>
+<p><strong>visualfrisson</strong> used technical tricks to address the theme of time powerfully, showing the "endless, timeless quality to hip-hop lyrics that we might not always appreciate." Pom called it "typically incredibly impressive - not just technically, but also how it uses the technical trick to address the theme really powerfully" (39 reactions).</p>
+<ul>
+<li><a href="https://cdn.discordapp.com/attachments/1316024582041243668/1490076727010005134/">Everyone All at Once</a></li>
+</ul>
+<h3>Archive 113391 -- yuvraj108c</h3>
+<p><strong>yuvraj108c</strong> used audio reactivity to tell a second story layered on top of the main one -- "The video kind of dances between them in time with the music and it's excellently done" (25 reactions).</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1316024582041243668/1490075690157211758/yuvraj108c.mp4?ex=69d2bca0&is=69d16b20&hm=7b8fb568473ef808a23b642db5fc89ccbf8314527746aa" type="video/mp4">
+                    </video>
+                    <span class="media-label">Archive 113391</span>
+                </div>
+            </li>
+</ul>
+<h3>Cherrybomb (Original Music) -- sagansagansagans</h3>
+<p><strong>sagansagansagans</strong> combined traditional narrative structure with an abstract, audio-driven transformation that "kind of extracts you out of the main story into the emotional depth it's trying to communicate" (23 reactions).</p>
+<ul>
+<li><a href="https://cdn.discordapp.com/attachments/1316024582041243668/1490075735669">Cherrybomb</a> <span class="reactions">23 reactions</span></li>
+</ul>
+<h3>Synth Study #1 -- gorkulus</h3>
+<p><strong>gorkulus</strong> gave us "Windows Media Player 2035" -- a completely different aesthetic lane (21 reactions).</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1316024582041243668/1490076584764506413/gorkulus.mp4?ex=69d2bd76&is=69d16bf6&hm=d948a9ccf099cfe4be6d77fe5670393811efafc3c19e524e135b2622b50b214d&" type="video/mp4">
+                    </video>
+                    <span class="media-label">Synth Study #1</span>
+                </div>
+            </li>
+</ul>
+<h3>It can't be that bad -- Victoria</h3>
+<p><strong>Victoria</strong> captured "an experience many men hear about but are fortunate enough to never experience -- and captures it in such a visceral and relatable way" (25 reactions).</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1316024582041243668/1489726205723676782/viktoria_vw0.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">It can't be that bad</span>
+                </div>
+             <span class="reactions">25 reactions</span></li>
+</ul>
+<h3>Bosch-esque Tapestry -- tom_scaria</h3>
+<p>Not a single generation but dozens of runs through various tools combined into a looping, detail-rich tapestry. Pom: "takes all kinds of unusual twists and turns along the way to end up something completely new, original and engaging" (20 reactions).</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1316024582041243668/1489726690300268594/tom_scaria0.mp4?ex=69d17798&is=69d02618&hm=38bd95b4801dbe4f4950f6f8" type="video/mp4">
+                    </video>
+                    <span class="media-label">Bosch-esque Tapestry</span>
+                </div>
+            </li>
+</ul>
+<hr>
+<h2>10. Fun & Viral: The Silly Stuff</h2>
+<p>Not everything has to be a technical breakthrough. Some of the most-reacted content in the community has been just... fun.</p>
+<h3>"THE DANGER" feat. Inflated LoRAs -- ingi // SYSTMS</h3>
+<p><strong>ingi // SYSTMS</strong> created "THE DANGER" using inflated LoRAs and it became one of the most iconic community videos. Pom featured it in an Art Appreciation Tuesday to 78 reactions.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1344057524935983125/1460356536181198888/THE_DANGER_HD.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">THE DANGER HD</span>
+                </div>
+             <span class="reactions">78 reactions</span></li>
+</ul>
+<h3>Inflating Bad -- pom</h3>
+<p>Walter White, but inflated. 64 reactions. No further explanation needed.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1344057524935983125/1461050645539717161/INFLATING_BAD_01.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">INFLATING BAD</span>
+                </div>
+             <span class="reactions">64 reactions</span></li>
+</ul>
+<h3>Old Scatman -- community</h3>
+<p>The scatman video that somehow got 48 reactions:</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1309520535012638740/1461492613206245406/oldscatman.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">Old Scatman</span>
+                </div>
+             <span class="reactions">48 reactions</span></li>
+</ul>
+<h3>thankskijai -- Dj47 & Godhand</h3>
+<p><strong>Dj47</strong> created "thankskijai" -- a tribute to Kijai's contributions to the community that became a viral hit at 81 reactions. <strong>Godhand</strong> later reposted it asking for workflow tips and got another 12 reactions.</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://cdn.discordapp.com/attachments/1309520535012638740/1461772498902319167/thankskijai01.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">thankskijai</span>
+                </div>
+             <span class="reactions">81 reactions</span></li>
+</ul>
+<h3>NebSH's Lipsync Demo</h3>
+<p><strong>NebSH</strong> shared an early lipsync generation that made people's jaws drop -- 28 reactions:</p>
+<ul>
+<li>
+                <div class="media-item">
+                    <video controls preload="metadata" playsinline>
+                        <source src="https://ujlwuvkrxlvoswwkerdf.supabase.co/storage/v1/object/public/content-assets/ltx-showcase/videos/Lipsync2Sampler_00016-audio.mp4" type="video/mp4">
+                    </video>
+                    <span class="media-label">NebSH lipsync demo</span>
+                </div>
+             <span class="reactions">28 reactions</span></li>
+</ul>
+<hr>
+<h2>Community Context</h2>
+<p>All of this is happening on consumer hardware. People are training LoRAs on 3060s and 5090s, generating music videos on 4090s, and building feature-film production pipelines in ComfyUI. LTX's position as the fastest open-source video model, combined with its native audio support and IC-LoRA extensibility, has created an ecosystem where individual creators are pushing capabilities that didn't exist months ago.</p>
+<p>As <strong>oumoumad</strong> put it: "LTX is just so good at context, I've been constantly impressed with things I've seen, like respecting depth of field, FOV etc... And I'm genuinely impressed some people got to do anime with it, another thing I didn't have in my dataset lol."</p>
+<p>Or as <strong>fredbliss</strong> said after his first week with LTX 2.3: "what a wild time to be alive."</p>
+<h3>Key People</h3>
+<ul>
+<li><a href="https://cdn.discordapp.com/avatars/257217392298426380/9aac8eacc689882e3627234cb232053b.png?size=128"><img src="https://cdn.discordapp.com/avatars/257217392298426380/9aac8eacc689882e3627234cb232053b.png?size=32" alt="oumoumad" class="avatar-thumb"></a> <strong>oumoumad</strong> -- Outpaint IC-LoRA, depth IC-LoRA, ReFocus IC-LoRA, color grading removal, style transfer methodology, IC-LoRA training insights</li>
+<li><a href="https://cdn.discordapp.com/avatars/211685818622803970/6afbbf76e08e3844329d5804bf87ee72.png?size=128"><img src="https://cdn.discordapp.com/avatars/211685818622803970/6afbbf76e08e3844329d5804bf87ee72.png?size=32" alt="Alisson Pereira" class="avatar-thumb"></a> <strong>Alisson Pereira</strong> -- BFS face/head swap, anime2half-realism, MR2V masked inpainting, IC-LoRA training configs</li>
+<li><a href="https://cdn.discordapp.com/avatars/330829305477333022/30fa6781db882a5380bdda729421d6a8.png?size=128"><img src="https://cdn.discordapp.com/avatars/330829305477333022/30fa6781db882a5380bdda729421d6a8.png?size=32" alt="VRGameDevGirl84" class="avatar-thumb"></a> <strong>VRGameDevGirl84</strong> -- Pixar/Golden Age/puppet/felt/paper style LoRAs, in-ComfyUI training workflow, NanoBanana unlimited-length system, LLM dataset generation, music video pipeline</li>
+<li><a href="https://cdn.discordapp.com/avatars/228118453062467585/2ac19c5c44d8f8d8a6de84fad038b930.png?size=128"><img src="https://cdn.discordapp.com/avatars/228118453062467585/2ac19c5c44d8f8d8a6de84fad038b930.png?size=32" alt="Kijai" class="avatar-thumb"></a> <strong>Kijai</strong> -- Looping sampler, SAM3 integration, ComfyUI core infrastructure, RIFE/FILM optimization</li>
+<li><a href="https://cdn.discordapp.com/avatars/1166951985573003363/1aceb1f919a915174d34ebe10f3d2ee4.png?size=128"><img src="https://cdn.discordapp.com/avatars/1166951985573003363/1aceb1f919a915174d34ebe10f3d2ee4.png?size=32" alt="ckinpdx" class="avatar-thumb"></a> <strong>ckinpdx</strong> -- Audio looping workflows, music video pipelines, HuMo integration, multi-pass quality stacking</li>
+<li><a href="https://cdn.discordapp.com/avatars/256636116763934731/762f9b4513bf17beee4069a0f8c0ae10.png?size=128"><img src="https://cdn.discordapp.com/avatars/256636116763934731/762f9b4513bf17beee4069a0f8c0ae10.png?size=32" alt="Ablejones" class="avatar-thumb"></a> <strong>Ablejones</strong> -- Context window management, detailer IC-LoRA techniques, native context windows</li>
+<li><a href="https://cdn.discordapp.com/avatars/1074404980737450065/3503243a4cf6ee9cda41262ef47be10f.png?size=128"><img src="https://cdn.discordapp.com/avatars/1074404980737450065/3503243a4cf6ee9cda41262ef47be10f.png?size=32" alt="Cseti" class="avatar-thumb"></a> <strong>Cseti</strong> -- Camera motion transfer IC-LoRA</li>
+<li><a href="https://cdn.discordapp.com/avatars/265203531969986560/bb52cd9669352e38d6e7b43625553ab1.png?size=128"><img src="https://cdn.discordapp.com/avatars/265203531969986560/bb52cd9669352e38d6e7b43625553ab1.png?size=32" alt="siraxe" class="avatar-thumb"></a> <strong>siraxe</strong> -- MergeGreen IC-LoRA, TTM IC-LoRA</li>
+<li><a href="https://cdn.discordapp.com/avatars/391020191338987522/2e40c243a0ff35f557eef85c02a4b507.png?size=128"><img src="https://cdn.discordapp.com/avatars/391020191338987522/2e40c243a0ff35f557eef85c02a4b507.png?size=32" alt="Nekodificador" class="avatar-thumb"></a> <strong>Nekodificador</strong> -- Precision lipsync workflow, exponential scheduler discovery</li>
+<li><a href="https://cdn.discordapp.com/avatars/781117147421474837/11ffb3dcc89eb1116ccd62894e85a369.png?size=128"><img src="https://cdn.discordapp.com/avatars/781117147421474837/11ffb3dcc89eb1116ccd62894e85a369.png?size=32" alt="protector131090" class="avatar-thumb"></a> <strong>protector131090</strong> -- 64fps generation, pushing LTX visual limits</li>
+<li><a href="https://cdn.discordapp.com/avatars/138234075931475968/c57eadbf685d3058ba57443da3ee72e7.png?size=128"><img src="https://cdn.discordapp.com/avatars/138234075931475968/c57eadbf685d3058ba57443da3ee72e7.png?size=32" alt="crinklypaper" class="avatar-thumb"></a> <strong>crinklypaper</strong> -- Extended anime LoRA training (34k+ steps)</li>
+<li><a href="https://cdn.discordapp.com/avatars/606012921935429632/0b768c1e00e2f061ab07c205df9fe54d.png?size=128"><img src="https://cdn.discordapp.com/avatars/606012921935429632/0b768c1e00e2f061ab07c205df9fe54d.png?size=32" alt="fredbliss" class="avatar-thumb"></a> <strong>fredbliss</strong> -- Music video production, AudioLoopHelper</li>
+<li><a href="https://cdn.discordapp.com/avatars/1198356571906904255/cb000b444b8a914a83f9b160b7c220f4.png?size=128"><img src="https://cdn.discordapp.com/avatars/1198356571906904255/cb000b444b8a914a83f9b160b7c220f4.png?size=32" alt="Jonathan" class="avatar-thumb"></a> <strong>Jonathan</strong> -- WhatDreamsCost custom nodes, loop fix with CropGuides</li>
+<li><a href="https://cdn.discordapp.com/avatars/1279467736187146242/7e25bd6fe015f7dac8dbb138713c0c63.png?size=128"><img src="https://cdn.discordapp.com/avatars/1279467736187146242/7e25bd6fe015f7dac8dbb138713c0c63.png?size=32" alt="hicho" class="avatar-thumb"></a> <strong>hicho</strong> -- 8-step generation, AnimateDiff-style v2v</li>
+<li><a href="https://cdn.discordapp.com/avatars/179640884311097344/e715e382e462de820d9cf9a83f9c3c88.png?size=128"><img src="https://cdn.discordapp.com/avatars/179640884311097344/e715e382e462de820d9cf9a83f9c3c88.png?size=32" alt="SmaX" class="avatar-thumb"></a> <strong>SmaX</strong> -- Training efficiency documentation across GPU tiers</li>
+<li><a href="https://cdn.discordapp.com/avatars/867727155499499520/7206e3347f00016ae9bc414f8193f241.png?size=128"><img src="https://cdn.discordapp.com/avatars/867727155499499520/7206e3347f00016ae9bc414f8193f241.png?size=32" alt="N0NSens" class="avatar-thumb"></a> <strong>N0NSens</strong> -- Cinema4D depth map integration</li>
+<li><a href="https://cdn.discordapp.com/avatars/155631980749389824/b3de2e467fa8324802be5df4483d0807.png?size=128"><img src="https://cdn.discordapp.com/avatars/155631980749389824/b3de2e467fa8324802be5df4483d0807.png?size=32" alt="Ethanfel" class="avatar-thumb"></a> <strong>Ethanfel</strong> -- BIM-VFI interpolation, SelVA audio, ComfyUI tooling</li>
+</ul>
+</body>
+</html>
