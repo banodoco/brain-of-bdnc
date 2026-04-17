@@ -36,9 +36,39 @@ class ReactorCog(commands.Cog):
         0x1F53B,   # 🔻 Red triangle pointing down
     }
 
+    # Codepoints for religious symbols and places of worship
+    RELIGIOUS_CODEPOINTS = {
+        0x271D,    # ✝ Latin cross
+        0x271E,    # ✞ Shadowed Latin cross
+        0x2720,    # ✠ Maltese cross
+        0x2625,    # ☥ Ankh
+        0x2626,    # ☦ Orthodox cross
+        0x2627,    # ☧ Chi Rho
+        0x2629,    # ☩ Cross of Jerusalem
+        0x262A,    # ☪ Star and crescent
+        0x262C,    # ☬ Adi Shakti
+        0x2721,    # ✡ Star of David
+        0x1F52F,   # 🔯 Six-pointed star with dot
+        0x2638,    # ☸ Wheel of Dharma
+        0x262F,    # ☯ Yin Yang
+        0x1F549,   # 🕉 Om
+        0x1F54E,   # 🕎 Menorah
+        0x1F6D0,   # 🛐 Place of worship
+        0x26EA,    # ⛪ Church
+        0x1F54C,   # 🕌 Mosque
+        0x1F6D5,   # 🛕 Hindu temple
+        0x1F54D,   # 🕍 Synagogue
+        0x1F54B,   # 🕋 Kaaba
+        0x26E9,    # ⛩ Shinto shrine
+        0x1F4FF,   # 📿 Prayer beads
+        0x1FAAC,   # 🪬 Hamsa
+        0x1FAAF,   # 🪯 Khanda
+        0x1F9FF,   # 🧿 Nazar amulet
+    }
+
     @staticmethod
-    def _is_political_emoji(emoji_str: str) -> bool:
-        """Check if an emoji is a flag or political symbol."""
+    def _is_restricted_emoji(emoji_str: str) -> bool:
+        """Check if an emoji is a flag, political symbol, or religious symbol."""
         codepoints = [ord(c) for c in emoji_str]
 
         # Country flags: pairs of Regional Indicator Symbol Letters (U+1F1E6 to U+1F1FF)
@@ -50,8 +80,8 @@ class ReactorCog(commands.Cog):
         if codepoints and codepoints[0] == 0x1F3F4 and any(0xE0061 <= cp <= 0xE007A for cp in codepoints):
             return True
 
-        # Other political symbols — check if any codepoint in the emoji matches
-        if any(cp in ReactorCog.POLITICAL_CODEPOINTS for cp in codepoints):
+        # Political or religious symbols — check if any codepoint in the emoji matches
+        if any(cp in ReactorCog.POLITICAL_CODEPOINTS or cp in ReactorCog.RELIGIOUS_CODEPOINTS for cp in codepoints):
             return True
 
         return False
@@ -307,14 +337,14 @@ class ReactorCog(commands.Cog):
             # --- STEP 3: Restore final logic (Simulate reaction, call logger, call reactor) ---
             # Proceed with Reactor check only if message was fetched successfully
             if message and user:
-                # --- Political emoji enforcement: remove and post reminder in rules channel ---
+                # --- Restricted emoji enforcement: remove and post reminder in rules channel ---
                 emoji_str = str(emoji)
-                if self._is_political_emoji(emoji_str):
-                    self.logger.info(f"[ReactorCog] Political emoji '{emoji_str}' detected from user {user.id} on message {message.id} — removing and posting reminder.")
+                if self._is_restricted_emoji(emoji_str):
+                    self.logger.info(f"[ReactorCog] Restricted emoji '{emoji_str}' detected from user {user.id} on message {message.id} — removing and posting reminder.")
                     try:
                         await message.remove_reaction(emoji, user)
                     except (discord.Forbidden, discord.HTTPException) as e:
-                        self.logger.warning(f"[ReactorCog] Could not remove political reaction: {e}")
+                        self.logger.warning(f"[ReactorCog] Could not remove restricted reaction: {e}")
                     # Post a temporary reminder in the rules channel (auto-deletes after 5 minutes)
                     try:
                         sc = getattr(getattr(self.bot, 'db_handler', None), 'server_config', None)
@@ -322,8 +352,8 @@ class ReactorCog(commands.Cog):
                         if rules_channel_id:
                             rules_channel = self.bot.get_channel(rules_channel_id) or await self.bot.fetch_channel(rules_channel_id)
                             reminder_msg = await rules_channel.send(
-                                f"<@{user.id}> — friendly reminder: political symbols (flags, political emojis, etc.) "
-                                f"are not allowed as reactions here. This is a non-political environment. "
+                                f"<@{user.id}> — friendly reminder: political or religious symbols (flags, political emojis, religious iconography, etc.) "
+                                f"are not allowed as reactions here. This is a non-political, non-religious environment. "
                                 f"Please keep reactions fun and neutral! 🙂"
                             )
                             # Delete the reminder after 5 minutes so it doesn't clutter the channel
@@ -335,9 +365,9 @@ class ReactorCog(commands.Cog):
                                     pass
                             asyncio.create_task(_delete_after_delay(reminder_msg, 300))
                         else:
-                            self.logger.warning(f"[ReactorCog] No rules_channel_id configured for guild {payload.guild_id} — could not post political emoji reminder.")
+                            self.logger.warning(f"[ReactorCog] No rules_channel_id configured for guild {payload.guild_id} — could not post restricted emoji reminder.")
                     except (discord.Forbidden, discord.HTTPException) as e:
-                        self.logger.warning(f"[ReactorCog] Could not post political emoji reminder in rules channel: {e}")
+                        self.logger.warning(f"[ReactorCog] Could not post restricted emoji reminder in rules channel: {e}")
                     return  # Stop further processing for this reaction
 
                 # Simulate Reaction object (Needed for LoggerCog and Reactor)
