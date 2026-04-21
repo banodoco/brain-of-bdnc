@@ -43,6 +43,8 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+from src.common.urls import message_jump_url
+
 
 def get_client():
     """Get Supabase client."""
@@ -181,7 +183,7 @@ def get_top_messages_server_wide(days: int = 7, min_reactions: int = 3, limit: i
     channel_ids = list(channel_map.keys())
 
     q = client.table('discord_messages').select(
-        'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
+        'message_id, channel_id, thread_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
     ).in_('channel_id', channel_ids).gte('created_at', cutoff).gte('reaction_count', min_reactions).order('reaction_count', desc=True).limit(limit)
     if get_active_guild_id():
         q = q.eq('guild_id', get_active_guild_id())
@@ -231,7 +233,7 @@ def _enrich_messages(messages: List[Dict], channel_names: Dict = None, parse_rea
     return messages
 
 
-MSG_SELECT = 'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id, guild_id'
+MSG_SELECT = 'message_id, channel_id, thread_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id, guild_id'
 
 
 def get_messages_in_range(channel_id: int, days: int = 7) -> List[Dict]:
@@ -391,7 +393,7 @@ def get_messages_by_user(user_id: int, channel_ids: List[int] = None, days: int 
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
     
     query = client.table('discord_messages').select(
-        'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
+        'message_id, channel_id, thread_id, author_id, content, created_at, attachments, reaction_count, reactors, reference_id'
     ).eq('author_id', user_id).gte('created_at', cutoff).order('created_at', desc=True).limit(limit)
 
     if channel_ids:
@@ -443,7 +445,7 @@ def get_messages_with_media(channel_id: int = None, category_id: int = None, day
     
     # Query messages with non-empty attachments
     query = client.table('discord_messages').select(
-        'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors'
+        'message_id, channel_id, thread_id, author_id, content, created_at, attachments, reaction_count, reactors'
     ).gte('created_at', cutoff).neq('attachments', []).order('reaction_count', desc=True).limit(limit)
 
     if channel_ids:
@@ -476,7 +478,7 @@ def search_messages_by_content(query_text: str, channel_ids: List[int] = None, d
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
     
     query = client.table('discord_messages').select(
-        'message_id, channel_id, author_id, content, created_at, attachments, reaction_count, reactors'
+        'message_id, channel_id, thread_id, author_id, content, created_at, attachments, reaction_count, reactors'
     ).gte('created_at', cutoff).ilike('content', f'%{query_text}%').order('created_at', desc=True).limit(limit)
 
     if channel_ids:
@@ -701,13 +703,6 @@ def format_message_for_display(msg: Dict, include_attachments: bool = True) -> s
     return "\n".join(lines)
 
 
-def generate_jump_url(channel_id: int, message_id: int, guild_id: int = None) -> str:
-    """Generate Discord jump URL for a message."""
-    if guild_id is None:
-        guild_id = get_active_guild_id() or 0
-    return f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
-
-
 # ============ CLI Commands ============
 
 def cmd_channels(args):
@@ -746,7 +741,7 @@ def cmd_server_top(args):
     for i, msg in enumerate(messages, 1):
         print(f"--- #{i} ({msg.get('channel_name', 'Unknown')}) ---")
         print(format_message_for_display(msg))
-        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
+        print(f"   🔗 {message_jump_url(msg.get('guild_id') or (get_active_guild_id() or 0), msg['channel_id'], msg['message_id'], thread_id=msg.get('thread_id'))}")
         print()
 
 
@@ -768,7 +763,7 @@ def _print_top_messages(messages: List[Dict], header: str):
         ch_label = f" ({msg.get('channel_name', 'Unknown')})" if 'channel_name' in msg else ""
         print(f"--- #{i}{ch_label} ---")
         print(format_message_for_display(msg))
-        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
+        print(f"   🔗 {message_jump_url(msg.get('guild_id') or (get_active_guild_id() or 0), msg['channel_id'], msg['message_id'], thread_id=msg.get('thread_id'))}")
         print()
 
 
@@ -801,7 +796,7 @@ def cmd_context(args):
     
     print("=== TARGET MESSAGE ===")
     print(format_message_for_display(context['target_message']))
-    print(f"   🔗 {generate_jump_url(context['target_message']['channel_id'], context['target_message']['message_id'], context['target_message'].get('guild_id'))}")
+    print(f"   🔗 {message_jump_url(context['target_message'].get('guild_id') or (get_active_guild_id() or 0), context['target_message']['channel_id'], context['target_message']['message_id'])}")
     print()
     
     print("=== AFTER ===")
@@ -870,7 +865,7 @@ def cmd_user(args):
     for msg in messages:
         print(f"[{msg.get('channel_name', 'Unknown')}]")
         print(format_message_for_display(msg))
-        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
+        print(f"   🔗 {message_jump_url(msg.get('guild_id') or (get_active_guild_id() or 0), msg['channel_id'], msg['message_id'], thread_id=msg.get('thread_id'))}")
         print()
 
 
@@ -895,7 +890,7 @@ def cmd_thread(args):
         
         print(f"{prefix}{'=== TARGET ===' if is_target else ''}")
         print(format_message_for_display(msg).replace('\n', f'\n{prefix}'))
-        print(f"{prefix}🔗 {generate_jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
+        print(f"{prefix}🔗 {message_jump_url(msg.get('guild_id') or (get_active_guild_id() or 0), msg['channel_id'], msg['message_id'], thread_id=msg.get('thread_id'))}")
         print()
 
 
@@ -916,7 +911,7 @@ def cmd_media(args):
     for i, msg in enumerate(messages, 1):
         print(f"--- #{i} ({msg.get('channel_name', 'Unknown')}) ---")
         print(format_message_for_display(msg))
-        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
+        print(f"   🔗 {message_jump_url(msg.get('guild_id') or (get_active_guild_id() or 0), msg['channel_id'], msg['message_id'], thread_id=msg.get('thread_id'))}")
         print()
 
 
@@ -937,7 +932,7 @@ def cmd_search(args):
     for i, msg in enumerate(messages, 1):
         print(f"--- #{i} ({msg.get('channel_name', 'Unknown')}) ---")
         print(format_message_for_display(msg))
-        print(f"   🔗 {generate_jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
+        print(f"   🔗 {message_jump_url(msg.get('guild_id') or (get_active_guild_id() or 0), msg['channel_id'], msg['message_id'], thread_id=msg.get('thread_id'))}")
         print()
 
 

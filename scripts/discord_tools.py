@@ -53,13 +53,15 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+from src.common.urls import message_jump_url
+
 _DEFAULT_GUILD_ID = (
     int(os.getenv('TARGET_GUILD_ID', os.getenv('GUILD_ID', os.getenv('DEV_GUILD_ID', '0'))))
     or None
 )
 _active_guild_id = _DEFAULT_GUILD_ID
 MSG_SELECT = (
-    'message_id, guild_id, channel_id, author_id, content, created_at, '
+    'message_id, guild_id, channel_id, thread_id, author_id, content, created_at, '
     'attachments, reaction_count, reactors, reference_id'
 )
 
@@ -216,11 +218,6 @@ def _channel_map(exclude_nsfw: bool = True) -> Dict:
     return {r['channel_id']: r['channel_name'] for r in rows.data}
 
 
-def jump_url(channel_id, message_id, guild_id: Optional[int] = None) -> str:
-    active_guild_id = guild_id or _get_active_guild_id() or 0
-    return f"https://discord.com/channels/{active_guild_id}/{channel_id}/{message_id}"
-
-
 def _fmt(msg: Dict) -> str:
     """Format a single message for display."""
     lines = []
@@ -252,7 +249,7 @@ def _fmt(msg: Dict) -> str:
     if atts:
         for a in atts[:3]:
             lines.append(f"  Attachment: {a.get('filename', 'file')}")
-    lines.append(f"  {jump_url(msg['channel_id'], msg['message_id'], msg.get('guild_id'))}")
+    lines.append(f"  {message_jump_url(msg.get('guild_id') or _get_active_guild_id() or 0, msg['channel_id'], msg['message_id'], thread_id=msg.get('thread_id'))}")
     return '\n'.join(lines)
 
 
@@ -1035,7 +1032,7 @@ def profile(username: str, month: str) -> Dict[str, Any]:
     page_size = 1000
     while True:
         q = db.table('discord_messages').select(
-            'message_id, channel_id, content, created_at, '
+            'message_id, channel_id, thread_id, content, created_at, '
             'reaction_count, reactors, reference_id, attachments'
         ).eq('author_id', uid).gte('created_at', start).lte('created_at', end)
         if guild_id:
@@ -1140,7 +1137,7 @@ def profile(username: str, month: str) -> Dict[str, Any]:
             'date': msg.get('created_at', '')[:10],
             'reaction_count': msg.get('reaction_count', 0),
             'is_reply': msg.get('reference_id') is not None,
-            'link': jump_url(msg['channel_id'], mid),
+            'link': message_jump_url(_get_active_guild_id() or 0, msg['channel_id'], mid, thread_id=msg.get('thread_id')),
             'reactions': reactions[:20],  # cap for readability
             'equity_holder_reactions': len(eh_reactions),
             'replies': replies[:10],  # cap for readability
@@ -1215,7 +1212,7 @@ def profile(username: str, month: str) -> Dict[str, Any]:
             'reply_reactions': msg.get('reaction_count', 0),
             'channel': cmap.get(msg['channel_id'], str(msg['channel_id'])),
             'date': msg.get('created_at', '')[:10],
-            'link': jump_url(msg['channel_id'], msg['message_id']),
+            'link': message_jump_url(_get_active_guild_id() or 0, msg['channel_id'], msg['message_id'], thread_id=msg.get('thread_id')),
         })
 
     # ---- @mentions of them by others (not in replies) ----

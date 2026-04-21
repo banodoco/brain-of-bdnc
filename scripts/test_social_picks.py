@@ -11,6 +11,7 @@ load_dotenv()
 
 from src.common.db_handler import DatabaseHandler
 from src.common.llm import get_llm_response
+from src.common.urls import message_jump_url, resolve_thread_ids
 
 
 GUILD_ID = os.getenv('GUILD_ID', '1076117621407223829')
@@ -55,12 +56,18 @@ Why: <1 sentence>
 If nothing stands out today, respond with just: NOTHING"""
 
 
-def build_summary_lookup(enriched_summary_str, guild_id):
+def build_summary_lookup(enriched_summary_str, guild_id, db_handler=None):
     lookup = {}
     try:
         items = json.loads(enriched_summary_str) if isinstance(enriched_summary_str, str) else enriched_summary_str
         if not isinstance(items, list):
             return lookup
+
+        thread_id_by_msg = resolve_thread_ids(
+            db_handler,
+            (it.get('message_id') for it in items),
+        )
+
         for item in items:
             title = item.get('title', '').strip()
             if not title:
@@ -70,7 +77,12 @@ def build_summary_lookup(enriched_summary_str, guild_id):
             message_id = item.get('message_id')
             discord_link = None
             if guild_id and channel_id and message_id:
-                discord_link = f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
+                discord_link = message_jump_url(
+                    guild_id,
+                    channel_id,
+                    message_id,
+                    thread_id=thread_id_by_msg.get(int(message_id)),
+                )
 
             media_urls = []
             for m in (item.get('mainMediaUrls') or []):
@@ -114,7 +126,7 @@ async def main():
     print(f"Got summary ({len(summary)} chars)")
 
     # Build lookup
-    lookup = build_summary_lookup(summary, GUILD_ID)
+    lookup = build_summary_lookup(summary, GUILD_ID, db_handler=db)
     print(f"Built lookup with {len(lookup)} items")
     print(f"Titles: {list(lookup.keys())[:10]}")
     print()

@@ -9,6 +9,7 @@ import anthropic
 from openai import AsyncOpenAI
 
 from src.common.soul import BOT_VOICE
+from src.common.urls import message_jump_url, resolve_thread_ids
 
 # We removed direct Discord/bot usage here since SUMMARIZER handles posting logic now.
 # This class now focuses on:
@@ -613,11 +614,11 @@ Check each claim in the summary against the source messages. Identify any attrib
         self.logger.error(f"GPT-5 verification failed after {max_retries} attempts. Using unverified summary.")
         return summary_json
 
-    def format_news_for_discord(self, news_items_json: str) -> List[Dict[str, Any]]:
+    def format_news_for_discord(self, news_items_json: str, db_handler=None) -> List[Dict[str, Any]]:
         """
         Convert the JSON string from Claude into a list of dictionaries
         each containing a 'content' field that can be posted to Discord.
-        
+
         Each message dict includes 'topic_index' and 'topic_title' for tracking
         which posted Discord messages belong to which topic.
         """
@@ -635,16 +636,32 @@ Check each claim in the summary against the source messages. Identify any attrib
         except json.JSONDecodeError:
             return [{"content": news_items_json}]
 
+        def _iter_referenced_ids():
+            for item in items:
+                yield item.get('message_id')
+                for sub in item.get('subTopics') or []:
+                    yield sub.get('message_id')
+
+        thread_id_by_msg = resolve_thread_ids(db_handler, _iter_referenced_ids())
+
+        def build_jump_url(channel_id: int, message_id: int) -> str:
+            return message_jump_url(
+                self.guild_id,
+                int(channel_id),
+                int(message_id),
+                thread_id=thread_id_by_msg.get(int(message_id)),
+            )
+
         messages_to_send = []
         for topic_index, item in enumerate(items):
             topic_title = item.get('title', 'No Title')
-            
+
             main_part = []
             main_part.append(f"## {topic_title}\n")
             # mainText + messageLink
             message_id = int(item['message_id'])
             channel_id = int(item['channel_id'])
-            jump_url = f"https://discord.com/channels/{self.guild_id}/{channel_id}/{message_id}"
+            jump_url = build_jump_url(channel_id, message_id)
             main_part.append(f"{item.get('mainText', '')} {jump_url}")
 
             messages_to_send.append({
@@ -674,7 +691,7 @@ Check each claim in the summary against the source messages. Identify any attrib
                     if sub.get('message_id') and sub.get('channel_id'):
                         message_id = int(sub['message_id'])
                         channel_id = int(sub['channel_id'])
-                        jump_url = f"https://discord.com/channels/{self.guild_id}/{channel_id}/{message_id}"
+                        jump_url = build_jump_url(channel_id, message_id)
                         sub_msg.append(f"• {text} {jump_url}")
                     else:
                         sub_msg.append(f"• {text}")

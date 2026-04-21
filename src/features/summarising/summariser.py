@@ -25,7 +25,7 @@ from src.common.error_handler import handle_errors
 from src.common.rate_limiter import RateLimiter
 from src.common.log_handler import LogHandler
 from src.common import discord_utils
-# from src.common.base_bot import BaseDiscordBot 
+from src.common.urls import message_jump_url, resolve_thread_ids
 
 # Import the new summarizer that handles queries/Claude calls
 from src.features.summarising.subfeatures.news_summary import NewsSummarizer
@@ -1894,6 +1894,12 @@ If nothing stands out today, respond with just: NOTHING"""
             items = json.loads(enriched_summary) if isinstance(enriched_summary, str) else enriched_summary
             if not isinstance(items, list):
                 return lookup
+
+            thread_id_by_msg = resolve_thread_ids(
+                self.db_handler,
+                (it.get('message_id') for it in items),
+            )
+
             for item in items:
                 title = item.get('title', '').strip()
                 if not title:
@@ -1905,7 +1911,12 @@ If nothing stands out today, respond with just: NOTHING"""
                 main_media_message_id = item.get('mainMediaMessageId')
                 discord_link = None
                 if self.guild_id and channel_id and message_id:
-                    discord_link = f"https://discord.com/channels/{self.guild_id}/{channel_id}/{message_id}"
+                    discord_link = message_jump_url(
+                        self.guild_id,
+                        int(channel_id),
+                        int(message_id),
+                        thread_id=thread_id_by_msg.get(int(message_id)),
+                    )
 
                 # Collect media URLs (videos first, then images)
                 media_urls = []
@@ -2320,7 +2331,7 @@ If nothing stands out today, respond with just: NOTHING"""
                             if channel_obj:
                                 # Filter out blocked content before formatting
                                 channel_summary = await filter_summary_media(channel_summary, self._fetch_message_for_moderation)
-                                formatted_summary = self.news_summarizer.format_news_for_discord(channel_summary)
+                                formatted_summary = self.news_summarizer.format_news_for_discord(channel_summary, db_handler=self.db_handler)
                                 thread = None
                                 if not thread:
                                     self.logger.info(f"Creating new summary thread for channel {channel_id}...")
@@ -2447,7 +2458,7 @@ If nothing stands out today, respond with just: NOTHING"""
                         elif overall_summary and overall_summary not in skip_responses:
                             # Filter out blocked content before formatting
                             overall_summary = await filter_summary_media(overall_summary, self._fetch_message_for_moderation)
-                            formatted_summary = self.news_summarizer.format_news_for_discord(overall_summary)
+                            formatted_summary = self.news_summarizer.format_news_for_discord(overall_summary, db_handler=self.db_handler)
                             # UPDATED CALL — wrapped so a header failure doesn't abort the entire summary
                             try:
                                 header = await discord_utils.safe_send_message(self.bot, summary_channel, self.rate_limiter, self.logger, content=f"\n\n# Daily Summary - {current_date.strftime('%A, %B %d, %Y')}\n\n")

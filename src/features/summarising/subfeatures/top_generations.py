@@ -8,6 +8,7 @@ from typing import Optional, List
 from datetime import datetime, timedelta
 
 from src.common import discord_utils
+from src.common.urls import message_jump_url
 
 class TopGenerations:
     def __init__(self, summarizer_instance):
@@ -86,9 +87,10 @@ class TopGenerations:
             # Build a query that looks for attachments with .mp4/.mov/.webm, and 3+ unique reactors
             query = f"""
                 WITH video_messages AS (
-                    SELECT 
+                    SELECT
                         m.message_id,
                         m.channel_id,
+                        m.thread_id,
                         m.content,
                         m.attachments,
                         m.reactors,
@@ -174,11 +176,15 @@ class TopGenerations:
                 desc.append(f"> \"{self._replace_user_mentions(first_gen['content'][:150])}\"")
             
             desc.append(video_attachment['url'])
-            # Generate jump URL dynamically
-            jump_url = f"https://discord.com/channels/{self.summarizer.guild_id}/{first_gen['channel_id']}/{first_gen['message_id']}"
+            jump_url = message_jump_url(
+                self.summarizer.guild_id,
+                first_gen['channel_id'],
+                first_gen['message_id'],
+                thread_id=first_gen.get('thread_id'),
+            )
             desc.append(f"🔗 Original post: {jump_url}")
             msg_text = "\n".join(desc)
-            
+
             header_message = await discord_utils.safe_send_message(
                 self.summarizer.bot, 
                 summary_channel, 
@@ -224,20 +230,24 @@ class TopGenerations:
                         desc.append(f"> \"{self._replace_user_mentions(gen['content'][:150])}\"")
                     
                     desc.append(video_attachment['url'])
-                    # Generate jump URL dynamically
-                    jump_url = f"https://discord.com/channels/{self.summarizer.guild_id}/{gen['channel_id']}/{gen['message_id']}"
+                    jump_url = message_jump_url(
+                        self.summarizer.guild_id,
+                        gen['channel_id'],
+                        gen['message_id'],
+                        thread_id=gen.get('thread_id'),
+                    )
                     desc.append(f"🔗 Original post: {jump_url}")
                     msg_text = "\n".join(desc)
-                    
+
                     await discord_utils.safe_send_message(
-                        self.summarizer.bot, 
-                        thread, 
-                        self.summarizer.rate_limiter, 
-                        self.summarizer.logger, 
+                        self.summarizer.bot,
+                        thread,
+                        self.summarizer.rate_limiter,
+                        self.summarizer.logger,
                         content=msg_text
                     )
                     await asyncio.sleep(1)
-            
+
             # Also post to additional channel if specified (as individual messages, not thread)
             if also_post_to_channel_id:
                 try:
@@ -276,8 +286,12 @@ class TopGenerations:
                                 desc.append(f"> \"{self._replace_user_mentions(gen['content'][:150])}\"")
                             
                             desc.append(video_attachment['url'])
-                            # Generate jump URL dynamically
-                            jump_url = f"https://discord.com/channels/{self.summarizer.guild_id}/{gen['channel_id']}/{gen['message_id']}"
+                            jump_url = message_jump_url(
+                                self.summarizer.guild_id,
+                                gen['channel_id'],
+                                gen['message_id'],
+                                thread_id=gen.get('thread_id'),
+                            )
                             desc.append(f"🔗 Original post: {jump_url}")
                             msg_text_individual = "\n".join(desc)
                             
@@ -317,9 +331,10 @@ class TopGenerations:
             yesterday = datetime.utcnow() - timedelta(hours=24)
             
             query = """
-                SELECT 
+                SELECT
                     m.message_id,
                     m.channel_id,
+                    m.thread_id,
                     m.content,
                     m.attachments,
                     COALESCE(mem.server_nick, mem.global_name, mem.username) as author_name,
@@ -404,20 +419,24 @@ class TopGenerations:
                         desc.append(f"> \"{self._replace_user_mentions(row['content'][:150])}\"")
                     
                     desc.append(video_attachment['url'])
-                    # Generate jump URL dynamically
-                    jump_url = f"https://discord.com/channels/{self.summarizer.guild_id}/{row['channel_id']}/{row['message_id']}"
+                    jump_url = message_jump_url(
+                        self.summarizer.guild_id,
+                        row['channel_id'],
+                        row['message_id'],
+                        thread_id=row.get('thread_id'),
+                    )
                     desc.append(f"🔗 Original post: {jump_url}")
                     msg_text = "\n".join(desc)
-                    
+
                     await discord_utils.safe_send_message(
-                        self.summarizer.bot, 
-                        thread, 
-                        self.summarizer.rate_limiter, 
-                        self.summarizer.logger, 
+                        self.summarizer.bot,
+                        thread,
+                        self.summarizer.rate_limiter,
+                        self.summarizer.logger,
                         content=msg_text
                     )
                     await asyncio.sleep(1)
-                    
+
                 except Exception as e:
                     self.summarizer.logger.error(f"Error processing generation {i}: {e}")
                     self.summarizer.logger.debug(traceback.format_exc())

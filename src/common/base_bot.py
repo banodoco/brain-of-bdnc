@@ -206,8 +206,3 @@ class BaseDiscordBot(commands.Bot):
             return self.ws.close_code is None
         # If no reliable attribute, assume connected
         return True
-
-    @staticmethod
-    def generate_jump_url(guild_id: int, channel_id: int, message_id: int) -> str:
-        """Generate a Discord jump URL for a message."""
-        return f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"

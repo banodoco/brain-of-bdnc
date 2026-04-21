@@ -366,8 +366,9 @@ class ReactionBackfiller(BaseDiscordBot):
                     desc.append(f"> \"{content[:150]}\"")
 
                 desc.append(video_attachment['url'])
+                route_id = gen.get('thread_id') or gen['channel_id']
                 jump_url = (f"https://discord.com/channels/"
-                            f"{guild_id}/{gen['channel_id']}/{gen['message_id']}")
+                            f"{guild_id}/{route_id}/{gen['message_id']}")
                 desc.append(f"🔗 Original post: {jump_url}")
 
                 msg_text = "\n".join(desc)
@@ -392,7 +393,7 @@ class ReactionBackfiller(BaseDiscordBot):
 
         while True:
             query = sb.table('discord_messages') \
-                .select('message_id, channel_id, author_id, content, '
+                .select('message_id, channel_id, thread_id, author_id, content, '
                         'attachments, reactors, reaction_count') \
                 .gte('created_at', window_start.isoformat()) \
                 .lt('created_at', window_end.isoformat()) \

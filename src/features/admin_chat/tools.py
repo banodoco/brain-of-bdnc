@@ -1354,7 +1354,11 @@ def format_message_for_llm(msg: Dict, include_link: bool = True) -> Dict:
         result["media_urls"] = msg['media_urls']
     if include_link:
         link_guild_id = msg.get('guild_id') or _get_server_config().resolve_guild_id(require_write=True)
-        result["link"] = f"https://discord.com/channels/{link_guild_id}/{msg.get('channel_id')}/{msg.get('message_id')}"
+        # Route through thread_id when set so links to forum posts land on the
+        # specific thread instead of the parent forum's main page.
+        thread_id = msg.get('thread_id')
+        route_id = thread_id if thread_id else msg.get('channel_id')
+        result["link"] = f"https://discord.com/channels/{link_guild_id}/{route_id}/{msg.get('message_id')}"
     return result
 
 

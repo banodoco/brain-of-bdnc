@@ -410,16 +410,15 @@ class MessageArchiver(BaseDiscordBot):
                     # Update cache
                     self.member_update_cache[cache_key] = current_time
 
-            # Get the actual channel ID and name (use parent forum for threads)
+            # Threads (regular text threads and forum posts) are stored against
+            # their parent channel with thread_id pointing to the thread itself.
+            # This keeps per-parent-channel activity queries working while still
+            # preserving enough info for jump-URL builders.
             actual_channel = message.channel
             thread_id = None
-            
-            if hasattr(message.channel, 'parent') and message.channel.parent:
-                actual_channel = message.channel.parent
-                if isinstance(message.channel, discord.Thread) and not hasattr(message.channel, 'thread_type'):
-                    thread_id = message.channel.id
-                elif hasattr(message.channel, 'thread_type'):
-                    actual_channel = message.channel
+            if isinstance(message.channel, discord.Thread):
+                actual_channel = message.channel.parent or message.channel
+                thread_id = message.channel.id
 
             # Create or update the channel (skip in fast-fill mode - channels already exist)
             if not self.fast_fill:

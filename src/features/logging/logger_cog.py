@@ -226,18 +226,16 @@ class LoggerCog(commands.Cog):
                                 'emoji': emoji_str,
                             })
 
-            # Resolve channel_id and thread_id to match the archive script:
-            # - Regular threads → channel_id = parent, thread_id = thread
-            # - Forum threads   → channel_id = thread itself, thread_id = None
-            # - Normal channels → channel_id = channel, thread_id = None
+            # For threads (both regular text-channel threads and forum posts),
+            # store channel_id = parent so summariser queries that count activity
+            # per parent channel keep working, and store thread_id = thread so
+            # jump-URL builders can route to the specific thread. Non-thread
+            # channels have thread_id = None.
             actual_channel = message.channel
             thread_id = None
-            if hasattr(message.channel, 'parent') and message.channel.parent:
-                actual_channel = message.channel.parent
-                if isinstance(message.channel, discord.Thread) and not hasattr(message.channel, 'thread_type'):
-                    thread_id = message.channel.id
-                elif hasattr(message.channel, 'thread_type'):
-                    actual_channel = message.channel
+            if isinstance(message.channel, discord.Thread):
+                actual_channel = message.channel.parent or message.channel
+                thread_id = message.channel.id
 
             # Get guild display name (nickname) if available
             display_name = None
