@@ -7,6 +7,7 @@ import traceback
 import asyncio
 import logging
 import time
+from typing import Optional
 # Import necessary libraries for your actions (e.g., tweepy for Twitter)
 # import tweepy # Example
 # Import the new subfeature
@@ -29,6 +30,7 @@ class ReactorCog(commands.Cog):
             self.logger.info(f"Initializing ReactorCog in development mode (Reactor instance expected on bot object)")
         self.message_linker_channel_ids = [] # Initialize attribute
         self._rate_limit_until = 0  # monotonic timestamp; skip reaction handling while active
+        self._bot_initiated_removals = {}
 
     # Codepoints for emojis commonly used as political symbols (beyond flags)
     POLITICAL_CODEPOINTS = {
@@ -67,24 +69,46 @@ class ReactorCog(commands.Cog):
     }
 
     @staticmethod
-    def _is_restricted_emoji(emoji_str: str) -> bool:
-        """Check if an emoji is a flag, political symbol, or religious symbol."""
+    def _classify_restricted_emoji(emoji_str: str) -> Optional[str]:
+        """Classify a restricted emoji as flag, political, or religious."""
         codepoints = [ord(c) for c in emoji_str]
 
         # Country flags: pairs of Regional Indicator Symbol Letters (U+1F1E6 to U+1F1FF)
         regional_indicators = [cp for cp in codepoints if 0x1F1E6 <= cp <= 0x1F1FF]
         if len(regional_indicators) == 2:
-            return True
+            return 'flag'
 
         # Subdivision flags: 🏴 (U+1F3F4) followed by tag characters (U+E0061-U+E007A)
         if codepoints and codepoints[0] == 0x1F3F4 and any(0xE0061 <= cp <= 0xE007A for cp in codepoints):
-            return True
+            return 'flag'
 
-        # Political or religious symbols — check if any codepoint in the emoji matches
-        if any(cp in ReactorCog.POLITICAL_CODEPOINTS or cp in ReactorCog.RELIGIOUS_CODEPOINTS for cp in codepoints):
-            return True
+        if any(cp in ReactorCog.POLITICAL_CODEPOINTS for cp in codepoints):
+            return 'political'
 
-        return False
+        if any(cp in ReactorCog.RELIGIOUS_CODEPOINTS for cp in codepoints):
+            return 'religious'
+
+        return None
+
+    def _prune_bot_removals(self, ttl_seconds=60):
+        """Drop expired bot-initiated removal markers."""
+        now = time.monotonic()
+        expired_keys = [
+            key
+            for key, (_, _, created_at) in self._bot_initiated_removals.items()
+            if now - created_at > ttl_seconds
+        ]
+        for key in expired_keys:
+            self._bot_initiated_removals.pop(key, None)
+
+    def register_bot_removal(self, message_id, user_id, emoji_str, classification, reason=None):
+        """Record a short-lived marker for a bot-initiated reaction removal."""
+        self._prune_bot_removals()
+        self._bot_initiated_removals[(message_id, user_id, emoji_str)] = (
+            classification,
+            reason,
+            time.monotonic(),
+        )
 
     def _is_feature_enabled(self, guild_id, channel_id, feature):
         """Check if a feature is enabled via server_config, defaulting to True."""
@@ -339,10 +363,28 @@ class ReactorCog(commands.Cog):
             if message and user:
                 # --- Restricted emoji enforcement: remove and post reminder in rules channel ---
                 emoji_str = str(emoji)
-                if self._is_restricted_emoji(emoji_str):
+                category = self._classify_restricted_emoji(emoji_str)
+                if category is not None:
                     self.logger.info(f"[ReactorCog] Restricted emoji '{emoji_str}' detected from user {user.id} on message {message.id} — removing and posting reminder.")
                     try:
+                        self.register_bot_removal(message.id, user.id, emoji_str, 'bot_auto_restricted', category)
                         await message.remove_reaction(emoji, user)
+                        db_handler = getattr(self.bot, 'db_handler', None)
+                        if db_handler:
+                            db_handler.record_moderation_decision(
+                                message_id=message.id,
+                                channel_id=getattr(message.channel, 'id', None),
+                                guild_id=getattr(message.guild, 'id', payload.guild_id),
+                                reactor_user_id=user.id,
+                                reactor_name=getattr(user, 'display_name', user.name),
+                                emoji=emoji_str,
+                                message_author_id=getattr(message.author, 'id', None),
+                                message_author_name=getattr(message.author, 'display_name', getattr(message.author, 'name', None)),
+                                message_content_snippet=(message.content or '')[:200],
+                                classification='bot_auto_restricted',
+                                reason=category,
+                                is_suspicious=False,
+                            )
                     except (discord.Forbidden, discord.HTTPException) as e:
                         self.logger.warning(f"[ReactorCog] Could not remove restricted reaction: {e}")
                     # Post a temporary reminder in the rules channel (auto-deletes after 5 minutes)
@@ -481,6 +523,7 @@ class ReactorCog(commands.Cog):
                 return
             message = await channel.fetch_message(payload.message_id)
             emoji = payload.emoji
+            emoji_str = str(emoji)
 
             # Simulate Reaction object
             simulated_reaction = SimpleReaction(message, emoji)
@@ -488,6 +531,59 @@ class ReactorCog(commands.Cog):
             # Call LoggerCog to log the reaction removal
             asyncio.create_task(logger_cog.log_reaction_remove(simulated_reaction, user))
             self.logger.debug(f"[ReactorCog] Task created to call LoggerCog.log_reaction_remove")
+
+            db_handler = getattr(self.bot, 'db_handler', None)
+            content_snippet = (message.content or '')[:200]
+            marker_key = (message.id, user.id, emoji_str)
+            marker = self._bot_initiated_removals.pop(marker_key, None)
+            if marker is not None:
+                classification, reason, _ = marker
+                if classification == 'bot_auto_restricted':
+                    return
+                if db_handler:
+                    db_handler.record_moderation_decision(
+                        message_id=message.id,
+                        channel_id=getattr(message.channel, 'id', None),
+                        guild_id=getattr(message.guild, 'id', payload.guild_id),
+                        reactor_user_id=user.id,
+                        reactor_name=getattr(user, 'display_name', user.name),
+                        emoji=emoji_str,
+                        message_author_id=getattr(message.author, 'id', None),
+                        message_author_name=getattr(message.author, 'display_name', getattr(message.author, 'name', None)),
+                        message_content_snippet=content_snippet,
+                        classification=classification,
+                        reason=reason,
+                        is_suspicious=False,
+                    )
+                return
+
+            is_suspicious = emoji_str in {'🤮', '👎', '😭'}
+            if db_handler:
+                db_handler.record_moderation_decision(
+                    message_id=message.id,
+                    channel_id=getattr(message.channel, 'id', None),
+                    guild_id=getattr(message.guild, 'id', payload.guild_id),
+                    reactor_user_id=user.id,
+                    reactor_name=getattr(user, 'display_name', user.name),
+                    emoji=emoji_str,
+                    message_author_id=getattr(message.author, 'id', None),
+                    message_author_name=getattr(message.author, 'display_name', getattr(message.author, 'name', None)),
+                    message_content_snippet=content_snippet,
+                    classification='user_self_removal',
+                    reason=None,
+                    is_suspicious=is_suspicious,
+                )
+
+            if is_suspicious:
+                async def _notify_admin():
+                    try:
+                        admin_id = int(os.getenv("ADMIN_USER_ID", "0"))
+                        if admin_id:
+                            admin_user = await self.bot.fetch_user(admin_id); dm = await admin_user.create_dm()
+                            await dm.send(f"Suspicious reaction removal: {user.mention} removed {emoji_str} from {message.jump_url}\nSnippet: {content_snippet}")
+                    except Exception as e:
+                        self.logger.warning(f"[ReactorCog] Failed to DM admin about suspicious reaction removal: {e}")
+                asyncio.create_task(_notify_admin())
 
         except discord.HTTPException as e:
             if e.status == 429:
@@ -502,6 +598,103 @@ class ReactorCog(commands.Cog):
         except Exception as e:
             self.logger.error(f"[ReactorCog] Error fetching objects for reaction remove logging: {e}")
             self.logger.error(traceback.format_exc())
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_clear(self, payload: discord.RawReactionClearEvent):
+        """Record moderation decisions for bulk reaction clears."""
+        db_handler = getattr(self.bot, 'db_handler', None)
+        if not db_handler:
+            return
+
+        snapshot = db_handler.get_message_snapshot(payload.message_id)
+        active_reactors = db_handler.get_active_reactors(payload.message_id)
+        if not active_reactors:
+            return
+
+        channel_id = snapshot.get('channel_id') if snapshot else getattr(payload, 'channel_id', None)
+        author_id = snapshot.get('author_id') if snapshot else None
+        author_name = snapshot.get('author_name') if snapshot else None
+        content_snippet = ((snapshot.get('content') or '')[:200] if snapshot else None)
+        for row in active_reactors:
+            db_handler.record_moderation_decision(
+                message_id=payload.message_id,
+                channel_id=channel_id,
+                guild_id=row.get('guild_id') or (snapshot.get('guild_id') if snapshot else getattr(payload, 'guild_id', None)),
+                reactor_user_id=row.get('user_id'),
+                reactor_name=None,
+                emoji=row.get('emoji'),
+                message_author_id=author_id,
+                message_author_name=author_name,
+                message_content_snippet=content_snippet,
+                classification='moderator_cleared_all',
+                reason=None,
+                is_suspicious=False,
+            )
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_clear_emoji(self, payload: discord.RawReactionClearEmojiEvent):
+        """Record moderation decisions for single-emoji clears."""
+        db_handler = getattr(self.bot, 'db_handler', None)
+        if not db_handler:
+            return
+
+        emoji_str = str(payload.emoji)
+        snapshot = db_handler.get_message_snapshot(payload.message_id)
+        active_reactors = db_handler.get_active_reactors(payload.message_id, emoji=emoji_str)
+        if not active_reactors:
+            return
+
+        channel_id = snapshot.get('channel_id') if snapshot else getattr(payload, 'channel_id', None)
+        author_id = snapshot.get('author_id') if snapshot else None
+        author_name = snapshot.get('author_name') if snapshot else None
+        content_snippet = ((snapshot.get('content') or '')[:200] if snapshot else None)
+        for row in active_reactors:
+            db_handler.record_moderation_decision(
+                message_id=payload.message_id,
+                channel_id=channel_id,
+                guild_id=row.get('guild_id') or (snapshot.get('guild_id') if snapshot else getattr(payload, 'guild_id', None)),
+                reactor_user_id=row.get('user_id'),
+                reactor_name=None,
+                emoji=row.get('emoji'),
+                message_author_id=author_id,
+                message_author_name=author_name,
+                message_content_snippet=content_snippet,
+                classification='moderator_cleared_emoji',
+                reason=None,
+                is_suspicious=False,
+            )
+
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
+        """Record moderation decisions when message deletion cascades remove reactions."""
+        db_handler = getattr(self.bot, 'db_handler', None)
+        if not db_handler:
+            return
+
+        snapshot = db_handler.get_message_snapshot(payload.message_id)
+        active_reactors = db_handler.get_active_reactors(payload.message_id)
+        if not active_reactors:
+            return
+
+        channel_id = snapshot.get('channel_id') if snapshot else payload.channel_id
+        author_id = snapshot.get('author_id') if snapshot else None
+        author_name = snapshot.get('author_name') if snapshot else None
+        content_snippet = ((snapshot.get('content') or '')[:200] if snapshot else None)
+        for row in active_reactors:
+            db_handler.record_moderation_decision(
+                message_id=payload.message_id,
+                channel_id=channel_id,
+                guild_id=row.get('guild_id') or (snapshot.get('guild_id') if snapshot else payload.guild_id),
+                reactor_user_id=row.get('user_id'),
+                reactor_name=None,
+                emoji=row.get('emoji'),
+                message_author_id=author_id,
+                message_author_name=author_name,
+                message_content_snippet=content_snippet,
+                classification='message_deleted_cascade',
+                reason=None,
+                is_suspicious=False,
+            )
 
     # --- Action Methods are handled by the Reactor class via the shared instance --- 
 

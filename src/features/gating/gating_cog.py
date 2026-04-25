@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import re
@@ -7,8 +9,15 @@ import discord
 from discord.ext import commands, tasks
 from src.common.llm import get_llm_response
 from src.common.soul import BOT_VOICE
+from src.features.gating.intro_embed import build_application_embed, extract_approval_request_marker
 
 logger = logging.getLogger('DiscordBot')
+
+APPROVAL_POLL_INTERVAL_SECONDS = 30
+APPROVAL_POLL_BATCH = 25
+RECONCILE_HISTORY_LIMIT = 100
+RECONCILE_HISTORY_HOURS = 1
+STAMP_INLINE_RETRIES = 1
 
 # ── Prompt used by Haiku to review new introductions ──
 
@@ -94,6 +103,13 @@ class GatingCog(commands.Cog):
         # message_id → member_id for all intro messages from pending members
         self._pending_messages: dict[int, int] = {}
 
+        # Single-replica only. brain-of-bndc must run as a single process.
+        # Multiple replicas would break _pending_messages, poll loop ordering,
+        # and Discord event delivery semantics. To scale: implement
+        # AutoShardedBot and migrate _pending_messages to a shared cache.
+        # That deployment constraint is why MP2 does not use a DB-side lease.
+        self._poll_lock = asyncio.Lock()
+
         # Temp gate-channel welcome pings awaiting deletion: {message_id: (channel_id, sent_at)}
         self._temp_welcomes: dict[int, tuple[int, datetime]] = {}
 
@@ -130,14 +146,17 @@ class GatingCog(commands.Cog):
             logger.info(f"GatingCog: loaded {len(self._pending_messages)} pending intros from DB")
         except Exception as e:
             logger.error(f"GatingCog: failed to load pending intros: {e}", exc_info=True)
+        await self.reconcile_orphan_intro_embeds()
         self.scan_intro_channels.start()
         self.cleanup_expired_intros.start()
         self.cleanup_temp_welcomes.start()
+        self.poll_approval_requests.start()
 
     async def cog_unload(self):
         self.scan_intro_channels.cancel()
         self.cleanup_expired_intros.cancel()
         self.cleanup_temp_welcomes.cancel()
+        self.poll_approval_requests.cancel()
 
     # ═══════════════════════════════════════════════════════════════
     #  1. New member joins → temp welcome in gate channel
@@ -203,8 +222,7 @@ class GatingCog(commands.Cog):
             self.db.update_pending_intro_message(existing['id'], message.id, message.channel.id)
             logger.info(f"GatingCog: updated pending intro for {message.author} -> msg {message.id}")
         else:
-            if not self.db.create_pending_intro(message.author.id, message.id, message.channel.id, guild_id=guild_id):
-                return
+            self.db.create_pending_intro(message.author.id, message.id, message.channel.id, guild_id=guild_id)
             logger.info(f"GatingCog: tracked intro from {message.author} (msg {message.id})")
         self._pending_messages[message.id] = message.author.id
 
@@ -344,10 +362,25 @@ class GatingCog(commands.Cog):
                     logger.error(f"GatingCog: failed to add checkmark to {reacted_message_id}: {e}")
 
             try:
-                await member.send(
+                dm_body = (
                     f"Hey {member.display_name}! You've been approved to speak in **{guild.name}**. "
                     f"Welcome aboard \U0001f389"
                 )
+                if intro.get('approval_request_id'):
+                    try:
+                        member_row = self.db.get_member_for_approval(intro['member_id'])
+                        slug = (member_row or {}).get('username')
+                        if slug:
+                            dm_body += f" Your art is also now live at https://banodoco.com/@{slug}"
+                        else:
+                            dm_body += " Your art is also now live on banodoco.com"
+                    except Exception as e:
+                        logger.error(
+                            f"GatingCog: failed to load approval profile for DM copy: {e}",
+                            exc_info=True,
+                        )
+                        dm_body += " Your art is also now live on banodoco.com"
+                await member.send(dm_body)
             except discord.Forbidden:
                 logger.info(f"GatingCog: couldn't DM {member} (DMs disabled)")
             except Exception as e:
@@ -381,6 +414,283 @@ class GatingCog(commands.Cog):
     # ═══════════════════════════════════════════════════════════════
     #  Background tasks
     # ═══════════════════════════════════════════════════════════════
+
+    def _get_primary_intro_target(self) -> tuple[discord.Guild, discord.abc.Messageable, dict] | None:
+        """Return the first configured guild and intro channel for web approvals."""
+        for guild in self.bot.guilds:
+            cfg = self._get_gating_config(guild.id)
+            if not cfg:
+                continue
+            channel = guild.get_channel(cfg['intro_channel_id'])
+            if channel:
+                return guild, channel, cfg
+        return None
+
+    def _stamp_with_retry(self, ar_id: str, msg_id: int) -> bool:
+        for attempt in range(STAMP_INLINE_RETRIES + 1):
+            if self.db.mark_approval_request_posted(ar_id, msg_id):
+                return True
+            if attempt < STAMP_INLINE_RETRIES:
+                logger.warning(
+                    f"GatingCog: retrying posted_message_id stamp for approval request {ar_id}"
+                )
+        return False
+
+    async def _delete_reconciled_duplicate(self, msg: discord.Message, reason: str):
+        try:
+            await msg.delete()
+            logger.info(f"GatingCog: deleted approval embed {msg.id} during reconciliation ({reason})")
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            logger.error(
+                f"GatingCog: failed to delete approval embed {msg.id} during reconciliation: {e}",
+                exc_info=True,
+            )
+
+    async def reconcile_orphan_intro_embeds(self):
+        """Stitch marked application embeds to pending_intros once on cog_load."""
+        if not self.db:
+            return
+
+        try:
+            for row in self.db.list_unstamped_intros():
+                approval_request_id = row.get('approval_request_id')
+                message_id = row.get('message_id')
+                if not approval_request_id or not message_id:
+                    continue
+                self.db.mark_approval_request_posted(approval_request_id, int(message_id))
+        except Exception as e:
+            logger.exception(f"GatingCog: failed DB-only approval intro reconciliation: {e}")
+
+        try:
+            target = self._get_primary_intro_target()
+            if not target:
+                return
+            guild, intro_channel, _cfg = target
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=RECONCILE_HISTORY_HOURS)
+            seen_markers: set[str] = set()
+            bot_user_id = getattr(getattr(self.bot, 'user', None), 'id', None)
+            if bot_user_id is None:
+                logger.warning("GatingCog: skipping approval embed reconciliation; bot user unavailable")
+                return
+
+            async for msg in intro_channel.history(
+                limit=RECONCILE_HISTORY_LIMIT,
+                after=cutoff,
+                oldest_first=False,
+            ):
+                if getattr(msg.author, 'id', None) != bot_user_id:
+                    continue
+                marker = extract_approval_request_marker(msg)
+                if not marker:
+                    continue
+                if marker in seen_markers:
+                    await self._delete_reconciled_duplicate(msg, "older duplicate marker")
+                    continue
+                seen_markers.add(marker)
+
+                ar = self.db.get_approval_request(marker)
+                if not ar or ar.get('status') != 'pending':
+                    continue
+
+                existing_pi = self.db.get_pending_intro_by_approval_request(marker)
+                if existing_pi:
+                    existing_message_id = existing_pi.get('message_id')
+                    if existing_message_id and int(existing_message_id) == msg.id:
+                        if ar.get('posted_message_id') is None:
+                            self.db.mark_approval_request_posted(marker, msg.id)
+                        self._pending_messages[msg.id] = int(existing_pi['member_id'])
+                    else:
+                        await self._delete_reconciled_duplicate(msg, "stale orphan marker")
+                    continue
+
+                intro = self.db.create_pending_intro(
+                    member_id=int(ar['member_id']),
+                    message_id=msg.id,
+                    channel_id=intro_channel.id,
+                    guild_id=guild.id,
+                    approval_request_id=marker,
+                )
+                if intro:
+                    self._pending_messages[msg.id] = int(ar['member_id'])
+                    self.db.mark_approval_request_posted(marker, msg.id)
+                    continue
+
+                winner = self.db.get_pending_intro_by_approval_request(marker)
+                if winner and winner.get('message_id'):
+                    self._pending_messages[int(winner['message_id'])] = int(winner['member_id'])
+        except Exception as e:
+            logger.exception(f"GatingCog: failed Discord approval embed reconciliation: {e}")
+
+    # Single-replica only. brain-of-bndc must run as a single process.
+    # Multiple replicas would break _pending_messages, poll loop ordering, and
+    # Discord event delivery semantics. To scale: implement AutoShardedBot and
+    # migrate _pending_messages to a shared cache.
+    # That deployment constraint is why MP2 does not use a DB-side lease.
+    @tasks.loop(seconds=APPROVAL_POLL_INTERVAL_SECONDS)
+    async def poll_approval_requests(self):
+        """Post pending web approval requests into the introductions channel."""
+        if not self.db:
+            return
+        async with self._poll_lock:
+            target = self._get_primary_intro_target()
+            if not target:
+                return
+            guild, intro_channel, _cfg = target
+            rows = self.db.claim_pending_approval_requests(limit=APPROVAL_POLL_BATCH)
+
+            for row in rows or []:
+                try:
+                    ar_id = row.get('id')
+                    if not ar_id:
+                        continue
+
+                    # If a previous tick sent and inserted but failed to stamp,
+                    # re-stamp from pending_intros and skip channel.send so no
+                    # second visible embed appears in #introductions.
+                    existing = self.db.get_pending_intro_by_approval_request(ar_id)
+                    if existing and existing.get('message_id'):
+                        self._stamp_with_retry(ar_id, int(existing['message_id']))
+                        continue
+
+                    member_row = self.db.get_member_for_approval(int(row['member_id']))
+                    if not member_row:
+                        logger.warning(
+                            f"GatingCog: no members row for approval request {ar_id} "
+                            f"member {row.get('member_id')}"
+                        )
+                        continue
+
+                    art = row.get('media') or row.get('asset')
+                    embed = build_application_embed(member_row, row, art)
+
+                    try:
+                        msg = await intro_channel.send(embed=embed)
+                    except Exception as e:
+                        logger.error(
+                            f"GatingCog: failed to post approval request {ar_id}: {e}",
+                            exc_info=True,
+                        )
+                        continue
+
+                    try:
+                        intro = self.db.create_pending_intro(
+                            member_id=int(member_row['member_id']),
+                            message_id=msg.id,
+                            channel_id=intro_channel.id,
+                            guild_id=guild.id,
+                            approval_request_id=ar_id,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"GatingCog: failed to create pending intro for approval request {ar_id}: {e}",
+                            exc_info=True,
+                        )
+                        continue
+
+                    if intro is None:
+                        existing = self.db.get_pending_intro_by_approval_request(ar_id)
+                        if existing and existing.get('message_id'):
+                            self._stamp_with_retry(ar_id, int(existing['message_id']))
+                        try:
+                            await msg.delete()
+                        except Exception as e:
+                            logger.error(
+                                f"GatingCog: failed to delete duplicate approval embed {msg.id}: {e}",
+                                exc_info=True,
+                            )
+                        continue
+
+                    self._pending_messages[msg.id] = int(member_row['member_id'])
+                    if not self._stamp_with_retry(ar_id, msg.id):
+                        logger.warning(
+                            f"GatingCog: approval request {ar_id} posted as {msg.id} "
+                            "but posted_message_id could not be stamped"
+                        )
+                except Exception as e:
+                    logger.exception(
+                        f"GatingCog: failed while processing approval request row {row.get('id')}: {e}"
+                    )
+
+            # ── Refresh embeds for already-posted approval requests whose
+            # bio / attached media / attached asset was edited on the web.
+            # Mirrors the post-loop above but edits the existing message in
+            # place instead of sending a new one. Wrapped in its own try so a
+            # failure here can never break the post-loop tick.
+            try:
+                dirty_rows = self.db.claim_dirty_intro_edits(limit=APPROVAL_POLL_BATCH)
+                for row in dirty_rows:
+                    try:
+                        ar_id = row.get('id')
+                        if not ar_id:
+                            continue
+                        posted_message_id = row.get('posted_message_id')
+                        if not posted_message_id:
+                            # Defensive: the SQL filter excludes nulls, but
+                            # bail rather than fetch_message(None).
+                            continue
+
+                        member_row = self.db.get_member_for_approval(int(row['member_id']))
+                        if not member_row:
+                            logger.warning(
+                                f"GatingCog: no members row for dirty approval request {ar_id} "
+                                f"member {row.get('member_id')}"
+                            )
+                            continue
+
+                        art = row.get('media') or row.get('asset')
+                        embed = build_application_embed(member_row, row, art)
+
+                        try:
+                            msg = await intro_channel.fetch_message(int(posted_message_id))
+                            await msg.edit(embed=embed)
+                        except discord.NotFound:
+                            # Original message deleted by a mod — let the
+                            # post-loop recreate it next tick.
+                            self.db.clear_posted_message_id(ar_id)
+                            self.db.stamp_embed_retry_attempt(ar_id)
+                            logger.info(
+                                f"GatingCog: posted message for approval {ar_id} was deleted; "
+                                "cleared posted_message_id for re-post"
+                            )
+                            continue
+                        except discord.Forbidden as e:
+                            self.db.stamp_embed_retry_attempt(ar_id)
+                            logger.warning(
+                                f"GatingCog: edit forbidden for approval {ar_id}: {e}"
+                            )
+                            continue
+                        except discord.HTTPException as e:
+                            # Includes rate-limit (429). Leave embed_dirty=true;
+                            # we'll retry next tick.
+                            self.db.stamp_embed_retry_attempt(ar_id)
+                            logger.warning(
+                                f"GatingCog: edit failed for approval {ar_id} (HTTP): {e}"
+                            )
+                            continue
+
+                        self.db.mark_embed_updated(ar_id)
+                        logger.info(
+                            f"GatingCog: refreshed approval embed {posted_message_id} "
+                            f"for approval_request {ar_id}"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"GatingCog: unexpected error refreshing embed for "
+                            f"approval_request {row.get('id')}: {e}",
+                            exc_info=True,
+                        )
+                        continue
+            except Exception as e:
+                logger.error(
+                    f"GatingCog: dirty-edit refresh block failed: {e}",
+                    exc_info=True,
+                )
+
+    @poll_approval_requests.before_loop
+    async def before_poll_approval_requests(self):
+        await self.bot.wait_until_ready()
 
     @tasks.loop(count=1)
     async def scan_intro_channels(self):

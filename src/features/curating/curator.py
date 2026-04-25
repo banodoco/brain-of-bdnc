@@ -293,6 +293,9 @@ class ArtCurator(BaseDiscordBot):
                     self, user, self.rate_limiter, self.logger, 
                     content="Please complete your current rejection process before starting a new one. Reply to the above message with your reason for rejection or reply 'forget' to stop that rejection."
                 )
+                reactor_cog = self.get_cog('ReactorCog')
+                if reactor_cog:
+                    reactor_cog.register_bot_removal(message.id, user.id, '❌', 'bot_curator_reject', reason='curator_reject')
                 await message.remove_reaction('❌', user)
                 self.logger.info(f"Curator {user.name} attempted multiple rejections - blocked.")
                 return
@@ -336,6 +339,9 @@ class ArtCurator(BaseDiscordBot):
                 # Check if curator wants to cancel
                 if reason.lower().strip() == 'forget':
                     await discord_utils.safe_send_message(self, user, self.rate_limiter, self.logger, content="Rejection cancelled.")
+                    reactor_cog = self.get_cog('ReactorCog')
+                    if reactor_cog:
+                        reactor_cog.register_bot_removal(message.id, user.id, '❌', 'bot_curator_reject', reason='curator_reject')
                     await message.remove_reaction('❌', user)
                     self.logger.warning(f"Curator {user.name} cancelled the rejection.")
                     return
@@ -457,6 +463,9 @@ class ArtCurator(BaseDiscordBot):
                         self.logger.warning(f"Couldn't DM original poster {author}.")
                 else:
                     try:
+                        reactor_cog = self.get_cog('ReactorCog')
+                        if reactor_cog:
+                            reactor_cog.register_bot_removal(message.id, user.id, '❌', 'bot_curator_reject', reason='curator_reject')
                         await message.remove_reaction('❌', user)
                     except Exception as e:
                         self.logger.warning(f"Failed to remove reaction for empty reason: {e}")
@@ -469,6 +478,9 @@ class ArtCurator(BaseDiscordBot):
                     content="No reason provided within 5 minutes. Post will not be deleted."
                 )
                 try:
+                    reactor_cog = self.get_cog('ReactorCog')
+                    if reactor_cog:
+                        reactor_cog.register_bot_removal(message.id, user.id, '❌', 'bot_curator_reject', reason='curator_reject')
                     await message.remove_reaction('❌', user)
                 except Exception as e:
                     self.logger.warning(f"Failed to remove reaction on timeout for {user.name}: {e}")

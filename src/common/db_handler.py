@@ -696,6 +696,90 @@ class DatabaseHandler:
             logger.error(f"Error logging reaction event for message {message_id}: {e}")
             return False
 
+    def record_moderation_decision(
+        self,
+        *,
+        message_id: int,
+        channel_id: Optional[int],
+        guild_id: Optional[int],
+        reactor_user_id: Optional[int],
+        reactor_name: Optional[str],
+        emoji: str,
+        message_author_id: Optional[int],
+        message_author_name: Optional[str],
+        message_content_snippet: Optional[str],
+        classification: str,
+        reason: Optional[str] = None,
+        is_suspicious: bool = False,
+    ) -> bool:
+        """Insert a moderation decision row for a reaction removal."""
+        if not self._gate_check(guild_id):
+            return False
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            data = {
+                'message_id': message_id,
+                'channel_id': channel_id,
+                'guild_id': guild_id,
+                'reactor_user_id': reactor_user_id,
+                'reactor_name': reactor_name,
+                'emoji': emoji,
+                'message_author_id': message_author_id,
+                'message_author_name': message_author_name,
+                'message_content_snippet': message_content_snippet,
+                'classification': classification,
+                'reason': reason,
+                'is_suspicious': is_suspicious,
+            }
+            self.storage_handler.supabase_client.table('moderation_decisions').insert(data).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Error recording moderation decision for message {message_id}: {e}")
+            return False
+
+    def get_active_reactors(self, message_id: int, emoji: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return active reaction rows for a message."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for get_active_reactors")
+            return []
+
+        try:
+            query = (
+                self.storage_handler.supabase_client.table('discord_reactions')
+                .select('user_id, emoji, guild_id')
+                .eq('message_id', message_id)
+                .is_('removed_at', 'null')
+            )
+            if emoji is not None:
+                query = query.eq('emoji', emoji)
+            result = query.execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error fetching active reactors for message {message_id}: {e}")
+            return []
+
+    def get_message_snapshot(self, message_id: int) -> Optional[Dict[str, Any]]:
+        """Return a message snapshot for moderation-decision logging."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            logger.error("Supabase client not initialized for get_message_snapshot")
+            return None
+
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('discord_messages')
+                .select('author_id, author_name, content, channel_id, guild_id')
+                .eq('message_id', message_id)
+                .limit(1)
+                .execute()
+            )
+            if not result.data:
+                return None
+            return result.data[0]
+        except Exception as e:
+            logger.error(f"Error fetching message snapshot for message {message_id}: {e}")
+            return None
+
     def upsert_reactions_batch(self, message_id: int, rows: list,
                               guild_id: Optional[int] = None) -> bool:
         """Sync granular reactions for a message.
@@ -3161,12 +3245,13 @@ class DatabaseHandler:
     # ========== Pending Intros (Gated Entry) ==========
 
     def create_pending_intro(self, member_id: int, message_id: int, channel_id: int,
-                            guild_id: Optional[int] = None) -> bool:
+                            guild_id: Optional[int] = None,
+                            approval_request_id: Optional[str] = None) -> Optional[Dict]:
         """Insert a new pending intro record."""
         if not self._gate_check(guild_id):
-            return False
+            return None
         if not self.storage_handler or not self.storage_handler.supabase_client:
-            return False
+            return None
         try:
             data = {
                 'member_id': member_id,
@@ -3175,11 +3260,283 @@ class DatabaseHandler:
             }
             if guild_id is not None:
                 data['guild_id'] = guild_id
-            self.storage_handler.supabase_client.table('pending_intros').insert(data).execute()
-            return True
+            if approval_request_id is not None:
+                data['approval_request_id'] = approval_request_id
+            result = self.storage_handler.supabase_client.table('pending_intros').insert(data).execute()
+            return result.data[0] if result.data else data
         except Exception as e:
+            if self._is_unique_violation(e):
+                logger.info(f"Pending intro already exists for approval request {approval_request_id}")
+                return None
             logger.error(f"Error creating pending intro for member {member_id}: {e}", exc_info=True)
+            raise
+
+    @staticmethod
+    def _is_unique_violation(exc: Exception) -> bool:
+        """Return True for Postgres unique-violation errors surfaced by supabase-py."""
+        return (
+            getattr(exc, 'code', None) == '23505'
+            or getattr(exc, 'sqlstate', None) == '23505'
+            or '23505' in str(exc)
+            or 'duplicate key' in str(exc).lower()
+        )
+
+    @staticmethod
+    def _media_preview_url(media: Optional[Dict]) -> Optional[str]:
+        if not media:
+            return None
+        return (
+            media.get('backup_thumbnail_url')
+            or media.get('cloudflare_thumbnail_url')
+            or media.get('url')
+        )
+
+    def _get_media_for_embed(self, media_id: Optional[str]) -> Optional[Dict]:
+        if not media_id or not self.storage_handler or not self.storage_handler.supabase_client:
+            return None
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('media')
+                .select('id,title,url,type,cloudflare_thumbnail_url,backup_thumbnail_url,cloudflare_playback_hls_url,thumbnail_placeholder,admin_status')
+                .eq('id', media_id)
+                .limit(1)
+                .execute()
+            )
+            if not result.data:
+                return None
+            media = result.data[0]
+            media['preview_url'] = self._media_preview_url(media)
+            media['profile_url'] = f"https://banodoco.com/art/{media['id']}"
+            return media
+        except Exception as e:
+            logger.error(f"Error hydrating media {media_id} for approval request: {e}", exc_info=True)
+            return None
+
+    def _get_asset_for_embed(self, asset_id: Optional[str]) -> Optional[Dict]:
+        if not asset_id or not self.storage_handler or not self.storage_handler.supabase_client:
+            return None
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('assets')
+                .select('id,type,name,description,primary_media_id,download_link,slug,status,admin_status')
+                .eq('id', asset_id)
+                .limit(1)
+                .execute()
+            )
+            if not result.data:
+                return None
+            asset = result.data[0]
+            primary_media = self._get_media_for_embed(asset.get('primary_media_id'))
+            if primary_media:
+                asset['primary_media'] = primary_media
+                asset['preview_url'] = self._media_preview_url(primary_media)
+            if asset.get('slug'):
+                asset['profile_url'] = f"https://banodoco.com/resources/{asset['slug']}"
+            elif asset.get('id'):
+                asset['profile_url'] = f"https://banodoco.com/resources/{asset['id']}"
+            return asset
+        except Exception as e:
+            logger.error(f"Error hydrating asset {asset_id} for approval request: {e}", exc_info=True)
+            return None
+
+    def claim_pending_approval_requests(self, limit: int = 25) -> List[Dict]:
+        """Return pending approval requests that still need intro posts."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            result = (
+                self.storage_handler.supabase_client
+                .rpc('claim_pending_approval_requests', {'p_limit': limit})
+                .execute()
+            )
+            rows = result.data or []
+            for row in rows:
+                row['media'] = self._get_media_for_embed(row.get('attached_media_id'))
+                row['asset'] = self._get_asset_for_embed(row.get('attached_resource_id'))
+            return rows
+        except Exception as e:
+            logger.error(f"Error claiming pending approval requests: {e}", exc_info=True)
+            return []
+
+    def mark_approval_request_posted(self, approval_request_id: str, message_id: int) -> bool:
+        """Stamp the Discord intro message id on an approval request."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
             return False
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('approval_requests')
+                .update({'posted_message_id': message_id})
+                .eq('id', approval_request_id)
+                .execute()
+            )
+            return bool(result.data)
+        except Exception as e:
+            logger.error(f"Error marking approval request {approval_request_id} posted: {e}", exc_info=True)
+            return False
+
+    def get_member_for_approval(self, member_id: int) -> Optional[Dict]:
+        """Fetch a members row for an approval request."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return None
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('members')
+                .select('*')
+                .eq('member_id', member_id)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error fetching member {member_id} for approval request: {e}", exc_info=True)
+            return None
+
+    def get_approval_request(self, approval_request_id: str) -> Optional[Dict]:
+        """Fetch one approval request by id."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return None
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('approval_requests')
+                .select('*')
+                .eq('id', approval_request_id)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error fetching approval request {approval_request_id}: {e}", exc_info=True)
+            return None
+
+    def get_pending_intro_by_approval_request(self, approval_request_id: str) -> Optional[Dict]:
+        """Fetch the pending intro bridged to an approval request."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return None
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('pending_intros')
+                .select('*')
+                .eq('approval_request_id', approval_request_id)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error fetching pending intro for approval request {approval_request_id}: {e}", exc_info=True)
+            return None
+
+    def claim_dirty_intro_edits(self, limit: int = 25) -> List[Dict]:
+        """Return up to `limit` approval_requests rows whose Discord embed needs re-rendering.
+
+        A row qualifies when ALL of:
+          - status = 'pending'
+          - embed_dirty = true
+          - posted_message_id IS NOT NULL
+          - embed_updated_at IS NULL OR embed_updated_at < now() - interval '30 seconds'
+
+        Ordered by embed_updated_at NULLS FIRST, then created_at, so the oldest stale
+        rows are refreshed first.
+        """
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            threshold = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+            result = (
+                self.storage_handler.supabase_client
+                .from_('approval_requests')
+                .select(
+                    'id,member_id,attached_media_id,attached_resource_id,'
+                    'posted_message_id,bio_snapshot,status,embed_dirty,'
+                    'embed_updated_at,created_at'
+                )
+                .eq('status', 'pending')
+                .eq('embed_dirty', True)
+                .not_.is_('posted_message_id', 'null')
+                .or_(f'embed_updated_at.is.null,embed_updated_at.lt.{threshold}')
+                .order('embed_updated_at', desc=False, nullsfirst=True)
+                .order('created_at', desc=False)
+                .limit(limit)
+                .execute()
+            )
+            rows = result.data or []
+            for row in rows:
+                row['media'] = self._get_media_for_embed(row.get('attached_media_id'))
+                row['asset'] = self._get_asset_for_embed(row.get('attached_resource_id'))
+            return rows
+        except Exception as e:
+            logger.error(f"Error claiming dirty intro edits: {e}", exc_info=True)
+            return []
+
+    def mark_embed_updated(self, approval_request_id: str) -> bool:
+        """Clear embed_dirty and stamp embed_updated_at=now() after a successful re-render."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            result = (
+                self.storage_handler.supabase_client.table('approval_requests')
+                .update({'embed_dirty': False, 'embed_updated_at': now_iso})
+                .eq('id', approval_request_id)
+                .execute()
+            )
+            return bool(result.data)
+        except Exception as e:
+            logger.error(f"Error marking embed updated for approval request {approval_request_id}: {e}", exc_info=True)
+            return False
+
+    def stamp_embed_retry_attempt(self, approval_request_id: str) -> bool:
+        """Stamp embed_updated_at=now() without clearing embed_dirty after an edit failure."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            result = (
+                self.storage_handler.supabase_client.table('approval_requests')
+                .update({'embed_updated_at': now_iso})
+                .eq('id', approval_request_id)
+                .execute()
+            )
+            return bool(result.data)
+        except Exception as e:
+            logger.error(f"Error stamping embed retry for approval request {approval_request_id}: {e}", exc_info=True)
+            return False
+
+    def clear_posted_message_id(self, approval_request_id: str) -> bool:
+        """Clear posted_message_id so the post-loop re-creates the embed.
+
+        Used when the original Discord message was deleted (e.g. by a mod) and we
+        want the next poll tick to send a fresh message.
+        """
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return False
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('approval_requests')
+                .update({'posted_message_id': None})
+                .eq('id', approval_request_id)
+                .execute()
+            )
+            return bool(result.data)
+        except Exception as e:
+            logger.error(f"Error clearing posted_message_id for approval request {approval_request_id}: {e}", exc_info=True)
+            return False
+
+    def list_unstamped_intros(self) -> List[Dict]:
+        """Return bridged pending intros whose approval request lacks posted_message_id."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            result = (
+                self.storage_handler.supabase_client.table('pending_intros')
+                .select('*, approval_requests!inner(id,posted_message_id)')
+                .not_.is_('approval_request_id', 'null')
+                .is_('approval_requests.posted_message_id', 'null')
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error listing unstamped approval intro rows: {e}", exc_info=True)
+            return []
 
     def update_pending_intro_message(self, intro_id: int, message_id: int, channel_id: int) -> bool:
         """Update the message_id on an existing pending intro (member reposted)."""
