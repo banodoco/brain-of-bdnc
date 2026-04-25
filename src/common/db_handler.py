@@ -3306,7 +3306,7 @@ class DatabaseHandler:
                 return None
             media = result.data[0]
             media['preview_url'] = self._media_preview_url(media)
-            media['profile_url'] = f"https://banodoco.com/art/{media['id']}"
+            media['profile_url'] = f"https://banodoco.ai/art/{media['id']}"
             return media
         except Exception as e:
             logger.error(f"Error hydrating media {media_id} for approval request: {e}", exc_info=True)
@@ -3331,9 +3331,9 @@ class DatabaseHandler:
                 asset['primary_media'] = primary_media
                 asset['preview_url'] = self._media_preview_url(primary_media)
             if asset.get('slug'):
-                asset['profile_url'] = f"https://banodoco.com/resources/{asset['slug']}"
+                asset['profile_url'] = f"https://banodoco.ai/resources/{asset['slug']}"
             elif asset.get('id'):
-                asset['profile_url'] = f"https://banodoco.com/resources/{asset['id']}"
+                asset['profile_url'] = f"https://banodoco.ai/resources/{asset['id']}"
             return asset
         except Exception as e:
             logger.error(f"Error hydrating asset {asset_id} for approval request: {e}", exc_info=True)

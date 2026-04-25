@@ -52,10 +52,14 @@ def build_application_embed(member_row: dict, approval_request: dict, art: Optio
     bio = _truncate(member_row.get('bio'), 500)
     art = art or {}
     resource_name = (art.get('name') or '').strip()
-    title = resource_name or f"{display_name} is applying to speak"
+    title = resource_name or f"{display_name} would like to become a speaker"
+    slug = (member_row.get('username') or '').strip()
+    profile_url = f"https://banodoco.ai/@{slug}" if slug else None
+    description = f"*{bio}*" if bio else "*No bio provided.*"
     embed = discord.Embed(
         title=title,
-        description=bio or "No bio provided.",
+        url=profile_url,
+        description=description,
         color=discord.Color.blue(),
     )
 
@@ -93,9 +97,8 @@ def build_application_embed(member_row: dict, approval_request: dict, art: Optio
     )
     embed.add_field(name="I made this", value=str(made_this_value), inline=False)
 
-    slug = (member_row.get('username') or '').strip()
-    if slug:
-        embed.add_field(name="Profile", value=f"https://banodoco.com/@{slug}", inline=False)
+    if profile_url:
+        embed.add_field(name="Profile", value=profile_url, inline=False)
 
     embed.set_footer(text=f"React to admit · {APP_MARKER_PREFIX}{approval_request['id']}")
     return embed

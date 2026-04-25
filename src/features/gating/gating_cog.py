@@ -371,15 +371,15 @@ class GatingCog(commands.Cog):
                         member_row = self.db.get_member_for_approval(intro['member_id'])
                         slug = (member_row or {}).get('username')
                         if slug:
-                            dm_body += f" Your art is also now live at https://banodoco.com/@{slug}"
+                            dm_body += f" Your art is also now live at https://banodoco.ai/@{slug}"
                         else:
-                            dm_body += " Your art is also now live on banodoco.com"
+                            dm_body += " Your art is also now live on banodoco.ai"
                     except Exception as e:
                         logger.error(
                             f"GatingCog: failed to load approval profile for DM copy: {e}",
                             exc_info=True,
                         )
-                        dm_body += " Your art is also now live on banodoco.com"
+                        dm_body += " Your art is also now live on banodoco.ai"
                 await member.send(dm_body)
             except discord.Forbidden:
                 logger.info(f"GatingCog: couldn't DM {member} (DMs disabled)")
@@ -608,6 +608,10 @@ class GatingCog(commands.Cog):
                             f"GatingCog: approval request {ar_id} posted as {msg.id} "
                             "but posted_message_id could not be stamped"
                         )
+                    # Fresh post already reflects the latest bio/art, so clear any
+                    # leftover embed_dirty flag (e.g. set when the previous message
+                    # was deleted-then-edited and we re-posted on this tick).
+                    self.db.mark_embed_updated(ar_id)
                 except Exception as e:
                     logger.exception(
                         f"GatingCog: failed while processing approval request row {row.get('id')}: {e}"
