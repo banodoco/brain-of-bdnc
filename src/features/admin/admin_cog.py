@@ -156,6 +156,76 @@ def _parse_duration(duration_str: str) -> Optional[timedelta]:
     return None
 
 
+# Moderation log channel for mute notices. Override with MODERATION_CHANNEL_ID env var.
+_DEFAULT_MODERATION_CHANNEL_ID = 1475121919484366962
+
+
+def _get_moderation_channel_id() -> Optional[int]:
+    raw = os.getenv('MODERATION_CHANNEL_ID')
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning(f"Invalid MODERATION_CHANNEL_ID env var: {raw!r}")
+    return _DEFAULT_MODERATION_CHANNEL_ID
+
+
+async def post_mute_to_moderation(
+    bot,
+    *,
+    target_user_id: int,
+    target_username: str,
+    actor_user_id: Optional[int],
+    actor_label: str,
+    duration: Optional[str],
+    mute_end_at_iso: Optional[str],
+    reason: str,
+) -> bool:
+    """Post a mute notice to the moderation channel. Returns True on success."""
+    channel_id = _get_moderation_channel_id()
+    if not channel_id:
+        return False
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except discord.NotFound:
+            logger.error(f"Moderation channel {channel_id} not found")
+            return False
+        except discord.Forbidden:
+            logger.error(f"Bot lacks access to moderation channel {channel_id}")
+            return False
+        except discord.HTTPException as e:
+            logger.error(f"Could not fetch moderation channel {channel_id}: {e}")
+            return False
+
+    actor_part = f"<@{actor_user_id}>" if actor_user_id else actor_label
+    if duration:
+        duration_part = f"for **{duration}**"
+        if mute_end_at_iso:
+            try:
+                ts = int(datetime.fromisoformat(mute_end_at_iso.replace('Z', '+00:00')).timestamp())
+                duration_part += f" — unmute <t:{ts}:R>"
+            except (ValueError, TypeError):
+                pass
+    else:
+        duration_part = "**permanently**"
+
+    content = (
+        f"🔇 **Speaker muted**\n"
+        f"User: <@{target_user_id}> ({target_username})\n"
+        f"By: {actor_part}\n"
+        f"Duration: {duration_part}\n"
+        f"Reason: {reason}"
+    )
+    try:
+        await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
+        return True
+    except discord.HTTPException as e:
+        logger.error(f"Failed to post mute notice to moderation channel: {e}", exc_info=True)
+        return False
+
+
 # --- Admin Cog Class ---
 class AdminCog(commands.Cog):
     _commands_synced = False  # Add flag to track if commands have been synced
@@ -447,14 +517,23 @@ class AdminCog(commands.Cog):
                         logger.error(f"Failed to auto-restore Speaker role for {after.id}: {e}", exc_info=True)
 
     @app_commands.command(name="mute", description="Remove Speaker role from a user (Admin only)")
-    @app_commands.describe(user="The user to mute", duration="Optional duration (e.g. 1h, 7d, 2w). Omit for permanent.")
-    async def mute_user(self, interaction: discord.Interaction, user: discord.Member, duration: Optional[str] = None):
+    @app_commands.describe(
+        user="The user to mute",
+        reason="Why this user is being muted — required, posted to moderation log.",
+        duration="Optional duration (e.g. 1h, 7d, 2w). Omit for permanent.",
+    )
+    async def mute_user(self, interaction: discord.Interaction, user: discord.Member, reason: str, duration: Optional[str] = None):
         """Remove the Speaker role from a user, preventing them from sending messages."""
         if not await self.bot.is_owner(interaction.user):
             await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
             return
         if not self._is_speaker_management_enabled(interaction.guild_id):
             await interaction.response.send_message("Speaker mute controls are not enabled in this server.", ephemeral=True)
+            return
+
+        reason = (reason or "").strip()
+        if not reason:
+            await interaction.response.send_message("A reason is required.", ephemeral=True)
             return
 
         role_id = self._get_speaker_role_id(interaction.guild_id)
@@ -487,19 +566,23 @@ class AdminCog(commands.Cog):
             if self.db_handler:
                 self.db_handler.set_is_speaker(user.id, False, guild_id=interaction.guild_id)
 
-            await user.remove_roles(role, reason=f"Muted by {interaction.user.name}" + (f" for {duration}" if duration else ""))
+            audit_reason = f"Muted by {interaction.user.name}: {reason}" + (f" (for {duration})" if duration else "")
+            await user.remove_roles(role, reason=audit_reason[:512])
 
             # Record timed mute in DB
+            mute_end_iso: Optional[str] = None
+            timed_saved = False
             if td and self.db_handler:
                 mute_end = datetime.now(timezone.utc) + td
-                saved = self.db_handler.create_timed_mute(
+                mute_end_iso = mute_end.isoformat()
+                timed_saved = self.db_handler.create_timed_mute(
                     member_id=user.id,
                     guild_id=interaction.guild_id,
-                    mute_end_at=mute_end.isoformat(),
-                    reason=f"Muted by {interaction.user.name}",
+                    mute_end_at=mute_end_iso,
+                    reason=reason,
                     muted_by_id=interaction.user.id,
                 )
-                if saved:
+                if timed_saved:
                     await interaction.response.send_message(
                         f"Muted {user.mention} for {duration} — Speaker role removed. Unmute <t:{int(mute_end.timestamp())}:R>.",
                         ephemeral=True,
@@ -512,7 +595,18 @@ class AdminCog(commands.Cog):
             else:
                 await interaction.response.send_message(f"Muted {user.mention} — Speaker role removed.", ephemeral=True)
 
-            logger.info(f"Admin {interaction.user.id} muted user {user.id} ({user.name})" + (f" for {duration}" if duration else " permanently"))
+            await post_mute_to_moderation(
+                self.bot,
+                target_user_id=user.id,
+                target_username=user.name,
+                actor_user_id=interaction.user.id,
+                actor_label=interaction.user.name,
+                duration=duration,
+                mute_end_at_iso=mute_end_iso,
+                reason=reason,
+            )
+
+            logger.info(f"Admin {interaction.user.id} muted user {user.id} ({user.name})" + (f" for {duration}" if duration else " permanently") + f" — reason: {reason}")
         except discord.Forbidden:
             await interaction.response.send_message("I don't have permission to remove that role.", ephemeral=True)
         except Exception as e:

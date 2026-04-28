@@ -848,11 +848,12 @@ TOOLS = [
     {
         "name": "mute_speaker",
         "description": (
-            "Remove the Speaker role from a member, preventing them from sending messages "
-            "in speaker-gated channels. Mirrors the /mute slash command. Pass an optional "
-            "duration like '1h', '7d', '2w' for an auto-unmute; omit it for a permanent "
-            "mute. The bot's enforcement loop will keep the role off — use the /unmute "
-            "slash command (or restore it manually) to reverse this."
+            "Remove the Speaker role from a member, or update the duration of an existing "
+            "mute. Mirrors the /mute slash command. Pass an optional `duration` like "
+            "'1h', '7d', '2w' for an auto-unmute; omit for a permanent mute. If the user "
+            "is already muted, this updates/replaces their timed-mute record (e.g. "
+            "convert a permanent mute to a 30-day mute, or extend a 7-day to 30-day). "
+            "`reason` is required and is posted to the moderation log channel."
         ),
         "input_schema": {
             "type": "object",
@@ -861,13 +862,34 @@ TOOLS = [
                     "type": "string",
                     "description": "Discord user ID of the member to mute"
                 },
+                "reason": {
+                    "type": "string",
+                    "description": "Required free-text reason recorded with the mute and posted to the moderation channel."
+                },
                 "duration": {
                     "type": "string",
                     "description": "Optional duration like '1h', '7d', '2w'. Omit for a permanent mute."
+                }
+            },
+            "required": ["user_id", "reason"]
+        }
+    },
+    {
+        "name": "unmute_speaker",
+        "description": (
+            "Restore the Speaker role to a member, reversing a /mute or mute_speaker call. "
+            "Mirrors the /unmute slash command. Clears any pending timed-mute record."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "Discord user ID of the member to unmute"
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Optional free-text reason recorded with the mute."
+                    "description": "Optional free-text reason recorded in the audit log."
                 }
             },
             "required": ["user_id"]
@@ -3600,8 +3622,13 @@ async def execute_mute_speaker(
     db_handler,
     params: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Remove the Speaker role from a user — DM/admin-chat counterpart to /mute."""
-    from src.features.admin.admin_cog import _parse_duration
+    """Remove the Speaker role from a user — DM/admin-chat counterpart to /mute.
+
+    If the user is already muted, this updates/replaces their timed-mute record so
+    the admin can extend, shorten, or convert a permanent mute to a timed one
+    without first calling unmute.
+    """
+    from src.features.admin.admin_cog import _parse_duration, post_mute_to_moderation
 
     user_id_raw = params.get('user_id')
     if not user_id_raw:
@@ -3610,6 +3637,10 @@ async def execute_mute_speaker(
         member_id = int(user_id_raw)
     except (TypeError, ValueError):
         return {"success": False, "error": f"Invalid user_id: {user_id_raw!r}"}
+
+    reason_text = (params.get('reason') or "").strip()
+    if not reason_text:
+        return {"success": False, "error": "reason is required (will be posted to the moderation channel)"}
 
     guild_id = _resolve_guild_id(params)
     if not guild_id:
@@ -3649,25 +3680,20 @@ async def execute_mute_speaker(
                 "error": f"Invalid duration {duration!r}. Use a number + h/d/w (e.g. '1h', '7d', '2w').",
             }
 
-    if role not in member.roles:
-        return {
-            "success": True,
-            "already_muted": True,
-            "user_id": str(member_id),
-            "username": member.name,
-            "message": f"<@{member_id}> is already muted.",
-        }
-
     admin_user_id = params.get('admin_user_id')
-    reason_text = params.get('reason') or "Muted via admin chat"
     actor_label = f"admin {admin_user_id}" if admin_user_id else "admin chat"
-    audit_reason = f"{reason_text} (by {actor_label})" + (f" for {duration}" if duration else "")
+    audit_reason = (
+        f"Muted by {actor_label}: {reason_text}" + (f" (for {duration})" if duration else "")
+    )
+
+    was_already_muted = role not in member.roles
 
     try:
         if db_handler:
             db_handler.set_is_speaker(member_id, False, guild_id=guild_id)
 
-        await member.remove_roles(role, reason=audit_reason[:512])
+        if not was_already_muted:
+            await member.remove_roles(role, reason=audit_reason[:512])
 
         mute_end_iso = None
         timed_saved = False
@@ -3681,11 +3707,42 @@ async def execute_mute_speaker(
                 reason=reason_text,
                 muted_by_id=int(admin_user_id) if admin_user_id else None,
             )
+        elif was_already_muted and not td and db_handler:
+            # Converting an existing timed mute back to permanent: clear the timer.
+            db_handler.delete_timed_mute(member_id, guild_id)
 
-        logger.info(
-            f"[AdminChat] mute_speaker: {member_id} ({member.name}) muted by {actor_label}"
-            + (f" for {duration}" if duration else " permanently")
+        await post_mute_to_moderation(
+            bot,
+            target_user_id=member_id,
+            target_username=member.name,
+            actor_user_id=int(admin_user_id) if admin_user_id else None,
+            actor_label=actor_label,
+            duration=duration,
+            mute_end_at_iso=mute_end_iso,
+            reason=reason_text,
         )
+
+        action_verb = "updated mute on" if was_already_muted else "muted"
+        logger.info(
+            f"[AdminChat] mute_speaker: {action_verb} {member_id} ({member.name}) by {actor_label}"
+            + (f" for {duration}" if duration else " permanently")
+            + f" — reason: {reason_text}"
+        )
+
+        if was_already_muted:
+            if duration and timed_saved:
+                msg = f"<@{member_id}> was already muted — updated to expire after {duration}."
+            elif duration and not timed_saved:
+                msg = f"<@{member_id}> was already muted — but the {duration} auto-unmute couldn't be scheduled."
+            else:
+                msg = f"<@{member_id}> was already muted — converted to permanent (cleared any timer)."
+        else:
+            if duration and timed_saved:
+                msg = f"Muted <@{member_id}> for {duration} — Speaker role removed."
+            elif duration and not timed_saved:
+                msg = f"Muted <@{member_id}> — Speaker role removed, but auto-unmute couldn't be scheduled."
+            else:
+                msg = f"Muted <@{member_id}> — Speaker role removed."
 
         return {
             "success": True,
@@ -3695,20 +3752,95 @@ async def execute_mute_speaker(
             "permanent": duration is None,
             "mute_end_at": mute_end_iso,
             "timed_mute_scheduled": timed_saved,
-            "message": (
-                f"Muted <@{member_id}> for {duration} — Speaker role removed."
-                if duration and timed_saved
-                else (
-                    f"Muted <@{member_id}> — Speaker role removed, but auto-unmute couldn't be scheduled."
-                    if duration and not timed_saved
-                    else f"Muted <@{member_id}> — Speaker role removed."
-                )
-            ),
+            "was_already_muted": was_already_muted,
+            "reason": reason_text,
+            "message": msg,
         }
     except discord.Forbidden:
         return {"success": False, "error": "I don't have permission to remove that role."}
     except Exception as e:
         logger.error(f"[AdminChat] Error in mute_speaker for {member_id}: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_unmute_speaker(
+    bot: discord.Client,
+    db_handler,
+    params: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Restore the Speaker role — DM/admin-chat counterpart to /unmute."""
+    user_id_raw = params.get('user_id')
+    if not user_id_raw:
+        return {"success": False, "error": "user_id is required"}
+    try:
+        member_id = int(user_id_raw)
+    except (TypeError, ValueError):
+        return {"success": False, "error": f"Invalid user_id: {user_id_raw!r}"}
+
+    guild_id = _resolve_guild_id(params)
+    if not guild_id:
+        return {"success": False, "error": "Could not resolve guild_id"}
+
+    if not _is_speaker_management_enabled(guild_id):
+        return {"success": False, "error": "Speaker mute controls are not enabled in this server."}
+
+    role_id = _resolve_speaker_role_id(guild_id)
+    if not role_id:
+        return {"success": False, "error": "SPEAKER_ROLE_ID is not configured."}
+
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return {"success": False, "error": f"Guild {guild_id} not in cache"}
+
+    role = guild.get_role(role_id)
+    if not role:
+        return {"success": False, "error": "Speaker role not found in this server."}
+
+    member = guild.get_member(member_id)
+    if not member:
+        try:
+            member = await guild.fetch_member(member_id)
+        except discord.NotFound:
+            return {"success": False, "error": f"Member {member_id} not in guild"}
+        except discord.HTTPException as e:
+            return {"success": False, "error": f"Failed to fetch member: {e}"}
+
+    admin_user_id = params.get('admin_user_id')
+    actor_label = f"admin {admin_user_id}" if admin_user_id else "admin chat"
+    reason_text = (params.get('reason') or "").strip() or "Unmuted via admin chat"
+
+    if role in member.roles:
+        # Make sure DB & timed-mute state are in sync even if Discord role is already correct.
+        if db_handler:
+            db_handler.set_is_speaker(member_id, True, guild_id=guild_id)
+            db_handler.delete_timed_mute(member_id, guild_id)
+        return {
+            "success": True,
+            "already_unmuted": True,
+            "user_id": str(member_id),
+            "username": member.name,
+            "message": f"<@{member_id}> already has the Speaker role.",
+        }
+
+    try:
+        if db_handler:
+            db_handler.set_is_speaker(member_id, True, guild_id=guild_id)
+        await member.add_roles(role, reason=f"Unmuted by {actor_label}: {reason_text}"[:512])
+        if db_handler:
+            db_handler.delete_timed_mute(member_id, guild_id)
+        logger.info(
+            f"[AdminChat] unmute_speaker: {member_id} ({member.name}) unmuted by {actor_label} — reason: {reason_text}"
+        )
+        return {
+            "success": True,
+            "user_id": str(member_id),
+            "username": member.name,
+            "message": f"Unmuted <@{member_id}> — Speaker role restored.",
+        }
+    except discord.Forbidden:
+        return {"success": False, "error": "I don't have permission to add that role."}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in unmute_speaker for {member_id}: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 
@@ -4309,6 +4441,8 @@ async def execute_tool(
         return await execute_update_member_socials(db_handler, trusted_tool_input)
     elif tool_name == "mute_speaker":
         return await execute_mute_speaker(bot, db_handler, trusted_tool_input)
+    elif tool_name == "unmute_speaker":
+        return await execute_unmute_speaker(bot, db_handler, trusted_tool_input)
     elif tool_name == "get_bot_status":
         return await execute_get_bot_status(bot)
     elif tool_name == "search_logs":
