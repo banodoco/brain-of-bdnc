@@ -297,13 +297,92 @@ class GatingCog(commands.Cog):
     #  3. Approver reacts → approve member
     # ═══════════════════════════════════════════════════════════════
 
+    async def _recover_untracked_intro(self, payload: discord.RawReactionActionEvent) -> int | None:
+        """Recover an intro that wasn't in `_pending_messages` (e.g. bot was offline
+        when it was posted). Returns the author's member_id if the message looks like
+        a legitimate pending intro, else None. Persists the recovery so future reactions
+        on the same message are tracked normally.
+        """
+        cfg = self._get_gating_config(payload.guild_id)
+        if not cfg:
+            return None
+        if payload.channel_id != cfg['intro_channel_id']:
+            return None
+
+        guild = self.bot.get_guild(payload.guild_id)
+        if not guild:
+            return None
+        channel = guild.get_channel(payload.channel_id)
+        if not channel:
+            return None
+
+        try:
+            message = await channel.fetch_message(payload.message_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+            logger.info(f"GatingCog: couldn't fetch message {payload.message_id} for recovery: {e}")
+            return None
+
+        if message.author.bot:
+            return None
+
+        # Skip replies to other people (conversations, not intros) — same rule as on_message.
+        if (message.reference and message.reference.resolved
+                and getattr(message.reference.resolved, 'author', None)
+                and message.reference.resolved.author.id != message.author.id):
+            return None
+
+        author_member = guild.get_member(message.author.id)
+        if not author_member:
+            try:
+                author_member = await guild.fetch_member(message.author.id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return None
+
+        speaker_role = guild.get_role(cfg['speaker_role_id'])
+        if speaker_role and speaker_role in author_member.roles:
+            return None
+
+        member_id = message.author.id
+
+        existing = self.db.get_pending_intro_by_member(member_id, guild_id=payload.guild_id)
+        if existing:
+            # Pending intro exists in DB but this specific message wasn't tracked in memory.
+            self._pending_messages[payload.message_id] = member_id
+            logger.info(
+                f"GatingCog: recovered untracked message {payload.message_id} "
+                f"for existing pending intro of {member_id}"
+            )
+            return member_id
+
+        try:
+            self.db.create_pending_intro(
+                member_id, payload.message_id, payload.channel_id, guild_id=payload.guild_id
+            )
+            self._pending_messages[payload.message_id] = member_id
+            logger.info(
+                f"GatingCog: recovered missed intro message {payload.message_id} from "
+                f"{message.author} ({member_id}) — created pending row on the fly"
+            )
+            return member_id
+        except Exception as e:
+            logger.error(
+                f"GatingCog: failed to create recovery pending intro for {member_id}: {e}",
+                exc_info=True,
+            )
+            return None
+
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         if not self.db:
             return
         member_id = self._pending_messages.get(payload.message_id)
         if member_id is None:
-            return
+            # Fallback: an approver may be reacting to an intro that was never tracked
+            # (e.g. posted while the bot was offline, or whose DB write failed). Try to
+            # recover from the message itself before silently bailing.
+            member_id = await self._recover_untracked_intro(payload)
+            if member_id is None:
+                return
 
         logger.info(f"GatingCog: reaction {payload.emoji} on pending intro {payload.message_id} by user {payload.user_id}")
 
