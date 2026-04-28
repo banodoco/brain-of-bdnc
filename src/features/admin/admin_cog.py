@@ -181,48 +181,74 @@ async def post_mute_to_moderation(
     mute_end_at_iso: Optional[str],
     reason: str,
 ) -> bool:
-    """Post a mute notice to the moderation channel. Returns True on success."""
-    channel_id = _get_moderation_channel_id()
-    if not channel_id:
-        return False
-    channel = bot.get_channel(channel_id)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(channel_id)
-        except discord.NotFound:
-            logger.error(f"Moderation channel {channel_id} not found")
-            return False
-        except discord.Forbidden:
-            logger.error(f"Bot lacks access to moderation channel {channel_id}")
-            return False
-        except discord.HTTPException as e:
-            logger.error(f"Could not fetch moderation channel {channel_id}: {e}")
-            return False
+    """Post a mute notice to the moderation channel. Returns True on success.
 
-    actor_part = f"<@{actor_user_id}>" if actor_user_id else actor_label
-    if duration:
-        duration_part = f"for **{duration}**"
-        if mute_end_at_iso:
-            try:
-                ts = int(datetime.fromisoformat(mute_end_at_iso.replace('Z', '+00:00')).timestamp())
-                duration_part += f" — unmute <t:{ts}:R>"
-            except (ValueError, TypeError):
-                pass
-    else:
-        duration_part = "**permanently**"
-
-    content = (
-        f"🔇 **Speaker muted**\n"
-        f"User: <@{target_user_id}> ({target_username})\n"
-        f"By: {actor_part}\n"
-        f"Duration: {duration_part}\n"
-        f"Reason: {reason}"
-    )
+    Never raises — failures are logged and reported via the bool return value so
+    the calling mute action is never short-circuited by a logging hiccup.
+    """
     try:
-        await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
-        return True
-    except discord.HTTPException as e:
-        logger.error(f"Failed to post mute notice to moderation channel: {e}", exc_info=True)
+        channel_id = _get_moderation_channel_id()
+        if not channel_id:
+            return False
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except discord.NotFound:
+                logger.error(f"Moderation channel {channel_id} not found")
+                return False
+            except discord.Forbidden:
+                logger.error(f"Bot lacks access to moderation channel {channel_id}")
+                return False
+            except discord.HTTPException as e:
+                logger.error(f"Could not fetch moderation channel {channel_id}: {e}")
+                return False
+
+        actor_part = f"<@{actor_user_id}>" if actor_user_id else actor_label
+        if duration:
+            duration_part = f"for **{duration}**"
+            if mute_end_at_iso:
+                try:
+                    ts = int(datetime.fromisoformat(mute_end_at_iso.replace('Z', '+00:00')).timestamp())
+                    duration_part += f" — unmute <t:{ts}:R>"
+                except (ValueError, TypeError):
+                    pass
+        else:
+            duration_part = "**permanently**"
+
+        content = (
+            f"🔇 **Speaker muted**\n"
+            f"User: <@{target_user_id}> ({target_username})\n"
+            f"By: {actor_part}\n"
+            f"Duration: {duration_part}\n"
+            f"Reason: {reason}"
+        )
+
+        # Forum channels can't accept plain messages — they require a thread.
+        if isinstance(channel, discord.ForumChannel):
+            thread_name = f"Mute: {target_username} — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+            # Forum thread names are capped at 100 chars by Discord.
+            thread_name = thread_name[:100]
+            try:
+                await channel.create_thread(
+                    name=thread_name,
+                    content=content,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return True
+            except discord.HTTPException as e:
+                logger.error(f"Failed to create forum thread in moderation channel: {e}", exc_info=True)
+                return False
+
+        # Regular text channel / thread / news channel — plain send works.
+        try:
+            await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
+            return True
+        except discord.HTTPException as e:
+            logger.error(f"Failed to post mute notice to moderation channel: {e}", exc_info=True)
+            return False
+    except Exception as e:
+        logger.error(f"Unexpected error posting mute notice to moderation channel: {e}", exc_info=True)
         return False
 
 

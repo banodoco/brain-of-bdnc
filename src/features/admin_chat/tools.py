@@ -3711,7 +3711,7 @@ async def execute_mute_speaker(
             # Converting an existing timed mute back to permanent: clear the timer.
             db_handler.delete_timed_mute(member_id, guild_id)
 
-        await post_mute_to_moderation(
+        mod_log_posted = await post_mute_to_moderation(
             bot,
             target_user_id=member_id,
             target_username=member.name,
@@ -3744,6 +3744,9 @@ async def execute_mute_speaker(
             else:
                 msg = f"Muted <@{member_id}> — Speaker role removed."
 
+        if not mod_log_posted:
+            msg += " (Note: couldn't post to the moderation log channel — check bot permissions / channel type.)"
+
         return {
             "success": True,
             "user_id": str(member_id),
@@ -3754,6 +3757,7 @@ async def execute_mute_speaker(
             "timed_mute_scheduled": timed_saved,
             "was_already_muted": was_already_muted,
             "reason": reason_text,
+            "moderation_log_posted": mod_log_posted,
             "message": msg,
         }
     except discord.Forbidden:
