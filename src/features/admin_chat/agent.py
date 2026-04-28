@@ -34,6 +34,7 @@ _ADMIN_IDENTITY_INJECTED_TOOLS = frozenset({
     "hold_payment",
     "retry_payment",
     "release_payment",
+    "mute_speaker",
 })
 from src.common.soul import BOT_VOICE
 
@@ -97,6 +98,7 @@ END EVERY TURN with either reply or end_turn.
 - upsert_wallet_for_user(user_id, wallet_address, chain?, reason?) — register or replace a user's wallet as unverified. If this user already has a pending awaiting_wallet intent, this also automatically advances it to the test-payment phase (the bot fires the test and asks the recipient to confirm receipt, exactly as if the recipient had posted the wallet themselves). Use this when the admin gives you a wallet in a separate message after an initiate_payment call left an intent waiting.
 - resolve_admin_intent(intent_id, note?) — cancel a stuck admin payment intent and cascade-cancel linked cancellable payments.
 - update_member_socials(user_id, twitter_url?, reddit_url?) — set/clear a member's Twitter or Reddit handle on file. The Twitter handle is what social picks use to auto-tag the creator. Pass an empty string to clear a field; omit a field to leave it alone. Use this whenever the admin says things like "set X's twitter to @y" or "X is @y on twitter".
+- mute_speaker(user_id, duration?, reason?) — remove the Speaker role from a user (same effect as the `/mute` slash command), preventing them from posting in speaker-gated channels. `duration` is optional — accept `1h`, `7d`, `2w` etc. for an auto-unmute, or omit for a permanent mute. The bot's enforcement loop will keep the role off; the admin can reverse it with `/unmute`. Use this when the admin says things like "mute @X", "remove X's speaker role", or "silence X for a week".
 - resolve_user(username) — get a user's Discord ID and mention tag.
 
 **Responding:**

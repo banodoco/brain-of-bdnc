@@ -846,6 +846,34 @@ TOOLS = [
         }
     },
     {
+        "name": "mute_speaker",
+        "description": (
+            "Remove the Speaker role from a member, preventing them from sending messages "
+            "in speaker-gated channels. Mirrors the /mute slash command. Pass an optional "
+            "duration like '1h', '7d', '2w' for an auto-unmute; omit it for a permanent "
+            "mute. The bot's enforcement loop will keep the role off — use the /unmute "
+            "slash command (or restore it manually) to reverse this."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "Discord user ID of the member to mute"
+                },
+                "duration": {
+                    "type": "string",
+                    "description": "Optional duration like '1h', '7d', '2w'. Omit for a permanent mute."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional free-text reason recorded with the mute."
+                }
+            },
+            "required": ["user_id"]
+        }
+    },
+    {
         "name": "get_bot_status",
         "description": "Get the bot's current status including uptime and connections.",
         "input_schema": {
@@ -3546,6 +3574,144 @@ async def execute_update_member_socials(db_handler, params: Dict[str, Any]) -> D
         return {"success": False, "error": str(e)}
 
 
+def _resolve_speaker_role_id(guild_id: int) -> Optional[int]:
+    """Mirror AdminCog._get_speaker_role_id: server_config field, then env fallback."""
+    sc = _get_server_config()
+    value = sc.get_server_field(guild_id, 'speaker_role_id', cast=int)
+    if value is not None:
+        return value
+    env_value = os.getenv('SPEAKER_ROLE_ID')
+    return int(env_value) if env_value else None
+
+
+def _is_speaker_management_enabled(guild_id: int) -> bool:
+    """Mirror AdminCog._is_speaker_management_enabled."""
+    sc = _get_server_config()
+    server = sc.get_server(guild_id)
+    if server and server.get('speaker_management_enabled') is not None:
+        return bool(server.get('speaker_management_enabled'))
+    if guild_id == sc.bndc_guild_id:
+        return True
+    return False
+
+
+async def execute_mute_speaker(
+    bot: discord.Client,
+    db_handler,
+    params: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Remove the Speaker role from a user — DM/admin-chat counterpart to /mute."""
+    from src.features.admin.admin_cog import _parse_duration
+
+    user_id_raw = params.get('user_id')
+    if not user_id_raw:
+        return {"success": False, "error": "user_id is required"}
+    try:
+        member_id = int(user_id_raw)
+    except (TypeError, ValueError):
+        return {"success": False, "error": f"Invalid user_id: {user_id_raw!r}"}
+
+    guild_id = _resolve_guild_id(params)
+    if not guild_id:
+        return {"success": False, "error": "Could not resolve guild_id"}
+
+    if not _is_speaker_management_enabled(guild_id):
+        return {"success": False, "error": "Speaker mute controls are not enabled in this server."}
+
+    role_id = _resolve_speaker_role_id(guild_id)
+    if not role_id:
+        return {"success": False, "error": "SPEAKER_ROLE_ID is not configured."}
+
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return {"success": False, "error": f"Guild {guild_id} not in cache"}
+
+    role = guild.get_role(role_id)
+    if not role:
+        return {"success": False, "error": "Speaker role not found in this server."}
+
+    member = guild.get_member(member_id)
+    if not member:
+        try:
+            member = await guild.fetch_member(member_id)
+        except discord.NotFound:
+            return {"success": False, "error": f"Member {member_id} not in guild"}
+        except discord.HTTPException as e:
+            return {"success": False, "error": f"Failed to fetch member: {e}"}
+
+    duration = params.get('duration')
+    td = None
+    if duration:
+        td = _parse_duration(duration)
+        if td is None:
+            return {
+                "success": False,
+                "error": f"Invalid duration {duration!r}. Use a number + h/d/w (e.g. '1h', '7d', '2w').",
+            }
+
+    if role not in member.roles:
+        return {
+            "success": True,
+            "already_muted": True,
+            "user_id": str(member_id),
+            "username": member.name,
+            "message": f"<@{member_id}> is already muted.",
+        }
+
+    admin_user_id = params.get('admin_user_id')
+    reason_text = params.get('reason') or "Muted via admin chat"
+    actor_label = f"admin {admin_user_id}" if admin_user_id else "admin chat"
+    audit_reason = f"{reason_text} (by {actor_label})" + (f" for {duration}" if duration else "")
+
+    try:
+        if db_handler:
+            db_handler.set_is_speaker(member_id, False, guild_id=guild_id)
+
+        await member.remove_roles(role, reason=audit_reason[:512])
+
+        mute_end_iso = None
+        timed_saved = False
+        if td and db_handler:
+            mute_end = datetime.now(timezone.utc) + td
+            mute_end_iso = mute_end.isoformat()
+            timed_saved = db_handler.create_timed_mute(
+                member_id=member_id,
+                guild_id=guild_id,
+                mute_end_at=mute_end_iso,
+                reason=reason_text,
+                muted_by_id=int(admin_user_id) if admin_user_id else None,
+            )
+
+        logger.info(
+            f"[AdminChat] mute_speaker: {member_id} ({member.name}) muted by {actor_label}"
+            + (f" for {duration}" if duration else " permanently")
+        )
+
+        return {
+            "success": True,
+            "user_id": str(member_id),
+            "username": member.name,
+            "duration": duration,
+            "permanent": duration is None,
+            "mute_end_at": mute_end_iso,
+            "timed_mute_scheduled": timed_saved,
+            "message": (
+                f"Muted <@{member_id}> for {duration} — Speaker role removed."
+                if duration and timed_saved
+                else (
+                    f"Muted <@{member_id}> — Speaker role removed, but auto-unmute couldn't be scheduled."
+                    if duration and not timed_saved
+                    else f"Muted <@{member_id}> — Speaker role removed."
+                )
+            ),
+        }
+    except discord.Forbidden:
+        return {"success": False, "error": "I don't have permission to remove that role."}
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in mute_speaker for {member_id}: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 async def execute_get_bot_status(bot: discord.Client) -> Dict[str, Any]:
     """Get bot status information."""
     import time
@@ -4141,6 +4307,8 @@ async def execute_tool(
         return await execute_get_member_info(db_handler, trusted_tool_input)
     elif tool_name == "update_member_socials":
         return await execute_update_member_socials(db_handler, trusted_tool_input)
+    elif tool_name == "mute_speaker":
+        return await execute_mute_speaker(bot, db_handler, trusted_tool_input)
     elif tool_name == "get_bot_status":
         return await execute_get_bot_status(bot)
     elif tool_name == "search_logs":
