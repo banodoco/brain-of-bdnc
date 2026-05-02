@@ -1,0 +1,431 @@
+{
+  "name": "build-a-fail-closed-20260409-2327",
+  "idea": "Build a fail-closed generalized payment subsystem for ArcCompute-style payouts on Solana. Replace direct grant sends with a reusable payment ledger, provider abstraction, wallet registry, Discord confirmation flow, manual hold/retry controls, and restart-safe recovery. Critical requirements: no automatic double-payment after tx submission unless chain definitively reports failure; ambiguous chain state freezes to manual hold; private keys never enter DB/logs/admin-chat; atomic worker claiming; separate test-payment and final-payment attempts; grants becomes a producer into the payment system.",
+  "current_state": "finalized",
+  "iteration": 3,
+  "created_at": "2026-04-09T21:27:09Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc",
+    "auto_approve": true,
+    "robustness": "heavy",
+    "agent": ""
+  },
+  "sessions": {
+    "codex_prep": {
+      "id": "019d7424-7622-77f3-8808-8faf7160d5a7",
+      "mode": "persistent",
+      "created_at": "2026-04-09T21:31:25Z",
+      "last_used_at": "2026-04-09T21:31:25Z",
+      "refreshed": false
+    },
+    "claude_planner": {
+      "id": "07f19e5e-a5b4-430b-be32-f9d151baf466",
+      "mode": "persistent",
+      "created_at": "2026-04-09T21:35:22Z",
+      "last_used_at": "2026-04-09T22:03:20Z",
+      "refreshed": true
+    },
+    "codex_critic": {
+      "id": "019d742c-11ea-7160-a5a3-987f0418c9b0",
+      "mode": "persistent",
+      "created_at": "2026-04-09T21:40:38Z",
+      "last_used_at": "2026-04-09T22:06:36Z",
+      "refreshed": false
+    },
+    "codex_gatekeeper": {
+      "id": "019d7430-b6de-7783-a7f3-75da351f1fbf",
+      "mode": "persistent",
+      "created_at": "2026-04-09T21:41:05Z",
+      "last_used_at": "2026-04-09T22:07:04Z",
+      "refreshed": false
+    },
+    "codex_finalizer": {
+      "id": "019d7449-0819-71c1-9659-44eaf6428b11",
+      "mode": "persistent",
+      "created_at": "2026-04-09T22:09:27Z",
+      "last_used_at": "2026-04-09T22:09:27Z",
+      "refreshed": false
+    },
+    "codex_executor": {
+      "id": "019d7452-7f13-7000-80bb-49cdffb30c09",
+      "mode": "persistent",
+      "created_at": "2026-04-09T22:21:47Z",
+      "last_used_at": "2026-04-10T00:30:02Z",
+      "refreshed": true
+    }
+  },
+  "plan_versions": [
+    {
+      "version": 1,
+      "file": "plan_v1.md",
+      "hash": "sha256:9bed5b34d492af03515f5177ae15cc4b2a39faa2a402f30e654a562cf236b5b0",
+      "timestamp": "2026-04-09T21:35:22Z"
+    },
+    {
+      "version": 2,
+      "file": "plan_v2.md",
+      "hash": "sha256:a833ee969117cb99ee40a392d757c4f792a461b760ad17c1a44fa512914b7465",
+      "timestamp": "2026-04-09T21:51:21Z"
+    },
+    {
+      "version": 3,
+      "file": "plan_v3.md",
+      "hash": "sha256:f5d6886f8cd41425e304cb3ac3fb61e7cbf75753341011fcd9b708a3203d1ac4",
+      "timestamp": "2026-04-09T22:03:20Z"
+    }
+  ],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-04-09T21:27:09Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "prep",
+      "timestamp": "2026-04-09T21:31:25Z",
+      "duration_ms": 246121,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7424-7622-77f3-8808-8faf7160d5a7",
+      "agent": "codex",
+      "output_file": "prep.json",
+      "artifact_hash": "sha256:b2e272342bbd75add4bc96469433526ec6ef701937b3a59c347a81066e07f193"
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-09T21:35:22Z",
+      "duration_ms": 232665,
+      "cost_usd": 0.9536026000000001,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "1f60bb28-6e5c-4151-8d2b-b3ffbffdc055",
+      "agent": "claude",
+      "output_file": "plan_v1.md",
+      "artifact_hash": "sha256:9bed5b34d492af03515f5177ae15cc4b2a39faa2a402f30e654a562cf236b5b0"
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-09T21:40:38Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d742c-11ea-7160-a5a3-987f0418c9b0",
+      "agent": "codex",
+      "output_file": "critique_v1.json",
+      "artifact_hash": "sha256:001c0c8aaef09616aeb4d9c75a059750bbe95ca1ab07a377632610489a4cacb7",
+      "flags_count": 22
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-09T21:41:05Z",
+      "duration_ms": 22321,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7430-b6de-7783-a7f3-75da351f1fbf",
+      "agent": "codex",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:0b5aac3c1a493dfecf606aea1f8e42380d354c945a173c0cf764fffe4afb6435",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-09T21:46:09Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "revise_v2_raw.txt",
+      "message": "Codex revise step timed out after 300s before producing structured output. Try re-running later or using --agent claude."
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-09T21:51:21Z",
+      "duration_ms": 284317,
+      "cost_usd": 0.84377725,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "c12a5c35-0ff1-4e50-980f-c50ea41cd871",
+      "agent": "claude",
+      "output_file": "plan_v2.md",
+      "artifact_hash": "sha256:a833ee969117cb99ee40a392d757c4f792a461b760ad17c1a44fa512914b7465",
+      "flags_addressed": [
+        "FLAG-001",
+        "FLAG-002",
+        "FLAG-003",
+        "FLAG-004",
+        "FLAG-005",
+        "FLAG-006",
+        "issue_hints-1",
+        "issue_hints-2",
+        "correctness-1",
+        "correctness-2",
+        "scope-1",
+        "scope-2",
+        "all_locations-1",
+        "all_locations-2",
+        "all_locations-3",
+        "callers-1",
+        "callers-2",
+        "criteria_quality-1",
+        "criteria_quality-2"
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-09T21:55:59Z",
+      "duration_ms": 271829,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d742c-11ea-7160-a5a3-987f0418c9b0",
+      "agent": "codex",
+      "output_file": "critique_v2.json",
+      "artifact_hash": "sha256:004b441640d83b8664913f2eb6e9a1fc76f0198f9fc9e84a4385ddbdd780f9b8",
+      "flags_count": 19
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-09T21:56:30Z",
+      "duration_ms": 26483,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7430-b6de-7783-a7f3-75da351f1fbf",
+      "agent": "codex",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:ba85fe6e1bbac950244dcc0aed86d033c0a5a6bcb581d50caf34eae159753019",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-09T22:03:20Z",
+      "duration_ms": 402775,
+      "cost_usd": 1.1228018,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "07f19e5e-a5b4-430b-be32-f9d151baf466",
+      "agent": "claude",
+      "output_file": "plan_v3.md",
+      "artifact_hash": "sha256:f5d6886f8cd41425e304cb3ac3fb61e7cbf75753341011fcd9b708a3203d1ac4",
+      "flags_addressed": [
+        "FLAG-002",
+        "issue_hints-1",
+        "issue_hints-2",
+        "correctness-1",
+        "correctness-2",
+        "conventions",
+        "criteria_quality-1",
+        "criteria_quality-2",
+        "FLAG-007",
+        "FLAG-008",
+        "scope",
+        "all_locations",
+        "callers"
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-09T22:06:36Z",
+      "duration_ms": 187535,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d742c-11ea-7160-a5a3-987f0418c9b0",
+      "agent": "codex",
+      "output_file": "critique_v3.json",
+      "artifact_hash": "sha256:4deb3e15e2ac39c342528b33642397733ed60770b02cd41fb328cf5006ed3e38",
+      "flags_count": 4
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-09T22:07:04Z",
+      "duration_ms": 23431,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7430-b6de-7783-a7f3-75da351f1fbf",
+      "agent": "codex",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:fd07fdd3d867894030da4c81887bb403975f6c9859d6275fa886f3ef189e3fbc",
+      "recommendation": "PROCEED"
+    },
+    {
+      "step": "finalize",
+      "timestamp": "2026-04-09T22:09:27Z",
+      "duration_ms": 131148,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7449-0819-71c1-9659-44eaf6428b11",
+      "agent": "codex",
+      "output_file": "finalize.json",
+      "artifact_hash": "sha256:66d7e1a4b8291a297e522b490c06978b2afca8cff9a6f829248d8b7be781cf1f"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-09T22:21:47Z",
+      "duration_ms": 250429,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019d7452-7f13-7000-80bb-49cdffb30c09",
+      "agent": "codex",
+      "output_file": "execution_batch_1.json",
+      "artifact_hash": "sha256:ea78a30b0a34a917de445b6a69fc8a73f13e8ea22efba71b8c5c409c59c66e07",
+      "finalize_hash": "sha256:46b0aada61b6e5aea8ac5ced572277448e4c070d02cc760533559c9fdf202c21",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-09T22:35:28Z",
+      "duration_ms": 303953,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019d7452-7f13-7000-80bb-49cdffb30c09",
+      "agent": "codex",
+      "output_file": "execution_batch_2.json",
+      "artifact_hash": "sha256:77eaddd6c6b70b1e182b60b56387ff2d21ec342150a2cbaf7219c4a3aa0d0b43",
+      "finalize_hash": "sha256:45e43160467b2d44d9a5389f6736e4d0d2afcdca108c0c72808bc6139b5782ec",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-09T22:52:38Z",
+      "duration_ms": 193826,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019d7452-7f13-7000-80bb-49cdffb30c09",
+      "agent": "codex",
+      "output_file": "execution_batch_3.json",
+      "artifact_hash": "sha256:5ef03d57a29894f379f71042c9ca1b8f85dd9624a04992445f9ba9ac08a69acf",
+      "finalize_hash": "sha256:ab534b62fd77e787dc7778b428c6f1c6989119d995ec666d64f314a0f91560a6",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-09T23:05:49Z",
+      "duration_ms": 402327,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019d7452-7f13-7000-80bb-49cdffb30c09",
+      "agent": "codex",
+      "output_file": "execution_batch_4.json",
+      "artifact_hash": "sha256:8d30741e044fa6ae31eb951f11c053e52c2a84b4efe254f23e203e9f6d2049c0",
+      "finalize_hash": "sha256:32e7f2d785cc16f3bbd1261141bf48b156a384f4e068913516ef61ae805a09df",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-10T00:30:02Z",
+      "duration_ms": 229044,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019d7452-7f13-7000-80bb-49cdffb30c09",
+      "agent": "codex",
+      "output_file": "execution_batch_5.json",
+      "artifact_hash": "sha256:b6b5ffb0a4fa357106511928b43d31cec69b02203aa670664a6aa6b23d7731b9",
+      "finalize_hash": "sha256:c18673bed1929adf2d1db61f1992165fd928aaa3f9400f5df855cc9d7067596a",
+      "approval_mode": "auto_approve"
+    }
+  ],
+  "meta": {
+    "significant_counts": [
+      19,
+      13,
+      0
+    ],
+    "weighted_scores": [
+      28.5,
+      17.75,
+      0
+    ],
+    "plan_deltas": [
+      58.06,
+      22.59
+    ],
+    "recurring_critiques": [
+      [],
+      [],
+      [
+        "payments views: restart-safe confirmation behavior is still validated only by manual smoke testing, not by automated tests around `paymentconfirmview` or `bot.add_view(...)` re-registration."
+      ]
+    ],
+    "total_cost_usd": 2.920182,
+    "overrides": [
+      {
+        "action": "add-note",
+        "timestamp": "2026-04-09T21:35:34Z",
+        "note": "Locked decisions from user: test payment is a fixed tiny global amount; confirmation destination is route-configured and may be the source thread/forum post or a specific payments channel/forum; manual admin controls for retry/hold/release/cancel/status are required; do not auto-fallback from Codex to Claude on backend connection failures."
+      }
+    ],
+    "notes": [
+      {
+        "timestamp": "2026-04-09T21:35:34Z",
+        "note": "Locked decisions from user: test payment is a fixed tiny global amount; confirmation destination is route-configured and may be the source thread/forum post or a specific payments channel/forum; manual admin controls for retry/hold/release/cancel/status are required; do not auto-fallback from Codex to Claude on backend connection failures."
+      }
+    ]
+  },
+  "last_gate": {
+    "recommendation": "PROCEED",
+    "rationale": "The plan is ready to execute. The weighted score has reached 0, all previously significant blocking flags are resolved, the success criteria now cover the locked user requirements, and preflight remains fully green. The remaining concern is a non-blocking verification gap around automated testing of persistent-view re-registration; that should be handled during implementation and staging validation, not by another planning loop.",
+    "signals_assessment": "Score trajectory improved cleanly from 28.5 to 17.75 to 0 across three iterations, with no unresolved significant flags at the gate and no sign of loop churn beyond one recurring note about restart-safe view verification. Preflight posture is fully positive: project directory exists and is writable, success criteria are present, and both backends are available. This is the right point to move from planning into execution.",
+    "warnings": [
+      "Add implementation-time tests around `PaymentConfirmView` registration and `bot.add_view(...)` recovery if feasible; the current plan relies on manual smoke testing for that restart path.",
+      "Watch the known Supabase/RPC debt during rollout, since `claim_due_*` style RPC behavior is still a repo-wide risk area rather than a payment-specific design flaw."
+    ],
+    "settled_decisions": [
+      {
+        "id": "decision-test-payment-sol",
+        "decision": "Test payments use a fixed global SOL dust amount via `PAYMENT_TEST_AMOUNT_SOL`, not a USD-derived amount.",
+        "rationale": "This is user-locked and preserves constant on-chain validation behavior regardless of price."
+      },
+      {
+        "id": "decision-payment-routing",
+        "decision": "Payment destinations are resolved through `payment_channel_routes` plus `ServerConfig.resolve_payment_destinations()`, with fallback to the source thread only when no route exists.",
+        "rationale": "This satisfies the route-configured destination requirement while preserving a workable default path."
+      },
+      {
+        "id": "decision-fail-closed-hold",
+        "decision": "Ambiguous post-submit states and confirmation timeouts go to `manual_hold`, and `release_payment` is the only path out of that state.",
+        "rationale": "This is the core fail-closed invariant that prevents unsafe automatic retries after possible submission."
+      },
+      {
+        "id": "decision-retry-boundary",
+        "decision": "Direct retry is allowed only from `failed`; `submitted` and `manual_hold` cannot be retried directly.",
+        "rationale": "This keeps retry behavior aligned with definitive failure only."
+      },
+      {
+        "id": "decision-producer-handoff",
+        "decision": "Terminal payment results are handed back to producers through direct `bot.get_cog()` method calls, with `GrantsCog.handle_payment_result()` as the concrete grants integration.",
+        "rationale": "This chooses one repo-native cross-cog pattern and avoids mixed listener/callback/event designs."
+      },
+      {
+        "id": "decision-grants-linkage",
+        "decision": "Grants link to payments by `(producer='grants', producer_ref=thread_id, is_test)` rather than a single `payment_ref` column.",
+        "rationale": "This cleanly supports separate test and final payment attempts without collapsing them into one pointer."
+      }
+    ],
+    "passed": true,
+    "preflight_results": {
+      "project_dir_exists": true,
+      "project_dir_writable": true,
+      "success_criteria_present": true,
+      "claude_available": true,
+      "codex_available": true
+    },
+    "orchestrator_guidance": "Plan passed gate and preflight. Proceed to finalize. Recurring critiques (payments views: restart-safe confirmation behavior is still validated only by manual smoke testing, not by automated tests around `paymentconfirmview` or `bot.add_view(...)` re-registration.); the loop likely can't fix these, so judge if they are real blockers."
+  },
+  "active_step": null
+}

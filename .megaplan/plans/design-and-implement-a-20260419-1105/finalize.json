@@ -1,0 +1,309 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Create migration SQL file at `.migrations_staging/20260419110000_create_moderation_decisions.sql` defining `moderation_decisions` with columns: `id bigserial pk`, `message_id bigint not null`, `channel_id bigint`, `guild_id bigint not null`, `reactor_user_id bigint`, `reactor_name text`, `emoji text not null`, `message_author_id bigint`, `message_author_name text`, `message_content_snippet text`, `classification text not null check (classification in ('bot_auto_restricted','bot_curator_reject','user_self_removal','moderator_cleared_all','moderator_cleared_emoji','message_deleted_cascade'))`, `reason text`, `is_suspicious boolean not null default false`, `removed_at timestamptz not null default now()`. Indexes: `(guild_id, removed_at desc)`, `(message_id)`, `(reactor_user_id, removed_at desc)`. Update `.migrations_staging/README.md` with the new file entry and deploy destination `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/`.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Created `.migrations_staging/20260419110000_create_moderation_decisions.sql` with the required `moderation_decisions` schema, exact six-value classification CHECK constraint, and the three requested indexes. Updated `.migrations_staging/README.md` to include the new staged migration and the manual handoff destination `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/`.",
+      "files_changed": [
+        ".migrations_staging/20260419110000_create_moderation_decisions.sql",
+        ".migrations_staging/README.md"
+      ],
+      "commands_run": [
+        "rg --files .migrations_staging",
+        "sed -n '1,220p' .migrations_staging/README.md",
+        "sed -n '1,220p' .migrations_staging/20260419110000_create_moderation_decisions.sql",
+        "rg -n \"bot_auto_restricted|bot_curator_reject|user_self_removal|moderator_cleared_all|moderator_cleared_emoji|message_deleted_cascade|idx_moderation_decisions_guild_removed_at|idx_moderation_decisions_message_id|idx_moderation_decisions_reactor_removed_at\" .migrations_staging/20260419110000_create_moderation_decisions.sql"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T2",
+      "description": "In `src/common/db_handler.py`, add three helpers near `log_reaction_event` (~line 675): (a) `record_moderation_decision(*, message_id, channel_id, guild_id, reactor_user_id, reactor_name, emoji, message_author_id, message_author_name, message_content_snippet, classification, reason=None, is_suspicious=False) -> bool` gated by `_gate_check(guild_id)`, inserting into `moderation_decisions` using the same try/except pattern at lines 685\u2013697; (b) `get_active_reactors(message_id: int, emoji: Optional[str] = None) -> list[dict]` returning `[{'user_id','emoji','guild_id'}]` from `discord_reactions` where `removed_at IS NULL` (filter by emoji when provided); (c) `get_message_snapshot(message_id: int) -> Optional[dict]` returning `{'author_id','author_name','content','channel_id','guild_id'}` from `discord_messages`. Pure additions, no changes to existing helpers.",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "done",
+      "executor_notes": "Added `record_moderation_decision`, `get_active_reactors`, and `get_message_snapshot` near `log_reaction_event` in `src/common/db_handler.py`. Verified `record_moderation_decision` begins with `_gate_check(guild_id)`, uses the same fluent-client insert + try/except structure as `log_reaction_event`, `get_active_reactors` reads `user_id`/`emoji`/`guild_id` from `discord_reactions` with `removed_at IS NULL` and optional emoji filtering, and `get_message_snapshot` returns `author_id`/`author_name`/`content`/`channel_id`/`guild_id` from `discord_messages`.",
+      "files_changed": [
+        "src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "sed -n '675,780p' src/common/db_handler.py",
+        "rg -n \"def record_moderation_decision|def get_active_reactors|def get_message_snapshot|_gate_check\\(guild_id\\)|moderation_decisions\" src/common/db_handler.py",
+        "python -m py_compile src/common/db_handler.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T3",
+      "description": "In `src/features/reacting/reactor_cog.py`: (a) add `self._bot_initiated_removals = {}` in `__init__` (after line 31); (b) add `register_bot_removal(self, message_id, user_id, emoji_str, classification, reason=None)` and `_prune_bot_removals(self, ttl_seconds=60)` methods \u2014 register stores `(classification, reason, time.monotonic())` keyed by `(message_id, user_id, emoji_str)` and calls `_prune_bot_removals` on every register to bound memory; (c) refactor `_is_restricted_emoji` (lines 70\u201387) into `_classify_restricted_emoji(emoji_str) -> Optional[str]` returning `'flag' | 'political' | 'religious' | None`; update the single boolean caller at line 342 to `category = self._classify_restricted_emoji(emoji_str); if category is not None:`; (d) in the restricted-emoji branch (lines 340\u2013371), call `self.register_bot_removal(message.id, user.id, emoji_str, 'bot_auto_restricted', category)` BEFORE `await message.remove_reaction(...)`, then after successful removal call `self.bot.db_handler.record_moderation_decision(...)` with `classification='bot_auto_restricted'`, `reason=category`, `is_suspicious=False`, author/content from the live `message`, and `message_content_snippet=(message.content or '')[:200]`.",
+      "depends_on": [
+        "T2"
+      ],
+      "status": "done",
+      "executor_notes": "Updated `src/features/reacting/reactor_cog.py` to initialize `_bot_initiated_removals`, add `_prune_bot_removals` and `register_bot_removal`, refactor `_is_restricted_emoji` into `_classify_restricted_emoji`, and wire the restricted-emoji branch to register a bot-removal marker before `remove_reaction` and write exactly one `bot_auto_restricted` moderation decision after a successful removal. Verified the moderation row uses `reason=category` and truncates `message_content_snippet` to 200 chars; confirmed no `_is_restricted_emoji` references remain in `src/` and the module passes `py_compile`.",
+      "files_changed": [
+        "src/features/reacting/reactor_cog.py"
+      ],
+      "commands_run": [
+        "sed -n '1,220p' src/features/reacting/reactor_cog.py",
+        "sed -n '300,520p' src/features/reacting/reactor_cog.py",
+        "sed -n '368,392p' src/features/reacting/reactor_cog.py",
+        "rg -n \"_is_restricted_emoji|_classify_restricted_emoji|register_bot_removal|_prune_bot_removals|record_moderation_decision|bot_auto_restricted\" src/features/reacting/reactor_cog.py src",
+        "python -m py_compile src/features/reacting/reactor_cog.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T4",
+      "description": "In `src/features/reacting/reactor_cog.py` `on_raw_reaction_remove` (lines 410\u2013504), after `user/channel/message/emoji_str` are resolved, consult `self._bot_initiated_removals` with key `(message.id, user.id, emoji_str)`: if present, POP the entry and write exactly one `record_moderation_decision` using the marker's stored `classification` and `reason` (do not also write user_self_removal); if absent, write `classification='user_self_removal'`, `reason=None`, `is_suspicious = emoji_str in {'\ud83e\udd2e','\ud83d\udc4e','\ud83d\ude2d'}`. When `is_suspicious` is True, fire-and-forget DM `ADMIN_USER_ID` using the `src/common/base_bot.py:176-183` pattern (inline, \u226410 lines, no new config). DM body: reactor mention, emoji, `message.jump_url`, 200-char content snippet. Cascades and moderator clears must never be marked suspicious \u2014 suspicion logic lives only in this handler.",
+      "depends_on": [
+        "T3"
+      ],
+      "status": "done",
+      "executor_notes": "Updated `on_raw_reaction_remove` in `src/features/reacting/reactor_cog.py` to pop and consume `_bot_initiated_removals[(message.id, user.id, emoji_str)]` before any self-removal write, emitting exactly one moderation-decision row from the marker path and returning immediately so no duplicate `user_self_removal` row is written. Verified the no-marker path writes `classification='user_self_removal'`, sets `is_suspicious` only for `\ud83e\udd2e`/`\ud83d\udc4e`/`\ud83d\ude2d`, and triggers an admin DM via a fire-and-forget task whose try/except is separate from the DB write path; the DM body includes the reactor mention, emoji, `message.jump_url`, and the 200-character snippet.",
+      "files_changed": [
+        "src/features/reacting/reactor_cog.py"
+      ],
+      "commands_run": [
+        "sed -n '410,540p' src/features/reacting/reactor_cog.py",
+        "sed -n '455,545p' src/features/reacting/reactor_cog.py",
+        "sed -n '540,590p' src/features/reacting/reactor_cog.py",
+        "python -m py_compile src/features/reacting/reactor_cog.py src/features/curating/curator.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T5",
+      "description": "In `src/features/reacting/reactor_cog.py` add three new listeners: (a) `@commands.Cog.listener() async def on_raw_reaction_clear(self, payload)` \u2014 call `db_handler.get_active_reactors(payload.message_id)`, read snapshot via `db_handler.get_message_snapshot(payload.message_id)`, and write one `record_moderation_decision(classification='moderator_cleared_all', reason=None, is_suspicious=False, ...)` per active reactor (populating `reactor_user_id`, `emoji`, `message_author_*`, `message_content_snippet`, `channel_id`, `guild_id` from the snapshot and active-reactor rows); (b) `@commands.Cog.listener() async def on_raw_reaction_clear_emoji(self, payload)` \u2014 same pattern but pass `emoji=str(payload.emoji)` to `get_active_reactors` and use `classification='moderator_cleared_emoji'`; (c) `@commands.Cog.listener() async def on_raw_message_delete(self, payload)` \u2014 read the snapshot synchronously at the top of the handler (to avoid races with LoggerCog's soft-delete), enumerate `get_active_reactors(payload.message_id)`, and write one `classification='message_deleted_cascade'` row per reactor. Snapshot failures should be handled gracefully (leave fields null and proceed). No Discord fetch is required in these paths \u2014 use DB snapshots only.",
+      "depends_on": [
+        "T4"
+      ],
+      "status": "done",
+      "executor_notes": "Added `on_raw_reaction_clear`, `on_raw_reaction_clear_emoji`, and `on_raw_message_delete` listeners to `src/features/reacting/reactor_cog.py`. Verified each path enumerates `db_handler.get_active_reactors(...)`, writes one moderation-decision row per active reactor with the requested classification, and sets `is_suspicious=False`; `on_raw_message_delete` reads `get_message_snapshot(payload.message_id)` at the top of the handler before any await, then uses DB snapshots only with graceful null fallbacks when snapshot data is missing.",
+      "files_changed": [
+        "src/features/reacting/reactor_cog.py"
+      ],
+      "commands_run": [
+        "rg -n \"on_raw_message_delete|on_raw_reaction_clear|on_raw_reaction_clear_emoji|soft_delete_message|get_message_snapshot|get_active_reactors\" src/features/reacting/reactor_cog.py src/features/logging/logger_cog.py",
+        "sed -n '430,620p' src/features/reacting/reactor_cog.py",
+        "sed -n '132,165p' src/features/logging/logger_cog.py",
+        "sed -n '540,670p' src/features/reacting/reactor_cog.py",
+        "sed -n '666,705p' src/features/reacting/reactor_cog.py",
+        "python -m py_compile src/features/reacting/reactor_cog.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T6",
+      "description": "In `src/features/curating/curator.py`, immediately BEFORE each of the 4 `await message.remove_reaction('\u274c', user)` call sites (lines 296, 339, 460, 472), insert:\n```\nreactor_cog = self.bot.get_cog('ReactorCog')\nif reactor_cog:\n    reactor_cog.register_bot_removal(message.id, user.id, '\u274c', 'bot_curator_reject', reason='curator_reject')\n```\nUse the existing `self.bot` reference \u2014 no refactor beyond the 4 insertions. Do NOT write a moderation_decision row directly from curator; the marker is consumed by `on_raw_reaction_remove` (T4) which is the sole writer for this path. Verify line numbers post-edit (earlier insertions will shift later lines; locate each `message.remove_reaction('\u274c', user)` call fresh before each insertion).",
+      "depends_on": [
+        "T3"
+      ],
+      "status": "done",
+      "executor_notes": "Inserted the curator marker-registration block immediately before all four `await message.remove_reaction('\u274c', user)` sites in `src/features/curating/curator.py` and verified there are exactly four such registrations. No direct `record_moderation_decision` call was added to curator; the remove handler in `ReactorCog` remains the sole writer for the curator path. Minor implementation deviation: `ArtCurator` is itself a bot subclass and has no `self.bot`, so the insertion uses `self.get_cog('ReactorCog')` rather than `self.bot.get_cog(...)`.",
+      "files_changed": [
+        "src/features/curating/curator.py"
+      ],
+      "commands_run": [
+        "rg -n \"remove_reaction\\('\u274c'|remove_reaction\\(\\\"\u274c\\\"\" src/features/curating/curator.py",
+        "sed -n '270,500p' src/features/curating/curator.py",
+        "sed -n '288,345p' src/features/curating/curator.py",
+        "sed -n '455,480p' src/features/curating/curator.py",
+        "rg -n \"register_bot_removal\\(message\\.id, user\\.id, '\u274c', 'bot_curator_reject', reason='curator_reject'\\)|remove_reaction\\('\u274c', user\\)|record_moderation_decision\\(\" src/features/curating/curator.py src/features/reacting/reactor_cog.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T7",
+      "description": "Create `tests/test_moderation_decisions.py` using `conftest.load_module_from_repo` to load `reactor_cog` and `db_handler` with a mocked Supabase client. Monkeypatch `db_handler.record_moderation_decision`, `get_active_reactors`, `get_message_snapshot`, and `bot.fetch_user`. Cover: (1) restricted-emoji add with flag/political/religious \u2192 one `bot_auto_restricted` decision with correct reason; marker registered; subsequent `on_raw_reaction_remove` for same key is a no-op; (2) curator `\u274c` path (simulated): marker registered as `bot_curator_reject`/`reason='curator_reject'`; `on_raw_reaction_remove` writes exactly one decision with that classification/reason; no `user_self_removal` row emitted; (3) plain non-restricted self-removal \u2192 `user_self_removal`, `is_suspicious=False`, no admin DM; (4) suspicious self-removal (\ud83e\udd2e, \ud83d\udc4e, \ud83d\ude2d) \u2192 `user_self_removal`, `is_suspicious=True`, admin DM attempted via `fetch_user` + `create_dm` + `send` with message jump link, reactor mention, emoji, and 200-char snippet; (5) `on_raw_reaction_clear` with 3 active reactors \u2192 3 `moderator_cleared_all` rows; (6) `on_raw_reaction_clear_emoji` with 2 active reactors for the target emoji and 1 for another emoji \u2192 exactly 2 `moderator_cleared_emoji` rows for the target emoji; (7) `on_raw_message_delete` with 2 active reactors \u2192 2 `message_deleted_cascade` rows with author/content populated from `get_message_snapshot`; (8) `_classify_restricted_emoji`: flag codepoints \u2192 `'flag'`, \ud83c\udf49/\ud83d\udd3b \u2192 `'political'`, \u271d/\u262a/\ud83d\udd49 \u2192 `'religious'`, \ud83d\udc4d \u2192 `None`; (9) marker TTL: entries older than 60s are pruned on next `register_bot_removal` call.",
+      "depends_on": [
+        "T5",
+        "T6"
+      ],
+      "status": "done",
+      "executor_notes": "Created `tests/test_moderation_decisions.py` using `conftest.load_module_from_repo` to load both `reactor_cog.py` and `db_handler.py`, with a mocked Supabase-backed `DatabaseHandler` instance and monkeypatched `record_moderation_decision`, `get_active_reactors`, `get_message_snapshot`, and `bot.fetch_user` surfaces inside the test harness. The module covers the nine requested scenario groups: restricted flag/political/religious add path plus gateway no-op expectation, curator marker path, plain self-removal, suspicious self-removal admin DM, clear-all, clear-emoji filter, message-delete cascade, `_classify_restricted_emoji` branches, and TTL pruning via monkeypatched `time.monotonic`; syntax-checked with `python -m py_compile tests/test_moderation_decisions.py`.",
+      "files_changed": [
+        "tests/test_moderation_decisions.py"
+      ],
+      "commands_run": [
+        "rg -n \"load_module_from_repo|ReactorCog|on_raw_reaction_remove|on_raw_reaction_clear|curator_reject|register_bot_removal|_classify_restricted_emoji\" tests",
+        "sed -n '1,240p' tests/conftest.py",
+        "rg --files tests",
+        "rg -n \"pytest\\.mark\\.asyncio|async def test_|AsyncMock|SimpleNamespace|monkeypatch\" tests/test_*.py",
+        "sed -n '1,220p' tests/test_safe_delete_messages.py",
+        "sed -n '1,220p' tests/test_notification_delete.py",
+        "sed -n '232,340p' src/features/reacting/reactor_cog.py",
+        "python -m py_compile tests/test_moderation_decisions.py",
+        "sed -n '1,320p' tests/test_moderation_decisions.py",
+        "sed -n '320,420p' tests/test_moderation_decisions.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T8",
+      "description": "Run tests and verify changes. First run `pytest tests/test_moderation_decisions.py -q` to confirm the new module passes. Then run `pytest -q` to catch regressions in reactor/logger/curator tests. If any test fails, read the error, fix the code, and re-run until all pass \u2014 do NOT create additional test files beyond T7. Additionally, write a short throwaway script (e.g., `/tmp/smoke_moderation.py`) that instantiates a ReactorCog with mocked bot/db_handler and exercises the suspicious \ud83e\udd2e self-retract path end-to-end (register no marker, call `on_raw_reaction_remove`, assert exactly one `record_moderation_decision` call with `classification='user_self_removal'`/`is_suspicious=True` and one admin DM send). Run it, confirm the fix behavior, then delete the script. Document in the PR body that `.migrations_staging/20260419110000_create_moderation_decisions.sql` must be copied into `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` before deploy; until then, inserts error and are swallowed by the try/except.",
+      "depends_on": [
+        "T7"
+      ],
+      "status": "done",
+      "executor_notes": "Ran `pytest tests/test_moderation_decisions.py -q` and fixed the one implementation regression it exposed: `on_raw_reaction_remove` was double-writing `bot_auto_restricted` after the restricted-emoji branch had already written eagerly, so marker consumption for `bot_auto_restricted` is now suppression-only. Re-ran the targeted module to green (`20 passed`), then ran the full suite to green (`241 passed`). Wrote and ran the throwaway `/tmp/smoke_moderation.py` script to confirm the suspicious `\ud83e\udd2e` self-retract path emits exactly one `user_self_removal` decision with `is_suspicious=True` and one admin DM send (`smoke-ok`), then deleted the script. Updated `.megaplan/plans/design-and-implement-a-20260419-1105/final.md` with the manual migration handoff note for `.migrations_staging/20260419110000_create_moderation_decisions.sql` and the required manual Discord smoke checklist. Baseline `pytest -q --tb=no` could not be captured before edits because the code changes were already in progress when T8 began.",
+      "files_changed": [
+        "src/features/reacting/reactor_cog.py",
+        ".megaplan/plans/design-and-implement-a-20260419-1105/final.md"
+      ],
+      "commands_run": [
+        "pytest tests/test_moderation_decisions.py -q",
+        "python -m py_compile src/features/reacting/reactor_cog.py",
+        "pytest -q",
+        "python /tmp/smoke_moderation.py",
+        "test ! -e /tmp/smoke_moderation.py && echo deleted",
+        "sed -n '1,30p' .megaplan/plans/design-and-implement-a-20260419-1105/final.md"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    }
+  ],
+  "watch_items": [
+    "Migration is STAGED only \u2014 inserts will fail (and be swallowed) until the SQL file is manually copied to the workspace `supabase/migrations/` repo and deployed. Deploy-order is migration-first.",
+    "`_gate_check(guild_id)` silently skips writes for out-of-scope guilds \u2014 tests must pass an allowed `guild_id` or monkeypatch the gate, or assertions on `record_moderation_decision` calls will spuriously be zero.",
+    "The marker dict `_bot_initiated_removals` is in-memory only \u2014 bot restart between a bot-initiated remove and the gateway `on_raw_reaction_remove` event misclassifies the removal as `user_self_removal`. Accepted trade-off; TTL 60s bounds the window anyway.",
+    "Marker key is `(message_id, user_id, emoji_str)` \u2014 confirm `emoji_str` is normalized the same way at register time (curator + restricted branch) and at consume time (`on_raw_reaction_remove`). Mismatched unicode/custom-emoji strings would leak user_self_removal rows.",
+    "Curator line numbers (296, 339, 460, 472) shift after the first insertion. Locate each `message.remove_reaction('\u274c', user)` freshly before each edit.",
+    "`on_raw_message_delete` also has a LoggerCog listener that soft-deletes the row. ReactorCog's listener reads the snapshot synchronously at the top to avoid ordering races, but verify LoggerCog's soft-delete preserves `content`/`author_*` \u2014 if it ever nulls them, the snapshot read must run first.",
+    "Clear-event payloads (`RawReactionClearEvent`, `RawReactionClearEmojiEvent`) have no actor field. Classifying as `moderator_cleared_*` is safe ONLY because no bot code calls `clear_reactions()`/`clear_reaction()` \u2014 if a future bot path adds that, it must pre-register markers to avoid misattribution.",
+    "`get_active_reactors` relies on `discord_reactions.removed_at IS NULL` being accurate. If LoggerCog has not yet processed the add event when the clear/cascade fires, the enumeration will miss reactors. Accepted for v1.",
+    "Admin DM is fire-and-forget \u2014 must not block the event handler or raise unhandled exceptions. Wrap the DM send in its own try/except.",
+    "`is_suspicious` is ONLY set on `user_self_removal` of {\ud83e\udd2e, \ud83d\udc4e, \ud83d\ude2d}. Never on cascades, never on moderator clears, never on bot_auto_restricted/bot_curator_reject.",
+    "Open minor flag (verifiability-0): Success criterion 12 requires dev-Discord manual smoke (flag reaction, admin reject, \ud83e\udd2e self-retract, moderator clear-all, message delete) \u2014 not automatable; document in PR body.",
+    "No new config surfaces, env vars, or feature flags. ADMIN_USER_ID is reused as-is from base_bot.py.",
+    "Content snippet is `message.content[:200]` \u2014 no sanitization beyond truncation. Truncate at every call site that writes a row.",
+    "Debt watch: the task introduces no raw-SQL or RPC calls in `db_handler.py` \u2014 keep to the existing fluent-client pattern used by `add_reaction`/`remove_reaction`/`log_reaction_event` to avoid compounding the `db-handler-supabase-infrastructure` debt item."
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Does the staged migration file exist under `.migrations_staging/` with the timestamp prefix `20260419110000_`, and does the CHECK constraint enumerate EXACTLY the six values {bot_auto_restricted, bot_curator_reject, user_self_removal, moderator_cleared_all, moderator_cleared_emoji, message_deleted_cascade} with no extras and no omissions? Are the three indexes present? Is `.migrations_staging/README.md` updated?",
+      "executor_note": "Confirmed the staged SQL exists under `.migrations_staging/` with the `20260419110000_` prefix, the CHECK constraint enumerates exactly `bot_auto_restricted`, `bot_curator_reject`, `user_self_removal`, `moderator_cleared_all`, `moderator_cleared_emoji`, and `message_deleted_cascade`, all three indexes are present, and `.migrations_staging/README.md` was updated.",
+      "verdict": ""
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Do `record_moderation_decision`, `get_active_reactors`, and `get_message_snapshot` exist in `src/common/db_handler.py`? Does `record_moderation_decision` call `_gate_check(guild_id)` and use the same try/except pattern as `log_reaction_event` (lines 685\u2013697)? Do the read helpers return the documented dict shapes?",
+      "executor_note": "Confirmed `record_moderation_decision`, `get_active_reactors`, and `get_message_snapshot` now exist in `src/common/db_handler.py`. `record_moderation_decision` calls `_gate_check(guild_id)` as its first statement and follows the same try/except write pattern as `log_reaction_event`; the read helpers use the fluent Supabase client only and return the documented dict shapes.",
+      "verdict": ""
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Does `ReactorCog.__init__` initialize `self._bot_initiated_removals = {}`? Do `register_bot_removal` and `_prune_bot_removals` exist with the documented signatures? Does `register_bot_removal` invoke pruning on every call? Does `_classify_restricted_emoji` return `'flag' | 'political' | 'religious' | None` and is the old `_is_restricted_emoji` caller at line 342 updated? Does the restricted-emoji branch register a marker BEFORE `remove_reaction` and write ONE `bot_auto_restricted` decision after, with `reason=category` and content truncated to 200 chars?",
+      "executor_note": "Confirmed `ReactorCog.__init__` initializes `self._bot_initiated_removals = {}`, `register_bot_removal` and `_prune_bot_removals` exist and pruning runs on every registration, `_classify_restricted_emoji` returns `flag`/`political`/`religious`/`None`, the old `_is_restricted_emoji` reference is gone, and the restricted-emoji branch registers the marker before `await message.remove_reaction(...)` then writes one `bot_auto_restricted` moderation decision with `reason=category` and a 200-character snippet.",
+      "verdict": ""
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "In `on_raw_reaction_remove`, when a marker exists for `(message.id, user.id, emoji_str)`, is it popped and used to write exactly ONE row (no duplicate user_self_removal)? When no marker exists, is the row written as `user_self_removal` with `is_suspicious = emoji_str in {\ud83e\udd2e, \ud83d\udc4e, \ud83d\ude2d}`? Is the admin DM fired only on suspicious and wrapped in its own try/except? Does the DM body include reactor mention, emoji, `message.jump_url`, and the 200-char snippet?",
+      "executor_note": "Confirmed the marker-present branch in `on_raw_reaction_remove` pops the marker, writes exactly one moderation-decision row with the marker classification/reason, and returns before any `user_self_removal` write. The no-marker branch writes `user_self_removal`, sets `is_suspicious` only for `\ud83e\udd2e`/`\ud83d\udc4e`/`\ud83d\ude2d`, and sends the admin DM in a separate fire-and-forget task wrapped in its own try/except with reactor mention, emoji, jump URL, and the 200-char snippet.",
+      "verdict": ""
+    },
+    {
+      "id": "SC5",
+      "task_id": "T5",
+      "question": "Are the three new listeners (`on_raw_reaction_clear`, `on_raw_reaction_clear_emoji`, `on_raw_message_delete`) registered? Does each enumerate `get_active_reactors` and write one row per reactor with the correct classification? Does `on_raw_message_delete` read the snapshot synchronously at the top to avoid races with LoggerCog? Is `is_suspicious=False` on all three paths?",
+      "executor_note": "Confirmed the three new listeners are registered in `src/features/reacting/reactor_cog.py`. Each one uses `get_active_reactors` and writes one row per reactor with `classification` set to `moderator_cleared_all`, `moderator_cleared_emoji`, or `message_deleted_cascade` respectively, with `is_suspicious=False` on all three paths. `on_raw_message_delete` reads the message snapshot synchronously at handler entry before any await, so it stays ahead of LoggerCog's soft-delete race; when `get_active_reactors` returns an empty list, the handlers no-op.",
+      "verdict": ""
+    },
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "question": "Are ALL 4 curator `message.remove_reaction('\u274c', user)` sites (originally at lines 296, 339, 460, 472) preceded by a `register_bot_removal(..., 'bot_curator_reject', reason='curator_reject')` block that safely handles `get_cog('ReactorCog')` returning None? Was no direct `record_moderation_decision` call added in curator (the marker consumer handles the write)?",
+      "executor_note": "Verified all four curator `await message.remove_reaction('\u274c', user)` sites are immediately preceded by `register_bot_removal(..., 'bot_curator_reject', reason='curator_reject')`, and no direct `record_moderation_decision` call was added in `curator.py`. Because `ArtCurator` has no `self.bot` attribute, the safe local equivalent is `self.get_cog('ReactorCog')`.",
+      "verdict": ""
+    },
+    {
+      "id": "SC7",
+      "task_id": "T7",
+      "question": "Does `tests/test_moderation_decisions.py` cover all 9 scenarios listed in the task description? Specifically: restricted flag/political/religious with correct reasons, curator path with no duplicate user_self_removal row, plain self-removal with no DM, each of {\ud83e\udd2e, \ud83d\udc4e, \ud83d\ude2d} firing the DM with correct payload, clear_all enumerating all reactors, clear_emoji filtering to matching reactors only, message_delete cascade with snapshot population, `_classify_restricted_emoji` returns across all branches, and TTL pruning?",
+      "executor_note": "Confirmed `tests/test_moderation_decisions.py` covers the requested scenario set: restricted flag/political/religious add with correct reasons and gateway no-op expectation, curator marker consumption without duplicate `user_self_removal`, plain self-removal with no admin DM, suspicious self-removal for `\ud83e\udd2e`/`\ud83d\udc4e`/`\ud83d\ude2d` with admin DM payload assertions, clear-all enumeration, clear-emoji filtering, message-delete cascade snapshot population, `_classify_restricted_emoji` branch coverage, and TTL pruning via monkeypatched `time.monotonic`. The assertions check exact moderation-decision kwargs such as `classification`, `reason`, and `is_suspicious`, not only call counts.",
+      "verdict": ""
+    },
+    {
+      "id": "SC8",
+      "task_id": "T8",
+      "question": "Did `pytest tests/test_moderation_decisions.py -q` pass? Did `pytest -q` pass with no regressions in reactor/logger/curator tests? Did the throwaway smoke script confirm the \ud83e\udd2e self-retract admin DM path and was it deleted? Does the PR body mention that the migration must be manually copied to the workspace `supabase/migrations/` directory before deploy?",
+      "executor_note": "Confirmed `pytest tests/test_moderation_decisions.py -q` passed after fixing the duplicate `bot_auto_restricted` write on gateway remove, and `pytest -q` passed with no regressions (`241 passed`). The throwaway `/tmp/smoke_moderation.py` script confirmed the `\ud83e\udd2e` self-retract admin-DM path (`smoke-ok`) and was then deleted. `.megaplan/plans/design-and-implement-a-20260419-1105/final.md` now explicitly notes that `.migrations_staging/20260419110000_create_moderation_decisions.sql` must be copied into `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` before deploy.",
+      "verdict": ""
+    }
+  ],
+  "meta_commentary": "Implementation ordering is strict: migration SQL \\u2192 DB helpers \\u2192 ReactorCog marker infra + restricted branch \\u2192 `on_raw_reaction_remove` consumer \\u2192 clear/cascade listeners \\u2192 curator markers \\u2192 tests \\u2192 validate. Steps 3 and 6 both require `register_bot_removal` to exist; T6 depends on T3. Step 4 is the sole writer for the curator path \\u2014 do NOT add a `record_moderation_decision` call in curator.py itself. The restricted-emoji branch is the one exception that writes eagerly (it already holds live `user`/`message` objects and can short-circuit downstream event handling); its marker registration exists solely to suppress a duplicate write from the gateway `on_raw_reaction_remove` event. Key gotchas: (1) `_gate_check(guild_id)` will silently skip writes for out-of-scope guilds \\u2014 tests must set an allowed guild_id or patch the gate. (2) The marker key `(message_id, user_id, emoji_str)` must use the SAME emoji normalization at register time (curator + restricted branch) and consume time (`on_raw_reaction_remove`); mismatches silently leak user_self_removal rows. (3) `on_raw_message_delete` has a LoggerCog co-listener \\u2014 read the DB snapshot synchronously at the top of the ReactorCog handler. (4) Curator line numbers shift after the first insertion; find `message.remove_reaction('\\u274c', user)` fresh before each edit. (5) Admin DM must never block or raise into the event loop \\u2014 wrap in its own try/except. (6) Suspicion applies ONLY to `user_self_removal` of {\\ud83e\\udd2e, \\ud83d\\udc4e, \\ud83d\\ude2d}; never cascades/clears/bot_auto. (7) Verifiability-0 (manual Discord smoke) is unavoidable \\u2014 document in the PR body rather than trying to automate. (8) `.migrations_staging/` is NOT auto-applied; the PR body must explicitly call out the manual copy step to `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/`. Debt watch: stick to the fluent Supabase client pattern used by neighbors in `db_handler.py` \\u2014 no raw SQL / no RPC, per existing `db-handler-supabase-infrastructure` debt flag.",
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Stage `moderation_decisions` migration SQL + update staging README",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Add `record_moderation_decision`, `get_active_reactors`, `get_message_snapshot` helpers to `DatabaseHandler`",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "ReactorCog marker infra (`_bot_initiated_removals`, `register_bot_removal`, TTL prune), refactor `_is_restricted_emoji` into `_classify_restricted_emoji`, and wire restricted-emoji branch to register marker + write `bot_auto_restricted` row",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "ReactorCog `on_raw_reaction_remove`: consume marker (write marker's classification/reason) or classify as `user_self_removal` with suspicion + admin DM for {\ud83e\udd2e,\ud83d\udc4e,\ud83d\ude2d}",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      },
+      {
+        "plan_step_summary": "ReactorCog clear + message-delete cascade listeners enumerating active reactors and writing one row per reactor with moderator/cascade classifications",
+        "finalize_task_ids": [
+          "T5"
+        ]
+      },
+      {
+        "plan_step_summary": "Mark curator \u274c removal call sites (4x) to register `bot_curator_reject` markers before `remove_reaction`",
+        "finalize_task_ids": [
+          "T6"
+        ]
+      },
+      {
+        "plan_step_summary": "Tests in `tests/test_moderation_decisions.py` covering all 9 scenarios",
+        "finalize_task_ids": [
+          "T7"
+        ]
+      },
+      {
+        "plan_step_summary": "Validate: run targeted + full pytest, smoke the suspicious path, document migration hand-off in PR body",
+        "finalize_task_ids": [
+          "T8"
+        ]
+      }
+    ],
+    "orphan_tasks": [],
+    "completeness_notes": "Every plan step maps to exactly one finalize task. T8 subsumes both the `pytest tests/test_moderation_decisions.py` and full-suite `pytest -q` invocations from the plan's Validation Order, plus the throwaway repro-script requirement from the finalize instructions and the PR-body documentation step. The plan's Step 5.4 (optional `_fetch_channel_and_message` helper factoring) is explicitly called out as 'only if needed' \u2014 the new clear/cascade paths use DB snapshots, not Discord fetches, so no helper is required and no separate task is warranted. Manual dev-Discord smoke (plan Validation Order item 3 / success criterion 12) is an info-level criterion that cannot be automated; T8 documents it in the PR body.",
+    "coverage_complete": true
+  },
+  "baseline_test_command": "pytest --tb=no -q --no-header",
+  "baseline_test_failures": [],
+  "baseline_test_note": "Baseline pytest run was not executed \\u2014 the harness sandbox required approval for `python -m pytest`. The executor should run `python -m pytest -q --tb=no` against the clean working tree at the start of T8 (before applying any edits that could mask regressions) to capture the true baseline, then re-run after changes to diff for new failures. If pre-existing failures surface unrelated to reacting/logging/curator/db_handler, treat them as baseline noise and note in PR body."
+}

@@ -1,0 +1,181 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Create the three backfill migration files. First attempt direct-write to `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` (Step 2b). If the sandbox rejects the write, fall back to staging inside `brain-of-bndc/.migrations_staging/` (Step 2), also creating the handoff `README.md` and appending `/.migrations_staging/` to `brain-of-bndc/.gitignore`. Filenames: `20260411220000_backfill_payments.sql`, `20260411220100_backfill_admin_payment_intents.sql`, `20260411220200_backfill_social_publications.sql`. Each file is a verbatim copy of its source in `brain-of-bndc/sql/` with a prepended header comment stating purpose, idempotency guarantee, and (for admin_payment_intents) the FK dependency on the prior migration. For `20260411220200_backfill_social_publications.sql`, additionally reorder: move `revoke execute on function public.claim_due_social_publications(integer, bigint[]) from anon, authenticated;` (currently `sql/social_publications.sql:77`) to appear AFTER the `create or replace function public.claim_due_social_publications(...)` block at `sql/social_publications.sql:93-126`. Preserve the RLS-posture header comment from `sql/payments.sql:1-7` verbatim in the payments migration. Before writing via direct-write path, audit the target directory for any pre-existing file defining `wallet_registry`, `payment_channel_routes`, `payment_requests`, `admin_payment_intents`, `social_publications`, `social_channel_routes`, `claim_due_payment_requests`, or `claim_due_social_publications`; halt and escalate if a conflict exists. Re-verify each source file's idempotency while copying (every CREATE TABLE/INDEX uses IF NOT EXISTS, every function uses CREATE OR REPLACE, every trigger has matching DROP IF EXISTS, every backfill UPDATE has a guard clause) \u2014 if any non-idempotent statement is discovered, wrap it before copying.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Audited `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` for pre-existing definitions of `wallet_registry`, `payment_channel_routes`, `payment_requests`, `admin_payment_intents`, `social_publications`, `social_channel_routes`, `claim_due_payment_requests`, and `claim_due_social_publications`; no conflicts were found. Direct-write was then attempted and rejected by the sandbox, so the fallback staging path was used. Created the three timestamped migration files in `.migrations_staging/` with prepended purpose/idempotency headers, preserved the payments RLS posture comment verbatim, added the admin FK dependency note, and moved the social `REVOKE EXECUTE` to after the function definition. Verified payments/admin staged files are exact copies of the source after stripping only the new header, and verified social matches exactly aside from the header and permitted revoke reorder.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.gitignore",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/README.md",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220000_backfill_payments.sql",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220100_backfill_admin_payment_intents.sql",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220200_backfill_social_publications.sql"
+      ],
+      "commands_run": [
+        "git -C /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc rev-parse --show-toplevel",
+        "git -C /Users/peteromalley/Documents/banodoco-workspace/supabase rev-parse --show-toplevel",
+        "ls -1 /Users/peteromalley/Documents/banodoco-workspace/supabase/migrations",
+        "rg -n \"wallet_registry|payment_channel_routes|payment_requests|admin_payment_intents|social_publications|social_channel_routes|claim_due_payment_requests|claim_due_social_publications\" /Users/peteromalley/Documents/banodoco-workspace/supabase/migrations",
+        "sed -n '1,260p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql",
+        "sed -n '1,260p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/admin_payment_intents.sql",
+        "sed -n '1,260p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/social_publications.sql",
+        "diff -u /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql <(tail -n +4 /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220000_backfill_payments.sql)",
+        "diff -u /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/admin_payment_intents.sql <(tail -n +5 /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220100_backfill_admin_payment_intents.sql)",
+        "python - <<'PY' ... verify social_publications staged content matches source except for the permitted revoke reorder ... PY",
+        "rg -n \"^/.migrations_staging/$\" /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.gitignore"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T2",
+      "description": "Update bot-repo documentation to reflect the new canonical migration path and the two-repo topology. (1) `brain-of-bndc/README.md`: add a new 'Database migrations' subsection under 'Database Storage' (after line 72) documenting: canonical path `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` in a SEPARATE git repo from brain-of-bndc, `YYYYMMDDHHMMSS_` naming, idempotency requirement (IF NOT EXISTS / CREATE OR REPLACE / guarded backfills), apply commands (`supabase db push` / `supabase db reset`), and a warning against dropping SQL into a bot-repo `sql/` folder. (2) `brain-of-bndc/structure.md` lines 98-103: remove the fictitious bot-local `supabase/` tree and replace with a one-line note that supabase migrations live in the workspace-level repo at `../supabase/migrations/` (separate git root). (3) `brain-of-bndc/docs/payments.md`: rewrite the ten `sql/payments.sql:NNN` references on lines 20, 80, 92, 126, 129, 166, 177, 267, 287, 301 to point at `../supabase/migrations/20260411220000_backfill_payments.sql` using section-name anchors (e.g., `uq_payment_requests_active_producer_ref`, `claim_due_payment_requests`, `tx_signature_history backfill`) rather than line numbers. (4) `brain-of-bndc/.cursorrules:57`: update to `Migrations in ../supabase/migrations/ (workspace-level repo, separate git root from brain-of-bndc/), with YYYYMMDDHHMMSS_ timestamp prefixes.`. (5) FLAG-002 (still open): `brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md:15` currently says `Apply brain-of-bndc/supabase/migrations/20260322000000_merge_arca_gidan_into_shared_supabase.sql`; update it to reference the workspace-level `../supabase/migrations/` path to match the new canonical location. Do NOT create a new `CLAUDE.md` \u2014 the workflow docs live in `README.md` only.",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "done",
+      "executor_notes": "Updated the documentation set to make the workspace-level Supabase repo the canonical migration source. `README.md` now has a `Database migrations` subsection under `Database Storage` with the separate-repo path, timestamp naming, idempotency rules, `supabase db push` / `supabase db reset`, and a warning against using a bot-local `sql/` folder. `structure.md` no longer shows a fictitious bot-local `supabase/` tree. `docs/payments.md` replaced all ten `sql/payments.sql:NNN` references with stable section-name anchors into `../supabase/migrations/20260411220000_backfill_payments.sql`. `.cursorrules` now uses the requested `../supabase/migrations/` wording, `docs/arca-gidan-shared-supabase-cutover.md` no longer points at the retired `brain-of-bndc/supabase/migrations/` path, and `CLAUDE.md` remains absent. Verification: scoped grep found zero remaining `sql/payments.sql` or `brain-of-bndc/supabase/migrations/` matches across the edited docs, and git status shows exactly the five expected modified documentation files for this batch.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/README.md",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/structure.md",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.cursorrules",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md"
+      ],
+      "commands_run": [
+        "sed -n '60,120p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/README.md",
+        "sed -n '90,120p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/structure.md",
+        "sed -n '1,340p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md",
+        "sed -n '45,70p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.cursorrules",
+        "sed -n '1,40p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md",
+        "rg -n \"sql/payments\\.sql|brain-of-bndc/supabase/migrations/\" /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/README.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/structure.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.cursorrules /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md",
+        "rg -n \"20260411220000_backfill_payments\\.sql|Database migrations|../supabase/migrations/\" /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/README.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/structure.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.cursorrules /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md",
+        "git -C /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc status --short README.md structure.md docs/payments.md .cursorrules docs/arca-gidan-shared-supabase-cutover.md",
+        "test -e /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/CLAUDE.md && echo exists || echo missing"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T3",
+      "description": "Delete the shadow `brain-of-bndc/sql/` folder \u2014 STRICTLY GATED on the replacement being durable. Precondition check: (direct-write path from T1) run `git -C /Users/peteromalley/Documents/banodoco-workspace status supabase/migrations/` and confirm the three new migration files are visible; then ask the user to commit them in the workspace repo and wait for explicit confirmation before proceeding. (staging path from T1) HALT and ask the user to move `brain-of-bndc/.migrations_staging/*.sql` into `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` and commit them; do NOT proceed until the user confirms the workspace-repo commits exist. If the user has not confirmed, halt with a clear message and do not delete. Once confirmed: run `git -C /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc status sql/` to confirm only the three tracked files, then `git rm brain-of-bndc/sql/payments.sql brain-of-bndc/sql/admin_payment_intents.sql brain-of-bndc/sql/social_publications.sql`, and verify `sql/` no longer exists. NEVER delete the shadow files before the replacement is committed in the sibling repo \u2014 the shadow files are the only source of truth until then.",
+      "depends_on": [
+        "T1",
+        "T2"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T4",
+      "description": "Validate all edits and run tests. (1) Grep `brain-of-bndc/` (excluding `.megaplan/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `.migrations_staging/`) for `sql/payments.sql`, `sql/admin_payment_intents.sql`, `sql/social_publications.sql`, and bare `sql/` path references \u2014 zero matches outside the new docs. Also grep for `brain-of-bndc/supabase/migrations/` and confirm no stale references remain (FLAG-002). (2) Run `git -C /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc status` and confirm 3 tracked deletions under `sql/` plus edits to `README.md`, `structure.md`, `docs/payments.md`, `.cursorrules`, `docs/arca-gidan-shared-supabase-cutover.md`, and (staging path only) `.gitignore`. (3) Static syntax scan each new migration file: check for unclosed `$$` blocks, missing semicolons, mismatched parens, stray identifiers. Confirm migration filename ordering (payments < admin_payment_intents < social_publications) so FKs resolve on fresh `supabase db reset`. Confirm the REVOKE-after-CREATE reorder landed in the social_publications migration. (4) (direct-write path only) `git -C /Users/peteromalley/Documents/banodoco-workspace status supabase/migrations/` shows the three files. (5) Run `pytest -q tests/test_social_publications.py tests/test_caller_paths.py tests/test_notification_delete.py` from `brain-of-bndc/` to confirm no Python regressions. If any test fails, read the error, fix the code, and re-run until they pass. Do NOT create new test files.",
+      "depends_on": [
+        "T3"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    }
+  ],
+  "watch_items": [
+    "Cross-repo topology: `brain-of-bndc/` and `/Users/peteromalley/Documents/banodoco-workspace/` are SEPARATE git roots. Bot-repo deletions and workspace-repo migration additions are two independent commits in two independent repos and cannot be bundled. Confirm via `git rev-parse --show-toplevel` from each location before writing.",
+    "NEVER delete `brain-of-bndc/sql/*.sql` until the replacement migrations are durably committed in the workspace repo. The shadow files are the source of truth until then \u2014 premature deletion destroys work.",
+    "Idempotency is load-bearing: production already has this schema, so every new migration statement must be a replay no-op. Every CREATE TABLE/INDEX uses IF NOT EXISTS, every function uses CREATE OR REPLACE, every trigger has matching DROP IF EXISTS, every backfill UPDATE has a guard clause. If T1 surfaces any non-idempotent statement, wrap it before copying.",
+    "Migration filename ordering matters for fresh `supabase db reset`: `20260411220000_backfill_payments.sql` must come before `20260411220100_backfill_admin_payment_intents.sql` because admin_payment_intents has FKs to wallet_registry(wallet_id) and payment_requests(payment_id).",
+    "Social_publications has a latent ordering bug: `REVOKE EXECUTE on claim_due_social_publications(...)` appears at `sql/social_publications.sql:77` BEFORE the `CREATE OR REPLACE FUNCTION` at lines 93-126. Must be reordered in the new migration so fresh `supabase db reset` succeeds. This is the only SQL-semantic change across all three files.",
+    "Preserve `sql/payments.sql:1-7` (RLS posture comment) verbatim in the payments migration so the RLS rationale travels with the schema.",
+    "docs/payments.md anchor strategy: use section-name anchors (e.g., `uq_payment_requests_active_producer_ref`, `claim_due_payment_requests`), NOT line numbers. Header comments will shift line numbers; section names are resilient.",
+    "Sandbox gap (FLAG-001 addressed): executor may or may not have writable access to the sibling workspace repo. T1 must attempt direct-write first; on failure, fall back to staging + user handoff. Both paths are valid.",
+    "FLAG-002 still open: `brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md:15` references `brain-of-bndc/supabase/migrations/...` which never existed. Must be updated in T2 so the operator doc stops pointing at the retired bot-local path.",
+    "No new `CLAUDE.md` \u2014 none exists in `brain-of-bndc/` today. Workflow docs live in `README.md` only.",
+    "Duplicate `create extension if not exists pgcrypto;` and `set_payment_updated_at()` blocks between payments and admin_payment_intents migrations are intentional \u2014 keep them so each migration is self-contained on a per-file basis. They are idempotent no-ops.",
+    "Do not introduce any new schema beyond the exact contents of the three shadow files plus the single REVOKE reorder. This task is proportional backfill, not refactor."
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Do all three new migration files exist (either committed-ready in the workspace repo or staged in `brain-of-bndc/.migrations_staging/`), with correct `20260411220000/220100/220200_` filename prefixes, verbatim content from the source files plus header comments, the RLS posture comment preserved in payments, and the REVOKE-after-CREATE reorder landed in social_publications? If staged, do `.migrations_staging/README.md` and `.gitignore` entry also exist?",
+      "executor_note": "All three migration files exist in `.migrations_staging/` with the required `20260411220000`, `20260411220100`, and `20260411220200` prefixes. Payments retains the original RLS posture comment verbatim after the new header, admin_payment_intents carries the FK dependency note, social_publications has the `REVOKE EXECUTE` moved to after the `CREATE OR REPLACE FUNCTION`, and the staging fallback artifacts `.migrations_staging/README.md` plus the `/.migrations_staging/` `.gitignore` entry are present.",
+      "verdict": ""
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Are all five documentation edits complete and accurate? (a) README.md has a new 'Database migrations' subsection calling out the two-repo topology, naming, idempotency, and apply commands. (b) structure.md no longer claims a bot-local `supabase/` tree. (c) docs/payments.md references are rewritten to `../supabase/migrations/20260411220000_backfill_payments.sql` with section-name anchors (not line numbers). (d) .cursorrules:57 is updated. (e) docs/arca-gidan-shared-supabase-cutover.md:15 no longer references the retired `brain-of-bndc/supabase/migrations/` path (FLAG-002).",
+      "executor_note": "All five documentation edits are complete. `README.md` now documents the separate workspace-level migration repo, timestamp naming, idempotency requirements, and `supabase db push` / `supabase db reset`. `structure.md` no longer claims a bot-local `supabase/` tree. `docs/payments.md` rewrites the ten legacy `sql/payments.sql:NNN` references to `../supabase/migrations/20260411220000_backfill_payments.sql` with section-name anchors. `.cursorrules` matches the requested `../supabase/migrations/` wording, and `docs/arca-gidan-shared-supabase-cutover.md` no longer references `brain-of-bndc/supabase/migrations/`.",
+      "verdict": ""
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Was the shadow `sql/` folder deletion performed ONLY after the workspace-repo commits were confirmed (either via `git -C workspace status` + user commit confirmation, or an explicit user ack of the manual move+commit)? Are all three files removed (`git rm` tracked) and the `sql/` directory no longer present? Did the executor halt-and-ask rather than proceed speculatively if confirmation was missing?",
+      "executor_note": "Yes on the gate behavior: deletion was not attempted because the required workspace-repo commit confirmation is still missing. The three staged migrations remain in `.migrations_staging/`, the `2026041122...` replacements are still absent from `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/`, no `git rm` was run, and the `sql/` directory was intentionally left in place pending explicit user confirmation after move + commit.",
+      "verdict": ""
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Do all validation checks pass? Zero grep hits for stale `sql/*.sql` or `brain-of-bndc/supabase/migrations/` references outside the new docs; `git status` in both repos shows the expected changes; static syntax scan of the three new migrations is clean; filename ordering preserves the FK dependency; REVOKE-after-CREATE reorder is confirmed; and `pytest -q tests/test_social_publications.py tests/test_caller_paths.py tests/test_notification_delete.py` all pass.",
+      "executor_note": "",
+      "verdict": ""
+    }
+  ],
+  "meta_commentary": "The hardest judgment call here is the deletion gate in T3. This is a cross-repo task: the source of truth (`brain-of-bndc/sql/*.sql`) must not be deleted until the replacement (`.../workspace/supabase/migrations/2026041122*.sql`) is durably committed in the sibling repo \\u2014 otherwise a crash or abort between steps destroys the only copy. Default to HALTING and asking the user rather than proceeding speculatively on a deletion. The two execution paths (direct-write vs staging) are both valid; pick direct-write first because it lets T3 verify the gate automatically via `git -C workspace status`, and fall back to staging only if the sandbox rejects the sibling write. Second judgment call: the REVOKE reorder in social_publications is a real semantic change, not just a copy-paste. Production already has the function so the statement succeeds in the current shadow file, but a fresh `supabase db reset` would fail with 'function does not exist' if REVOKE comes before CREATE. Do the reorder exactly once, in the new migration file, and leave the source shadow file alone (it's getting deleted anyway). Third: FLAG-002 is still open \\u2014 `docs/arca-gidan-shared-supabase-cutover.md:15` references the retired bot-local path. Fold that fix into T2 since it's a one-line edit in the same documentation-edit pass. Finally, docs/payments.md's anchor-strategy switch (section names over line numbers) is slightly more work than a mechanical rewrite \\u2014 you must open the new migration file, find the relevant section (e.g., the `uq_payment_requests_active_producer_ref` unique-index clause, the `claim_due_payment_requests` function body, the `tx_signature_history` backfill UPDATE), and anchor each doc reference to the closest stable identifier. Do NOT guess line numbers \\u2014 they will be wrong by the time the header comment settles.",
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Step 1 \u2014 Re-confirm shadow SQL idempotency shape across all three files",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 2 / Step 2b \u2014 Stage three migration files in `.migrations_staging/` (with README + .gitignore) OR direct-write to workspace `supabase/migrations/` with conflict audit, including the social_publications REVOKE reorder and header comments",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 3 \u2014 Update bot-repo docs: README.md new 'Database migrations' section, structure.md:98-103 correction, docs/payments.md anchor rewrites, .cursorrules:57 update (plus FLAG-002 fix to docs/arca-gidan-shared-supabase-cutover.md:15)",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 4 \u2014 Delete shadow `brain-of-bndc/sql/` folder, strictly gated on workspace-repo commits being durable",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 5 \u2014 Validate bot-repo edits (grep for stale refs, git status, pytest subset)",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 6 \u2014 Validate workspace-repo migrations (presence check, git status in workspace repo, static syntax scan; or staging-path manual-checkpoint reporting)",
+        "finalize_task_ids": [
+          "T4",
+          "T3"
+        ]
+      }
+    ],
+    "orphan_tasks": [],
+    "completeness_notes": "All six plan steps map to tasks. The Step 1 idempotency audit is folded into T1 rather than a standalone task because the executor can re-verify while copying (per the 'don't create separate inspect/read tasks' guidance); the audit is explicitly called out in T1's description. Step 2 and Step 2b are branches of the same create-migration-files operation and are both covered by T1, which tries direct-write first and falls back to staging. Step 6's staging-path manual-checkpoint reporting is partially covered by T3 (which gates deletion on user confirmation of the workspace commits); the rest of Step 6's validation (presence check, git status in workspace, syntax scan) lives in T4. FLAG-002 (still open \u2014 stale `brain-of-bndc/supabase/migrations/` reference in `docs/arca-gidan-shared-supabase-cutover.md:15`) is folded into T2's documentation pass since the plan body does not explicitly list it. Per the finalize rules, T4 is the test-running task and runs last.",
+    "coverage_complete": true
+  },
+  "baseline_test_failures": [],
+  "baseline_test_command": "pytest --tb=no -q --no-header",
+  "baseline_test_note": "Baseline tests were not executed during finalize \\u2014 this is a file-change-only task (SQL migrations + docs + a `git rm`) with zero runtime code touched, so a pre-execution baseline is not load-bearing. T4 runs the targeted subset post-change to catch any accidental Python references to the deleted `sql/...` paths. If the executor wants a stronger signal, run the subset once at the start of T1 to capture the pre-change status."
+}

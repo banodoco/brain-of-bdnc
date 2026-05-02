@@ -1,0 +1,168 @@
+{
+  "name": "backfill-bot-schema-drift-as-20260411-2152",
+  "idea": "Backfill bot schema drift as proper Supabase CLI migrations in /Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/ using idempotent SQL (production already has the changes), delete the brain-of-bndc/sql/ shadow folder, and document the migration workflow in the bot README/CLAUDE.md. File changes only, no live DB access.",
+  "current_state": "finalized",
+  "iteration": 2,
+  "created_at": "2026-04-11T19:52:35Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc",
+    "auto_approve": true,
+    "robustness": "light",
+    "agent": ""
+  },
+  "sessions": {
+    "claude_planner": {
+      "id": "91e1dc83-aaac-4f07-b449-a1312572b607",
+      "mode": "persistent",
+      "created_at": "2026-04-11T19:57:02Z",
+      "last_used_at": "2026-04-11T20:02:37Z",
+      "refreshed": false
+    },
+    "codex_critic": {
+      "id": "019d7e1e-9d18-7193-8f36-1ccad02ffd51",
+      "mode": "persistent",
+      "created_at": "2026-04-11T19:59:34Z",
+      "last_used_at": "2026-04-11T19:59:34Z",
+      "refreshed": false
+    },
+    "claude_finalizer": {
+      "id": "ccf23226-daa9-4500-87aa-5396db0f055c",
+      "mode": "persistent",
+      "created_at": "2026-04-11T20:06:38Z",
+      "last_used_at": "2026-04-11T20:06:38Z",
+      "refreshed": false
+    },
+    "codex_executor": {
+      "id": "019d7e27-605b-77d0-b39c-caa0cfff7c19",
+      "mode": "persistent",
+      "created_at": "2026-04-11T20:13:03Z",
+      "last_used_at": "2026-04-11T20:19:09Z",
+      "refreshed": false
+    }
+  },
+  "plan_versions": [
+    {
+      "version": 1,
+      "file": "plan_v1.md",
+      "hash": "sha256:ee38fdd19bf5ec715dad218225b166c1f291696bbc619bf4975f78aba53603c4",
+      "timestamp": "2026-04-11T19:57:02Z"
+    },
+    {
+      "version": 2,
+      "file": "plan_v2.md",
+      "hash": "sha256:56e13b05924ba30254dd741ea3584e77c5477544de9f6a9fa8328c95c6ded222",
+      "timestamp": "2026-04-11T20:02:37Z"
+    }
+  ],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-04-11T19:52:35Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-11T19:57:02Z",
+      "duration_ms": 260057,
+      "cost_usd": 1.25439775,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "91e1dc83-aaac-4f07-b449-a1312572b607",
+      "agent": "claude",
+      "output_file": "plan_v1.md",
+      "artifact_hash": "sha256:ee38fdd19bf5ec715dad218225b166c1f291696bbc619bf4975f78aba53603c4"
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-11T19:59:34Z",
+      "duration_ms": 147831,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7e1e-9d18-7193-8f36-1ccad02ffd51",
+      "agent": "codex",
+      "output_file": "critique_v1.json",
+      "artifact_hash": "sha256:1bca46627d7843a96d4d01bdeb7443b8057cf35b0aa45fbc6bb6bd7274aed972",
+      "flags_count": 2
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-11T20:02:37Z",
+      "duration_ms": 180291,
+      "cost_usd": 0.8627340000000001,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "91e1dc83-aaac-4f07-b449-a1312572b607",
+      "agent": "claude",
+      "output_file": "plan_v2.md",
+      "artifact_hash": "sha256:56e13b05924ba30254dd741ea3584e77c5477544de9f6a9fa8328c95c6ded222",
+      "flags_addressed": [
+        "FLAG-001"
+      ]
+    },
+    {
+      "step": "finalize",
+      "timestamp": "2026-04-11T20:06:38Z",
+      "duration_ms": 232467,
+      "cost_usd": 0.76847275,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "ccf23226-daa9-4500-87aa-5396db0f055c",
+      "agent": "claude",
+      "output_file": "finalize.json",
+      "artifact_hash": "sha256:bdab70801d48c7ebbc2991c507fcb65d2ffc94b895ed3cd9ea48adbb25a34768"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-11T20:17:56Z",
+      "duration_ms": 674634,
+      "cost_usd": 0.0,
+      "result": "blocked",
+      "session_mode": "persistent",
+      "session_id": "019d7e27-605b-77d0-b39c-caa0cfff7c19",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:f63b86a67299d8c70d4cbf3de3e076dc32a13a0fc7d4c2be0aafd0d67806d7da",
+      "finalize_hash": "sha256:2f8871dac24b8ecace8123cf9e19610f81607947e72ac41ccb05f5713852c1fd",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-11T20:19:09Z",
+      "duration_ms": 38950,
+      "cost_usd": 0.0,
+      "result": "blocked",
+      "session_mode": "persistent",
+      "session_id": "019d7e27-605b-77d0-b39c-caa0cfff7c19",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:b57331b77d51f23c2796084528832b669b9fea6e3068e47fd41a64af757bc6f1",
+      "finalize_hash": "sha256:1b320f803cfd6118aeaaa34b2d0671ada07a87460118e70b851ab54f5e39690c",
+      "approval_mode": "auto_approve"
+    }
+  ],
+  "meta": {
+    "significant_counts": [
+      1
+    ],
+    "weighted_scores": [],
+    "plan_deltas": [
+      67.71
+    ],
+    "recurring_critiques": [
+      []
+    ],
+    "total_cost_usd": 2.885605,
+    "overrides": [],
+    "notes": []
+  },
+  "last_gate": {
+    "recommendation": "ITERATE"
+  }
+}

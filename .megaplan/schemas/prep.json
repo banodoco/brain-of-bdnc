@@ -55,7 +55,8 @@
         },
         "required": [
           "file_path",
-          "why"
+          "why",
+          "functions"
         ],
         "additionalProperties": false
       }
@@ -93,6 +94,12 @@
         "type": "string"
       }
     },
+    "primary_criterion": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "suggested_approach": {
       "type": "string"
     }
@@ -104,6 +111,7 @@
     "relevant_code",
     "test_expectations",
     "constraints",
+    "primary_criterion",
     "suggested_approach"
   ],
   "additionalProperties": false

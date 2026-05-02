@@ -1,0 +1,107 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "guidance": "Cross-check the result against explicit user notes, critique corrections, and watch items. Flag anything the implementation ignored, contradicted, or only partially covered.",
+      "findings": [],
+      "prior_findings": [
+        {
+          "detail": "Checked the admin-facing surface in `src/features/admin_chat/agent.py` and `src/features/admin_chat/tools.py`; the repo still documents and exposes only an immediate Twitter-only `share_to_social` flow plus `shared_posts` queries, so the revised plan's Step 4.2 and Step 6.3/6.4 now cover the operator-facing scheduling and failure-inspection requirements that were missing before.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Checked `src/features/reacting/subfeatures/tweet_sharer_bridge.py`; the bridge still owns moderation decisions, consent persistence, OP/reactor DM flows, and admin alerts around the final `sharer_instance.send_tweet(...)` call, and the revised plan now preserves those side effects by keeping the bridge in control and only swapping the final publish step.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "guidance": "Look for logic errors, invalid assumptions, broken invariants, schema mismatches, or behavior that would fail at runtime. When the fix adds a conditional branch, check whether it handles all relevant cases \u2014 not just the one reported in the issue.",
+      "findings": [],
+      "prior_findings": [
+        {
+          "detail": "Checked `src/common/db_handler.py` and `src/common/supabase_query_handler.py`; the current data layer can read with `execute_raw_sql`, but it explicitly rejects `UPDATE`/`INSERT` there, so the plan's checked-in SQL plus Supabase RPC claim primitive is the right way to make due-job claiming DB-atomic instead of trying to fake it with the existing Python select/update pattern.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Checked the delete flow in `src/features/sharing/subfeatures/notify_user.py`; `PostShareNotificationView` is instantiated with `discord_message_id`, `tweet_id`, and `tweet_url`, and the delete button currently acts on that legacy identity only. The revised plan correctly moves deletion onto canonical publication records, but it does not explicitly say the DM view or notification payload must carry a canonical publication identifier, which becomes necessary once one Discord message can have multiple `post|reply|retweet` records.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked `src/features/sharing/subfeatures/social_poster.py` and `src/features/sharing/subfeatures/notify_user.py`; deletion still blindly calls the authored-tweet delete API today, so the revised plan's explicit 'retweets are not delete-supported in current UX' handling is a technically correct fix for the existing ambiguity.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "guidance": "Look at how the changed function is used across the codebase. Does the fix only address one caller's scenario while others remain broken? Flag missing required work or out-of-scope edits. A minimal patch is often right, but check whether the underlying problem is bigger than what the issue describes.",
+      "findings": [],
+      "prior_findings": [
+        {
+          "detail": "Checked the summary path from `src/features/summarising/subfeatures/top_art_sharing.py` into `src/features/sharing/sharer.py`; top-art sharing still reaches `initiate_sharing_process_from_summary(...)` and then `finalize_sharing(...)`, so the revised plan now correctly treats summary-triggered sharing as part of the same publishing subsystem instead of only handling admin chat and the reaction bridge.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Checked `src/features/sharing/subfeatures/notify_user.py`; it still imports `delete_tweet` directly and updates legacy `shared_posts` state itself, so the revised plan is right to keep notification/deletion compatibility in scope rather than treating the issue as only a publish-time refactor.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "guidance": "Search for all instances of the symbol/pattern being changed. Also ask: does this feature require setup, registration, or integration code beyond the core logic? Missing glue code causes test failures even when the core fix is correct.",
+      "findings": [],
+      "prior_findings": [
+        {
+          "detail": "Checked the real load path in `main.py` and `src/features/sharing/sharing_cog.py`; the app instantiates `SharingCog(bot, bot.db_handler)` directly in `main.py` and then calls `await bot.add_cog(...)`, while the module-level `setup()` helper in `sharing_cog.py` is not the active startup path. The plan's scheduler wiring therefore still needs to be explicit about using `SharingCog` lifecycle hooks such as `cog_load`/`cog_unload` or updating `main.py`, otherwise 'startup wiring in cog setup' could land in dead code.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked admin observability touchpoints in `src/features/admin_chat/agent.py` and `src/features/admin_chat/tools.py`; beyond adding a new table, the repo also needs the query whitelist, guild-scoped table list, tool descriptions, and system prompt text updated, and the revised plan now calls out both the read surface and prompt/tool description changes.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "guidance": "Grep for call sites. For each caller, check what values it passes \u2014 especially edge cases like None, zero, empty, or composite inputs. Then ask: should this change be here, or in a caller, callee, or new method?",
+      "findings": [],
+      "prior_findings": [
+        {
+          "detail": "Checked `execute_share_to_social()` in `src/features/admin_chat/tools.py`; it still parses `reply_to_tweet` from either a status URL or raw ID and defaults `text_only=True` whenever a reply target is present unless the caller overrides it, and the revised plan now preserves that caller-specific default explicitly.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Checked the reaction caller in `src/features/reacting/subfeatures/tweet_sharer_bridge.py`; it still passes prebuilt reactor text, raw attachment URLs, original-message metadata, and no duplicate-suppression behavior into `sharer_instance.send_tweet(...)`, so the revised plan's normalized request plus source/policy fields is a necessary fit for the actual non-admin caller shape.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Checked duplicate behavior in `src/features/sharing/sharer.py`; non-reply `finalize_sharing(...)` calls short-circuit on `_successfully_shared` and `shared_posts`, while the bridge path calls `send_tweet(...)` directly and does not dedupe at all, so the revised plan is correct to keep duplicate policy action-aware and caller-aware instead of normalizing everything to the admin path.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    }
+  ],
+  "flags": [],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

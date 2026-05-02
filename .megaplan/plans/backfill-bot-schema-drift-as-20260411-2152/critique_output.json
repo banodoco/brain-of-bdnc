@@ -1,0 +1,21 @@
+{
+  "checks": [],
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Migration workflow: The plan treats `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` as if it were just another output under the bot repo, but that directory belongs to the workspace-root git repo and is outside the current writable sandbox. As written, Step 7.4 cannot confirm the migration files from `brain-of-bndc`, and an executor following this plan can land the deletions/docs in one repo without actually validating the new migrations in the other.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "`git rev-parse --show-toplevel` from `brain-of-bndc` returns `/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc`, while `git -C /Users/peteromalley/Documents/banodoco-workspace/supabase rev-parse --show-toplevel` returns `/Users/peteromalley/Documents/banodoco-workspace`. `git status` inside `brain-of-bndc` cannot show sibling migration files, and the current harness writable roots do not include `/Users/peteromalley/Documents/banodoco-workspace/supabase`."
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Documentation paths: The plan only updates `README.md`, `structure.md`, `docs/payments.md`, and `.cursorrules`, but the repo still has a live operator doc that points at the retired bot-local path `brain-of-bndc/supabase/migrations/...`. If this change establishes the sibling workspace-level path as canonical, that doc will remain wrong after the backfill.",
+      "category": "completeness",
+      "severity_hint": "likely-minor",
+      "evidence": "`docs/arca-gidan-shared-supabase-cutover.md:15` says `Apply brain-of-bndc/supabase/migrations/20260322000000_merge_arca_gidan_into_shared_supabase.sql`, and `rg -n \"brain-of-bndc/supabase|supabase/migrations/\" . --glob '!.megaplan/**'` only finds that file plus the entries already called out in the plan."
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

@@ -1,0 +1,81 @@
+{
+  "version": 3,
+  "timestamp": "2026-04-09T17:45:10Z",
+  "hash": "sha256:e1b71f5b167354791ef58436bf1760fdef00ab35e6b7f7a066dff9862719bc13",
+  "changes_summary": "No open flag points to the wrong subsystem or a wrong root-cause diagnosis. The plan still belongs in the sharing stack, but it now closes the two remaining design holes explicitly: the scheduler is tied to the active `SharingCog` lifecycle used by `main.py` instead of the dead-end `setup()` path, and first-share notification and delete flows now carry a canonical `publication_id` so deletion targets one `social_publications` record even when a Discord message has multiple publications.",
+  "flags_addressed": [
+    "all_locations-1",
+    "FLAG-005",
+    "correctness",
+    "all_locations"
+  ],
+  "questions": [
+    "For the first admin-facing scheduling release, is UTC or ISO-8601 input sufficient, or is there a hard requirement for natural-language time parsing in chat?",
+    "Should X `retweet` jobs be allowed to target any arbitrary status ID, or only IDs supplied by trusted operators or previously published records?",
+    "After retries are exhausted, should failed scheduled publications remain in a manual-retry state only, or should the worker apply any additional backoff policy automatically?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "An immediate `share_to_social` request without `schedule_for` still publishes to X and returns a concrete success payload with `tweet_url` and `tweet_id`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "A scheduled publication can be created for `post`, `reply`, and `retweet`, and each job ends in a durable terminal state such as `succeeded` or `failed` with timestamps, attempt counts, and error details.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Admin-triggered sharing, summary-triggered sharing, and reaction-consent publishing all execute through the same unified publish service while preserving their existing caller-specific moderation, consent, DM, and announcement behavior.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Per-channel routing resolves in the order channel override, parent channel, guild default, and only runs when the existing `sharing_enabled` gate allows it.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Canonical publication records, not `shared_posts`, drive duplicate and delete decisions so multi-action `post|reply|retweet` publishing for one Discord message does not corrupt state.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Due-job claiming is implemented as a DB-atomic primitive in the checked-in SQL artifact and prevents double execution across restarts or overlapping workers.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The scheduler reuses the repo's `discord.ext.tasks.loop` pattern and starts and stops from the active `SharingCog` lifecycle used by `main.py`, not only from the module `setup()` helper.",
+      "priority": "must"
+    },
+    {
+      "criterion": "First-share notification and delete flows carry a canonical `publication_id`, and delete actions resolve that specific publication record instead of inferring identity only from `discord_message_id` and `tweet_id`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The admin and operator surface can both create scheduled publications and inspect queued, processing, failed, cancelled, and succeeded publication records without relying only on `shared_posts`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Caller-specific defaults remain intact, including admin replies defaulting to `text_only=True` unless explicitly overridden and reaction-consent publishes not inheriting unintended duplicate suppression.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The scheduler logs publication id, platform, action, and final provider error for recovery and manual replay.",
+      "priority": "should"
+    },
+    {
+      "criterion": "The platform integration boundary is provider-based so adding a second outbound platform does not require rewriting admin, summary, or reaction caller code.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke tests on a real X account pass for immediate post, scheduled post, scheduled reply, scheduled retweet, failed publish visibility, and delete compatibility for a delete-supported X post.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "The first release still ships only one live outbound provider, X/Twitter, but the service boundary and DB shape must stay provider-neutral.",
+    "`social_publications` is the canonical source of truth for publish state, retries, duplicate checks, and deletion support; `shared_posts` remains only for legacy consumers that cannot be migrated in the same change.",
+    "Supabase RPC is available for a small, checked-in Postgres claim function even though the repo does not currently use RPC elsewhere.",
+    "Scheduled timestamps will be normalized to UTC before persistence, and the initial admin-facing input can stay ISO-8601-like rather than adding natural-language parsing.",
+    "`main.py` remains the active startup path for sharing, so worker lifecycle wiring should be implemented on `SharingCog` lifecycle hooks rather than relying on the module-level `setup()` helper alone.",
+    "The first-share DM and delete UX can change its internal payload shape to carry `publication_id` as long as the visible user flow remains the same except for clearer unsupported-delete handling."
+  ],
+  "delta_from_previous_percent": 32.29,
+  "structure_warnings": []
+}

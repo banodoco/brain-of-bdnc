@@ -1,0 +1,684 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Phase B Step 1: Add force_reconcile_payment_to_confirmed and force_reconcile_payment_to_failed to src/common/db_handler.py. Both accept (payment_id, *, tx_signature, reason, guild_id) with allowed_statuses=['submitted','processing','failed','manual_hold'] \u2014 explicitly broader than mark_payment_confirmed/mark_payment_failed's strict guards because reconciliation corrects history from authoritative on-chain truth. Append to tx_signature_history with reason='reconcile_confirmed' or 'reconcile_failed'. Reject pending_confirmation/queued/cancelled starting states (never reconcile-forward a row that never reached the chain). Log at WARNING with before/after status. Do NOT modify existing mark_payment_confirmed/mark_payment_failed \u2014 their strict guards remain the normal state-machine contract. Add unit tests in tests/test_admin_payments.py (or new tests/test_payment_reconcile.py) covering each allowed starting state, each rejected starting state, history append, and WARNING log.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Added DatabaseHandler force-reconcile primitives that intentionally bypass the normal strict transition guards only for authoritative on-chain correction. They accept submitted/processing/failed/manual_hold, reject pending_confirmation/queued/cancelled through the unchanged guard path, append reconcile_confirmed/reconcile_failed tx_signature_history entries, and emit WARNING logs with before/after status. Dedicated reconciliation tests cover allowed starts, rejected starts, history append, WARNING logging, and unchanged mark_payment_* strictness.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_reconcile.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_solana_client.py tests/test_admin_payments.py tests/test_check_payment_invariants.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T2",
+      "description": "Phase B Step 2: Add PaymentService.reconcile_with_chain(payment_id, *, guild_id) -> ReconcileDecision in src/features/payments/payment_service.py. Define frozen dataclass ReconcileDecision{decision: Literal['reconciled_confirmed','reconciled_failed','allow_requeue','keep_in_hold','not_applicable'], reason: str, tx_signature: Optional[str]}. Logic: fetch row; no tx_signature \u2192 allow_requeue('no prior signature'); missing provider \u2192 keep_in_hold('provider unavailable'); provider.check_status returns 'confirmed' \u2192 call force_reconcile_payment_to_confirmed \u2192 reconciled_confirmed; 'failed' \u2192 force_reconcile_payment_to_failed \u2192 reconciled_failed; 'not_found' AND now-submitted_at > 150s \u2192 allow_requeue('beyond 150s blockhash safety window'); 'not_found' within 150s \u2192 keep_in_hold('too recent'); provider exception OR 'rpc_unreachable' sentinel \u2192 keep_in_hold('RPC unreachable during reconcile'). Do NOT mutate state on allow_requeue/keep_in_hold. Unit-test all six branches with fake provider and fake DB.",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "done",
+      "executor_notes": "Added `ReconcileDecision` and `PaymentService.reconcile_with_chain(...)` in the post-cleanup PaymentService. The method now covers `reconciled_confirmed`, `reconciled_failed`, `allow_requeue`, `keep_in_hold`, and `not_applicable`, uses `now - submitted_at` for the 150s blockhash heuristic, and treats provider exceptions or `rpc_unreachable` as `keep_in_hold` without mutating state. Unit coverage in `tests/test_payment_reconcile.py` exercises all required branches.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_reconcile.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_social_publish_service.py tests/test_scheduler.py tests/test_admin_payments.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T3",
+      "description": "Phase B Step 3: Thread payment_service through admin_chat retry/release tools in src/features/admin_chat/tools.py. Change execute_retry_payment and execute_release_payment to accept bot; resolve payment_service = getattr(bot, 'payment_service', None); fail closed with {'success': False, 'error': 'payment_service unavailable'} if missing. Update dispatcher at tools.py:3134-3139 to pass bot for both (mirror the existing initiate_payment pattern at tools.py:3142-3143). Gate execute_retry_payment on await payment_service.reconcile_with_chain(payment_id, guild_id=guild_id): reconciled_confirmed/reconciled_failed \u2192 return reconciled row, skip requeue; allow_requeue \u2192 proceed to db_handler.requeue_payment; keep_in_hold \u2192 call db_handler.mark_payment_manual_hold with decision.reason and return non-success. Gate execute_release_payment the same way \u2014 reconciled outcomes refuse the requested release_payment_hold and return reconciled truth; allow_requeue proceeds to release_payment_hold; keep_in_hold calls mark_payment_manual_hold. Add tests covering five branches per tool with fake payment_service.",
+      "depends_on": [
+        "T2"
+      ],
+      "status": "done",
+      "executor_notes": "Threaded `bot.payment_service` through the admin-chat retry/release tools and gated both actions on `reconcile_with_chain(...)` before any DB mutation. Both tools now fail closed when `payment_service` is missing, return reconciled truth for `reconciled_confirmed`/`reconciled_failed`, hold on `keep_in_hold`, and only mutate on `allow_requeue`. Verification covered direct tool calls plus dispatcher wiring via `execute_tool(...)` in the full module test run.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_route_tools.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_social_route_tools.py tests/test_scheduler.py tests/test_social_publish_service.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T4",
+      "description": "Phase B Step 4: Add /payment-resolve slash command in src/features/payments/payment_cog.py (or post-cleanup PaymentUICog). Use discord.app_commands.Command with payment_id:str parameter. Gate on ADMIN_USER_ID check INSIDE the callback (match repo's admin gating pattern, not a permission decorator). On non-admin caller: reply ephemeral 'admin-only' and return. Body: decision = await self.payment_service.reconcile_with_chain(payment_id, guild_id=interaction.guild_id); reply ephemeral with structured embed/code block showing decision.decision, decision.reason, new status, redacted signature. CRITICAL: do NOT expose this as an admin_chat LLM tool \u2014 reconciliation surface must stay off the LLM path to preserve the hardening-pass prompt-injection closure. No execute_payment_resolve function anywhere in src/features/admin_chat/tools.py. Step 1's force_reconcile_* already writes tx_signature_history, so no extra audit append here. Unit-test the callback against fake payment_service and fake interaction for each decision branch.",
+      "depends_on": [
+        "T2"
+      ],
+      "status": "done",
+      "executor_notes": "Added the slash-only `/payment-resolve` command to `PaymentUICog` with the admin gate enforced inside the callback body using `ADMIN_USER_ID`. The callback reports `decision`, `reason`, current row `status`, and a redacted signature in an ephemeral code block. Verification covers non-admin rejection and all reconcile decision branches. A grep over `src/features/admin_chat/tools.py` for `payment_resolve|execute_payment_resolve` returned no matches, preserving the no-LLM-surface constraint.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_social_route_tools.py tests/test_scheduler.py tests/test_social_publish_service.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header",
+        "rg -n \"payment_resolve|execute_payment_resolve\" src/features/admin_chat/tools.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T5",
+      "description": "Phase B Step 5: Provider name migration path. Add db_handler.get_legacy_provider_payment_requests(guild_ids) that selects rows where provider='solana'. Add PaymentService.migrate_legacy_provider_rows(guild_ids) -> int: for each legacy row, producer='grants' \u2192 update provider='solana_grants'; producer='admin_chat' \u2192 'solana_payouts'; any other producer \u2192 db_handler.mark_payment_manual_hold with reason='legacy provider could not be mapped: unknown producer={producer}'. Log one WARNING per row with payment_id, before, after. Call it once at worker startup from PaymentWorkerCog.cog_load (post-cleanup) or PaymentCog.cog_load if cleanup hasn't landed. Test with fake DB containing three legacy rows (grants, admin_chat, unknown) \u2014 assert two rewrites and one manual_hold.",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "done",
+      "executor_notes": "Added `db_handler.get_legacy_provider_payment_requests(guild_ids)`, `PaymentService.migrate_legacy_provider_rows(guild_ids)`, and the worker startup hook in `PaymentWorkerCog.cog_load`. The migration rewrites `grants -> solana_grants`, `admin_chat -> solana_payouts`, and marks unknown producers `manual_hold` with the requested reason while logging one WARNING per legacy row. Tests cover the DB selector, the three migration branches, and the one-time worker startup call.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_reconcile.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_social_publish_service.py tests/test_scheduler.py tests/test_admin_payments.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T6",
+      "description": "Phase C Step 6: Dynamic priority fees in src/features/grants/solana_client.py (the shared SolanaClient used by both providers \u2014 do NOT create a new file). Add SolanaClient._get_dynamic_priority_fee(client) -> int: call client.get_recent_prioritization_fees() (verify exact SDK method at impl time, fall through to raw RPC via provider._provider_core.make_request if needed); compute 75th percentile of non-zero prioritization_fee values; clamp floor=self.priority_fee_micro_lamports, ceiling=int(os.getenv('SOLANA_PRIORITY_FEE_CEILING_MICRO_LAMPORTS', '1000000')). On exception or empty response: return self.priority_fee_micro_lamports and log WARNING with error string. Use the result at solana_client.py:94-98 inside send_sol, replacing static compute_unit_price = self.priority_fee_micro_lamports; log chosen value alongside existing priority-fee log. Test in tests/test_solana_client.py: mock SDK call; assert percentile math, floor clamp, ceiling clamp, fallback-on-error.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Implemented dynamic Solana priority-fee selection inside the shared SolanaClient. `_get_dynamic_priority_fee` now uses `getRecentPrioritizationFees` via SDK method when available and solders RPC request fallback otherwise, computes the 75th percentile of non-zero fees, clamps to the configured floor/ceiling, logs WARNING and falls back to the static floor on error, and `send_sol` now uses/logs the chosen value. Tests cover percentile math, floor clamp, ceiling clamp, fallback behavior, and send_sol wiring.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/solana_client.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_solana_client.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_solana_client.py tests/test_admin_payments.py tests/test_check_payment_invariants.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T7",
+      "description": "Phase C Step 7: Admin DM fallback channel in src/features/payments/payment_cog.py (or post-cleanup PaymentWorkerCog). Read ADMIN_FALLBACK_CHANNEL_ID env var in worker cog __init__. Extract helper _deliver_admin_alert(message: str) and route both _dm_admin_payment_success (payment_cog.py:288-344) and _dm_admin_payment_failure (payment_cog.py:346-406) through it: try DM via fetch_user(ADMIN_USER_ID).send(message); on discord.Forbidden or discord.HTTPException with rate-limit status \u2192 resolve ADMIN_FALLBACK_CHANNEL_ID and post via safe_send_message; if both fail \u2192 logger.error('[PaymentCog] admin alert undeliverable', extra={'message_preview': message[:120]}). Test: fake bot where DM raises Forbidden asserts fallback channel send called; fake bot where both fail asserts ERROR log.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Implemented admin alert fallback in the post-cleanup PaymentWorkerCog. The cog now reads `ADMIN_FALLBACK_CHANNEL_ID`, both success and failure admin DM paths route through `_deliver_admin_alert`, the helper falls back to `safe_send_message` on `discord.Forbidden` or HTTP 429, and it logs ERROR when neither DM nor fallback delivery succeeds. Tests cover helper routing, Forbidden-triggered fallback, and double-failure ERROR logging.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_solana_client.py tests/test_admin_payments.py tests/test_check_payment_invariants.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T8",
+      "description": "Phase C Step 8: RPC-down vs timeout distinction. Add 'rpc_unreachable' sentinel to SolanaProvider.confirm_tx and check_status return values in src/features/payments/solana_provider.py. Emit it ONLY on connection-family exceptions: aiohttp.ClientConnectionError, aiohttp.ClientConnectorError, asyncio.TimeoutError during connect, solana.rpc.core.RPCException with transport cause (verify exact types at impl time). A legitimate confirmation timeout (wait-budget expired but RPC responsive) remains 'timeout'. Update PaymentService._confirm_submitted_payment (payment_service.py:548+) to branch on 'rpc_unreachable' \u2192 mark_payment_manual_hold with reason='rpc_unreachable: confirmation RPC offline' (distinct from 'Confirmation timed out after submission'). Update PaymentService.recover_inflight (payment_service.py:458+) same way for submitted branch. Bridge to T2: reconcile_with_chain already treats 'rpc_unreachable' as keep_in_hold per Step 2's spec. Test: fake provider returning 'rpc_unreachable' asserts distinct manual_hold reason in both call sites.",
+      "depends_on": [
+        "T2"
+      ],
+      "status": "done",
+      "executor_notes": "Added `rpc_unreachable` handling in `SolanaProvider` and bridged it into `PaymentService` recovery/confirmation paths. Connection-family lookup failures now return `rpc_unreachable`, while a legitimate confirmation wait-budget timeout still returns `timeout`. Both `_confirm_submitted_payment(...)` and `recover_inflight(...)` now manual-hold with `rpc_unreachable: confirmation RPC offline`, and existing `reconcile_with_chain(...)` already keeps such rows in hold from T2. Verification includes provider sentinel tests plus service-level tests for both call sites.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/solana_provider.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_social_route_tools.py tests/test_scheduler.py tests/test_social_publish_service.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T9",
+      "description": "Phase A Step 9: Decompose PaymentService.request_payment (payment_service.py:69-316) into 5 named helpers with behavior and public signature IDENTICAL: _normalize_inputs(**kwargs) -> NormalizedRequest (absorbs lines 91-98 + provider key normalization at 139; returns None on validation failure); _detect_collision_and_idempotent_row(normalized, guild_id, is_test) -> tuple[Optional[row], Optional[row], Optional[row]] (absorbs lines 99-122); _derive_amounts(normalized, is_test, amount_usd, amount_token, provider) -> AmountsResult (absorbs lines 161-188); _enforce_caps(normalized, amount_token, amount_usd, provider) -> CapResult (absorbs lines 189-223); _persist_row(record, normalized, guild_id, is_test, collision_row, blocking_prior_row) -> Optional[dict] (absorbs lines 286-316 including duplicate re-read fallback). Rewrite request_payment as ~40-line thin orchestrator. Public signature and all log messages stay IDENTICAL \u2014 this is the behavior-preservation gate. Run existing test suite unchanged; it must pass with zero modifications.",
+      "depends_on": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6",
+        "T7",
+        "T8"
+      ],
+      "status": "done",
+      "executor_notes": "Refactored `PaymentService.request_payment(...)` into a thin orchestrator that now delegates to exactly five helpers: `_normalize_inputs`, `_detect_collision_and_idempotent_row`, `_derive_amounts`, `_enforce_caps`, and `_persist_row`. The public signature stayed unchanged, the existing log messages were preserved as code motion rather than rewritten behavior, and the refactor held under both the targeted payment-module run and the full pytest suite without needing refactor-specific test edits.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_social_publish_service.py tests/test_social_route_tools.py tests/test_scheduler.py tests/test_admin_payments.py tests/test_payment_race.py tests/test_payment_state_machine.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T10",
+      "description": "Phase A Step 10: Move rent-exempt guard into PaymentService.__init__. Add module-level constants in src/features/payments/payment_service.py: RENT_EXEMPT_LAMPORTS = 890_880 and MIN_TEST_LAMPORTS = 2_000_000. In PaymentService.__init__, compute int(self.test_payment_amount * 1_000_000_000) and raise ValueError with the existing message from main.py:178-184 if below MIN_TEST_LAMPORTS. Remove the duplicate guard from main.py:173-184 keeping only the env var read. Unit test: PaymentService(test_payment_amount=0.0001, ...) raises ValueError.",
+      "depends_on": [
+        "T9"
+      ],
+      "status": "done",
+      "executor_notes": "Moved the rent-exempt guard into `PaymentService.__init__` with module-level `RENT_EXEMPT_LAMPORTS = 890_880` and `MIN_TEST_LAMPORTS = 2_000_000`, preserved the existing error text while switching the constructor path to `ValueError`, and removed the duplicate startup guard from `main.py` while keeping the `PAYMENT_TEST_AMOUNT_SOL` env read. I added explicit constructor coverage for the `0.0001` failure case and normalized the existing low-value `PaymentService` test fixtures to `0.002` so the suite exercises the new contract instead of bypassing it. During verification, the worktree\u2019s `SolanaProvider` had drifted from the already-completed `rpc_unreachable` behavior, so I restored that contract as part of getting the full suite back to green.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/solana_provider.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_reconcile.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_authorization.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_race.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_state_machine.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_social_publish_service.py -q --no-header",
+        "pytest tests/test_payment_reconcile.py tests/test_payment_authorization.py tests/test_social_publish_service.py tests/test_admin_payments.py tests/test_scheduler.py tests/test_payment_cog_split.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T11",
+      "description": "Phase A Step 11: Consolidate _redact_wallet into NEW src/common/redaction.py (chain-agnostic, dedicated module per orchestrator decision #2 \u2014 NOT discord_utils.py). Create redact_wallet(wallet: Optional[str]) -> str with the same implementation currently duplicated in payment_service.py:33, payment_cog.py:18, and db_handler.py:13. Replace all three local definitions with `from src.common.redaction import redact_wallet as _redact_wallet` to minimize call-site churn. Do NOT touch admin_chat/tools.py's _redact_wallet_address, _redact_wallet_row, or _redact_payment_row \u2014 different signatures/behaviors, separate follow-up per orchestrator decision #3. Add trivial unit test on redact_wallet(None), redact_wallet('short'), redact_wallet('AbCdEfGhIjKlMnOpQrStUvWxYz1234567890').",
+      "depends_on": [
+        "T9"
+      ],
+      "status": "done",
+      "executor_notes": "Consolidated the shared wallet redaction helper into the new chain-agnostic module `src/common/redaction.py` and switched the post-cleanup payment stack to import it via alias in `payment_service.py`, `payment_worker_cog.py`, `payment_ui_cog.py`, and `db_handler.py`. The admin-chat-specific `_redact_wallet_address`, `_redact_wallet_row`, and `_redact_payment_row` helpers were left untouched. I added trivial helper coverage for `None`, short strings, and a long wallet address, then re-ran the affected payment modules and the full suite successfully.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/redaction.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_reconcile.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_social_publish_service.py -q --no-header",
+        "pytest tests/test_payment_reconcile.py tests/test_payment_authorization.py tests/test_social_publish_service.py tests/test_admin_payments.py tests/test_scheduler.py tests/test_payment_cog_split.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T12",
+      "description": "Phase D Step 12: recover_inflight vs worker-loop race \u2014 formal argument + sanity check. Create tests/test_payment_race.py with verdict comment at the top citing Postgres semantics (NOT the test) as the proof: claim_due_payment_requests at sql/payments.sql:166-198 uses `where status='queued'` inside `FOR UPDATE SKIP LOCKED` CTE and updates claimed row to 'processing' atomically; under read-committed isolation, that transition is visible only after commit; recover_inflight only touches 'processing'/'submitted' rows. The verdict MUST label the test as 'logical-correctness sanity check, not a proof of DB-level concurrency safety' and MUST NOT say 'proven safe by this test'. Write test_recover_inflight_and_execute_payment_logical_ordering using fake DB with ordered-log recording on mark_payment_*; simulate (a) recover_inflight inspects processing then execute_payment transitions to submitted; (b) execute_payment mid-flight then recover_inflight runs; assert consistent terminal state across both orderings and no double confirmed marks. ONLY IF the sanity check surfaces a real gremlin: add conditional update to recover_inflight restricting reclamation to rows with updated_at older than 150 seconds (5\u00d7 the 30s worker tick, per decision #5); update verdict to 'gremlin found; fixed in Step 12.3'.",
+      "depends_on": [
+        "T8"
+      ],
+      "status": "done",
+      "executor_notes": "The investigation separated the DB claim semantics from the real startup overlap. `claim_due_payment_requests` remains structurally safe at the `queued -> processing` boundary under `FOR UPDATE SKIP LOCKED`, but the worker loop could begin before `recover_inflight()` finished and re-scan fresh `processing/submitted` rows during startup. I added the specified 150-second reclaim guard in `PaymentService.recover_inflight()` and a logical-ordering sanity-check test in `tests/test_payment_race.py`; the new test and the full suite both pass.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_race.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_social_publish_service.py tests/test_social_route_tools.py tests/test_scheduler.py tests/test_admin_payments.py tests/test_payment_race.py tests/test_payment_state_machine.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T13",
+      "description": "Phase D Step 13: Concurrent admin-payment collision investigation. Target the DOWNSTREAM call sites, not execute_initiate_payment which dedupes per (guild_id, source_channel_id, recipient_user_id) at the admin_payment_intent table before producer_ref is set at tools.py:2486. Real surface is the downstream call to PaymentService.request_payment inside admin_chat_cog.py's _start_admin_payment_flow (~:246) and handle_payment_result (~:364) which use the intent's stored producer_ref. Write tests/test_admin_payments.py::test_concurrent_admin_payment_producer_ref_collision: patch time.time() to a fixed value; call execute_initiate_payment twice with DISTINCT source_channel_id (bypasses intent dedupe) and same (guild_id, recipient_user_id); drive both intents through _start_admin_payment_flow \u2192 PaymentService.request_payment at distinct amounts. Assert whether the second row collapses onto the first (gremlin) or collision logic at payment_service.py:99-122 rejects it. If confirmed (per decision #6): change producer_ref format at tools.py:2486 from f'{guild_id}_{recipient_user_id}_{int(time.time())}' to f'{guild_id}_{recipient_user_id}_{int(time.time() * 1000)}'. DO NOT use UUID suffix \u2014 rejected because it would break idempotency on legitimate replay paths. Commit test as regression guard with verdict comment: 'VERDICT 2026-04-11: collision reproduced; fixed by millisecond precision in producer_ref' OR 'VERDICT: collision refuted; this test is a regression guard.'",
+      "depends_on": [
+        "T8"
+      ],
+      "status": "done",
+      "executor_notes": "Reproduced the same-recipient admin collision at the downstream flow using two distinct `source_channel_id` values so the intent-dedupe layer was bypassed on purpose. The fix is the required millisecond-precision `producer_ref` in `execute_initiate_payment(...)`, and the regression test drives both intents through `_start_admin_payment_flow` to verify they persist as separate payments. The targeted payment/admin modules and the full suite pass with the fix in place.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_social_publish_service.py tests/test_social_route_tools.py tests/test_scheduler.py tests/test_admin_payments.py tests/test_payment_race.py tests/test_payment_state_machine.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T14",
+      "description": "Phase D Step 14: Property-based state machine tests. Add `hypothesis` to requirements.txt. Create tests/test_payment_state_machine.py using hypothesis.stateful.RuleBasedStateMachine against a fake in-memory DatabaseHandler store. Rules: create_payment, confirm_payment, execute_payment, recover_inflight, release_payment_hold, requeue_payment, reconcile_with_chain (to cover T2's new method). Invariants checked after every rule: (1) every status='confirmed' row has non-null tx_signature AND fake provider check_status returns 'confirmed'; (2) no row transitions from terminal (confirmed, cancelled) back to queued/processing/submitted \u2014 reconciliation from failed/manual_hold via force_reconcile_* is ALLOWED and NOT treated as backward; (3) sum(amount_usd) where status='confirmed' and provider in capped_providers and completed_at within 24h <= daily_usd_cap + per_payment_usd_cap (slack allows one in-flight breach); (4) is_test rows have amount_usd is None and token_price_usd is None; (5) fail-closed: after execute_payment raises, row is never left in processing/submitted without subsequent manual_hold or failed reason. Run: `pytest tests/test_payment_state_machine.py --hypothesis-show-statistics`. Green suite OR gremlin caught with xfail-to-fix-to-pass cycle.",
+      "depends_on": [
+        "T2",
+        "T8"
+      ],
+      "status": "done",
+      "executor_notes": "Added `hypothesis` to `requirements.txt` and shipped `tests/test_payment_state_machine.py` with a `RuleBasedStateMachine` that exercises `create_payment`, `confirm_payment`, `execute_payment`, `recover_inflight`, `release_payment_hold`, `requeue_payment`, and `reconcile_with_chain`, plus the five required invariants. I attempted the requested `--hypothesis-show-statistics` invocation, but this environment's pytest rejected that flag; the module itself still ran green under plain pytest, and the full suite also passed.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/requirements.txt",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_state_machine.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_social_publish_service.py tests/test_social_route_tools.py tests/test_scheduler.py tests/test_admin_payments.py tests/test_payment_race.py tests/test_payment_state_machine.py --tb=no -q --no-header --hypothesis-show-statistics",
+        "pytest tests/test_payment_reconcile.py tests/test_social_publish_service.py tests/test_social_route_tools.py tests/test_scheduler.py tests/test_admin_payments.py tests/test_payment_race.py tests/test_payment_state_machine.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T15",
+      "description": "Phase E Step 15: docs/payments.md \u2014 new architecture doc. Include: (1) State machine ASCII diagram: pending_confirmation \u2192 queued \u2192 processing \u2192 submitted \u2192 {confirmed, failed, manual_hold, cancelled}; also failed\u2192queued (requeue), manual_hold\u2192failed (release), reconciliation edges from failed/manual_hold to confirmed/failed via force_reconcile_*. (2) Authorization model table of PaymentActorKind \u00d7 producer, read from producer_flows.py:16-30; note AUTO is test-payment confirmer, RECIPIENT_CLICK/RECIPIENT_MESSAGE/ADMIN_DM are real-payment confirmers gated by producer. (3) Cap enforcement: per_payment_usd_cap + daily_usd_cap + capped_providers with file:line to payment_service.py:192-223 (post-refactor: to _enforce_caps). (4) Fail-closed contract: enumerated invariants with file:line pointers. (5) Reconciliation contract: force_reconcile_* bypasses normal transition guards on purpose because it corrects history from authoritative on-chain truth; only reachable via /payment-resolve slash command (never via LLM tool surface). (6) Non-obvious constraints: rent-exempt floor 0.002 SOL, static+dynamic priority fees, two-wallet split, idempotency index excludes failed/cancelled, millisecond-precision producer_ref for admin-initiated payments. Length target \u2264400 lines.",
+      "depends_on": [
+        "T9",
+        "T10",
+        "T11",
+        "T12",
+        "T13",
+        "T14"
+      ],
+      "status": "done",
+      "executor_notes": "Added `docs/payments.md` as the payment architecture doc with the required state-machine ASCII diagram, current `PaymentActorKind x producer` authorization model sourced from `producer_flows.py`, cap-enforcement and fail-closed sections with file:line pointers, the reconciliation contract and slash-only `/payment-resolve` surface, and the requested non-obvious constraints. Verification: the document is 303 lines (`<= 400`) and the full pytest suite passed after the change (`160 passed, 2 warnings`).",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md"
+      ],
+      "commands_run": [
+        "wc -l docs/payments.md",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T16",
+      "description": "Phase E Step 16: docs/runbook-payments.md \u2014 new operator runbook. Per-scenario playbooks: manual_hold \u2192 use /payment-resolve with decision tree per last_error prefix; failed \u2192 when to requeue via admin_chat retry_payment (now reconcile-gated), when to write off via release_payment_hold; wallet ghost-verified \u2192 SQL to clear verified_at and re-verify via new test payment; admin DM not received \u2192 check ADMIN_FALLBACK_CHANNEL_ID, escalation; RPC down \u2192 degraded-mode expectations (new 'rpc_unreachable' manual_hold reason), when to drain; budget cap hit \u2192 how to raise, how to audit recent spend. Include SQL audit queries from scripts/audit_ghost_confirmed_payments.py as copy-paste appendix. CRITICAL: include scheduler-wire-up section per orchestrator decision #4 documenting operator's choice between Railway cron, GitHub Actions scheduled workflow, or external scheduler for running scripts/check_payment_invariants.py daily. Explicitly flag as OPERATOR DECISION \u2014 this plan does NOT ship a CI workflow file or Railway config change.",
+      "depends_on": [
+        "T15"
+      ],
+      "status": "done",
+      "executor_notes": "Added `docs/runbook-payments.md` as the operator runbook covering the six required non-happy-path scenarios: `manual_hold`, `failed`, ghost-verified wallet, admin DM undelivered, RPC down / `rpc_unreachable`, and budget cap hit. The document includes the requested `/payment-resolve`-first decision flow, admin-chat retry/release guidance, the copy-paste SQL appendix sourced from `scripts/audit_ghost_confirmed_payments.py`, and an explicit scheduler section marked as an operator decision with Railway, GitHub Actions, and external-scheduler options. Verification: heading/keyword checks confirmed the required sections and scheduler language, and the full pytest suite passed after the doc landed (`160 passed, 2 warnings`).",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/runbook-payments.md"
+      ],
+      "commands_run": [
+        "rg -n \"^## Scenario:|OPERATOR DECISION|Railway Cron|GitHub Actions Scheduled Workflow|External Scheduler|admin alert undeliverable|/payment-resolve\" docs/runbook-payments.md",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T17",
+      "description": "Phase F Step 17: scripts/check_payment_invariants.py \u2014 new. Port scripts/audit_ghost_confirmed_payments.py as a superset. Implement all five checks: (a) every status='confirmed' solana row has tx_signature AND on-chain getSignatureStatuses returns err=null; (b) no row has been in pending_confirmation or processing for more than 24 hours (updated_at < now() - interval '24 hours'); (c) every wallet_registry row with verified_at has a corresponding confirmed is_test=true payment with amount_token >= 0.001 SOL; (d) no two wallet_registry rows share same wallet_address across different discord_user_id; (e) 24h rolling sum(amount_usd) where status='confirmed' and provider='solana_payouts' vs ADMIN_PAYOUT_DAILY_USD_CAP \u2014 warn at \u226590%, error at \u2265100%. Exit nonzero on any violation; print structured report to stdout. Do NOT add a CI workflow file \u2014 scheduler wire-up lives in docs/runbook-payments.md only per decision #4. Test with synthetic-violation fixture seeded with one row violating each invariant; assert each violation is reported.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Added `scripts/check_payment_invariants.py` as a daily read-only payment audit. It implements all five requested checks, prints a structured JSON report, exits non-zero on hard violations, verifies confirmed Solana rows against `getSignatureStatuses`, checks stale pending/processing rows, verifies wallet test-payment provenance, detects wallet-address reuse, and evaluates the 24h admin payout cap. Synthetic-fixture tests cover each invariant and the non-zero `main()` path. No CI workflow or scheduler config was added.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/check_payment_invariants.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_check_payment_invariants.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_solana_client.py tests/test_admin_payments.py tests/test_check_payment_invariants.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T18",
+      "description": "Phase F Step 18: Structured tx_confirm_decision log in src/features/grants/solana_client.py. Add structured logging at all three decision branches in SolanaClient.confirm_tx (solana_client.py:139-175): (1) Success branch after status inspection at line 169: logger.info('tx_confirm_decision', extra={'event':'tx_confirm_decision','signature':signature,'err':None,'slot':getattr(status,'slot',None),'confirmation_status':getattr(status,'confirmation_status',None),'decision':'confirmed'}); (2) Not-found branch around line 163: same schema with decision='not_found', err=None; (3) Errored branch around 169-172: same schema with decision='errored', err=repr(status.err). Test: patch logger, run confirm_tx under each branch, assert extra dict contains 'event':'tx_confirm_decision' and expected decision.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Added structured `tx_confirm_decision` logger.info events to all three `SolanaClient.confirm_tx` branches: confirmed, not_found, and errored. The log payload includes `event`, `signature`, `err`, `slot`, `confirmation_status`, and `decision`. Tests assert the structured extra payload for each branch without changing confirmation semantics.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/solana_client.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_solana_client.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_solana_client.py tests/test_admin_payments.py tests/test_check_payment_invariants.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T19",
+      "description": "Final verification: run the full test suite and validate end-to-end. Commands: (1) `pytest tests/test_admin_payments.py tests/test_payment_reconcile.py -k 'reconcile or retry or release or resolve or migration'` to validate Phase B; (2) `pytest tests/test_solana_client.py tests/test_admin_payments.py -k 'priority or fallback or rpc_unreachable'` to validate Phase C; (3) `pytest` (full suite) to validate Phase A behavior preservation and overall regression; (4) `pytest tests/test_payment_race.py tests/test_payment_state_machine.py --hypothesis-show-statistics` to validate Phase D; inspect verdict comments in both files to confirm they cite Postgres semantics (not the test) for T12, and report T13 outcome clearly. (5) Run `python scripts/check_payment_invariants.py` against local test DB with seeded synthetic violations; confirm nonzero exit. If any test fails: read error, fix the code, re-run until green. Do NOT create new test files beyond the ones already specified in T1-T18 \u2014 run the project's existing suite plus the new suites. Additionally, write a short throwaway script that reproduces a specific reconcile-with-chain scenario end-to-end (e.g., failed row with prior signature \u2192 reconcile_with_chain \u2192 verify row now shows reconciled_confirmed with tx_signature_history entry), run it to confirm the fix works, then delete the script.",
+      "depends_on": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6",
+        "T7",
+        "T8",
+        "T9",
+        "T10",
+        "T11",
+        "T12",
+        "T13",
+        "T14",
+        "T15",
+        "T16",
+        "T17",
+        "T18"
+      ],
+      "status": "done",
+      "executor_notes": "Ran the final verification sweep end to end. Phase B validation passed (`30 passed`), Phase C validation passed (`6 passed`), and the full suite passed green (`160 passed, 2 warnings`). The required Phase D command with `--hypothesis-show-statistics` was attempted exactly as specified and failed because this environment's pytest does not recognize that flag; I then reran the same modules without the flag and they passed (`3 passed`). I inspected the verdict comments directly: `tests/test_payment_race.py` cites `FOR UPDATE SKIP LOCKED` plus Postgres read-committed isolation and labels the test a logical-correctness sanity check, and `tests/test_admin_payments.py` clearly states the T13 collision was reproduced and fixed via millisecond `producer_ref`. For the invariants script, an exact local seeded DB run was not available in this environment, so I used a throwaway Python harness that imported `scripts/check_payment_invariants.py`, injected synthetic violating rows into its `main(...)` entrypoint, and confirmed a nonzero exit (`1`). I also wrote a throwaway reconcile-with-chain harness that drove a failed row through `PaymentService.reconcile_with_chain(...)`, verified `reconciled_confirmed`, verified the row status changed to `confirmed`, and verified a `reconcile_confirmed` tx-signature-history append. Both throwaway scripts were deleted and their deletion was verified.",
+      "files_changed": [],
+      "commands_run": [
+        "pytest tests/test_admin_payments.py tests/test_payment_reconcile.py -k 'reconcile or retry or release or resolve or migration' --tb=no -q --no-header",
+        "pytest tests/test_solana_client.py tests/test_admin_payments.py -k 'priority or fallback or rpc_unreachable' --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header",
+        "pytest tests/test_payment_race.py tests/test_payment_state_machine.py --hypothesis-show-statistics",
+        "pytest tests/test_payment_race.py tests/test_payment_state_machine.py --tb=no -q --no-header",
+        "nl -ba tests/test_payment_race.py | sed -n '1,40p'",
+        "rg -n \"VERDICT\" tests/test_admin_payments.py tests/test_payment_race.py",
+        "nl -ba tests/test_admin_payments.py | sed -n '586,606p'",
+        "python /tmp/check_payment_invariants_synthetic.py",
+        "python /tmp/reconcile_with_chain_repro.py",
+        "test ! -e /tmp/check_payment_invariants_synthetic.py && test ! -e /tmp/reconcile_with_chain_repro.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    }
+  ],
+  "watch_items": [
+    "PREFLIGHT: Confirm cleanup megaplan (payment-subsystem-follow-up-20260410-2339) has landed on main before starting Phase A (T9-T11). Check for PaymentWorkerCog/PaymentUICog split and PaymentActor-based confirm_payment signature. If not landed, pause Phase A; Phases B/C/D/E/F can proceed against the pre-cleanup shape with minor path adjustments.",
+    "FLAG-001 (addressed): force_reconcile_payment_to_confirmed/force_reconcile_payment_to_failed INTENTIONALLY bypass the normal mark_payment_* strict guards. Accountability is the tx_signature_history append + WARNING log. Do NOT weaken the strict guards on mark_payment_confirmed/mark_payment_failed \u2014 they remain the normal-flow contract.",
+    "FLAG-002 (addressed): The dispatcher at tools.py:3134-3139 MUST pass bot to both retry_payment and release_payment. Missing this wiring means payment_service is unreachable and the reconcile gate is a no-op.",
+    "FLAG-003 (addressed): D11/T13 reproduction MUST target the DOWNSTREAM _start_admin_payment_flow / handle_payment_result call sites, not execute_initiate_payment. Use distinct source_channel_ids to bypass the intent dedupe layer. Targeting the wrong layer would falsely 'prove safe'.",
+    "CONCERN A (addressed): NO admin_chat LLM tool named execute_payment_resolve (or any equivalent) may exist. /payment-resolve is slash-command-only. Exposing reconcile via the LLM path would re-open the prompt-injection attack surface closed by the hardening megaplan.",
+    "CONCERN B (addressed): T12 verdict comment MUST cite FOR UPDATE SKIP LOCKED + Postgres read-committed isolation as the proof. The fake-DB test is a 'logical-correctness sanity check'. Phrase 'proven safe by this test' is FORBIDDEN \u2014 use 'proven safe by the documented Postgres semantics; this test is a sanity check'.",
+    "ADMIN-DM APPROVAL MEGAPLAN: T14 (hypothesis state machine) should ideally run after the admin-DM megaplan lands so it sees the ADMIN_DM PaymentActorKind. If that megaplan is not yet landed, T14 should still run but note the missing actor kind in a comment.",
+    "B4 150s BLOCKHASH HEURISTIC and D10 150s RECLAIM WINDOW are independent thresholds that coincidentally share the same value. Keep them as SEPARATE CONSTANTS in code \u2014 do not DRY them to a single shared constant.",
+    "D11 FIX DIRECTION: If collision is confirmed, use int(time.time() * 1000) for millisecond precision. UUID suffix is explicitly REJECTED because it would break idempotency on legitimate replay paths.",
+    "RECONCILIATION SURFACE: /payment-resolve callback must gate on ADMIN_USER_ID INSIDE the callback body (match repo's admin gating pattern, not a permission decorator).",
+    "A3 SCOPE LIMIT: src/common/redaction.py only consolidates the three identical _redact_wallet helpers. Do NOT touch admin_chat/tools.py's _redact_wallet_address / _redact_wallet_row / _redact_payment_row \u2014 different signatures, separate follow-up.",
+    "F15 SCHEDULER: Ship only the script. No CI workflow file, no Railway config change. Scheduler wire-up is documented in runbook as operator decision.",
+    "DEBT WATCH: admin-payments-intent-state debt (button confirmation path updates admin_payment_intents only indirectly via handle_payment_result) \u2014 T13's D11 fix should not make this worse.",
+    "DEBT WATCH: payment-service-confirmation debt (null-recipient DM wiring bundled with cap-breach DM wiring) \u2014 T7's DM fallback refactor should preserve existing null-recipient log-and-return behavior.",
+    "REFACTOR PRESERVATION: T9 is strictly behavior-preserving. Public signature, return values, AND log messages must stay identical. Existing tests must pass without modification \u2014 that is the gate.",
+    "RPC-DOWN SENTINEL BRIDGE: T8's 'rpc_unreachable' must be emitted ONLY on connection-family exceptions. A confirmation wait-budget timeout (RPC responsive) stays as 'timeout'. T2's reconcile_with_chain treats 'rpc_unreachable' as keep_in_hold."
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Do force_reconcile_payment_to_confirmed and force_reconcile_payment_to_failed both accept allowed_statuses=['submitted','processing','failed','manual_hold'], reject pending_confirmation/queued/cancelled, append to tx_signature_history with reconcile_* reason, and log at WARNING? Are mark_payment_confirmed/mark_payment_failed's strict guards unchanged?",
+      "executor_note": "Verified both force-reconcile primitives accept only `submitted`/`processing`/`failed`/`manual_hold`, reject `pending_confirmation`/`queued`/`cancelled`, append `reconcile_*` tx_signature_history entries, and log at WARNING. The original `mark_payment_confirmed`/`mark_payment_failed` guards were left unchanged and are covered by regression assertions.",
+      "verdict": ""
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Does reconcile_with_chain cover all six decision branches (reconciled_confirmed, reconciled_failed, allow_requeue, keep_in_hold, not_applicable, rpc_unreachable\u2192keep_in_hold) with a unit test per branch? Does the 150s blockhash heuristic use now - submitted_at?",
+      "executor_note": "Verified `reconcile_with_chain` covers `reconciled_confirmed`, `reconciled_failed`, `allow_requeue`, `keep_in_hold`, `not_applicable`, and `rpc_unreachable -> keep_in_hold` with dedicated unit coverage. The 150s blockhash heuristic is implemented as `datetime.now(timezone.utc) - submitted_at`.",
+      "verdict": ""
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Does the dispatcher at tools.py:3134-3139 pass bot for BOTH retry_payment and release_payment? Do both tools fail closed when payment_service is missing? Is reconcile_with_chain called BEFORE any DB mutation, and are all five decision branches tested per tool?",
+      "executor_note": "Verified the dispatcher now passes `bot` for both `retry_payment` and `release_payment`, both tools fail closed when `payment_service` is missing, and `reconcile_with_chain(...)` runs before any DB mutation. Module tests cover missing service plus `reconciled_confirmed`, `reconciled_failed`, `allow_requeue`, and `keep_in_hold` branches for both tools, along with dispatcher routing.",
+      "verdict": ""
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Is /payment-resolve gated on ADMIN_USER_ID inside the callback? Is there ZERO execute_payment_resolve or equivalent in src/features/admin_chat/tools.py? Does a grep for 'payment_resolve' in admin_chat/tools.py return nothing?",
+      "executor_note": "Verified `/payment-resolve` checks `ADMIN_USER_ID` inside the callback body, reports all reconcile decision branches through the UI callback tests, and `rg -n \"payment_resolve|execute_payment_resolve\" src/features/admin_chat/tools.py` returned no matches.",
+      "verdict": ""
+    },
+    {
+      "id": "SC5",
+      "task_id": "T5",
+      "question": "Does migrate_legacy_provider_rows handle all three branches (grants\u2192solana_grants, admin_chat\u2192solana_payouts, unknown\u2192manual_hold)? Is it called from worker cog_load and tested with fake DB?",
+      "executor_note": "Verified `migrate_legacy_provider_rows` handles all three branches (`grants -> solana_grants`, `admin_chat -> solana_payouts`, `unknown -> manual_hold`), and `PaymentWorkerCog.cog_load` now calls the migration once at startup. Fake-DB tests cover both the migration behavior and the startup hook.",
+      "verdict": ""
+    },
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "question": "Does _get_dynamic_priority_fee compute the 75th percentile of non-zero fees, clamp to [floor, ceiling], fall back to static floor on exception, and log the chosen value? Is it wired into send_sol at the right line? Do the mock tests cover percentile math, both clamps, and fallback?",
+      "executor_note": "Verified `_get_dynamic_priority_fee` computes the 75th percentile of non-zero fees, clamps to `[floor, ceiling]`, falls back to the static floor with a WARNING on exceptions, and is wired into `send_sol`. Tests cover percentile math, floor clamp, ceiling clamp, fallback, and send-path usage.",
+      "verdict": ""
+    },
+    {
+      "id": "SC7",
+      "task_id": "T7",
+      "question": "Does _deliver_admin_alert try DM first, fall back to ADMIN_FALLBACK_CHANNEL_ID on Forbidden/rate limit, and log at ERROR when both fail? Are both success and failure DM paths routed through it?",
+      "executor_note": "Verified `_deliver_admin_alert` tries DM first, falls back to `ADMIN_FALLBACK_CHANNEL_ID` on `discord.Forbidden` or HTTP 429, logs ERROR when both paths fail, and both success/failure admin DM flows now route through the helper.",
+      "verdict": ""
+    },
+    {
+      "id": "SC8",
+      "task_id": "T8",
+      "question": "Is 'rpc_unreachable' emitted ONLY on connection-family exceptions, not on legitimate confirmation timeouts? Are both _confirm_submitted_payment and recover_inflight updated to branch on it with a distinct manual_hold reason? Does reconcile_with_chain treat it as keep_in_hold?",
+      "executor_note": "Verified `rpc_unreachable` is emitted only from connection-family failures in `SolanaProvider`, while a responsive confirmation wait-budget timeout still returns `timeout`. Both `_confirm_submitted_payment(...)` and `recover_inflight(...)` now branch to the distinct `rpc_unreachable: confirmation RPC offline` manual-hold reason, and `reconcile_with_chain(...)` already treats `rpc_unreachable` as `keep_in_hold` from T2.",
+      "verdict": ""
+    },
+    {
+      "id": "SC9",
+      "task_id": "T9",
+      "question": "Is request_payment now a ~40-line orchestrator calling exactly 5 named helpers? Are the public signature and all log messages byte-identical to before? Does the existing test suite pass with ZERO modifications?",
+      "executor_note": "Verified `request_payment(...)` now delegates to `_normalize_inputs`, `_detect_collision_and_idempotent_row`, `_derive_amounts`, `_enforce_caps`, and `_persist_row`, with the public signature unchanged. The refactor survived both the targeted payment-module run and the full pytest suite, which is the regression gate for the byte-identical behavior claim.",
+      "verdict": ""
+    },
+    {
+      "id": "SC10",
+      "task_id": "T10",
+      "question": "Does PaymentService.__init__ raise ValueError below MIN_TEST_LAMPORTS=2_000_000? Was the duplicate guard at main.py:173-184 removed while keeping the env var read? Is the new unit test covering this?",
+      "executor_note": "Verified `PaymentService.__init__` now raises `ValueError` below `MIN_TEST_LAMPORTS = 2_000_000`, `main.py` keeps the `PAYMENT_TEST_AMOUNT_SOL` env read while removing the duplicate startup guard, and `tests/test_payment_reconcile.py` covers the `0.0001` failure case explicitly.",
+      "verdict": ""
+    },
+    {
+      "id": "SC11",
+      "task_id": "T11",
+      "question": "Is redact_wallet defined EXACTLY ONCE in src/common/redaction.py? Are payment_service.py, payment_cog.py, and db_handler.py importing it via alias? Are admin_chat/tools.py's _redact_wallet_* helpers UNTOUCHED?",
+      "executor_note": "Verified `redact_wallet` is defined exactly once in `src/common/redaction.py`; `payment_service.py`, `payment_worker_cog.py`, `payment_ui_cog.py`, and `db_handler.py` now import it via alias; and the admin-chat-specific `_redact_wallet_address`, `_redact_wallet_row`, and `_redact_payment_row` helpers remain untouched. The legacy `payment_cog.py` file is absent in this post-cleanup tree, so the worker/UI split is the correct import surface here.",
+      "verdict": ""
+    },
+    {
+      "id": "SC12",
+      "task_id": "T12",
+      "question": "Does the verdict comment at the top of tests/test_payment_race.py cite FOR UPDATE SKIP LOCKED and Postgres read-committed isolation as the proof? Does it explicitly label the test as 'logical-correctness sanity check, not a proof of DB-level concurrency safety'? Is the phrase 'proven safe by this test' ABSENT?",
+      "executor_note": "Verified the verdict comment at the top of `tests/test_payment_race.py` cites `FOR UPDATE SKIP LOCKED` and Postgres read-committed isolation as the DB-level proof boundary, explicitly labels the test a logical-correctness sanity check, and does not contain the forbidden phrase `proven safe by this test`.",
+      "verdict": ""
+    },
+    {
+      "id": "SC13",
+      "task_id": "T13",
+      "question": "Does the D11 reproduction use distinct source_channel_ids to bypass intent dedupe and drive the downstream _start_admin_payment_flow path? If collision confirmed, does producer_ref use int(time.time() * 1000) NOT a UUID suffix? Is there a verdict comment stating the outcome?",
+      "executor_note": "Verified the D11 reproduction uses distinct `source_channel_id` values and drives the downstream admin payment flow, not the intent-dedupe layer. The fix in `src/features/admin_chat/tools.py` uses `int(time.time() * 1000)` rather than a UUID suffix, and the regression test carries a verdict comment stating the collision was reproduced and fixed.",
+      "verdict": ""
+    },
+    {
+      "id": "SC14",
+      "task_id": "T14",
+      "question": "Is hypothesis added to requirements.txt? Does the RuleBasedStateMachine include a reconcile_with_chain rule? Are all 5 invariants checked after every rule, with the reconciliation edge explicitly NOT treated as a backward terminal transition?",
+      "executor_note": "Verified `hypothesis` was added to `requirements.txt`, the `RuleBasedStateMachine` includes a `reconcile_with_chain` rule, and the file defines all five invariants. The terminal-state invariant only blocks backward transitions after `confirmed/cancelled`, so reconciliation from `failed/manual_hold` is intentionally not treated as a backward terminal transition.",
+      "verdict": ""
+    },
+    {
+      "id": "SC15",
+      "task_id": "T15",
+      "question": "Does docs/payments.md include the state machine ASCII diagram with reconciliation edges, the PaymentActorKind\u00d7producer table, the reconciliation contract (why force_reconcile_* bypasses guards and that it's only reachable via /payment-resolve), and file:line pointers? Is it \u2264400 lines?",
+      "executor_note": "Verified `docs/payments.md` includes the state machine ASCII diagram with reconciliation edges, the current `PaymentActorKind x producer` table derived from `src/features/payments/producer_flows.py`, the reconciliation contract explaining why `force_reconcile_*` intentionally bypasses normal guards and that reconciliation is only reachable via `/payment-resolve`, and code/SQL file:line pointers throughout. The file is 303 lines long.",
+      "verdict": ""
+    },
+    {
+      "id": "SC16",
+      "task_id": "T16",
+      "question": "Does docs/runbook-payments.md cover all six scenarios (manual_hold, failed, ghost-verified wallet, DM undelivered, RPC down, budget cap)? Does the scheduler wire-up section explicitly flag the choice as an operator decision? Is there NO CI workflow file shipped?",
+      "executor_note": "Verified `docs/runbook-payments.md` covers all six required scenarios (`manual_hold`, `failed`, ghost-verified wallet, DM undelivered, RPC down, budget cap), includes a scheduler wire-up section explicitly marked `OPERATOR DECISION`, and no CI workflow or Railway config file was added as part of this batch.",
+      "verdict": ""
+    },
+    {
+      "id": "SC17",
+      "task_id": "T17",
+      "question": "Does scripts/check_payment_invariants.py implement all 5 checks (a-e)? Does it exit nonzero on violation? Does the synthetic-violation fixture test each check? Is there NO CI workflow file shipped alongside?",
+      "executor_note": "Verified `scripts/check_payment_invariants.py` implements checks (a)-(e), exits non-zero on hard violations, and has synthetic-fixture coverage for each invariant. No CI workflow or scheduler file was added.",
+      "verdict": ""
+    },
+    {
+      "id": "SC18",
+      "task_id": "T18",
+      "question": "Does SolanaClient.confirm_tx emit structured logs at all THREE branches (confirmed, not_found, errored) with event='tx_confirm_decision' in extra? Are the test patches asserting the extra dict shape?",
+      "executor_note": "Verified `SolanaClient.confirm_tx` emits structured `tx_confirm_decision` logs for confirmed, not_found, and errored branches, and the test module asserts the expected extra-dict shape for each branch.",
+      "verdict": ""
+    },
+    {
+      "id": "SC19",
+      "task_id": "T19",
+      "question": "Does the full pytest suite pass green? Do the Phase D verdict comments cite Postgres semantics for T12 and report T13 outcome clearly? Does check_payment_invariants.py exit nonzero on synthetic violations? Was the throwaway reconcile repro script deleted after confirming the fix?",
+      "executor_note": "Verified the full pytest suite passed green (`160 passed, 2 warnings`), the Phase D verdict comments explicitly cite Postgres semantics for T12 and clearly report the T13 collision-fix outcome, the invariants audit path was proven to exit nonzero on synthetic violations via a throwaway harness around `scripts/check_payment_invariants.py`, and the temporary reconcile/audit verification scripts were deleted afterward.",
+      "verdict": ""
+    }
+  ],
+  "meta_commentary": "Execution order: Phase B (T1-T5) \u2192 Phase C (T6-T8) \u2192 Phase A (T9-T11) \u2192 Phase D (T12-T14) \u2192 Phase E (T15-T16) \u2192 Phase F (T17-T18) \u2192 Final verify (T19). Phase A MUST run after B/C because the new tests defend the refactor, and behavior-preservation is the gate for T9. Key judgment calls: (1) T1's force_reconcile_* primitives are NEW and intentionally bypass the normal mark_payment_* strict guards \u2014 this is a deliberate correctness choice, not a bug; the tx_signature_history append and WARNING log are the accountability mechanism. (2) T4's /payment-resolve is slash-command-ONLY; there must be NO execute_payment_resolve admin_chat LLM tool \u2014 this preserves the prompt-injection closure from the hardening megaplan. (3) T12's verdict MUST cite FOR UPDATE SKIP LOCKED + Postgres read-committed isolation as the proof, NOT the fake-DB test. The phrase 'proven safe by this test' is forbidden; the correct phrasing is 'proven safe by the documented Postgres semantics; this test is a sanity check'. (4) T13's reproduction must target the DOWNSTREAM _start_admin_payment_flow / handle_payment_result call sites, NOT execute_initiate_payment's intent-dedupe layer \u2014 use distinct source_channel_ids. (5) T13 fix uses int(time.time()*1000) for millisecond precision; UUID suffix is REJECTED because it would break legitimate replay idempotency. (6) T11 does NOT unify admin_chat/tools.py's _redact_wallet_address etc \u2014 separate follow-up. (7) T17 ships the script only; scheduler wire-up is documented as operator decision in T16's runbook, no CI file or Railway config. (8) Preflight check: if the cleanup megaplan has not landed, Phase A must wait. Phase B/C/D can proceed against the pre-cleanup shape with minor path adjustments in T7 (payment_cog.py vs PaymentWorkerCog) and T5 (cog_load target). (9) The admin-DM approval megaplan should ideally land before T14 so hypothesis sees the ADMIN_DM actor kind; if not, note it in the test. (10) 150s appears in both T2 (blockhash expiry) and T12 (recover_inflight reclaim window) \u2014 these are independent coincidences, keep as SEPARATE constants. (11) T19's throwaway reproduction script is required by the finalize spec \u2014 write one reconcile-with-chain end-to-end scenario, run it, delete it.",
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Phase B Step 1: Add force_reconcile_* DB primitives with broad allowed_statuses and history append",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase B Step 2: Add PaymentService.reconcile_with_chain with six decision branches",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase B Step 3: Thread bot/payment_service into execute_retry_payment and execute_release_payment; gate on reconcile_with_chain",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase B Step 4: Add /payment-resolve slash command (no LLM tool equivalent)",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase B Step 5: Legacy provider='solana' row migration at worker startup",
+        "finalize_task_ids": [
+          "T5"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase C Step 6: Dynamic priority fees (75th percentile + clamp + fallback)",
+        "finalize_task_ids": [
+          "T6"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase C Step 7: Admin DM fallback to ADMIN_FALLBACK_CHANNEL_ID with ERROR log on double failure",
+        "finalize_task_ids": [
+          "T7"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase C Step 8: 'rpc_unreachable' sentinel distinct from 'timeout' in providers and payment service",
+        "finalize_task_ids": [
+          "T8"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase A Step 9: Decompose request_payment into 5 named helpers with zero behavior change",
+        "finalize_task_ids": [
+          "T9"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase A Step 10: Move rent-exempt guard into PaymentService.__init__",
+        "finalize_task_ids": [
+          "T10"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase A Step 11: Consolidate _redact_wallet into new src/common/redaction.py",
+        "finalize_task_ids": [
+          "T11"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase D Step 12: recover_inflight race \u2014 formal Postgres-semantics verdict + sanity check test",
+        "finalize_task_ids": [
+          "T12"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase D Step 13: Concurrent admin payment collision reproduction at downstream call sites + millisecond fix",
+        "finalize_task_ids": [
+          "T13"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase D Step 14: hypothesis state machine tests with 5 invariants",
+        "finalize_task_ids": [
+          "T14"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase E Step 15: docs/payments.md architecture doc",
+        "finalize_task_ids": [
+          "T15"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase E Step 16: docs/runbook-payments.md operator runbook with scheduler-wire-up section",
+        "finalize_task_ids": [
+          "T16"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase F Step 17: scripts/check_payment_invariants.py with 5 checks and synthetic-violation test",
+        "finalize_task_ids": [
+          "T17"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase F Step 18: tx_confirm_decision structured log at three branches in SolanaClient.confirm_tx",
+        "finalize_task_ids": [
+          "T18"
+        ]
+      },
+      {
+        "plan_step_summary": "Final verification: per-phase pytest + full suite + invariants script + throwaway repro",
+        "finalize_task_ids": [
+          "T19"
+        ]
+      }
+    ],
+    "orphan_tasks": [],
+    "completeness_notes": "All 18 plan steps are mapped 1:1 to tasks T1-T18, plus T19 as the mandatory final verification task per the finalize spec. Task count (19) is proportional to the substantial scope \u2014 each step involves its own files, tests, and judgment calls. T19 bundles the validation-order commands from the plan into one final sweep. No orphan tasks. Preflight check (confirming cleanup megaplan landing) is encoded as a watch_item rather than a task because it is a conditional gate, not a work item.",
+    "coverage_complete": true
+  },
+  "baseline_test_failures": [],
+  "baseline_test_command": "pytest --tb=no -q --no-header",
+  "baseline_test_note": "Baseline tests were not executed in this finalize step \u2014 finalize produces the briefing document only. The executor must run the baseline command before starting T1 to capture any pre-existing failures that are not caused by this plan's changes. T19 prescribes the full validation sweep after implementation."
+}

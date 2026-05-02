@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-09T14:15:19Z",
+  "hash": "sha256:7ac702b3cc5a5af02a799ef6d88c1d44e79d2a08fe4b571b641ea64f4bad2b94",
+  "questions": [
+    "Should admins manage scheduled posts only through the existing admin DM chat, or do you also want slash commands/buttons as a first-class UI?",
+    "For \"retweets\", do you mean native X reposts of an existing tweet URL/ID, or quote-tweets with new copy?",
+    "Must queued replies be able to target another queued item, or is replying only to an already-published tweet ID/URL enough for v1?",
+    "Is v1 allowed to use attachments from an existing Discord message as the asset source, or do you need arbitrary file uploads into the queue?",
+    "What exactly should \"publish daily\" mean: each queue item carries its own `publish_at`, there is one fixed daily publish slot, or the bot should post the next queued item once per day?",
+    "Which timezone should scheduling use for admin-entered publish times?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "An admin can create, list, cancel, and retry scheduled social-post jobs from the supported admin surface, and each queue row persists `status`, `post_type`, `publish_at`, and normalized source/target IDs.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Due scheduled `tweet` and `reply` jobs publish through the existing sharing flow (`Sharer.finalize_sharing`) and successful jobs store the resulting tweet URL and tweet ID on the queue row.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Due scheduled `retweet` jobs use a native retweet/repost API branch and finish with either `published` or `failed` status plus the target tweet ID recorded on the queue row.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Queue claiming is DB-backed, so a single due row is posted at most once across poll cycles, restarts, or multiple bot instances.",
+      "priority": "must"
+    },
+    {
+      "criterion": "If the bot restarts after jobs become due, overdue queued rows are picked up on the next scheduler pass instead of being lost.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Existing immediate `share_to_social` behavior still works for standalone posts and thread replies after the scheduling changes land.",
+      "priority": "must"
+    },
+    {
+      "criterion": "A committed regression harness covers enqueue/list/cancel/retry, due-row claim idempotency, scheduled tweet/reply publishing, scheduled retweet publishing, and exits successfully.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Scheduled tweet/reply jobs reuse the current share pipeline instead of duplicating media download, caption, and announcement logic.",
+      "priority": "should"
+    },
+    {
+      "criterion": "New scheduler logic stays isolated to a small queue module/cog plus DB helpers, with only minimal new branches in `tools.py`, `sharer.py`, and `social_poster.py`.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual staging smoke confirms one scheduled tweet, one scheduled reply, and one scheduled retweet publish correctly against a non-production X account.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "V1 queue management will live in the existing admin chat flow; no new dashboard or slash-command UI is required unless clarified otherwise.",
+    "V1 media-backed scheduled tweet/reply jobs will reference an existing Discord message for assets rather than introducing arbitrary file uploads into the queue.",
+    "Scheduling will use one-off absolute `publish_at` timestamps stored in UTC; recurring schedules are out of scope.",
+    "Reply jobs will target already-published tweet IDs/URLs, not other queued jobs, unless clarified otherwise.",
+    "\"Retweet\" means a native X repost of an existing tweet ID/URL, not a quote-tweet with added copy.",
+    "Scheduled tweet/reply jobs should keep the current opt-out checks, announcement-channel behavior, and first-share side effects by reusing `Sharer.finalize_sharing()` where that behavior is still correct.",
+    "`scheduled_social_posts` will be a new table separate from `shared_posts`, which remains the current deletion/first-share log rather than becoming the queue source of truth."
+  ],
+  "structure_warnings": []
+}

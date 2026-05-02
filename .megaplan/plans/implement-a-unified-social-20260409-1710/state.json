@@ -1,0 +1,402 @@
+{
+  "name": "implement-a-unified-social-20260409-1710",
+  "idea": "Implement a unified social publishing system that preserves current immediate Twitter/X posting, adds scheduled queueing for tweets/replies/retweets, tracks success and failure, and is extensible to multiple outbound channels/platforms with per-channel routing and configuration.",
+  "current_state": "done",
+  "iteration": 3,
+  "created_at": "2026-04-09T15:10:24Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc",
+    "auto_approve": true,
+    "robustness": "standard",
+    "agent": ""
+  },
+  "sessions": {
+    "claude_critic": {
+      "id": "da615754-e6be-4b35-8b43-c982caaa30c7",
+      "mode": "ephemeral",
+      "created_at": "2026-04-09T17:52:42Z",
+      "last_used_at": "2026-04-09T17:52:42Z",
+      "refreshed": true
+    },
+    "claude_gatekeeper": {
+      "id": "e51c49f7-0793-4f86-b846-e9192ae91acd",
+      "mode": "ephemeral",
+      "created_at": "2026-04-09T17:53:44Z",
+      "last_used_at": "2026-04-09T17:53:44Z",
+      "refreshed": true
+    },
+    "claude_finalizer": {
+      "id": "603978a2-65e5-4fc0-97a8-e38b97ec8579",
+      "mode": "ephemeral",
+      "created_at": "2026-04-09T17:58:19Z",
+      "last_used_at": "2026-04-09T17:58:19Z",
+      "refreshed": true
+    },
+    "codex_executor": {
+      "id": "019d7365-334f-7bd0-b725-a6df8907253c",
+      "mode": "persistent",
+      "created_at": "2026-04-09T18:03:36Z",
+      "last_used_at": "2026-04-09T19:49:13Z",
+      "refreshed": true
+    }
+  },
+  "plan_versions": [
+    {
+      "version": 1,
+      "file": "plan_v1.md",
+      "hash": "sha256:720e0dc274451e3476d58d55b97ac5cae3d0bf7ecd24d0d79b98fcab9ab5e182",
+      "timestamp": "2026-04-09T17:25:23Z"
+    },
+    {
+      "version": 2,
+      "file": "plan_v2.md",
+      "hash": "sha256:06f09281caea481b29c95cb65fa984778119a023f7e5b931134ac885b4afca9c",
+      "timestamp": "2026-04-09T17:37:36Z"
+    },
+    {
+      "version": 3,
+      "file": "plan_v3.md",
+      "hash": "sha256:e1b71f5b167354791ef58436bf1760fdef00ab35e6b7f7a066dff9862719bc13",
+      "timestamp": "2026-04-09T17:45:10Z"
+    }
+  ],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-04-09T15:10:24Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-09T15:21:54Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "plan_v1_raw.txt",
+      "message": "hermes-agent not installed. Install with: pip install hermes-agent"
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-09T16:42:34Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "plan_v1_raw.txt",
+      "message": "Codex could not resolve the backend host. Try --agent claude to use a different backend."
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-09T17:01:05Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "plan_v1_raw.txt",
+      "message": "Codex plan step timed out after 180s before producing structured output. Try re-running later or using --agent claude."
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-09T17:06:21Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "plan_v1_raw.txt",
+      "message": "Codex could not resolve the backend host. Try --agent claude to use a different backend."
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-09T17:20:31Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "plan_v1_raw.txt",
+      "message": "Codex plan step timed out after 180s before producing structured output. Try re-running later or using --agent claude."
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-09T17:25:23Z",
+      "duration_ms": 261225,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "ephemeral",
+      "session_id": null,
+      "agent": "codex",
+      "output_file": "plan_v1.md",
+      "artifact_hash": "sha256:720e0dc274451e3476d58d55b97ac5cae3d0bf7ecd24d0d79b98fcab9ab5e182"
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-09T17:32:08Z",
+      "duration_ms": 263789,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "ephemeral",
+      "session_id": null,
+      "agent": "codex",
+      "output_file": "critique_v1.json",
+      "artifact_hash": "sha256:3aae4121f04d2e8fe1679b9ba8e80c7a042eb92eb2b0a12e523e16906ff02199",
+      "flags_count": 16
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-09T17:33:53Z",
+      "duration_ms": 100746,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "ephemeral",
+      "session_id": null,
+      "agent": "codex",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:14c7ff7486ae95f4bb63f15e769d29a178475c9407a557c92a746d4e4280b05e",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-09T17:37:36Z",
+      "duration_ms": 218510,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "ephemeral",
+      "session_id": null,
+      "agent": "codex",
+      "output_file": "plan_v2.md",
+      "artifact_hash": "sha256:06f09281caea481b29c95cb65fa984778119a023f7e5b931134ac885b4afca9c",
+      "flags_addressed": [
+        "FLAG-001",
+        "FLAG-002",
+        "FLAG-003",
+        "issue_hints-1",
+        "issue_hints-2",
+        "correctness-1",
+        "correctness-2",
+        "correctness-3",
+        "scope-1",
+        "scope-2",
+        "all_locations-1",
+        "all_locations-2",
+        "callers-1",
+        "callers-2",
+        "callers-3"
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-09T17:42:20Z",
+      "duration_ms": 276824,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "ephemeral",
+      "session_id": null,
+      "agent": "codex",
+      "output_file": "critique_v2.json",
+      "artifact_hash": "sha256:c00331baa8b1910da206dc9f2565d704fb9e71e459ca0ecfbe86825c56133c17",
+      "flags_count": 4
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-09T17:42:43Z",
+      "duration_ms": 17863,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "ephemeral",
+      "session_id": null,
+      "agent": "codex",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:064fd7c2b4d35b84f07da575c431cf14b3180ac15b0eb3a76177ad7af8f94dcf",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-09T17:45:10Z",
+      "duration_ms": 142916,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "ephemeral",
+      "session_id": null,
+      "agent": "codex",
+      "output_file": "plan_v3.md",
+      "artifact_hash": "sha256:e1b71f5b167354791ef58436bf1760fdef00ab35e6b7f7a066dff9862719bc13",
+      "flags_addressed": [
+        "all_locations-1",
+        "FLAG-005",
+        "correctness",
+        "all_locations"
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-09T17:50:14Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "critique_v3_raw.txt",
+      "message": "Codex critique step timed out after 300s before producing structured output. Try re-running later or using --agent claude."
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-09T17:52:42Z",
+      "duration_ms": 139960,
+      "cost_usd": 0.583068,
+      "result": "success",
+      "session_mode": "ephemeral",
+      "session_id": "da615754-e6be-4b35-8b43-c982caaa30c7",
+      "agent": "claude",
+      "output_file": "critique_v3.json",
+      "artifact_hash": "sha256:c59ed524b448894a4d058ee4d10129ffecfb1cf5d8fe1404330191c8e9d51a76",
+      "flags_count": 6
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-09T17:53:44Z",
+      "duration_ms": 56656,
+      "cost_usd": 0.26649775,
+      "result": "success",
+      "session_mode": "ephemeral",
+      "session_id": "e51c49f7-0793-4f86-b846-e9192ae91acd",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:ab4104e5979b29756c479a6c68338067621c8f1d02dd60b066ea3a2b99e8cbd3",
+      "recommendation": "PROCEED"
+    },
+    {
+      "step": "finalize",
+      "timestamp": "2026-04-09T17:58:19Z",
+      "duration_ms": 267105,
+      "cost_usd": 0.8633046500000001,
+      "result": "success",
+      "session_mode": "ephemeral",
+      "session_id": "603978a2-65e5-4fc0-97a8-e38b97ec8579",
+      "agent": "claude",
+      "output_file": "finalize.json",
+      "artifact_hash": "sha256:b16ada6fb7a0b114e2f9ab043ec4ef6466abde97218ddd06c1a16086b8c69a54"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-09T18:47:01Z",
+      "duration_ms": 2915362,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7365-334f-7bd0-b725-a6df8907253c",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:c6cc557c6384c0b5ddc7552c1b29b33d1938b2aaa6631b5fbc87b9e233c1273d",
+      "finalize_hash": "sha256:459e39185049aba19bcef845253e472b4ce6277a627ff723f5f6b551973ad41a",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "review",
+      "timestamp": "2026-04-09T19:36:56Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "review_v3_raw.txt",
+      "message": "Codex request timed out. Try --agent claude to use a different backend."
+    },
+    {
+      "step": "review",
+      "timestamp": "2026-04-09T19:43:35Z",
+      "duration_ms": 267885,
+      "cost_usd": 0.0,
+      "result": "needs_rework",
+      "session_mode": "ephemeral",
+      "session_id": null,
+      "agent": "codex",
+      "output_file": "review.json",
+      "artifact_hash": "sha256:b31defca7dc8c3f907bd8020b580d16f6c367c88a67f559807547b410c4646bc",
+      "finalize_hash": "sha256:0c18747001035bf157c0dfb84f72f228389d8dd454c3923cfc40ec47eee55319"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-09T19:49:13Z",
+      "duration_ms": 321699,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7365-334f-7bd0-b725-a6df8907253c",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:102d544a58b4b775f26ee3b053a6ce6231f9424bd437fe44e6775451c447d215",
+      "finalize_hash": "sha256:c90ded87b45a32d8ca86ecc5e1df1faae001ede1265850f18fbcbec3243a187e",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "review",
+      "timestamp": "2026-04-09T20:31:05Z",
+      "duration_ms": 249673,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "ephemeral",
+      "session_id": null,
+      "agent": "codex",
+      "output_file": "review.json",
+      "artifact_hash": "sha256:38f3d36d86bf62fe6594e10d33b424f83a231ac1e0a10cfeaffa69a5de2361e6",
+      "finalize_hash": "sha256:c9e537801b083d92566d515c05bbe0c8aab8718721e039da8a9af5c1585018ac"
+    }
+  ],
+  "meta": {
+    "significant_counts": [
+      15,
+      4,
+      4
+    ],
+    "weighted_scores": [
+      26.5,
+      7.0,
+      6.5
+    ],
+    "plan_deltas": [
+      90.05,
+      32.29
+    ],
+    "recurring_critiques": [
+      [],
+      [],
+      []
+    ],
+    "total_cost_usd": 1.712871,
+    "overrides": [],
+    "notes": []
+  },
+  "last_gate": {
+    "recommendation": "PROCEED",
+    "rationale": "Score trajectory shows strong convergence (26.5 \u2192 7.0 \u2192 6.5) with 17 flags resolved and zero recurring critiques. The four remaining open flags are execution-level details and operational prerequisites, not design-direction problems. None indicate the wrong subsystem, wrong root cause, or architectural misfit. Further iteration would produce diminishing returns \u2014 these concerns are best addressed as implementation constraints during execution rather than through another plan revision cycle.",
+    "signals_assessment": "Weighted score stabilized at 6.5 from 7.0, with plan delta dropping to 32% \u2014 the plan is converging. All 17 previously raised flags were resolved across three iterations, and no critiques recurred. The four remaining flags are: a style concern about mixing three DB access patterns in one subsystem, a missing explicit mention of adding new tables to the admin agent query whitelist, an operational prerequisite about Supabase RPC dashboard setup, and a scoping question about whether route management tooling ships in v1. Preflight checks all pass. No debt overlaps or escalated subsystems apply.",
+    "warnings": [
+      "During execution, explicitly add `social_publications` and `social_channel_routes` to the QUERYABLE_TABLES whitelist in tools.py and update the agent.py system prompt table list \u2014 the plan covers this implicitly in Step 6.5-6.6 but does not name the exact locations.",
+      "Before implementing the RPC claim function, verify that the Supabase project dashboard allows creating SQL functions via migration or the SQL editor \u2014 this is a first-time integration pattern for this codebase.",
+      "For the first release, route resolution should fall back to guild-default when no channel-specific route exists; route management admin commands are out of scope unless the implementer adds them."
+    ],
+    "settled_decisions": [
+      {
+        "id": "db-access-pattern",
+        "decision": "Use the Supabase fluent client (.table().insert/update/select().execute()) for all normal CRUD on social_publications. Reserve RPC exclusively for the atomic claim_due_social_publications function. Do not introduce raw SQL via execute_query for this subsystem.",
+        "rationale": "Resolves the correctness flag about mixed access patterns by constraining to two patterns (fluent + RPC) instead of three, matching the dominant codebase style for CRUD while using RPC only where atomicity requires it."
+      },
+      {
+        "id": "admin-query-whitelist",
+        "decision": "Add social_publications and social_channel_routes to QUERYABLE_TABLES in tools.py (around line 70 and line 1637) and update the table list in the agent.py system prompt (around line 38).",
+        "rationale": "Ensures the admin agent can query the new tables. Explicitly called out here so the implementer does not miss it during Step 6."
+      },
+      {
+        "id": "v1-routing-scope",
+        "decision": "First release ships guild-default routing only. The social_channel_routes table is created but route management admin commands are out of scope. Channel-specific routes can be seeded via direct DB operations.",
+        "rationale": "Keeps scope bounded while leaving the table structure ready for future per-channel routing admin tooling."
+      }
+    ],
+    "passed": true,
+    "preflight_results": {
+      "project_dir_exists": true,
+      "project_dir_writable": true,
+      "success_criteria_present": true,
+      "claude_available": true,
+      "codex_available": true
+    },
+    "orchestrator_guidance": "Plan passed gate and preflight. Proceed to finalize. Verify unresolved flags against the plan and project code before accepting."
+  }
+}

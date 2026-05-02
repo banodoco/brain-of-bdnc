@@ -32,11 +32,14 @@ class SocialPublishService:
         self.logger = logger_instance or logger
         if providers is None:
             from .providers.x_provider import XProvider
+            from .providers.youtube_zapier_provider import YouTubeZapierProvider
 
             default_x_provider = XProvider()
+            default_youtube_provider = YouTubeZapierProvider()
             self.providers = {
                 'twitter': default_x_provider,
                 'x': default_x_provider,
+                'youtube': default_youtube_provider,
             }
         else:
             self.providers = providers

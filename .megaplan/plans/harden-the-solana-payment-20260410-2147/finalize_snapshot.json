@@ -1,0 +1,412 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Null recipient_discord_id fail-closed in PaymentService.confirm_payment (src/features/payments/payment_service.py:193-202): when privileged_override is False, reject unless expected_user_id AND confirmed_by_user_id are both non-null and equal; log WARN; return None. Audit every confirm_payment call site (admin_chat_cog.py:258-262, grants_cog.py:596-601, payment_cog button-confirmation view) and add a one-line inline comment confirming each passes matching recipient IDs. privileged_override=True must still bypass the check.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T2",
+      "description": "Prompt-injection verification + defensive pop in execute_initiate_payment (src/features/admin_chat/tools.py:2438). Grep ADMIN_CHAT_TOOLS schemas for any wallet_address / address / solana_address / recipient_wallet / wallet fields and strip/harden if found. Add a docstring stating wallets MUST come from wallet_registry, and at the top of execute_initiate_payment add a defensive params.pop('wallet_address', None) + params.pop('recipient_wallet', None) with a WARN log when either key is present. Record explicitly in executor_notes that the P0 prompt-injection premise was already substantially satisfied by prior work \u2014 this step is verification + defensive assertion + regression test.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T3",
+      "description": "Git history secret audit (memo only, no code change). Run: git log -p -S 'SOLANA_PRIVATE_KEY' -- .; git log -p -S 'HELIUS_API_KEY' -- .; git log -p -S 'ANTHROPIC_API_KEY' -- .; git log -p -S 'from_bytes' -- .; git log --all --full-history -- '**/*.env*' '**/.env' '**/secrets*'; git log -p -G 'sk-[a-zA-Z0-9]{20,}' --all; gitleaks detect --source . --no-banner (if installed). Record findings verbatim in executor_notes. If any real secret is found, STOP and flag to the user for rotation before proceeding with later tasks.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T4",
+      "description": "Add DatabaseHandler.has_active_payment_or_intent(guild_id, discord_user_id) -> bool in src/common/db_handler.py. Query 1: payment_requests WHERE guild_id=? AND recipient_discord_id=? AND status NOT IN ('confirmed','failed','manual_hold','cancelled') LIMIT 1. Query 2: admin_payment_intents WHERE guild_id=? AND recipient_user_id=? AND status NOT IN ('completed','failed','cancelled') LIMIT 1 \u2014 verify exact non-terminal enum values by reading the table definition + db_handler.create_admin_payment_intent BEFORE coding. Use _gate_check(guild_id) + supabase guard. Return True if either query yields a row.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T5",
+      "description": "Exception-based upsert_wallet blocking. (1) Add class WalletUpdateBlockedError(Exception) to db_handler.py (or src/common/exceptions.py if one already exists \u2014 grep first). (2) In upsert_wallet (db_handler.py:1417-1465) the existing-wallet lookup at line ~1431 runs FIRST; THEN, if existing.wallet_address differs from incoming address AND has_active_payment_or_intent(guild_id, discord_user_id) returns True, log WARN and raise WalletUpdateBlockedError. Identical-address upserts and no-prior-row upserts must NEVER be blocked. (3) Wrap upsert_wallet call in admin_chat_cog._handle_wallet_received (admin_chat_cog.py:193-218) \u2014 catch WalletUpdateBlockedError and call _notify_admin_review with an 'active payment in flight' message, then return. (4) Wrap upsert_wallet call in grants_cog._start_payment_flow (grants_cog.py:550-565) \u2014 catch WalletUpdateBlockedError and send a thread message explaining active payment and return. (5) Grep .upsert_wallet( across the repo to confirm only these two callers exist; if a third is found, add equivalent handling.",
+      "depends_on": [
+        "T4"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T6",
+      "description": "Idempotency collision detection with index-aware branching in PaymentService.request_payment (src/features/payments/payment_service.py:54-61 and 167-174). (1) Confirm get_payment_requests_by_producer at db_handler.py:1853 returns all statuses; add an inline comment documenting this invariant. (2) Rework the early-return: query all_prior_rows, normalize incoming wallet string, define INDEX_EXCLUDED={'failed','cancelled'} and TERMINAL_FOR_RETURN={'confirmed','failed','manual_hold','cancelled'}. Iterate once to find collision_row (different wallet) and blocking_prior_row (any non-index-excluded row). The idempotent early-return must ONLY fire for an active, same-wallet prior row \u2014 terminal rows MUST NOT short-circuit (add inline comment explaining why). (3) Branch A \u2014 slot reuse after terminal failure (blocking_prior_row is None): build record normally but set record['status']='manual_hold' and record['last_error']='idempotency collision: prior wallet differs', call create_payment_request, then await on_cap_breach(created). (4) Branch B \u2014 prior row still holds index slot (blocking_prior_row is not None): log WARN, await on_cap_breach(blocking_prior_row), return None without attempting any insert. (5) Fallback path at 167-174 (post-insert duplicate re-read): apply the same wallet-mismatch check against the re-read row; mismatch \u2192 log WARN, fire on_cap_breach, return None; match \u2192 return canonical row.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T7",
+      "description": "Add DatabaseHandler.get_rolling_24h_payout_usd(guild_id, provider) -> float in src/common/db_handler.py. Query payment_requests WHERE guild_id=? AND provider=? AND is_test=false AND status IN ('pending_confirmation','queued','processing','submitted','confirmed') AND created_at >= now() - interval '24 hours'. Sum amount_usd (null\u21920.0); return float. Add a comment documenting: (a) Supabase REST has no serializable transaction so residual burst-race window is ~RPC latency (100-500ms); manual_hold + admin DM is the fail-closed backstop; (b) this helper depends on upstream request_payment persisting derived USD for amount_token-only capped callers (see T8).",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T8",
+      "description": "PaymentService cap enforcement with persisted derived USD (src/features/payments/payment_service.py). (1) Extend __init__ with kwargs per_payment_usd_cap=None, daily_usd_cap=None, capped_providers=None, on_cap_breach=None. Normalize capped_providers to a frozenset of lowercased strings; stash on_cap_breach. Defaults (None) disable cap logic entirely. (2) In request_payment, AFTER amount_token derivation (lines 90-119) and BEFORE create_payment_request (line 163), inject the cap block. Gate on (not is_test AND provider.lower() in capped_providers). (3) amount_usd caller: cap_usd = normalized_amount_usd. (4) amount_token-only capped caller: derive USD via provider.get_token_price_usd() * amount_token; persist into derived_usd_for_record + derived_price_for_record. If price lookup raises or returns None/0, cap_usd stays None \u2192 fail-closed to manual_hold with last_error='cap check unavailable: token price missing'. (5) Compute cap_breach: per-payment cap exceeded, OR daily cap exceeded (rolling = db_handler.get_rolling_24h_payout_usd(guild_id, provider_key); rolling + cap_usd > daily_cap). (6) CRITICAL: stamp record['amount_usd']=derived_usd_for_record, record['token_price_usd']=derived_price_for_record, AND mirror onto record['request_payload']['amount_usd'] and record['request_payload']['token_price_usd'] \u2014 but ONLY inside the capped+derived branch. NEVER stamp for uncapped providers or is_test=True (that would break existing tests asserting amount_usd is None). (7) If cap_breach is set: log WARN with redacted wallet, set record['status']='manual_hold', record['last_error']=cap_breach. (8) After create_payment_request returns created and if cap_breach and self._on_cap_breach: await self._on_cap_breach(created). This same path also receives Branch A manual_hold rows from T6. (9) Do NOT add cap logic in execute_payment \u2014 scheduler path must stay untouched. (10) BEFORE writing the code, re-grep amount_usd in tests/test_admin_payments.py and tests/test_social_publish_service.py to confirm every existing amount_usd-is-None assertion uses 'solana' or 'solana_native' (outside default capped_providers); record grep results in executor_notes.",
+      "depends_on": [
+        "T6",
+        "T7"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T9",
+      "description": "Admin success DM sibling in PaymentCog (src/features/payments/payment_cog.py). (1) In __init__, read env: self._admin_success_dm_threshold_usd = float(os.getenv('ADMIN_PAYMENT_SUCCESS_DM_THRESHOLD_USD','100')); self._admin_success_dm_providers = frozenset(lowercased split of os.getenv('ADMIN_PAYMENT_SUCCESS_DM_PROVIDERS','solana_payouts')). Reading env inside __init__ keeps both PaymentCog construction sites (main.py:233 and the setup() hook at payment_cog.py:503) in sync without modification. (2) Add new method _dm_admin_payment_success(self, payment) modeled on _dm_admin_payment_failure (payment_cog.py:273-333) but with distinct prefix '\u2705 **Payment Completed**', NO 'requires manual review' line, include amount_usd (populated end-to-end for capped amount_token callers via T8) alongside amount_token, redact wallet via existing _redact_wallet helper. (3) In _handle_terminal_payment (around lines 267-272), alongside the existing failure branch, add: if status=='confirmed' and not is_test and provider.lower() in self._admin_success_dm_providers and float(payment.get('amount_usd') or 0) >= self._admin_success_dm_threshold_usd: await self._dm_admin_payment_success(payment). (4) Do NOT modify _dm_admin_payment_failure.",
+      "depends_on": [
+        "T8"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T10",
+      "description": "Wire caps + on_cap_breach into main.py (around lines 157-165). Add env reads: per_payment_usd_cap = float(os.getenv('ADMIN_PAYOUT_PER_PAYMENT_USD_CAP','500')); daily_usd_cap = float(os.getenv('ADMIN_PAYOUT_DAILY_USD_CAP','2000')). Extend PaymentService(...) construction with per_payment_usd_cap, daily_usd_cap, capped_providers=('solana_payouts',), on_cap_breach=_bind_cap_breach_dm(bot) \u2014 where _bind_cap_breach_dm returns an async closure that looks up bot.get_cog('PaymentCog') and awaits _dm_admin_payment_failure(payment) (the failure DM wording already fits both cap-breach and collision-blocked rows since both land in admin manual-review). Log effective caps at startup with logger.info. Do NOT touch payment_cog.py:503.",
+      "depends_on": [
+        "T8",
+        "T9"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T11",
+      "description": "Log audit memo. Grep across src/ for: SOLANA_PRIVATE_KEY / HELIUS_API_KEY / ANTHROPIC_API_KEY (must appear only in os.environ/os.getenv, never in logger.*); Keypair.from_bytes / Keypair( / SolanaClient( with no exc_info=True near key material; case-insensitive 'logger\\..*os\\.environ' and 'logger\\..*(private_key|secret)'. Document findings in executor_notes. Add a scrubbing filter in src/common/log_handler.py ONLY if a real leak path is found \u2014 otherwise record 'no leak detected, no code change' and move on.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T12",
+      "description": "Add RLS posture comment block at the very top of sql/payments.sql. Content: RLS is already ENABLED on wallet_registry, payment_channel_routes, payment_requests (referenced below); access mediated exclusively via DatabaseHandler using Supabase service role (bypasses RLS); anon/authenticated roles have all privileges revoked; no policies defined because no non-service-role access path exists; writes parameterized via supabase-py \u2014 no raw SQL interpolation; changing posture requires writing explicit row-level policies first. COMMENT-ONLY \u2014 do NOT add ALTER TABLE ENABLE RLS or any schema changes.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T13",
+      "description": "Extend PaymentService tests (tests/test_admin_payments.py, tests/test_social_publish_service.py, tests/conftest.py). (1) Inspect the inline fake-db classes at tests/test_admin_payments.py:497-729 and tests/test_social_publish_service.py:474-685, plus conftest.py shared fixtures. Additively add has_active_payment_or_intent(guild_id, user_id), get_rolling_24h_payout_usd(guild_id, provider) (default 0.0), upsert_wallet raising WalletUpdateBlockedError when configured; import WalletUpdateBlockedError from wherever T5 places it. (2) Before writing any test, re-grep 'amount_usd' in both test files and confirm every existing assertion uses uncapped provider names ('solana','solana_native'); record results. (3) Add fail-to-pass tests: test_confirm_rejects_null_recipient_discord_id; test_confirm_privileged_override_bypasses_null_check; test_confirm_rejects_mismatched_user; test_request_payment_per_payment_cap_manual_holds; test_request_payment_amount_token_path_cap_breach; test_request_payment_amount_token_path_stamps_amount_usd (pins derived USD is persisted end-to-end); test_request_payment_amount_token_path_missing_price_holds; test_request_payment_amount_token_uncapped_provider_preserves_none (pins provider.price_calls==0 on uncapped, amount_usd stays None); test_request_payment_rolling_daily_cap_manual_holds; test_request_payment_rolling_daily_cap_sees_derived_usd; test_slot_reuse_collision_detected_after_failure (Branch A); test_slot_reuse_collision_blocked_when_prior_active (Branch B, no insert); test_slot_reuse_same_wallet_creates_fresh_row_after_failure; test_idempotent_return_for_nonterminal; test_upsert_wallet_raises_during_active_intent (cover BOTH admin_chat._handle_wallet_received AND grants_cog._start_payment_flow catching the exception); test_upsert_wallet_unblocked_after_terminal (also covers identical-address no-block); test_admin_success_dm_over_threshold (+ under-threshold does NOT DM; failure path unchanged); test_admin_success_dm_sees_derived_usd; test_execute_payment_uses_stored_wallet (regression pin \u2014 frozen-string wallet); test_initiate_payment_tool_rejects_wallet_address_arg.",
+      "depends_on": [
+        "T1",
+        "T2",
+        "T5",
+        "T6",
+        "T8",
+        "T9"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T14",
+      "description": "Full test validation. Run pytest tests/test_admin_payments.py first (all new fail-to-pass tests must go green). Then pytest tests/test_scheduler.py tests/test_social_publish_service.py (regression pin: caps do not leak into scheduler or social flows; uncapped providers still see amount_usd is None). Finally pytest tests/ end-to-end. Fix any failures by correcting code, not tests, unless a test violates a newly-established invariant. Also write a short throwaway script that reproduces one of the adversarial scenarios end-to-end (e.g. an amount_token-only admin-chat payout crossing the daily cap through the persisted-USD path), run it to confirm the fix, then delete the script. Do NOT create permanent new test files \u2014 extend existing suites only. In executor_notes, record: (a) pass/fail counts per suite, (b) any unrelated pre-existing failures surfaced, (c) manual read-through audit of payment_service.request_payment + both upsert_wallet callers confirming fail-closed invariants, (d) git-history audit findings from T3, (e) log audit findings from T11.",
+      "depends_on": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6",
+        "T7",
+        "T8",
+        "T9",
+        "T10",
+        "T11",
+        "T12",
+        "T13"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    }
+  ],
+  "watch_items": [
+    "DEC-013 / FLAG-001 root cause: derived USD MUST be persisted into record['amount_usd'], record['token_price_usd'], AND the request_payload mirrors \u2014 but ONLY inside the capped_providers + amount_token branch in T8. Uncapped providers and is_test rows must NEVER get amount_usd stamped, or tests/test_admin_payments.py::test_request_payment_amount_token (line 684-709, uses 'solana') and tests/test_social_publish_service.py:474-497 (uses 'solana_native', is_test=True) will regress. They also assert provider.price_calls == 0, so the derivation branch must not call get_token_price_usd() for uncapped providers either.",
+    "upsert_wallet existing-wallet lookup runs FIRST (db_handler.py:1431), THEN the has_active_payment_or_intent guard. Identical-address upserts and no-prior-row upserts must NOT be blocked. Do NOT widen the block window.",
+    "Idempotency collision (T6): the partial unique index uq_payment_requests_active_producer_ref is WHERE status NOT IN ('failed','cancelled'). manual_hold IS covered by the index. Branch A (all prior rows failed/cancelled) can insert a fresh manual_hold. Branch B (any prior row in a non-excluded status) MUST NOT attempt the insert \u2014 return None and fire on_cap_breach with the prior row as payload.",
+    "The idempotent early-return MUST NOT short-circuit on terminal rows. Only an active, same-wallet prior row may be returned as-is; a failed/cancelled/manual_hold prior row must fall through to new-request handling. Add an inline comment explaining why.",
+    "Collision detection + idempotent early-return must be reordered so collision detection runs BEFORE the same-wallet early return. A different-wallet collision against an active prior row must hit Branch B, not the early return.",
+    "Scheduler path (claim_due_payment_requests \u2192 execute_payment) MUST remain untouched \u2014 caps run exclusively in request_payment. Do NOT double-check caps in execute_payment or downstream retries.",
+    "execute_payment at payment_service.py:244 already uses the frozen stored recipient_wallet \u2014 DO NOT change it. Regression test only.",
+    "Rolling 24h helper MUST include in-flight statuses (pending_confirmation, queued, processing, submitted, confirmed); exclude manual_hold/failed/cancelled. Residual burst-race window (~RPC latency) is documented in the helper comment; manual_hold + admin DM is the backstop.",
+    "Both PaymentCog construction sites (main.py:233 and payment_cog.py:503 setup() hook) must work WITHOUT modification \u2014 success-DM env vars are read inside PaymentCog.__init__, not passed through the constructor signature.",
+    "Both upsert_wallet callers \u2014 admin_chat_cog._handle_wallet_received (193-218) AND grants_cog._start_payment_flow (550-565) \u2014 MUST catch WalletUpdateBlockedError explicitly. Grants test coverage is required, not just admin_chat.",
+    "DEC-014 / disputed FLAG-004: null-recipient fail-closed is log WARN + return None only. The calling button-confirmation view surfaces UX to the user via its existing path; NO admin DM is wired for null-recipient rejection. The success criterion text that bundles null-recipient with cap-breach DM wiring is a wording mismatch \u2014 only cap-breach and collision paths fire on_cap_breach.",
+    "DEC-015: cap-breach admin DM REUSES _dm_admin_payment_failure (wording already fits manual-review semantics). Do NOT create a new sibling for cap-breach. _dm_admin_payment_success IS a new sibling, distinct from both.",
+    "DEC-016: Branch B on_cap_breach payload is the PRIOR row (for operator triage), not a synthesized dict with a fake status.",
+    "DEC-017: token price freshness \u2014 use whatever provider.get_token_price_usd() returns, including cached prices. No freshness guarantee; same cache grants already uses.",
+    "privileged_override=True must remain usable for any future test-payment auto-advance path. Verify T1's tightened rule still lets the current admin_chat and grants auto-confirm paths through under normal matching recipient IDs without needing privileged_override.",
+    "Do NOT change the partial-index predicate on uq_payment_requests_active_producer_ref \u2014 collision handling stays in app code.",
+    "Do NOT add LLM-sourced wallet parameters anywhere. If T2's grep finds any sibling admin_chat tool accepting wallet_address text, harden or remove it in the same plan.",
+    "All new cap/collision/success-DM logging MUST use existing _redact_wallet helpers \u2014 never log raw wallet addresses, env var values, or key material.",
+    "Default thresholds: per_payment=$500, daily=$2000/guild, success DM=$100, capped_providers=('solana_payouts',). Baked into main.py with env overrides. Grants (solana_grants) must NOT be affected.",
+    "RLS on sql/payments.sql is already ENABLED (lines ~192-199). Step 12 is COMMENT-ONLY. Do NOT add ALTER TABLE statements.",
+    "P0 prompt-injection premise is already substantially satisfied. T2's work is verification + defensive pop + test \u2014 NOT a rewrite. State this explicitly in executor_notes so review doesn't mark prep as incomplete.",
+    "During T14, grep amount_usd across the repo (Discord notify embeds, admin channel messages, analytics sinks) for sites that previously depended on the null-for-token-denominated contract. Our change populates amount_usd for admin-chat capped payouts; downstream reporting will start seeing real USD, which is a welcome improvement but should be surfaced if any consumer explicitly depends on the null contract.",
+    "Debt watch: do not worsen admin-chat-classification (anthropic client init), admin-payments-intent-state (PaymentConfirmView has no direct bridge to admin_payment_intents), db-handler-social-publications mixed access patterns, or db-handler-supabase-infrastructure (supabase rpc untested)."
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Does confirm_payment now reject when expected_user_id OR confirmed_by_user_id is None, unless privileged_override=True? Did the executor verify every call site (admin_chat auto-confirm at admin_chat_cog.py:258-262, grants auto-confirm at grants_cog.py:596-601, payment_cog button view) passes matching recipient IDs so the tightened rule does not break existing flows?",
+      "executor_note": "Read the diff on payment_service.py:193-202 and confirm the new guard is `if not privileged_override: if expected_user_id is None or confirmed_by_user_id is None or int(expected_user_id) != int(confirmed_by_user_id): return None`. Then check that each confirm_payment call site has an inline comment stating it passes matching recipient IDs.",
+      "verdict": ""
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Did the grep of ADMIN_CHAT_TOOLS surface any tool schema accepting wallet_address / recipient_wallet / address? Is execute_initiate_payment now defensively popping both keys with a WARN log? Did the executor record that P0 prompt-injection was already substantially satisfied by prior work?",
+      "executor_note": "Verify executor_notes contains the grep output for wallet_address fields and the explicit 'already substantially satisfied' statement. Open tools.py:2438 and confirm the pop+WARN block is at the top of execute_initiate_payment.",
+      "verdict": ""
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Were all git-history audit commands actually run and their output captured in executor_notes? If any real secret was surfaced, did the executor STOP and flag to the user for rotation before proceeding?",
+      "executor_note": "Read executor_notes for each of the 6+ git log commands and confirm either 'no findings' or a verbatim redacted summary. If any real secret is present, verify the plan paused before T4 and flagged the user.",
+      "verdict": ""
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Does has_active_payment_or_intent use the correct non-terminal status predicates for BOTH payment_requests AND admin_payment_intents? Did the executor verify the admin_payment_intents enum values against the actual table/create_admin_payment_intent implementation rather than hardcoding a guess?",
+      "executor_note": "Grep admin_payment_intents status enum definitions and cross-check the predicate in the new helper. Confirm executor_notes records the enum values that were verified.",
+      "verdict": ""
+    },
+    {
+      "id": "SC5",
+      "task_id": "T5",
+      "question": "Does upsert_wallet raise WalletUpdateBlockedError only when (a) existing wallet differs AND (b) has_active_payment_or_intent returns True? Do BOTH admin_chat._handle_wallet_received AND grants_cog._start_payment_flow catch the exception and surface a user-facing message? Did the grep of .upsert_wallet( confirm no other callers exist?",
+      "executor_note": "Open db_handler.py:1417-1465 and verify the existing-wallet lookup runs FIRST, then the guard. Confirm both caller sites have try/except WalletUpdateBlockedError wrappers with user-facing messages. Verify the grep-for-callers output in executor_notes.",
+      "verdict": ""
+    },
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "question": "Is collision detection index-aware? Branch A inserts a fresh manual_hold only when every prior row is failed/cancelled; Branch B returns None without attempting insert when any prior row is in a non-excluded status. Does the idempotent early-return fire ONLY for active same-wallet prior rows (never for terminal rows)? Does the fallback at 167-174 also handle wallet mismatch?",
+      "executor_note": "Read the diff on payment_service.py around the rework. Confirm INDEX_EXCLUDED and TERMINAL_FOR_RETURN sets exist, the loop builds both collision_row and blocking_prior_row, the early-return filter excludes terminal rows, and both branches (A insert, B return None) fire on_cap_breach.",
+      "verdict": ""
+    },
+    {
+      "id": "SC7",
+      "task_id": "T7",
+      "question": "Does get_rolling_24h_payout_usd filter on the correct in-flight + confirmed statuses, exclude is_test, and return a float summing amount_usd? Does its comment document both the residual burst-race window AND the upstream-persistence dependency on T8?",
+      "executor_note": "Read the new helper in db_handler.py. Verify the WHERE clause matches the plan, the return is a float (0.0 fallback), and the inline comment mentions both the Supabase RPC burst window and the Step 8 persistence dependency.",
+      "verdict": ""
+    },
+    {
+      "id": "SC8",
+      "task_id": "T8",
+      "question": "In the capped-provider + amount_token-only branch, is derived USD persisted into record['amount_usd'], record['token_price_usd'], AND both request_payload mirrors BEFORE create_payment_request runs? Is stamping gated on capped_providers + not is_test so uncapped 'solana'/'solana_native' tests and is_test paths are untouched? Is provider.get_token_price_usd() never called for uncapped providers (preserving provider.price_calls == 0)? Does missing price fail-closed to manual_hold with last_error='cap check unavailable: token price missing'? Does on_cap_breach fire after create_payment_request returns on cap breach?",
+      "executor_note": "This is the load-bearing step. Diff payment_service.py request_payment carefully. Confirm: (a) the stamping block is inside the `if not is_test and provider_key in self.capped_providers:` branch; (b) the amount_token derivation calls get_token_price_usd only inside that branch; (c) both record and record['request_payload'] are updated; (d) missing-price path sets cap_breach='cap check unavailable: token price missing'; (e) the post-insert on_cap_breach hook fires.",
+      "verdict": ""
+    },
+    {
+      "id": "SC9",
+      "task_id": "T9",
+      "question": "Is _dm_admin_payment_success a new sibling method with prefix '\u2705 **Payment Completed**' and no 'requires manual review' line? Is it gated on confirmed + not is_test + provider in _admin_success_dm_providers + amount_usd >= threshold? Does PaymentCog read env inside __init__ so both construction sites stay in sync without modification? Is _dm_admin_payment_failure unchanged?",
+      "executor_note": "Open payment_cog.py and confirm the new sibling method exists, the env reads are inside __init__, the gate in _handle_terminal_payment reads payment.get('amount_usd'), and _dm_admin_payment_failure has zero modifications.",
+      "verdict": ""
+    },
+    {
+      "id": "SC10",
+      "task_id": "T10",
+      "question": "Does main.py pass per_payment_usd_cap, daily_usd_cap, capped_providers=('solana_payouts',), and an on_cap_breach closure binding to PaymentCog._dm_admin_payment_failure into PaymentService? Are effective caps logged at startup? Was payment_cog.py:503 left untouched?",
+      "executor_note": "Diff main.py around line 157-165. Confirm the new kwargs and the _bind_cap_breach_dm closure. Check that payment_cog.py:503 setup() hook is untouched.",
+      "verdict": ""
+    },
+    {
+      "id": "SC11",
+      "task_id": "T11",
+      "question": "Were all log-audit greps actually performed and results recorded? If a real leak path was found, was a scrubbing filter added to log_handler.py; if not, does executor_notes explicitly record 'no leak detected, no code change'?",
+      "executor_note": "Verify executor_notes contains grep outputs for each target pattern. If log_handler.py was modified, check the scrubbing filter is narrowly scoped and tested.",
+      "verdict": ""
+    },
+    {
+      "id": "SC12",
+      "task_id": "T12",
+      "question": "Is the RLS posture comment block at the very top of sql/payments.sql, covering: already-enabled status, service-role-only access, anon/authenticated revoked, parameterized writes, and policy-first requirement for posture changes? Were zero ALTER TABLE statements added?",
+      "executor_note": "Open sql/payments.sql and read the first 20 lines. Confirm the comment block is comment-only and covers all five points. Diff the file to confirm zero non-comment changes.",
+      "verdict": ""
+    },
+    {
+      "id": "SC13",
+      "task_id": "T13",
+      "question": "Were the inline fake-db classes in BOTH tests/test_admin_payments.py and tests/test_social_publish_service.py extended additively (not rewritten) with has_active_payment_or_intent, get_rolling_24h_payout_usd, and WalletUpdateBlockedError support? Did the re-grep of amount_usd confirm every existing assertion uses uncapped providers? Are all fail-to-pass tests present, including the four new persistence/wiring pins (test_..._stamps_amount_usd, test_..._uncapped_provider_preserves_none, test_..._rolling_daily_cap_sees_derived_usd, test_admin_success_dm_sees_derived_usd)? Is there coverage for BOTH upsert_wallet callers (admin_chat AND grants)?",
+      "executor_note": "Grep the test files for each new test name. Confirm the fake-db classes have the new methods. Verify the amount_usd regrep output is recorded in executor_notes. Check that the upsert_wallet blocked test covers both callers.",
+      "verdict": ""
+    },
+    {
+      "id": "SC14",
+      "task_id": "T14",
+      "question": "Did pytest tests/test_admin_payments.py, tests/test_scheduler.py, tests/test_social_publish_service.py, and the full tests/ suite all pass? Did the throwaway reproducer for an amount_token-only admin-chat payout crossing the daily cap confirm the persisted-USD path end-to-end and was the script then deleted? Did the manual read-through audit confirm all fail-closed invariants?",
+      "executor_note": "Read executor_notes for pass/fail counts per suite. Confirm the throwaway reproducer script was created, run, and deleted (no new tracked files). Verify the manual read-through audit bullets match the four fail-closed invariants listed in the plan's Validation Order item 4.",
+      "verdict": ""
+    }
+  ],
+  "meta_commentary": "Heavy-robustness security hardening plan across admin_chat, payments, grants, and sql. The single subtlety behind the review loop's eight flags is: for capped providers in the amount_token-only branch, derived USD must be PERSISTED into record['amount_usd'], record['token_price_usd'], AND the request_payload mirrors BEFORE create_payment_request \u2014 and only in that branch. Get T8 right and everything else (rolling helper, success-DM gate, the four new pinning tests) falls into place. Get it wrong by stamping uncapped providers and you regress test_request_payment_amount_token + test_social_publish_service. Get it wrong by NOT stamping capped providers and you silently re-open FLAG-001.\n\nExecution order matters: T1/T2/T3 first (P0, independent), then T4\u2192T5 (wallet lock depends on helper), T6 (collision, independent of T4-T5), then T7\u2192T8\u2192T9\u2192T10 (caps pipeline; T8 is the load-bearing step), then T11/T12 (docs), T13 (tests depend on all code changes), T14 (validation). T1-T4, T6, T7, T11, T12 can actually run in parallel if the executor is comfortable; the listed depends_on enforces only the hard dependencies.\n\nRead before coding: (a) src/features/payments/payment_service.py:54-202 (request_payment + confirm_payment + execute_payment), (b) src/common/db_handler.py:1417-1465 + 1853-1883 (upsert_wallet + get_payment_requests_by_producer), (c) src/features/admin_chat/admin_chat_cog.py:193-402 (wallet receipt through handoff), (d) src/features/grants/grants_cog.py:550-601 (second upsert_wallet caller + auto-confirm), (e) src/features/admin_chat/tools.py:580-599 + 2438-2526 (initiate_payment schema + executor), (f) src/features/payments/payment_cog.py:267-333 + 503 (terminal handler + second construction site), (g) sql/payments.sql:92-199 (status enum + partial unique index + RLS enable), (h) tests/test_admin_payments.py:497-729 + 684-709 (fake db glue + existing amount_token test), (i) tests/test_social_publish_service.py:474-685, (j) main.py:157-233 (PaymentService + PaymentCog construction).\n\nDisputed flag (DEC-014 / FLAG-004): the success criterion that bundles null-recipient with cap-breach DM wiring is a wording mismatch \u2014 null-recipient intentionally only logs WARN + returns None; the calling button view surfaces UX via its existing error path. Do NOT add an admin DM for null-recipient rejection. The reviewer may narrow the criterion text in-place.\n\nCap config must be injectable via constructor kwargs with None defaults. Existing PaymentService construction sites in tests must keep working without modification. This is non-negotiable \u2014 several tests instantiate PaymentService directly with different signatures.\n\nWhen T13 adds tests that exercise the amount_token persistence path, the fake payment provider must expose get_token_price_usd() and track price_calls. The existing tests already use this convention \u2014 follow it.\n\nIf T3 or T11 surfaces a real secret leak, STOP and flag to the user before continuing. Rotation is out of scope for this plan.",
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Step 1: Null recipient_discord_id fail-closed in confirm_payment + audit call sites",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 2: Prompt-injection verification + defensive pop in execute_initiate_payment",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 3: Git history secret audit memo",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 4: Add DatabaseHandler.has_active_payment_or_intent helper",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 5: Exception-based upsert_wallet blocking + both caller handlers (admin_chat + grants)",
+        "finalize_task_ids": [
+          "T5"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 6: Index-aware collision detection + rework idempotent early-return + fallback path",
+        "finalize_task_ids": [
+          "T6"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 7: Add DatabaseHandler.get_rolling_24h_payout_usd helper with comment",
+        "finalize_task_ids": [
+          "T7"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 8: PaymentService cap enforcement with persisted derived USD (capped-provider+amount_token branch)",
+        "finalize_task_ids": [
+          "T8"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 9: _dm_admin_payment_success sibling + _handle_terminal_payment invocation + env read inside __init__",
+        "finalize_task_ids": [
+          "T9"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 10: Wire caps + on_cap_breach closure into main.py with env vars and startup log",
+        "finalize_task_ids": [
+          "T10"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 11: Log audit memo with optional scrubbing filter if leak found",
+        "finalize_task_ids": [
+          "T11"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 12: RLS posture comment block at top of sql/payments.sql (comment-only)",
+        "finalize_task_ids": [
+          "T12"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 13: Extend fake-db glue + all fail-to-pass tests in test_admin_payments.py, test_social_publish_service.py, conftest.py",
+        "finalize_task_ids": [
+          "T13"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 14: Verify scheduler + social publish suites remain green (caps do not leak)",
+        "finalize_task_ids": [
+          "T14"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 15: Run full pytest tests/ end-to-end and investigate any unrelated failures",
+        "finalize_task_ids": [
+          "T14"
+        ]
+      }
+    ],
+    "orphan_tasks": [],
+    "completeness_notes": "Every plan step maps to at least one finalize task. Steps 14 and 15 are both bundled into T14 because they are a single run-the-tests validation pass \u2014 the plan itself lists them as consecutive `Scope: Small` steps in the same Phase 5, and the finalize requirements explicitly state the FINAL task MUST always be to run tests and verify. Manual read-through audit (plan's Validation Order item 4) and the git-history + log-audit memo recording (Validation Order item 5) are also folded into T14's executor_notes checklist. All 44 gate success criteria are covered through the 14 tasks: fail-closed correctness (T1, T5, T6), prompt-injection verification (T2), git history audit (T3), wallet lock (T4+T5), collision detection branches A and B (T6), cap enforcement with persisted derived USD (T7+T8), admin success DM (T9), main.py wiring (T10), log audit (T11), RLS comment (T12), full test coverage including all new fail-to-pass tests (T13), and end-to-end validation (T14).",
+    "coverage_complete": true
+  }
+}

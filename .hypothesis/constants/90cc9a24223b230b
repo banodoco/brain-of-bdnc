@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py
+# hypothesis_version: 6.151.11
+
+[10.0, 8080, '!', '%Y-%m-%d', '--archive-days', '--combine-only', '--dev', '--summary-now', '.env', '0.002085', '10000', '70000', 'DISCORD_BOT_TOKEN', 'DiscordBot', 'JUST_SUMMARY_DATE', 'No token found', 'PaymentUICog loaded.', 'PaymentWorkerCog', 'RAILWAY_REPLICA_ID', 'RAILWAY_SERVICE_ID', 'SUPABASE_SERVICE_KEY', 'SUPABASE_URL', 'SharingCog loaded.', 'Starting bot...', 'Unified Discord Bot', '__main__', 'daily_summaries', 'date', 'discord_bot.log', 'discord_bot_dev.log', 'guild_id', 'local', 'payment_id', 'server_config', 'solana_grants', 'solana_payouts', 'store_true', 'twitter', 'x']

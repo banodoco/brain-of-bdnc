@@ -1,0 +1,413 @@
+{
+  "output": "Aggregated execute batches: completed 8/8.\nBatch 1: Completed batch 1 tasks T1, T4, and T6. Added the payment actor vocabulary and producer flow registry, added the additive tx_signature_history schema/backfill, and introduced safe_delete_messages with no-raise error handling. Verification passed with `pytest --tb=no -q --no-header` (`79 passed, 1 warning`). Checkpoint written to `.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_1.json`.\nBatch 2: Completed batch 2 tasks T2 and T5. `PaymentService.confirm_payment` now authorizes through a single actor-based entrypoint, and `db_handler` now appends tx-signature audit history on submit, confirm, and requeue. Checkpoint written to `.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_2.json`. Verification: targeted actor-authorization and tx-history smoke checks passed; full `pytest --tb=no -q --no-header` is not green yet (`74 passed, 5 failed`), and all 5 failures are the expected legacy `confirm_payment(..., confirmed_by=..., confirmed_by_user_id=...)` call sites still present in `tests/test_social_publish_service.py`, which are scheduled for later migration batches.\nBatch 3: Completed batch 3 task T3. The four production confirmation call sites now pass `PaymentActor(...)`, `PaymentConfirmView` still preserves the two distinct user-visible failure messages required by FLAG-003, and `privileged_override` has been fully removed from `src/` and `tests/`. Verification passed: `python -m pytest tests/test_social_publish_service.py tests/test_admin_payments.py tests/test_scheduler.py -q` (`55 passed`) and `pytest --tb=no -q --no-header` (`79 passed, 1 warning`). Checkpoint written to `.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_3.json`.\nBatch 4: Completed batch 4 tasks T7 and T8. Added new `PaymentWorkerCog` and `PaymentUICog` modules, moved the worker-side and UI-side responsibilities into those extracted cogs, wired terminal cleanup through `safe_delete_messages`, and retargeted the production confirmation-request callers to prefer `PaymentUICog`. Verification passed: direct smoke checks for `PaymentUICog.cog_load()` persistent-view registration and `PaymentWorkerCog._handle_terminal_payment()` cleanup/success-DM behavior both succeeded, and `pytest --tb=no -q --no-header` is green (`79 passed, 1 warning`). Checkpoint written to `.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_4.json`.\nBatch 5:\nBatch 6:\nBatch 7:\nBatch 8:",
+  "files_changed": [
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/producer_flows.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/discord_utils.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_1.json",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_2.json",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_3.json",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_4.json"
+  ],
+  "commands_run": [
+    "python -m py_compile src/features/payments/payment_service.py src/features/payments/producer_flows.py src/common/discord_utils.py",
+    "python - <<'PY'  # assert PaymentActorKind values and producer flow sets",
+    "nl -ba sql/payments.sql | sed -n '105,225p'",
+    "python -m py_compile src/common/discord_utils.py",
+    "python - <<'PY'  # exercise safe_delete_messages None/NotFound/Forbidden/429/HTTPException/AttributeError paths",
+    "pytest --tb=no -q --no-header",
+    "python -m py_compile src/features/payments/payment_service.py src/common/db_handler.py",
+    "python - <<'PY'  # PaymentService actor authorization smoke checks",
+    "python - <<'PY'  # DatabaseHandler tx_signature_history smoke checks",
+    "python -m pytest tests/test_social_publish_service.py -x",
+    "rg -n \"confirm_payment\\(|privileged_override\" src tests",
+    "python -m py_compile src/features/payments/payment_cog.py src/features/admin_chat/admin_chat_cog.py src/features/grants/grants_cog.py tests/test_social_publish_service.py tests/test_admin_payments.py tests/test_scheduler.py",
+    "python -m pytest tests/test_social_publish_service.py tests/test_admin_payments.py tests/test_scheduler.py -q",
+    "rg -n \"send_confirmation_request|get_cog\\('PaymentCog'\\)|PaymentUICog|PaymentWorkerCog\" src tests main.py",
+    "python -m py_compile src/features/payments/payment_worker_cog.py src/features/payments/payment_ui_cog.py src/features/admin_chat/admin_chat_cog.py src/features/grants/grants_cog.py",
+    "python - <<'PY'  # PaymentUICog registration smoke checks",
+    "python - <<'PY'  # PaymentWorkerCog terminal handling smoke checks"
+  ],
+  "deviations": [
+    "Adjusted existing `src/common/discord_utils.py` type annotations from `discord.ext.commands.Bot` attribute access to `commands.Bot` because the module was not importable at runtime under the installed `discord` package; this was necessary to verify and use the new helper.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_1.json",
+    "Advisory quality: src/features/payments/payment_service.py adds unused imports: DatabaseHandler.",
+    "Advisory quality: code changes lacked test updates: src/common/discord_utils.py, src/features/payments/payment_service.py, src/features/payments/producer_flows.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/discord_utils.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/producer_flows.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql/payments.sql, src/common/discord_utils.py, src/features/payments/payment_service.py, src/features/payments/producer_flows.py, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC2 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment.",
+    "`DatabaseHandler._append_tx_signature_history` uses a fetch-append-update write through the existing Supabase REST client instead of a raw SQL `tx_signature_history = tx_signature_history || ...` expression because the repository's `execute_raw_sql` path explicitly rejects `UPDATE` statements. The helper still preserves the required entry shape and keeps audit persistence behaviorally non-blocking.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_2.json",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: .megaplan/plans/final-polish-and-gremlin-20260411-0020",
+    "Advisory quality: src/features/payments/payment_service.py adds unused imports: DatabaseHandler.",
+    "Advisory quality: code changes lacked test updates: src/common/db_handler.py, src/features/payments/payment_service.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/discord_utils.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/producer_flows.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql/payments.sql, src/common/db_handler.py, src/common/discord_utils.py, src/features/payments/payment_service.py, src/features/payments/producer_flows.py, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment.",
+    "Updated the directly impacted test modules in this batch so the suite stays aligned with the actor-based API and the required `privileged_override` grep is empty; the broader test migration task (T10) still remains for later batches.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_3.json",
+    "Advisory quality: tests/test_scheduler.py has similar functions claim_due_social_publications and claim_due_payment_requests (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions wait_until_ready and wait_until_ready (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions is_ready and is_ready (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions __init__ and __init__ (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions edit and edit (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fake_fetch_grant_thread and fetch_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fake_fetch_grant_thread and fetch_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fake_fetch_grant_thread and fake_fetch_grant_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fetch_thread and fetch_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fetch_thread and fake_fetch_grant_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fetch_thread and fake_fetch_grant_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py adds unused imports: datetime, timezone.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/discord_utils.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/producer_flows.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql/payments.sql, src/common/db_handler.py, src/common/discord_utils.py, src/features/admin_chat/admin_chat_cog.py, src/features/grants/grants_cog.py, src/features/payments/payment_cog.py, src/features/payments/payment_service.py, src/features/payments/producer_flows.py, tests/conftest.py, tests/test_admin_payments.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment.",
+    "`payment_cog.py` remains in place as a temporary compatibility layer for this batch. The production `send_confirmation_request` callers now prefer `PaymentUICog`, but they still fall back to `PaymentCog` until T9 rewires startup registration and deletes the legacy cog.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_4.json",
+    "Advisory quality: src/features/payments/payment_ui_cog.py grew by 244 lines (threshold 200).",
+    "Advisory quality: src/features/payments/payment_worker_cog.py grew by 446 lines (threshold 200).",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/admin_chat_cog.py, src/features/grants/grants_cog.py, src/features/payments/payment_ui_cog.py, src/features/payments/payment_worker_cog.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/discord_utils.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/producer_flows.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql/payments.sql, src/common/db_handler.py, src/common/discord_utils.py, src/features/admin_chat/admin_chat_cog.py, src/features/grants/grants_cog.py, src/features/payments/payment_cog.py, src/features/payments/payment_service.py, src/features/payments/payment_ui_cog.py, src/features/payments/payment_worker_cog.py, src/features/payments/producer_flows.py, tests/conftest.py, tests/test_admin_payments.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: main.py, src/features/admin_chat/admin_chat_cog.py, src/features/grants/grants_cog.py, src/features/payments/payment_cog.py, tests/test_admin_payments.py, tests/test_scheduler.py",
+    "Advisory quality: main.py has similar functions _bind_cap_breach_dm and _notify (85% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions claim_due_social_publications and claim_due_payment_requests (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions wait_until_ready and wait_until_ready (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions is_ready and is_ready (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions __init__ and __init__ (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions edit and edit (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fake_fetch_grant_thread and fetch_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fake_fetch_grant_thread and fetch_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fake_fetch_grant_thread and fake_fetch_grant_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fetch_thread and fetch_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fetch_thread and fake_fetch_grant_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fetch_thread and fake_fetch_grant_thread (100% similarity).",
+    "Advisory quality: tests/test_admin_payments.py adds unused imports: PaymentUICog.",
+    "Advisory quality: tests/test_scheduler.py adds unused imports: datetime, timezone.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_5.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/discord_utils.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/producer_flows.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, sql/payments.sql, src/common/db_handler.py, src/common/discord_utils.py, src/features/admin_chat/admin_chat_cog.py, src/features/grants/grants_cog.py, src/features/payments/payment_cog.py, src/features/payments/payment_service.py, src/features/payments/payment_ui_cog.py, src/features/payments/payment_worker_cog.py, src/features/payments/producer_flows.py, tests/conftest.py, tests/test_admin_payments.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: tests/test_admin_payments.py, tests/test_scheduler.py",
+    "Advisory quality: tests/test_scheduler.py has similar functions claim_due_social_publications and claim_due_payment_requests (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions wait_until_ready and wait_until_ready (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions is_ready and is_ready (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions __init__ and __init__ (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions edit and edit (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fake_fetch_grant_thread and fetch_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fake_fetch_grant_thread and fetch_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fake_fetch_grant_thread and fake_fetch_grant_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fetch_thread and fetch_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fetch_thread and fake_fetch_grant_thread (100% similarity).",
+    "Advisory quality: tests/test_scheduler.py has similar functions fetch_thread and fake_fetch_grant_thread (100% similarity).",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_5.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_6.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/discord_utils.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/producer_flows.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, sql/payments.sql, src/common/db_handler.py, src/common/discord_utils.py, src/features/admin_chat/admin_chat_cog.py, src/features/grants/grants_cog.py, src/features/payments/payment_cog.py, src/features/payments/payment_service.py, src/features/payments/payment_ui_cog.py, src/features/payments/payment_worker_cog.py, src/features/payments/producer_flows.py, tests/conftest.py, tests/test_admin_payments.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: tests/test_payment_authorization.py, tests/test_payment_cog_split.py, tests/test_safe_delete_messages.py, tests/test_terminal_cleanup_wiring.py, tests/test_tx_signature_history.py",
+    "Advisory quality: tests/test_tx_signature_history.py has similar functions __init__ and __init__ (100% similarity).",
+    "Advisory quality: tests/test_payment_authorization.py adds unused imports: pytest.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_5.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_6.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_7.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/discord_utils.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/producer_flows.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_authorization.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_cog_split.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_safe_delete_messages.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_terminal_cleanup_wiring.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_tx_signature_history.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, sql/payments.sql, src/common/db_handler.py, src/common/discord_utils.py, src/features/admin_chat/admin_chat_cog.py, src/features/grants/grants_cog.py, src/features/payments/payment_cog.py, src/features/payments/payment_service.py, src/features/payments/payment_ui_cog.py, src/features/payments/payment_worker_cog.py, src/features/payments/producer_flows.py, tests/conftest.py, tests/test_admin_payments.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_payment_authorization.py, tests/test_payment_cog_split.py, tests/test_safe_delete_messages.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py, tests/test_terminal_cleanup_wiring.py, tests/test_tx_signature_history.py",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: tests/conftest.py, tests/test_payment_authorization.py",
+    "Advisory quality: tests/conftest.py has similar functions __init__ and __init__ (100% similarity).",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_5.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_6.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_7.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_8.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/discord_utils.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/producer_flows.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/conftest.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_authorization.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_cog_split.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_safe_delete_messages.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_terminal_cleanup_wiring.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_tx_signature_history.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, sql/payments.sql, src/common/db_handler.py, src/common/discord_utils.py, src/features/admin_chat/admin_chat_cog.py, src/features/grants/grants_cog.py, src/features/payments/payment_cog.py, src/features/payments/payment_service.py, src/features/payments/payment_ui_cog.py, src/features/payments/payment_worker_cog.py, src/features/payments/producer_flows.py, tests/conftest.py, tests/test_admin_payments.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_payment_authorization.py, tests/test_payment_cog_split.py, tests/test_safe_delete_messages.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py, tests/test_terminal_cleanup_wiring.py, tests/test_tx_signature_history.py",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_5.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_6.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_7.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_8.json, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/discord_utils.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/producer_flows.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/conftest.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_authorization.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_cog_split.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_safe_delete_messages.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_terminal_cleanup_wiring.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_tx_signature_history.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, sql/payments.sql, src/common/db_handler.py, src/common/discord_utils.py, src/features/admin_chat/admin_chat_cog.py, src/features/grants/grants_cog.py, src/features/payments/payment_cog.py, src/features/payments/payment_service.py, src/features/payments/payment_ui_cog.py, src/features/payments/payment_worker_cog.py, src/features/payments/producer_flows.py, tests/conftest.py, tests/test_admin_payments.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_payment_authorization.py, tests/test_payment_cog_split.py, tests/test_safe_delete_messages.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py, tests/test_terminal_cleanup_wiring.py, tests/test_tx_signature_history.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "Added `PaymentActorKind` and `PaymentActor` to `payment_service.py`, exported both, and created `producer_flows.py` with frozen `ProducerFlow`, `PRODUCER_FLOWS`, and `get_flow`. Verified exact enum string serialization and that `admin_chat.real_confirmed_by` is a frozenset containing both recipient confirmation kinds via runtime import/assert checks.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/producer_flows.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/payments/payment_service.py src/features/payments/producer_flows.py src/common/discord_utils.py",
+        "python - <<'PY'  # assert PaymentActorKind values and producer flow sets"
+      ]
+    },
+    {
+      "task_id": "T4",
+      "status": "done",
+      "executor_notes": "Added `tx_signature_history jsonb not null default '[]'::jsonb` immediately after `tx_signature` inside the `payment_requests` table definition and appended an additive `alter table ... add column if not exists ...` plus a backfill update guarded by `jsonb_array_length(tx_signature_history) = 0`. Verified placement and that the RLS preamble remained untouched with numbered-file inspection.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql"
+      ],
+      "commands_run": [
+        "nl -ba sql/payments.sql | sed -n '105,225p'"
+      ]
+    },
+    {
+      "task_id": "T6",
+      "status": "done",
+      "executor_notes": "Added `DeleteCounts` and `safe_delete_messages` to `discord_utils.py` with non-propagating handling for `channel is None`, `discord.NotFound`, `discord.Forbidden`, `discord.HTTPException` including a single 429 retry after sleep, and `AttributeError`. Verified the helper with a runtime smoke script covering each branch and with the full pytest suite; also repaired the module's bot type annotations so the file imports correctly at runtime.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/discord_utils.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/common/discord_utils.py",
+        "python - <<'PY'  # exercise safe_delete_messages None/NotFound/Forbidden/429/HTTPException/AttributeError paths",
+        "pytest --tb=no -q --no-header"
+      ]
+    },
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Rewrote `PaymentService.confirm_payment` to `confirm_payment(payment_id, *, actor, guild_id=None)` and added `_authorize_actor` to enforce producer-flow membership, recipient null-fail-closed checks, admin-DM `ADMIN_USER_ID` equality, and unknown-producer fail-closed warnings. Verified with a direct runtime smoke check covering recipient mismatch, recipient success, auto confirmation for a test payment, admin-DM identity gating via a temporary in-process flow, null-recipient rejection, and unknown-producer warning logging. Full-suite verification is red only on legacy tests that still call the removed kwargs in `tests/test_social_publish_service.py`.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/payments/payment_service.py src/common/db_handler.py",
+        "python - <<'PY'  # PaymentService actor authorization smoke checks",
+        "pytest --tb=no -q --no-header",
+        "python -m pytest tests/test_social_publish_service.py -x"
+      ]
+    },
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Added `_append_tx_signature_history` and wired `mark_payment_submitted`, `mark_payment_confirmed`, and `requeue_payment` to append consistent `{signature, status, timestamp, reason, send_phase}` entries while preserving the original transition result if audit persistence fails. Verified with a direct `DatabaseHandler` smoke check using a minimal fake Supabase table: submit appends `reason='submit'`, confirm appends `reason='confirm'`, and requeue appends the prior signature with `reason='requeue'` before `tx_signature` is cleared.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/payments/payment_service.py src/common/db_handler.py",
+        "python - <<'PY'  # DatabaseHandler tx_signature_history smoke checks",
+        "pytest --tb=no -q --no-header"
+      ]
+    },
+    {
+      "task_id": "T3",
+      "status": "done",
+      "executor_notes": "Retargeted the four production `confirm_payment` call sites to pass `PaymentActor(...)`, preserved the explicit recipient-ID pre-check in `PaymentConfirmView` so the recipient-only ephemeral message still appears only on ID mismatch, and kept service-level `None` failures mapped to the existing generic queueing message. Verified by removing all `privileged_override` references under `src/` and `tests/`, running the directly impacted payment modules, and then re-running the full suite successfully.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py"
+      ],
+      "commands_run": [
+        "rg -n \"confirm_payment\\(|privileged_override\" src tests",
+        "python -m py_compile src/features/payments/payment_cog.py src/features/admin_chat/admin_chat_cog.py src/features/grants/grants_cog.py tests/test_social_publish_service.py tests/test_admin_payments.py tests/test_scheduler.py",
+        "python -m pytest tests/test_social_publish_service.py tests/test_admin_payments.py tests/test_scheduler.py -q",
+        "pytest --tb=no -q --no-header"
+      ]
+    },
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "Added `PaymentWorkerCog` in a new module with the worker loop, recovery path, terminal handoff logic, admin success/failure DMs, copied `_redact_wallet`, and the `safe_delete_messages` cleanup call at the end of `_handle_terminal_payment`. Verified with a direct runtime smoke check that a confirmed non-test payment still hits the admin-success branch and passes `metadata.cleanup_message_ids` through to `safe_delete_messages`, then re-ran the full suite successfully.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/payments/payment_worker_cog.py src/features/payments/payment_ui_cog.py src/features/admin_chat/admin_chat_cog.py src/features/grants/grants_cog.py",
+        "python - <<'PY'  # PaymentWorkerCog terminal handling smoke checks",
+        "pytest --tb=no -q --no-header"
+      ]
+    },
+    {
+      "task_id": "T8",
+      "status": "done",
+      "executor_notes": "Added `PaymentUICog` in a new module with `PaymentConfirmView`, `send_confirmation_request`, `_register_pending_confirmation_views`, `_build_confirmation_message`, and `cog_load`-time persistent-view registration. Retargeted the production `send_confirmation_request` callers in `admin_chat_cog.py` and `grants_cog.py` to prefer `PaymentUICog`, while keeping a temporary `PaymentCog` fallback for this batch until startup wiring moves in T9. Verified with a direct runtime smoke check that `PaymentUICog.cog_load()` re-registers a pending confirmation view before on_ready, then re-ran the full suite successfully.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py"
+      ],
+      "commands_run": [
+        "rg -n \"send_confirmation_request|get_cog\\('PaymentCog'\\)|PaymentUICog|PaymentWorkerCog\" src tests main.py",
+        "python -m py_compile src/features/payments/payment_worker_cog.py src/features/payments/payment_ui_cog.py src/features/admin_chat/admin_chat_cog.py src/features/grants/grants_cog.py",
+        "python - <<'PY'  # PaymentUICog registration smoke checks",
+        "pytest --tb=no -q --no-header"
+      ]
+    },
+    {
+      "id": "T9",
+      "status": "done",
+      "executor_notes": "Retargeted startup wiring to `PaymentWorkerCog` and `PaymentUICog`, rewired `_bind_cap_breach_dm` to the worker cog including the warning string, removed the remaining `PaymentCog` fallbacks, updated the affected test harnesses to the split cogs, and deleted `src/features/payments/payment_cog.py` with no compat shim left behind. Verified with `python -m py_compile` over the edited modules, `python -m pytest tests/test_admin_payments.py tests/test_scheduler.py -q`, a full `pytest --tb=no -q --no-header` run (`79 passed, 1 warning`), and empty grep results for `privileged_override`, `get_cog('PaymentCog')`, and `from src.features.payments.payment_cog`.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_5.json"
+      ],
+      "commands_run": [
+        "rg -n \"PaymentCog|payment_cog|get_cog\\('PaymentCog'\\)|from src\\.features\\.payments\\.payment_cog\" main.py src tests",
+        "python -m py_compile main.py src/features/admin_chat/admin_chat_cog.py src/features/grants/grants_cog.py src/features/payments/payment_ui_cog.py src/features/payments/payment_worker_cog.py tests/test_admin_payments.py tests/test_scheduler.py",
+        "python -m pytest tests/test_admin_payments.py tests/test_scheduler.py -q",
+        "pytest --tb=no -q --no-header",
+        "rg -n \"privileged_override\" src tests",
+        "rg -n \"get_cog\\('PaymentCog'\\)\" src tests main.py",
+        "rg -n \"from src\\.features\\.payments\\.payment_cog\" src tests main.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T9"
+    },
+    {
+      "id": "T10",
+      "status": "done",
+      "executor_notes": "Migrated the remaining stale payment-test fakes to the actor-based `confirm_payment(payment_id, *, actor, guild_id=None)` signature, removed leftover test-only import drift, and verified that the inspected payment-related test modules no longer depend on `PaymentCog` lookups or pre-actor confirmation kwargs. `tests/conftest.py` and `tests/test_caller_paths.py` were inspected during the migration pass and required no edits because they contain no old payment confirmation API or `PaymentCog` references. Verified with a payment-test grep, `python -m py_compile` across the inspected modules, `python -m pytest tests/test_admin_payments.py tests/test_scheduler.py tests/test_social_publish_service.py tests/test_caller_paths.py -q`, and a full `pytest --tb=no -q --no-header` run (`79 passed, 1 warning`).",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_6.json"
+      ],
+      "commands_run": [
+        "rg -n \"confirm_payment\\(|privileged_override|PaymentCog|payment_cog|get_cog\\('PaymentCog'\\)|confirmed_by=|confirmed_by_user_id=|privileged_override=\" tests",
+        "python -m py_compile tests/test_admin_payments.py tests/test_scheduler.py tests/test_social_publish_service.py tests/test_caller_paths.py tests/conftest.py",
+        "python -m pytest tests/test_admin_payments.py tests/test_scheduler.py tests/test_social_publish_service.py tests/test_caller_paths.py -q",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T10"
+    },
+    {
+      "id": "T11",
+      "status": "done",
+      "executor_notes": "Added the five targeted regression modules covering payment authorization actor-set membership across grants/admin_chat plus null-recipient and unknown-producer failures, tx signature history append behavior across confirm/requeue cycles using a real `DatabaseHandler` method stack backed by an in-memory fake Supabase table, `safe_delete_messages` error handling including 429 retry and `channel=None`, split-cog restart-safety plus `_bind_cap_breach_dm` routing to `PaymentWorkerCog`, and terminal cleanup wiring for populated and empty cleanup-message lists. Verified with `python -m py_compile` for the new files, `python -m pytest tests/test_payment_authorization.py tests/test_tx_signature_history.py tests/test_safe_delete_messages.py tests/test_payment_cog_split.py tests/test_terminal_cleanup_wiring.py -q`, and a full `pytest --tb=no -q --no-header` run (`89 passed, 2 warnings`).",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_authorization.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_tx_signature_history.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_safe_delete_messages.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_cog_split.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_terminal_cleanup_wiring.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_7.json"
+      ],
+      "commands_run": [
+        "python -m py_compile tests/test_payment_authorization.py tests/test_tx_signature_history.py tests/test_safe_delete_messages.py tests/test_payment_cog_split.py tests/test_terminal_cleanup_wiring.py",
+        "python -m pytest tests/test_payment_authorization.py tests/test_tx_signature_history.py tests/test_safe_delete_messages.py tests/test_payment_cog_split.py tests/test_terminal_cleanup_wiring.py -q",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T11"
+    },
+    {
+      "id": "T12",
+      "status": "done",
+      "executor_notes": "Ran the ordered validation slices and full suite to completion, then finished the required grep and manual reproduction checks. Slice 1 (`pytest tests/test_payment_authorization.py tests/test_tx_signature_history.py tests/test_safe_delete_messages.py tests/test_payment_cog_split.py tests/test_terminal_cleanup_wiring.py -x`) initially exposed a plain-`pytest` import-path regression; fixing repo-root insertion in `tests/conftest.py` and correcting the producer_flows import in `tests/test_payment_authorization.py` made the slice pass. Slice 2 (`pytest tests/test_admin_payments.py tests/test_caller_paths.py -x`) passed unchanged. Full `pytest` then passed green at `89 passed, 2 warnings`. All three required greps returned empty. The throwaway `PaymentService` authorization script reproduced wrong-recipient `None` then right-recipient confirmation successfully and was deleted afterward.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/conftest.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_authorization.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_8.json"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_authorization.py tests/test_tx_signature_history.py tests/test_safe_delete_messages.py tests/test_payment_cog_split.py tests/test_terminal_cleanup_wiring.py -x",
+        "pytest tests/test_admin_payments.py tests/test_caller_paths.py -x",
+        "pytest",
+        "grep -r 'privileged_override' src/ tests/",
+        "grep -r \"get_cog('PaymentCog')\" src/ tests/ main.py",
+        "grep -r 'from src.features.payments.payment_cog' src/ tests/ main.py",
+        "python tmp_t12_payment_auth_check.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T12"
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "Confirmed `PaymentActorKind` serializes to `recipient_click`, `recipient_message`, `auto`, and `admin_dm`, and `admin_chat.real_confirmed_by` is a frozenset containing both `RECIPIENT_CLICK` and `RECIPIENT_MESSAGE`."
+    },
+    {
+      "sense_check_id": "SC4",
+      "executor_note": "Confirmed `tx_signature_history` is inside the `payment_requests` `CREATE TABLE` body immediately after `tx_signature`, the RLS preamble at lines 1-7 is unchanged, and the backfill is idempotent because it only runs when `jsonb_array_length(tx_signature_history) = 0`."
+    },
+    {
+      "sense_check_id": "SC6",
+      "executor_note": "Confirmed `safe_delete_messages` returns accurate `DeleteCounts` and handles `None` channel, `NotFound`, `Forbidden`, HTTP 429 with one sleep-and-retry, generic `HTTPException`, and `AttributeError` without raising out of the helper."
+    },
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "Confirmed `_authorize_actor` preserves null-fail-closed behavior for recipient actors, requires `ADMIN_USER_ID` equality for `ADMIN_DM`, warns and fails closed on unknown producers, and leaves the `request_payment` cap/collision logic untouched."
+    },
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Confirmed submit, confirm, and requeue append consistent history-entry shapes; requeue captures the prior signature with `reason='requeue'` before the `tx_signature` pointer is blanked."
+    },
+    {
+      "sense_check_id": "SC3",
+      "executor_note": "Confirmed `PaymentConfirmView` still emits 'Only the intended recipient can confirm this payment.' only on the explicit recipient-ID pre-check and still emits the generic 'I couldn't queue that payment.' on other `None` returns; `rg -n \"privileged_override\" src tests` now returns no matches."
+    },
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "Confirmed the listed worker-side methods and admin-success DM state exist in `PaymentWorkerCog`, `_redact_wallet` is copied into the new file, the confirmed-payment success-DM branch remains intact, and `_handle_terminal_payment` passes `payment.metadata.cleanup_message_ids` to `safe_delete_messages` with the current empty-list no-op semantics preserved."
+    },
+    {
+      "sense_check_id": "SC8",
+      "executor_note": "Confirmed `PaymentUICog.cog_load()` re-registers pending confirmation views before on_ready, and the production `send_confirmation_request` callers in `admin_chat_cog.py` and `grants_cog.py` now target `PaymentUICog` first."
+    },
+    {
+      "id": "SC9",
+      "executor_note": "Confirmed `main.py` now binds cap-breach DMs through `PaymentWorkerCog` with the updated warning string, registers both `PaymentWorkerCog` and `PaymentUICog`, deletes `src/features/payments/payment_cog.py` with no compat shim, and all three required greps return empty.",
+      "verdict": "",
+      "sense_check_id": "SC9"
+    },
+    {
+      "id": "SC10",
+      "executor_note": "Confirmed the remaining payment-related test fakes now use the actor-based `confirm_payment` signature, no tests still look up `PaymentCog`, and the existing user-visible assertions remained unchanged while the impacted modules and full suite both pass.",
+      "verdict": "",
+      "sense_check_id": "SC10"
+    },
+    {
+      "id": "SC11",
+      "executor_note": "Confirmed the five new modules together cover grants/admin_chat authorization set-membership, null-recipient rejection, unknown-producer warning failure, tx-signature history across repeated requeues, safe-delete error branches, persistent-view re-registration, `_bind_cap_breach_dm` routing to `PaymentWorkerCog`, and terminal cleanup with both populated and empty cleanup-message lists.",
+      "verdict": "",
+      "sense_check_id": "SC11"
+    },
+    {
+      "id": "SC12",
+      "executor_note": "Confirmed the ordered pytest slices and full `pytest` run all passed, the three final greps returned empty, and the throwaway script reproduced auth-mismatch `None` followed by auth-match confirmation successfully before being deleted.",
+      "verdict": "",
+      "sense_check_id": "SC12"
+    }
+  ]
+}

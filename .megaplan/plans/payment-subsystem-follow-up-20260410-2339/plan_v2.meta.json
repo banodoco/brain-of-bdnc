@@ -1,0 +1,124 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-10T22:06:25Z",
+  "hash": "sha256:9dec9846924e09423faa10c94138af31ac3422936b5b9578f42d5dc9c3401721",
+  "changes_summary": "Addressed all three open flags. FLAG-001: Reworked `PRODUCER_FLOWS` so `test_confirmed_by` / `real_confirmed_by` are frozensets of `PaymentActorKind` (not single values), and set `admin_chat.real_confirmed_by = {RECIPIENT_CLICK, RECIPIENT_MESSAGE}` to represent both current confirmation paths. `_authorize_actor` logic now checks set membership. FLAG-002: Added Phase 3 Step 9 subtask to retarget `main.py:65-77 _bind_cap_breach_dm` from `get_cog('PaymentCog')` to `get_cog('PaymentWorkerCog')`, and added explicit grep for other `get_cog('PaymentCog')` references. Added a dedicated test case in Step 12.4 asserting the cap-breach wiring resolves to the worker cog. FLAG-004: Gave `safe_delete_messages` a concrete, tested caller in `PaymentWorkerCog._handle_terminal_payment` against `payment.metadata.cleanup_message_ids` (empty today = no-op, populated by the future admin-DM feature). Added `tests/test_terminal_cleanup_wiring.py` to prove the integration and the no-behavior-change claim. Reordered the execution plan so Step 10 lands before Step 7 (worker cog must import the helper). Overview and success criteria updated to reference the new wiring.",
+  "flags_addressed": [
+    "FLAG-001",
+    "FLAG-002",
+    "FLAG-004"
+  ],
+  "questions": [
+    "Does the admin-DM feature megaplan plan to populate `metadata.cleanup_message_ids` when it creates payments? The Step 10 wiring assumes yes; if no, the primitive is live but dead-code until someone populates it.",
+    "Is there a preferred name for the metadata key (`cleanup_message_ids` vs `thread_cleanup_message_ids`)? I'll default to `cleanup_message_ids` unless you have a prior convention.",
+    "Should `safe_delete_messages` also be wired into the grants terminal path (`grants_cog._handle_final_payment_result` at grants_cog.py:749-762) to delete the intermediate confirmation button before archiving the thread? That would change behavior (currently the button message stays in the archived thread). Default: no \u2014 out of scope for behavior preservation.",
+    "Is `tests/test_terminal_cleanup_wiring.py` acceptable as a new test file, or would you prefer the assertion be folded into `tests/test_payment_cog_split.py`?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "`PaymentService.confirm_payment` accepts exactly one well-typed entrypoint: `(payment_id, *, actor: PaymentActor, guild_id=None)`. No `privileged_override`, `confirmed_by`, or `confirmed_by_user_id` parameters remain.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`grep -r 'privileged_override' src/ tests/` returns no matches.",
+      "priority": "must"
+    },
+    {
+      "criterion": "All four call sites (PaymentConfirmView in payment_ui_cog, admin_chat _handle_confirmation_received, grants_cog auto-confirm, admin_chat auto-confirm) pass a `PaymentActor` instead of string/bool kwargs.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`PRODUCER_FLOWS` registry exists at `src/features/payments/producer_flows.py`. `test_confirmed_by` and `real_confirmed_by` are `frozenset[PaymentActorKind]`. `grants` = `({AUTO}, {RECIPIENT_CLICK})`. `admin_chat` = `({AUTO}, {RECIPIENT_CLICK, RECIPIENT_MESSAGE})` so the button and free-text paths both confirm.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`PaymentService._authorize_actor` reads `PRODUCER_FLOWS` for every confirmation, uses set membership, and preserves the hardening null-fail-closed for recipient-kind actors (null recipient_discord_id or null actor_id both reject).",
+      "priority": "must"
+    },
+    {
+      "criterion": "Unknown producer passed to `get_flow` results in the payment being rejected (fail-closed) and logged at WARNING.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`payment_requests` schema has an additive `tx_signature_history jsonb not null default '[]'::jsonb` column; existing rows are backfilled with a single-entry history where `tx_signature is not null`. The RLS preamble at sql/payments.sql:1-7 is untouched.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`requeue_payment` appends a history entry capturing the prior signature before blanking `tx_signature`. Verified by `tests/test_tx_signature_history.py`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`PaymentCog` is deleted; `PaymentWorkerCog` and `PaymentUICog` are both registered in `main.py` and load without errors.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`main.py:65-77 _bind_cap_breach_dm` (and any other `get_cog('PaymentCog')` lookup in the repo) is retargeted to the correct new cog. A cap-breach event still results in `_dm_admin_payment_failure` firing on `PaymentWorkerCog`. Verified by `tests/test_payment_cog_split.py`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Admin success-DM env vars and conditional branch in `_handle_terminal_payment` are preserved on `PaymentWorkerCog` exactly as they were on `PaymentCog` \u2014 no regression in the hardening success-DM threshold behavior.",
+      "priority": "must"
+    },
+    {
+      "criterion": "On restart, persistent confirmation views for `pending_confirmation` payments are re-registered exactly once via `PaymentUICog.cog_load`. Verified by `tests/test_payment_cog_split.py` asserting `bot.add_view` was called.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`safe_delete_messages` exists in `src/common/discord_utils.py`, handles NotFound/Forbidden/HTTPException(429)/generic HTTPException/None-channel without raising, and is invoked from `PaymentWorkerCog._handle_terminal_payment` against `payment.metadata.cleanup_message_ids`. Verified by `tests/test_safe_delete_messages.py` and `tests/test_terminal_cleanup_wiring.py`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Existing tests in `tests/test_admin_payments.py` and `tests/test_caller_paths.py` pass (with only the mechanical migration to `PaymentActor` and updated cog names in fakes).",
+      "priority": "must"
+    },
+    {
+      "criterion": "Full `pytest` run is green.",
+      "priority": "must"
+    },
+    {
+      "criterion": "No user-visible behavior change in grants flow (auto-confirm on test, recipient click on real), current admin_chat flow (auto-confirm on test, either button OR free-text on real), cap-breach DM, or admin success-DM threshold. Any deviation is explicitly called out in the PR as scope creep.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`PaymentWorkerCog` and `PaymentUICog` are each under ~400 lines (the current combined file is 576). Neither holds both a `discord.ui.View` class and the worker loop.",
+      "priority": "should"
+    },
+    {
+      "criterion": "`PaymentService._authorize_actor` has a single code path per `PaymentActorKind` value \u2014 no nested `if privileged_override else` branches.",
+      "priority": "should"
+    },
+    {
+      "criterion": "`tx_signature_history` entries include `signature`, `status`, `timestamp`, `reason`, `send_phase` \u2014 consistent shape across submit/confirm/requeue/backfill writes.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke: start the bot against a test guild; run one grants test payout (auto-confirm) and one real grants payout (recipient clicks button) and confirm both complete.",
+      "priority": "info"
+    },
+    {
+      "criterion": "Manual smoke: restart the bot with a payment in `pending_confirmation` and confirm the recipient can still click the button on the pre-restart message.",
+      "priority": "info"
+    },
+    {
+      "criterion": "Manual smoke: trigger a cap-breach manual-hold and verify the admin still receives the DM (proves the Step 9 `_bind_cap_breach_dm` retarget is live).",
+      "priority": "info"
+    },
+    {
+      "criterion": "Manual smoke: in the admin_chat flow, confirm a final payout via the button in the payment channel AND (separately) via a free-text recipient reply in the admin chat \u2014 both must still succeed.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "`PRODUCER_FLOWS` drives authorization only in this plan \u2014 `thread_cleanup` and `notify_admin_dm_on_approval` fields exist on the dataclass but are NOT read. The admin-DM feature will consume them. Reading them here would be a behavior change.",
+    "`admin_chat.real_confirmed_by = {RECIPIENT_CLICK, RECIPIENT_MESSAGE}` is the exact current behavior: both the button path (admin_chat_cog.py:389-402) and the free-text path (admin_chat_cog.py:284-309) confirm the same final payment row today, and both must continue to work.",
+    "`admin_chat.test_confirmed_by = {AUTO}` matches current behavior at admin_chat_cog.py:269-274. The brief's future-state `{RECIPIENT_CLICK}` is the admin-DM feature's job.",
+    "`PaymentActorKind` subclasses `str` so `confirmed_by` column values become `recipient_click`/`recipient_message`/`auto`/`admin_dm`. This is a log/DB-string rename; historical rows keep their old strings (`discord`/`auto`/`free_text`/`user`); nothing reads those values externally.",
+    "`tx_signature_history` is audit-only. No code reads it back.",
+    "`safe_delete_messages` is wired from `PaymentWorkerCog._handle_terminal_payment` via `payment.metadata.cleanup_message_ids`, which is empty for every current producer \u2014 so today the call is a verified no-op. The admin-DM feature populates the list when it creates payments. This satisfies the 'used by the thread cleanup path' success criterion via a real integration with test coverage, not a dangling primitive.",
+    "`main.py` is the single cog-wiring point. `_bind_cap_breach_dm` at main.py:65-77 is the only cap-breach callback resolver and must be retargeted to `PaymentWorkerCog`. Any additional `get_cog('PaymentCog')` references found during Step 9 grep are updated in the same change.",
+    "Tests use the in-memory fake `db_handler` for `tx_signature_history`; Supabase is not spun up in the test suite.",
+    "`PaymentCog` is deleted outright with no compat shim. All imports and cog lookups are updated in the same change."
+  ],
+  "delta_from_previous_percent": 52.89,
+  "structure_warnings": []
+}

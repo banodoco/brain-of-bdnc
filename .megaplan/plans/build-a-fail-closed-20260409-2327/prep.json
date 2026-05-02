@@ -1,0 +1,40 @@
+{
+  "skip": false,
+  "task_summary": "Prepared the engineering brief after investigating the existing grants payout flow, the Solana client, the DB helpers, the admin surfaces, and the existing social-publication queue pattern.",
+  "key_evidence": [
+    {
+      "point": "Current grant payouts are still executed inline from `GrantsCog` and use mutable `grant_applications` status fields instead of a reusable ledger.",
+      "source": "src/features/grants/grants_cog.py",
+      "relevance": "high"
+    },
+    {
+      "point": "The repo already contains an atomic queue/worker pattern with `FOR UPDATE SKIP LOCKED` via `social_publications`, which is the strongest template for the new payment subsystem.",
+      "source": "sql/social_publications.sql; src/common/db_handler.py; src/features/sharing/sharing_cog.py",
+      "relevance": "high"
+    },
+    {
+      "point": "Admin chat currently exposes `grant_applications` through generic `query_table`, so any new secret-bearing payment/wallet tables must be kept off that surface or explicitly redacted.",
+      "source": "src/features/admin_chat/tools.py",
+      "relevance": "high"
+    }
+  ],
+  "relevant_code": [
+    {
+      "file_path": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/build-a-fail-closed-20260409-2327/prep.json",
+      "why": "Final brief written here.",
+      "functions": []
+    }
+  ],
+  "test_expectations": [
+    {
+      "test_id": "prep.json",
+      "what_it_checks": "Brief file exists and is valid JSON.",
+      "status": "pass_to_pass"
+    }
+  ],
+  "constraints": [
+    "The requested output had to be written to the specified megaplan prep path.",
+    "The brief needed investigation because the task spans multiple subsystems and files."
+  ],
+  "suggested_approach": "Use the written prep brief as the planning context for the next step."
+}

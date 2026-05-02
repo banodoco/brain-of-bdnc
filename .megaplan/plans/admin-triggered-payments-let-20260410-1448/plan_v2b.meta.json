@@ -1,0 +1,157 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-10T14:02:37Z",
+  "hash": "sha256:a5c7d3c1075c52fa2be8d802d5e233985f0c3a5d89147674c222bd5de01f9990",
+  "questions": [
+    "Should active intents have a TTL/expiry? If the recipient never replies, should the intent auto-expire after N hours/days? If so, what timeout?",
+    "If the admin initiates a second payment for the same recipient in the same channel while one is already active, should it overwrite, reject, or allow parallel intents? The current plan uses a unique index that prevents duplicates per (guild, channel, recipient) for active intents.",
+    "For the agent classification of wallet/confirmation replies: should this use the same Anthropic API key and model as the admin chat agent, or a lighter/cheaper model? The classification prompt is very short and deterministic.",
+    "The SQL schema file sql/admin_payment_intents.sql needs to be applied to the Supabase database. Is there a deployment step that runs these SQL files, or should the plan include instructions for manual application?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "admin_payment_intents table exists in sql/admin_payment_intents.sql with status state machine, message cursor fields, and proper indexes",
+      "priority": "must"
+    },
+    {
+      "criterion": "db_handler has CRUD methods for admin_payment_intents: create, get by ID, get active for recipient (identity-gated lookup), list active, update",
+      "priority": "must"
+    },
+    {
+      "criterion": "PaymentService.request_payment accepts optional amount_token parameter and creates payment with direct SOL amount when provided (amount_usd=None, token_price_usd=None)",
+      "priority": "must"
+    },
+    {
+      "criterion": "initiate_payment tool appears in TOOLS list, ADMIN_ONLY_TOOLS set, and the assertion at tools.py:916 passes",
+      "priority": "must"
+    },
+    {
+      "criterion": "initiate_payment accepts amount_sol (not amount_usd) and does NOT accept wallet_address",
+      "priority": "must"
+    },
+    {
+      "criterion": "When recipient has wallet on file: initiate_payment creates persisted intent with status=awaiting_test and starts test payment with producer='admin_chat'",
+      "priority": "must"
+    },
+    {
+      "criterion": "When no wallet on file: initiate_payment creates persisted intent with status=awaiting_wallet, sends channel ping, stores prompt_message_id",
+      "priority": "must"
+    },
+    {
+      "criterion": "initiate_payment fails closed when called from DM (no guild_id/source_channel_id)",
+      "priority": "must"
+    },
+    {
+      "criterion": "initiate_payment fails closed on invalid recipient_user_id or amount_sol <= 0",
+      "priority": "must"
+    },
+    {
+      "criterion": "Duplicate active intent for same (guild, channel, recipient) is prevented and returns existing intent info",
+      "priority": "must"
+    },
+    {
+      "criterion": "Reply interceptor fires before _is_directed_at_bot and _can_user_message_bot gates in on_message",
+      "priority": "must"
+    },
+    {
+      "criterion": "Intent matching is deterministic: (guild_id, channel_id, author_id) lookup returns single active intent before any agent classification",
+      "priority": "must"
+    },
+    {
+      "criterion": "Agent classification only runs after single candidate intent is identified, categorizing reply as wallet_provided/positive_confirmation/declined/ambiguous/suspicious",
+      "priority": "must"
+    },
+    {
+      "criterion": "Ambiguous, suspicious, or out-of-ordinary reply patterns fail closed and tag admin for review",
+      "priority": "must"
+    },
+    {
+      "criterion": "Valid wallet reply triggers upsert_wallet, updates intent status+cursor, starts test payment",
+      "priority": "must"
+    },
+    {
+      "criterion": "handle_payment_result for test-confirmed creates final payment with amount_token (direct SOL, no USD conversion) and posts both PaymentConfirmView button and free-text confirmation prompt",
+      "priority": "must"
+    },
+    {
+      "criterion": "handle_payment_result for test-failed updates intent to failed and does NOT create final payment",
+      "priority": "must"
+    },
+    {
+      "criterion": "Free-text positive confirmation calls confirm_payment with confirmed_by='free_text' and updates intent",
+      "priority": "must"
+    },
+    {
+      "criterion": "PaymentConfirmView button confirmation also works as secondary path (existing button handler, no changes needed)",
+      "priority": "must"
+    },
+    {
+      "criterion": "producer_ref includes timestamp to satisfy unique index on (producer, producer_ref, is_test)",
+      "priority": "must"
+    },
+    {
+      "criterion": "source_channel_id injected in agent.py using key that does not conflict with existing tools",
+      "priority": "must"
+    },
+    {
+      "criterion": "Startup reconciliation in cog_load queries active intents, scans channel history from last_scanned_message_id, processes missed replies",
+      "priority": "must"
+    },
+    {
+      "criterion": "Intent status and message cursors are persisted in DB (survives restart)",
+      "priority": "must"
+    },
+    {
+      "criterion": "All existing tests pass: test_scheduler.py, test_social_route_tools.py, full suite",
+      "priority": "must"
+    },
+    {
+      "criterion": "System prompt documents initiate_payment with amount_sol and guild-channel requirement",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test file covers: both wallet paths, validation, duplicate prevention, wallet reply handling, agent classification, terminal callbacks, confirmation, concurrent intents, startup reconciliation, amount_token parameter",
+      "priority": "must"
+    },
+    {
+      "criterion": "Multiple concurrent intents in same channel for different recipients handled correctly",
+      "priority": "must"
+    },
+    {
+      "criterion": "execute_initiate_payment and _start_admin_payment_flow are each under ~80 lines",
+      "priority": "should"
+    },
+    {
+      "criterion": "handle_payment_result follows GrantsCog structure: guard then branch is_test then branch status",
+      "priority": "should"
+    },
+    {
+      "criterion": "_check_pending_payment_reply has minimal overhead for non-matching messages (single DB query on indexed columns)",
+      "priority": "should"
+    },
+    {
+      "criterion": "Race-condition guard prevents double-processing of same intent reply",
+      "priority": "should"
+    },
+    {
+      "criterion": "Agent classification prompt is concise and deterministic with clear category definitions",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke test: admin says 'pay @user 5 SOL' in channel, bot pings user, user replies wallet, test queues, confirmation button appears, user replies 'yes', payout executes",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "Producer name is 'admin_chat' \u2014 PaymentCog._candidate_producer_cog_names('admin_chat') produces ['AdminChatCog', ...] auto-matching the cog with zero PaymentCog changes.",
+    "Admin must initiate from a guild channel, not DM. Admin DMs have guild_id=None (AdminChatCog skips guild resolution for admins) and no channel to ping recipient in.",
+    "The wallet-reply interceptor fires before _is_directed_at_bot() and _can_user_message_bot(). Recipient does not need can_message_bot permission.",
+    "Agent classification uses the same Anthropic client already available on AdminChatAgent, with a short classification-specific prompt (not a full chat turn).",
+    "The unique index on (guild_id, channel_id, recipient_user_id) for active intents means only one active intent per recipient per channel. A second initiate_payment for the same user in the same channel returns the existing intent.",
+    "handle_payment_result posts producer-specific messages to the notify channel in addition to PaymentCog's generic terminal notification (same pattern as GrantsCog).",
+    "No maximum payment amount guardrail \u2014 admin is trusted.",
+    "The DB schema file sql/admin_payment_intents.sql will be applied to Supabase via the same deployment process as sql/payments.sql (manual or automated).",
+    "For startup recovery, channel.history() scan is limited to a reasonable number of messages (e.g., 200) to avoid excessive API calls. Older unresolved intents should be flagged for admin review rather than scanning indefinitely."
+  ],
+  "structure_warnings": []
+}

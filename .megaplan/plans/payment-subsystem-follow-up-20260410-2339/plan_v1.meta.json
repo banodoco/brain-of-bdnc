@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-10T21:44:36Z",
+  "hash": "sha256:8e15e9cff002737ae064dac6b5b10d4cc81d0c85929323604ef0707e4d4d2893",
+  "questions": [
+    "The brief says the admin_chat flow is `{test_confirmed_by: recipient_click, real_confirmed_by: admin_dm}`, but admin_chat_cog.py:269 currently auto-confirms test payments. Should this cleanup land with the current behavior (`test_confirmed_by: AUTO`) and let the admin-DM feature flip it, or flip it now (which would be a user-visible behavior change)?",
+    "Does a thread_cleanup path already exist in the codebase that I should route through the new `safe_delete_messages`, or is this primitive purely forward-looking for the admin-DM feature? Repo search found no existing helper. If forward-looking, should I add it without a caller?",
+    "Should `PRODUCER_FLOWS` drive state transitions beyond authorization (e.g., `thread_cleanup: bool`, `notify_admin_dm_on_approval: bool`), or is it authorization-only in this cleanup? Driving transitions risks behavior drift vs. the preservation constraint.",
+    "Do you want the tx_signature_history entries keyed on `reason` values `submit`/`confirm`/`requeue`/`backfill`, or is there a prior vocabulary I should match (e.g., send_phase values)?",
+    "Is `main.py` the single wiring point for cogs, or is there a loader (`extensions/`, `setup_hook`) pattern I should use for registering the two new cogs?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "`PaymentService.confirm_payment` accepts exactly one well-typed entrypoint: `(payment_id, *, actor: PaymentActor, guild_id=None)`. No `privileged_override`, `confirmed_by`, or `confirmed_by_user_id` parameters remain.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`grep -r 'privileged_override' src/ tests/` returns no matches.",
+      "priority": "must"
+    },
+    {
+      "criterion": "All four call sites (PaymentConfirmView in payment_ui_cog, admin_chat _handle_confirmation_received, grants_cog auto-confirm, admin_chat auto-confirm) pass a `PaymentActor` instead of string/bool kwargs.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`PRODUCER_FLOWS` registry exists at `src/features/payments/producer_flows.py`, contains entries for `grants` and `admin_chat`, and `PaymentService._authorize_actor` reads from it for AUTO/ADMIN_DM decisions.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Unknown producer passed to `get_flow` results in the payment being rejected (fail-closed) and logged at WARNING.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`payment_requests` schema has an additive `tx_signature_history jsonb not null default '[]'::jsonb` column; existing rows are backfilled with a single-entry history where `tx_signature is not null`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`requeue_payment` appends a history entry capturing the prior signature before blanking `tx_signature`. Verified by `tests/test_tx_signature_history.py`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`PaymentCog` is deleted; `PaymentWorkerCog` and `PaymentUICog` are both registered in `main.py` and load without errors.",
+      "priority": "must"
+    },
+    {
+      "criterion": "On restart, persistent confirmation views for `pending_confirmation` payments are re-registered exactly once via `PaymentUICog.cog_load`. Verified by `tests/test_payment_cog_split.py` asserting `bot.add_view` was called.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`safe_delete_messages` exists in `src/common/discord_utils.py` and handles NotFound/Forbidden/HTTPException(429)/generic HTTPException without raising. Verified by `tests/test_safe_delete_messages.py`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Existing tests in `tests/test_admin_payments.py` and `tests/test_caller_paths.py` pass unchanged (except for the API migration to `PaymentActor`).",
+      "priority": "must"
+    },
+    {
+      "criterion": "Full `pytest` run is green.",
+      "priority": "must"
+    },
+    {
+      "criterion": "No user-visible behavior change in grants flow (auto-confirm on test, recipient click on real) or current admin_chat flow. Any deviation is explicitly called out in the PR as scope creep.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`PaymentWorkerCog` and `PaymentUICog` are each under ~400 lines (the current combined file is 576). Neither holds both a `discord.ui.View` class and the worker loop.",
+      "priority": "should"
+    },
+    {
+      "criterion": "`PaymentService._authorize_actor` has a single code path per `PaymentActorKind` value \u2014 no nested `if privileged_override else` branches.",
+      "priority": "should"
+    },
+    {
+      "criterion": "`tx_signature_history` entries include `signature`, `status`, `timestamp`, `reason`, `send_phase` \u2014 consistent shape across submit/confirm/requeue/backfill writes.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke: start the bot against a test guild; run one grants test payout (auto-confirm) and one real grants payout (recipient clicks button) and confirm both complete.",
+      "priority": "info"
+    },
+    {
+      "criterion": "Manual smoke: restart the bot with a payment in `pending_confirmation` and confirm the recipient can still click the button on the pre-restart message.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "`PRODUCER_FLOWS` drives authorization only in this plan \u2014 it does NOT yet drive state transitions, thread cleanup, or admin DM notifications, because any such wiring would be a behavior change violating the preservation constraint. Those fields exist on the dataclass for the admin-DM feature to consume.",
+    "The `admin_chat` flow entry ships as `test_confirmed_by=AUTO` to match current behavior at `admin_chat_cog.py:269`. The brief's `test_confirmed_by=recipient_click` is the admin-DM feature's target state and is out of scope for this cleanup.",
+    "`PaymentActorKind` subclasses `str` so the existing `confirmed_by` column values (`discord`, `auto`, `free_text`, `user`) are replaced with the new enum values (`recipient_click`, `auto`, `recipient_message`, `admin_dm`). This is a log/DB-string rename, not a user-visible change, and is acceptable since `confirmed_by` is not exposed externally. Historical rows keep their old strings.",
+    "`tx_signature_history` is authoritative audit metadata only \u2014 no code reads it back; it exists purely for forensic/audit queries.",
+    "`safe_delete_messages` may land without an existing caller if grep finds no current thread-cleanup path; the admin-DM feature will adopt it. A shared primitive is worth creating now because the brief treats it as foundational.",
+    "Tests use an in-memory/fake `db_handler` for the `tx_signature_history` test, not a real Postgres; Supabase is not spun up in the test suite. If a Postgres fixture exists already, reuse it instead.",
+    "Main wiring is `main.py`. If a loader/extension pattern exists I'll use it instead \u2014 this is verified in Step 7 before landing.",
+    "`PaymentCog` is deleted outright with no compat shim (per session guidance against backwards-compatibility hacks). All imports are updated in the same change."
+  ],
+  "structure_warnings": []
+}

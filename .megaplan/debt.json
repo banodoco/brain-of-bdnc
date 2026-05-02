@@ -1,0 +1,225 @@
+{
+  "entries": [
+    {
+      "id": "DEBT-001",
+      "subsystem": "db-handler-social-publications",
+      "concern": "mixing fluent client, raw sql, and rpc access patterns in one subsystem increases maintenance surface.",
+      "flag_ids": [
+        "correctness"
+      ],
+      "plan_ids": [
+        "implement-a-unified-social-20260409-1710"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-04-09T17:53:44Z",
+      "updated_at": "2026-04-09T17:53:44Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-002",
+      "subsystem": "db-handler-supabase-infrastructure",
+      "concern": "supabase rpc is untested in this codebase and may require dashboard configuration.",
+      "flag_ids": [
+        "issue_hints"
+      ],
+      "plan_ids": [
+        "implement-a-unified-social-20260409-1710"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-04-09T17:53:44Z",
+      "updated_at": "2026-04-09T17:53:44Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-003",
+      "subsystem": "social-channel-routes",
+      "concern": "route management tooling is absent, leaving the routing system inert until manual db inserts.",
+      "flag_ids": [
+        "scope"
+      ],
+      "plan_ids": [
+        "implement-a-unified-social-20260409-1710"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-04-09T17:53:44Z",
+      "updated_at": "2026-04-09T17:53:44Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-004",
+      "subsystem": "admin-payments-intent-state",
+      "concern": "button confirmation path does not directly update admin_payment_intents \u2014 intent sync happens indirectly via handle_payment_result on terminal state.",
+      "flag_ids": [
+        "FLAG-ADMIN-PAY-004"
+      ],
+      "plan_ids": [
+        "admin-triggered-payments-let-20260410-1448"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-04-10T15:07:49Z",
+      "updated_at": "2026-04-10T15:07:49Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-005",
+      "subsystem": "admin-payments-intent-state",
+      "concern": "no direct bridge from paymentconfirmview to admin_payment_intents.",
+      "flag_ids": [
+        "all_locations"
+      ],
+      "plan_ids": [
+        "admin-triggered-payments-let-20260410-1448"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-04-10T15:07:49Z",
+      "updated_at": "2026-04-10T15:07:49Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-006",
+      "subsystem": "admin-chat-classification",
+      "concern": "anthropic client may not be initialized when interceptor fires before _ensure_agent.",
+      "flag_ids": [
+        "callers"
+      ],
+      "plan_ids": [
+        "admin-triggered-payments-let-20260410-1448"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-04-10T15:07:49Z",
+      "updated_at": "2026-04-10T15:07:49Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-007",
+      "subsystem": "payment-service-confirmation",
+      "concern": "success criterion bundles null-recipient dm wiring with cap-breach/collision dm wiring; step 1 only does log+return-none for null-recipient.",
+      "flag_ids": [
+        "criteria_quality"
+      ],
+      "plan_ids": [
+        "harden-the-solana-payment-20260410-2147"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-04-10T20:54:51Z",
+      "updated_at": "2026-04-10T20:54:51Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-008",
+      "subsystem": "admin-payments-intent-state",
+      "concern": "awaiting_admin_init stale cleanup only runs at cog_load, not periodically, so stranded verified-batch intents could remain active until restart",
+      "flag_ids": [
+        "correctness"
+      ],
+      "plan_ids": [
+        "identity-based-routing-for-20260411-0256"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-04-11T02:04:17Z",
+      "updated_at": "2026-04-11T02:04:17Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-009",
+      "subsystem": "admin-payments-intent-state",
+      "concern": "scheduling glue for periodic _reconcile_admin_chat_orphans invocation is not in the plan",
+      "flag_ids": [
+        "all_locations"
+      ],
+      "plan_ids": [
+        "identity-based-routing-for-20260411-0256"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-04-11T02:04:17Z",
+      "updated_at": "2026-04-11T02:04:17Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-010",
+      "subsystem": "admin-payments-intent-state",
+      "concern": "awaiting_admin_init in the active set has broader effects on active-intent callers across the repo until restart",
+      "flag_ids": [
+        "scope"
+      ],
+      "plan_ids": [
+        "identity-based-routing-for-20260411-0256"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-04-11T02:04:17Z",
+      "updated_at": "2026-04-11T02:04:17Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-011",
+      "subsystem": "discord-resource-sync-promoter",
+      "concern": "pl/pgsql promoter + cursor-table removal deviates from the brief's stated two-edge-function + cursor-table shape.",
+      "flag_ids": [
+        "issue_hints-1"
+      ],
+      "plan_ids": [
+        "sync-discord-resources-20260423-2100"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-04-23T20:04:26Z",
+      "updated_at": "2026-04-23T20:04:26Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-012",
+      "subsystem": "discord-resource-sync-schema",
+      "concern": "`asset_comments.discord_guild_id bigint not null` could fail on historical `discord_messages` rows with null `guild_id`.",
+      "flag_ids": [
+        "FLAG-012"
+      ],
+      "plan_ids": [
+        "sync-discord-resources-20260423-2100"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-04-23T20:04:26Z",
+      "updated_at": "2026-04-23T20:04:26Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-013",
+      "subsystem": "discord-resource-sync-schema",
+      "concern": "same null-guild_id concern as flag-012, raised as category-level flag.",
+      "flag_ids": [
+        "correctness"
+      ],
+      "plan_ids": [
+        "sync-discord-resources-20260423-2100"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-04-23T20:04:26Z",
+      "updated_at": "2026-04-23T20:04:26Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    }
+  ]
+}

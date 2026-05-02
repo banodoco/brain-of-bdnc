@@ -1,0 +1,16 @@
+{
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Admin-chat cleanup: The plan's repo-wide zero-hit grep for `_can_user_message_bot` is not achievable within the stated scope, because `src/features/admin/admin_cog.py` still defines and uses its own live `_can_user_message_bot` for DM routing.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed FLAG-001 by narrowing every grep verification for `_can_user_message_bot` to `src/features/admin_chat/` plus `tests/` (instead of the full `src/` tree) and explicitly documenting that the same-name method in `src/features/admin/admin_cog.py` is a live, unrelated sibling that must remain untouched. Added a Sibling-file caveat in the Overview, refined Step 1's audit wording, qualified Step 7's grep scope, Step 10's cross-directory grep expectation, Step 11's hasattr assertion comment, Step 12's final grep instructions, and the corresponding success criterion. No scope, test-set, or implementation changes beyond what the flag required.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    }
+  ]
+}

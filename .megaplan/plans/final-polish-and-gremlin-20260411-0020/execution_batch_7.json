@@ -1,0 +1,34 @@
+{
+  "task_updates": [
+    {
+      "id": "T16",
+      "status": "done",
+      "executor_notes": "Added `docs/runbook-payments.md` as the operator runbook covering the six required non-happy-path scenarios: `manual_hold`, `failed`, ghost-verified wallet, admin DM undelivered, RPC down / `rpc_unreachable`, and budget cap hit. The document includes the requested `/payment-resolve`-first decision flow, admin-chat retry/release guidance, the copy-paste SQL appendix sourced from `scripts/audit_ghost_confirmed_payments.py`, and an explicit scheduler section marked as an operator decision with Railway, GitHub Actions, and external-scheduler options. Verification: heading/keyword checks confirmed the required sections and scheduler language, and the full pytest suite passed after the doc landed (`160 passed, 2 warnings`).",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/runbook-payments.md"
+      ],
+      "commands_run": [
+        "rg -n \"^## Scenario:|OPERATOR DECISION|Railway Cron|GitHub Actions Scheduled Workflow|External Scheduler|admin alert undeliverable|/payment-resolve\" docs/runbook-payments.md",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T16"
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "id": "SC16",
+      "executor_note": "Verified `docs/runbook-payments.md` covers all six required scenarios (`manual_hold`, `failed`, ghost-verified wallet, DM undelivered, RPC down, budget cap), includes a scheduler wire-up section explicitly marked `OPERATOR DECISION`, and no CI workflow or Railway config file was added as part of this batch.",
+      "verdict": "",
+      "sense_check_id": "SC16"
+    }
+  ],
+  "deviations": [
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: docs/runbook-payments.md",
+    "Advisory quality: docs/runbook-payments.md grew by 406 lines (threshold 200).",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/runbook-payments.md, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/requirements.txt, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/check_payment_invariants.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/redaction.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/solana_client.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/solana_provider.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_check_payment_invariants.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_authorization.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_race.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_reconcile.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_state_machine.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_route_tools.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_solana_client.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, docs/payments.md, docs/runbook-payments.md, main.py, requirements.txt, scripts/check_payment_invariants.py, src/common/db_handler.py, src/common/redaction.py, src/features/admin_chat/tools.py, src/features/payments/payment_service.py, src/features/payments/payment_ui_cog.py, src/features/payments/payment_worker_cog.py, tests/conftest.py, tests/test_admin_payments.py, tests/test_caller_paths.py, tests/test_check_payment_invariants.py, tests/test_notification_delete.py, tests/test_payment_authorization.py, tests/test_payment_race.py, tests/test_payment_reconcile.py, tests/test_payment_state_machine.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py, tests/test_social_route_tools.py",
+    "Advisory audit finding: Sense check SC19 is missing an executor acknowledgment."
+  ]
+}

@@ -29,6 +29,7 @@ from src.features.summarising.summariser import ChannelSummarizer
 from src.features.logging.logger_cog import LoggerCog
 from src.features.sharing.sharing_cog import SharingCog
 from src.features.sharing.providers.x_provider import XProvider
+from src.features.sharing.providers.youtube_zapier_provider import YouTubeZapierProvider
 from src.features.sharing.social_publish_service import SocialPublishService
 from src.features.reacting.reactor import Reactor
 from src.features.reacting.reactor_cog import ReactorCog
@@ -154,11 +155,13 @@ async def main_async(args):
 
         # Shared social publish service for immediate callers and scheduled worker.
         x_provider = XProvider()
+        youtube_provider = YouTubeZapierProvider()
         bot.social_publish_service = SocialPublishService(
             db_handler=bot.db_handler,
             providers={
                 'twitter': x_provider,
                 'x': x_provider,
+                'youtube': youtube_provider,
             },
             logger_instance=logger,
         )

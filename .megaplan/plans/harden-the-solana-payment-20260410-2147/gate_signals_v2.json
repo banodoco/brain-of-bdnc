@@ -1,0 +1,393 @@
+{
+  "robustness": "heavy",
+  "signals": {
+    "iteration": 2,
+    "idea": "Harden the Solana payment subsystem against the attack vectors found by the adversarial security review. Fix P0: git history secret audit, prompt-injection hardening in admin_chat (remove LLM-sourced wallet addresses from initiate_payment tool; wallets must come from wallet_registry keyed by mentioned Discord user), null recipient_discord_id confirmation bypass (fail-closed). Fix P1: wallet swap window between test and final payment (verify execute_payment uses stored recipient_wallet string; reject or warn on upsert_wallet during active intents), idempotency slot reuse after forced failure (warn/DM on producer_ref collision with prior failed row having different wallet), per-payment and rolling daily USD cap on admin-triggered payouts enforced in PaymentService (default $500/payment, $2000/day/guild, exceeding goes to manual_hold), admin DM on successful admin_chat payouts over threshold (default $100, differentiated from failure DMs). Fix P2: log audit for secret leakage, document RLS posture at top of sql/payments.sql. Already using Helius so RPC attacks out of scope. Two wallets already split into solana_grants and solana_payouts providers. Think carefully about wallet-swap and idempotency \u2014 they are subtle and easy to half-fix. Goal is end-to-end hardening.",
+    "significant_flags": 8,
+    "unresolved_flags": [
+      {
+        "id": "FLAG-001",
+        "concern": "Payments caps: Recurring debt: the revised amount_token fix still keeps derived USD out of the stored payment row, so admin-chat token-denominated payouts do not reliably participate in the rolling daily USD cap or the success-DM threshold.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "issue_hints",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Checked the revised Step 8 and Step 9 together against the real admin-chat final payout caller at `src/features/admin_chat/admin_chat_cog.py:352-365`. The plan now derives USD for amount_token-only requests during cap checks, but its own assumptions say that derived USD is kept local and not written back to `record['amount_usd']`; because `get_rolling_24h_payout_usd` is defined to sum stored `payment_requests.amount_usd` and the success-DM gate in Step 9 checks `payment.get('amount_usd')`, the actual admin-chat payouts would still miss the rolling daily cap and success-DM threshold in the live flow.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "scope",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The amount_token issue is broader than the immediate cap check. In this codebase, admin-chat final payouts are token-denominated at creation time, but later observability and rolling-budget logic operate on the stored `amount_usd` field. Because the revised plan keeps the derived USD local, it fixes the one-request calculation while leaving the broader payment-ledger semantics inconsistent for the same admin payout path.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "callers-1",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Checked the real admin payout caller at `src/features/admin_chat/admin_chat_cog.py:352-365`; it passes `amount_token` and omits `amount_usd`, so any cap logic written around the grants-style USD caller alone will miss the exact caller the brief cares about most.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "addressed"
+      },
+      {
+        "id": "criteria_quality",
+        "concern": "Are the success criteria well-prioritized and verifiable?: One `must` still overstates what the current plan would prove: 'Cap enforcement covers BOTH amount_usd-supplying callers AND amount_token-only callers' reads as an end-to-end guarantee, but the plan's own assumption that derived USD stays out of the stored row means rolling-daily enforcement and success-DM thresholding are still not fully covered for amount_token-only admin-chat payouts.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "correctness",
+        "concern": "Are the proposed changes technically correct?: There is still a correctness gap in the amount_token path. The plan derives a transient `cap_usd` for current-request checks but explicitly keeps that value out of `record['amount_usd']`; as a result, later logic that depends on stored USD, namely the rolling-24h aggregation and the confirmed-payment success-DM threshold, would still behave as if admin-chat token-denominated payouts were worth $0.00.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "all_locations",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: Not all supporting locations are aligned on the amount_token path yet. Step 8 derives USD locally in `PaymentService.request_payment`, Step 7's rolling helper sums stored `payment_requests.amount_usd`, and Step 9's success-DM gate reads `payment.get('amount_usd')`; unless the derived USD is persisted or recomputed in the downstream sites too, the feature is still only partially wired across the repository.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "callers",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Checked the actual admin payout caller and the downstream consumer. `src/features/admin_chat/admin_chat_cog.py:352-365` still creates final payouts with `amount_token` only, while the planned success-DM gate in `PaymentCog` keys off `amount_usd`; with the revised assumption that derived USD stays local instead of being stored, the real caller shape is still not handled end-to-end.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      }
+    ],
+    "resolved_flags": [
+      {
+        "id": "FLAG-002",
+        "concern": "Wallet registry updates: The proposed `upsert_wallet` blocked-path sentinel is only handled in admin chat, but `grants_cog` is another live caller and would treat a truthy sentinel dict as a successful wallet record.",
+        "resolution": "Resolved all 12 open significant flags. (1) Cap enforcement now covers amount_token-only callers (admin_chat final payout): derives USD from provider.get_token_price_usd() and fail-closes to manual_hold if price is unavailable. Added two new tests pinning that path. (2) upsert_wallet blocking is now exception-based (WalletUpdateBlockedError) and both live callers \u2014 admin_chat._handle_wallet_received AND grants_cog._start_payment_flow \u2014 catch it explicitly, eliminating the truthy-sentinel trap. (3) Collision handling is now index-aware with two explicit branches: Branch A inserts a fresh manual_hold row only when every prior row is failed/cancelled (index permits); Branch B returns None without attempting an insert when a prior row still holds a unique-index slot, and the admin DM fires in both cases. Added a new Branch-B test. (4) Step 5's control flow is fixed: the existing-wallet lookup now runs before the guard, and the sample code matches the real call order. (5) PaymentCog success-DM config is now read inside __init__ from env so both construction sites (main.py:233 and the setup() hook at payment_cog.py:503) stay in sync without touching either caller. (6) Test glue expansion is explicit: inline fakes in test_admin_payments.py and test_social_publish_service.py are named as the sites where has_active_payment_or_intent, get_rolling_24h_payout_usd, and WalletUpdateBlockedError stubs must land. (7) Criteria quality: demoted git-history-audit and log-audit from must to should (they are memo tasks, not diff-verifiable); added must criteria for the two new token-path cap tests and the Branch-B collision test. No scope creep; the plan remains aligned with the original P0/P1/P2 brief."
+      },
+      {
+        "id": "FLAG-003",
+        "concern": "Payment idempotency: The collision path over-assumes it can insert a new `manual_hold` row for any prior-wallet mismatch, but the active unique index still blocks inserts when the prior row is not `failed` or `cancelled`.",
+        "resolution": "Resolved all 12 open significant flags. (1) Cap enforcement now covers amount_token-only callers (admin_chat final payout): derives USD from provider.get_token_price_usd() and fail-closes to manual_hold if price is unavailable. Added two new tests pinning that path. (2) upsert_wallet blocking is now exception-based (WalletUpdateBlockedError) and both live callers \u2014 admin_chat._handle_wallet_received AND grants_cog._start_payment_flow \u2014 catch it explicitly, eliminating the truthy-sentinel trap. (3) Collision handling is now index-aware with two explicit branches: Branch A inserts a fresh manual_hold row only when every prior row is failed/cancelled (index permits); Branch B returns None without attempting an insert when a prior row still holds a unique-index slot, and the admin DM fires in both cases. Added a new Branch-B test. (4) Step 5's control flow is fixed: the existing-wallet lookup now runs before the guard, and the sample code matches the real call order. (5) PaymentCog success-DM config is now read inside __init__ from env so both construction sites (main.py:233 and the setup() hook at payment_cog.py:503) stay in sync without touching either caller. (6) Test glue expansion is explicit: inline fakes in test_admin_payments.py and test_social_publish_service.py are named as the sites where has_active_payment_or_intent, get_rolling_24h_payout_usd, and WalletUpdateBlockedError stubs must land. (7) Criteria quality: demoted git-history-audit and log-audit from must to should (they are memo tasks, not diff-verifiable); added must criteria for the two new token-path cap tests and the Branch-B collision test. No scope creep; the plan remains aligned with the original P0/P1/P2 brief."
+      },
+      {
+        "id": "correctness-1",
+        "concern": "Are the proposed changes technically correct?: Step 5 says to add the active-payment guard in `upsert_wallet` before the existing-wallet lookup, but the sample code branches on `existing` before `existing = self.get_wallet(...)` has run. That control flow is not implementable as written and needs to be reordered or rewritten.",
+        "resolution": "Resolved all 12 open significant flags. (1) Cap enforcement now covers amount_token-only callers (admin_chat final payout): derives USD from provider.get_token_price_usd() and fail-closes to manual_hold if price is unavailable. Added two new tests pinning that path. (2) upsert_wallet blocking is now exception-based (WalletUpdateBlockedError) and both live callers \u2014 admin_chat._handle_wallet_received AND grants_cog._start_payment_flow \u2014 catch it explicitly, eliminating the truthy-sentinel trap. (3) Collision handling is now index-aware with two explicit branches: Branch A inserts a fresh manual_hold row only when every prior row is failed/cancelled (index permits); Branch B returns None without attempting an insert when a prior row still holds a unique-index slot, and the admin DM fires in both cases. Added a new Branch-B test. (4) Step 5's control flow is fixed: the existing-wallet lookup now runs before the guard, and the sample code matches the real call order. (5) PaymentCog success-DM config is now read inside __init__ from env so both construction sites (main.py:233 and the setup() hook at payment_cog.py:503) stay in sync without touching either caller. (6) Test glue expansion is explicit: inline fakes in test_admin_payments.py and test_social_publish_service.py are named as the sites where has_active_payment_or_intent, get_rolling_24h_payout_usd, and WalletUpdateBlockedError stubs must land. (7) Criteria quality: demoted git-history-audit and log-audit from must to should (they are memo tasks, not diff-verifiable); added must criteria for the two new token-path cap tests and the Branch-B collision test. No scope creep; the plan remains aligned with the original P0/P1/P2 brief."
+      },
+      {
+        "id": "correctness-2",
+        "concern": "Are the proposed changes technically correct?: The collision path in Step 6 assumes it can create a fresh `manual_hold` row whenever any prior `(producer, producer_ref, is_test)` row has a different wallet, but `sql/payments.sql:126-128` still enforces uniqueness for every status except `failed` and `cancelled`. If the differing prior row is `pending_confirmation`, `queued`, `processing`, `submitted`, `confirmed`, or `manual_hold`, the insert cannot succeed, so the plan needs an explicit non-insert branch instead of assuming a new held row can always be created.",
+        "resolution": "Resolved all 12 open significant flags. (1) Cap enforcement now covers amount_token-only callers (admin_chat final payout): derives USD from provider.get_token_price_usd() and fail-closes to manual_hold if price is unavailable. Added two new tests pinning that path. (2) upsert_wallet blocking is now exception-based (WalletUpdateBlockedError) and both live callers \u2014 admin_chat._handle_wallet_received AND grants_cog._start_payment_flow \u2014 catch it explicitly, eliminating the truthy-sentinel trap. (3) Collision handling is now index-aware with two explicit branches: Branch A inserts a fresh manual_hold row only when every prior row is failed/cancelled (index permits); Branch B returns None without attempting an insert when a prior row still holds a unique-index slot, and the admin DM fires in both cases. Added a new Branch-B test. (4) Step 5's control flow is fixed: the existing-wallet lookup now runs before the guard, and the sample code matches the real call order. (5) PaymentCog success-DM config is now read inside __init__ from env so both construction sites (main.py:233 and the setup() hook at payment_cog.py:503) stay in sync without touching either caller. (6) Test glue expansion is explicit: inline fakes in test_admin_payments.py and test_social_publish_service.py are named as the sites where has_active_payment_or_intent, get_rolling_24h_payout_usd, and WalletUpdateBlockedError stubs must land. (7) Criteria quality: demoted git-history-audit and log-audit from must to should (they are memo tasks, not diff-verifiable); added must criteria for the two new token-path cap tests and the Branch-B collision test. No scope creep; the plan remains aligned with the original P0/P1/P2 brief."
+      },
+      {
+        "id": "all_locations-1",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The plan says to grep for `PaymentCog(` and find a single construction site, but there are two repo instantiations today: `main.py:233` and `src/features/payments/payment_cog.py:503`. If the constructor grows success-DM configuration, both locations need to stay in sync.",
+        "resolution": "Resolved all 12 open significant flags. (1) Cap enforcement now covers amount_token-only callers (admin_chat final payout): derives USD from provider.get_token_price_usd() and fail-closes to manual_hold if price is unavailable. Added two new tests pinning that path. (2) upsert_wallet blocking is now exception-based (WalletUpdateBlockedError) and both live callers \u2014 admin_chat._handle_wallet_received AND grants_cog._start_payment_flow \u2014 catch it explicitly, eliminating the truthy-sentinel trap. (3) Collision handling is now index-aware with two explicit branches: Branch A inserts a fresh manual_hold row only when every prior row is failed/cancelled (index permits); Branch B returns None without attempting an insert when a prior row still holds a unique-index slot, and the admin DM fires in both cases. Added a new Branch-B test. (4) Step 5's control flow is fixed: the existing-wallet lookup now runs before the guard, and the sample code matches the real call order. (5) PaymentCog success-DM config is now read inside __init__ from env so both construction sites (main.py:233 and the setup() hook at payment_cog.py:503) stay in sync without touching either caller. (6) Test glue expansion is explicit: inline fakes in test_admin_payments.py and test_social_publish_service.py are named as the sites where has_active_payment_or_intent, get_rolling_24h_payout_usd, and WalletUpdateBlockedError stubs must land. (7) Criteria quality: demoted git-history-audit and log-audit from must to should (they are memo tasks, not diff-verifiable); added must criteria for the two new token-path cap tests and the Branch-B collision test. No scope creep; the plan remains aligned with the original P0/P1/P2 brief."
+      },
+      {
+        "id": "all_locations-2",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The supporting test glue is broader than the plan currently describes. The fake databases and bot doubles that would need to absorb helper or return-shape changes live inline in `tests/test_admin_payments.py` and `tests/test_social_publish_service.py`, not only in `tests/conftest.py`.",
+        "resolution": "Resolved all 12 open significant flags. (1) Cap enforcement now covers amount_token-only callers (admin_chat final payout): derives USD from provider.get_token_price_usd() and fail-closes to manual_hold if price is unavailable. Added two new tests pinning that path. (2) upsert_wallet blocking is now exception-based (WalletUpdateBlockedError) and both live callers \u2014 admin_chat._handle_wallet_received AND grants_cog._start_payment_flow \u2014 catch it explicitly, eliminating the truthy-sentinel trap. (3) Collision handling is now index-aware with two explicit branches: Branch A inserts a fresh manual_hold row only when every prior row is failed/cancelled (index permits); Branch B returns None without attempting an insert when a prior row still holds a unique-index slot, and the admin DM fires in both cases. Added a new Branch-B test. (4) Step 5's control flow is fixed: the existing-wallet lookup now runs before the guard, and the sample code matches the real call order. (5) PaymentCog success-DM config is now read inside __init__ from env so both construction sites (main.py:233 and the setup() hook at payment_cog.py:503) stay in sync without touching either caller. (6) Test glue expansion is explicit: inline fakes in test_admin_payments.py and test_social_publish_service.py are named as the sites where has_active_payment_or_intent, get_rolling_24h_payout_usd, and WalletUpdateBlockedError stubs must land. (7) Criteria quality: demoted git-history-audit and log-audit from must to should (they are memo tasks, not diff-verifiable); added must criteria for the two new token-path cap tests and the Branch-B collision test. No scope creep; the plan remains aligned with the original P0/P1/P2 brief."
+      },
+      {
+        "id": "callers-2",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Checked `upsert_wallet` callers and found both `src/features/admin_chat/admin_chat_cog.py:193-201` and `src/features/grants/grants_cog.py:557-562`. A truthy sentinel such as `{'__error__': ...}` would be caught in admin chat only if the new branch is added there, but grants would still treat that dict as a valid wallet record and continue.",
+        "resolution": "Resolved all 12 open significant flags. (1) Cap enforcement now covers amount_token-only callers (admin_chat final payout): derives USD from provider.get_token_price_usd() and fail-closes to manual_hold if price is unavailable. Added two new tests pinning that path. (2) upsert_wallet blocking is now exception-based (WalletUpdateBlockedError) and both live callers \u2014 admin_chat._handle_wallet_received AND grants_cog._start_payment_flow \u2014 catch it explicitly, eliminating the truthy-sentinel trap. (3) Collision handling is now index-aware with two explicit branches: Branch A inserts a fresh manual_hold row only when every prior row is failed/cancelled (index permits); Branch B returns None without attempting an insert when a prior row still holds a unique-index slot, and the admin DM fires in both cases. Added a new Branch-B test. (4) Step 5's control flow is fixed: the existing-wallet lookup now runs before the guard, and the sample code matches the real call order. (5) PaymentCog success-DM config is now read inside __init__ from env so both construction sites (main.py:233 and the setup() hook at payment_cog.py:503) stay in sync without touching either caller. (6) Test glue expansion is explicit: inline fakes in test_admin_payments.py and test_social_publish_service.py are named as the sites where has_active_payment_or_intent, get_rolling_24h_payout_usd, and WalletUpdateBlockedError stubs must land. (7) Criteria quality: demoted git-history-audit and log-audit from must to should (they are memo tasks, not diff-verifiable); added must criteria for the two new token-path cap tests and the Branch-B collision test. No scope creep; the plan remains aligned with the original P0/P1/P2 brief."
+      },
+      {
+        "id": "conventions",
+        "concern": "Does the approach match how the codebase solves similar problems?: The proposed `{'__error__': 'active_payment_or_intent'}` return value does not match the surrounding `DatabaseHandler` convention, which is overwhelmingly `Optional[Dict]` or `bool` with `None`/`False` on failure across `src/common/db_handler.py`. That divergence is risky here because current callers already treat any dict as success.",
+        "resolution": "The proposed `{'__error__': 'active_payment_or_intent'}` return value does not match the surrounding `DatabaseHandler` convention, which is overwhelmingly `Optional[Dict]` or `bool` with `None`/`False` on failure across `src/common/db_handler.py`. That divergence is risky here because current callers already treat any dict as success."
+      },
+      {
+        "id": "verification-2",
+        "concern": "Is there convincing verification for the change?: The plan adds an admin-chat test for blocked wallet updates, but it does not add any regression coverage for the other live `upsert_wallet` caller in `grants_cog`. That leaves the proposed sentinel-versus-exception choice unverified on a real second caller.",
+        "resolution": "The plan adds an admin-chat test for blocked wallet updates, but it does not add any regression coverage for the other live `upsert_wallet` caller in `grants_cog`. That leaves the proposed sentinel-versus-exception choice unverified on a real second caller."
+      }
+    ],
+    "weighted_score": 13.0,
+    "weighted_history": [
+      19.0
+    ],
+    "plan_delta_from_previous": 61.33,
+    "recurring_critiques": [],
+    "scope_creep_flags": [
+      "callers-1"
+    ],
+    "loop_summary": "Iteration 2. Weighted score trajectory: 19.0 -> 13.0. Plan deltas: 61.3%. Recurring critiques: 0. Resolved flags: 9. Open significant flags: 8.",
+    "debt_overlaps": [],
+    "escalated_debt_subsystems": []
+  },
+  "warnings": [
+    "Scope creep detected: the plan appears to be expanding beyond the original idea or recorded user notes."
+  ],
+  "criteria_check": {
+    "count": 39,
+    "items": [
+      {
+        "criterion": "All existing tests in tests/test_admin_payments.py, tests/test_scheduler.py, and tests/test_social_publish_service.py pass unchanged (default None caps preserve existing PaymentService construction).",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_confirm_rejects_null_recipient_discord_id passes: confirm_payment with recipient_discord_id=None returns None and logs WARN.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test verifying privileged_override=True still bypasses the null-recipient check passes.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_confirm_rejects_mismatched_user passes: confirm_payment with a non-matching confirmed_by_user_id returns None.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_request_payment_per_payment_cap_manual_holds passes: amount_usd over per-payment cap lands the row as manual_hold with cap-breach last_error; grants provider is unaffected.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_request_payment_amount_token_path_cap_breach passes: caller supplies amount_token with no amount_usd, derived USD (amount_token * token_price_usd) exceeds the cap \u2192 manual_hold. Pins the admin-chat final-payout path.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_request_payment_amount_token_path_missing_price_holds passes: amount_token path with provider returning None/0 for token price \u2192 manual_hold with last_error='cap check unavailable'. Fail-closed pin.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_request_payment_rolling_daily_cap_manual_holds passes: rolling 24h aggregation across non-test solana_payouts rows in (pending_confirmation, queued, processing, submitted, confirmed) drives the cap; grants are unaffected.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_slot_reuse_collision_detected_after_failure passes: only prior rows are failed/cancelled with a different wallet \u2192 a fresh manual_hold row IS inserted (Branch A) and on_cap_breach fires.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_slot_reuse_collision_blocked_when_prior_active passes: prior row is pending_confirmation/queued/etc with a different wallet \u2192 request_payment returns None without attempting an insert (Branch B), the prior row is NOT replaced, and on_cap_breach fires. Pins index-aware branching.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_slot_reuse_same_wallet_creates_fresh_row_after_failure passes: only terminal prior rows with matching wallet \u2192 new pending_confirmation row is created (pins reordered early-return).",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_idempotent_return_for_nonterminal passes: non-terminal prior row with matching wallet is returned unchanged.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_upsert_wallet_raises_during_active_intent passes: upsert_wallet raises WalletUpdateBlockedError while a non-terminal payment_requests OR admin_payment_intents row exists; admin_chat._handle_wallet_received catches it and surfaces to the admin review channel; grants_cog._start_payment_flow catches it and surfaces to the grant thread.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_upsert_wallet_unblocked_after_terminal passes: upsert_wallet proceeds when only terminal rows exist, and when the incoming address matches the stored address even while an active intent exists.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_admin_success_dm_over_threshold passes: confirmed, non-test, solana_payouts, amount_usd >= threshold triggers _dm_admin_payment_success; under-threshold does not; failure DM path is unchanged.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_execute_payment_uses_stored_wallet passes: execute_payment passes payment['recipient_wallet'] (frozen) to provider.send even when wallet_registry has been updated. Regression pin.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_initiate_payment_tool_rejects_wallet_address_arg passes: wallet_address/recipient_wallet keys in params are popped and ignored; wallet is resolved exclusively via db_handler.get_wallet.",
+        "priority": "must"
+      },
+      {
+        "criterion": "PaymentService constructor accepts per_payment_usd_cap, daily_usd_cap, capped_providers, and on_cap_breach kwargs; all default to None so existing construction sites remain compatible.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Cap enforcement in PaymentService runs only in request_payment, never in execute_payment. Scheduler path (claim_due_payment_requests -> execute_payment) is untouched.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Cap enforcement covers BOTH amount_usd-supplying callers AND amount_token-only callers. amount_token-only path derives USD via provider.get_token_price_usd(); if price is unavailable, the row is held as manual_hold (fail-closed).",
+        "priority": "must"
+      },
+      {
+        "criterion": "Cap-breach, collision (Branch A insert and Branch B reject), and null-recipient paths trigger an admin DM via on_cap_breach or equivalent path. No silent rejection.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Collision handling is index-aware: Branch A (prior rows all failed/cancelled) inserts a fresh manual_hold row; Branch B (any prior row in a non-excluded status) returns None without attempting an insert. No code path tries to insert a manual_hold row that would violate uq_payment_requests_active_producer_ref.",
+        "priority": "must"
+      },
+      {
+        "criterion": "upsert_wallet blocked path raises WalletUpdateBlockedError (not a truthy sentinel). Both admin_chat._handle_wallet_received and grants_cog._start_payment_flow catch the exception and surface a user-facing message without continuing to request_payment.",
+        "priority": "must"
+      },
+      {
+        "criterion": "upsert_wallet's existing-wallet lookup runs BEFORE the has_active_payment_or_intent guard so the control flow is implementable. Identical-address upserts and upserts with no prior row are never blocked.",
+        "priority": "must"
+      },
+      {
+        "criterion": "_dm_admin_payment_success is a new sibling method with a distinct prefix ('\u2705 **Payment Completed**') and no 'requires manual review' line. _dm_admin_payment_failure is unchanged.",
+        "priority": "must"
+      },
+      {
+        "criterion": "PaymentCog reads success-DM threshold and provider set from env inside __init__ with defaults ($100, 'solana_payouts'), so both construction sites (main.py:233 and src/features/payments/payment_cog.py:503 setup hook) stay in sync without modification.",
+        "priority": "must"
+      },
+      {
+        "criterion": "main.py wires per_payment_usd_cap, daily_usd_cap, capped_providers=('solana_payouts',), and on_cap_breach into PaymentService from env vars with defaults $500/$2000 and logs effective caps at startup.",
+        "priority": "must"
+      },
+      {
+        "criterion": "sql/payments.sql has a top-of-file comment block documenting the RLS posture (RLS already enabled, anon/authenticated revoked, service-role bypass). No ALTER TABLE changes.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Admin success DM is provider-scoped and threshold-gated; solana_grants payouts never trigger admin success DMs.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Inline fake-db glue in tests/test_admin_payments.py, tests/test_social_publish_service.py, and tests/conftest.py is extended with has_active_payment_or_intent, get_rolling_24h_payout_usd, and WalletUpdateBlockedError stubs additively (no rewrites of existing tests).",
+        "priority": "must"
+      },
+      {
+        "criterion": "pytest tests/ runs green end-to-end.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New cap/collision/DM code paths redact wallets via existing _redact_wallet helpers and never log env values or key material.",
+        "priority": "should"
+      },
+      {
+        "criterion": "has_active_payment_or_intent uses the same non-terminal predicates as existing helpers (('completed','failed','cancelled') for intents; ('confirmed','failed','manual_hold','cancelled') for payments) \u2014 no ad-hoc drift.",
+        "priority": "should"
+      },
+      {
+        "criterion": "Inline comment at the collision-detection + idempotent-return reorder explains WHY terminal rows must not short-circuit the early return.",
+        "priority": "should"
+      },
+      {
+        "criterion": "Rolling-24h cap helper includes a comment documenting the residual burst-race window under non-serializable Supabase REST access.",
+        "priority": "should"
+      },
+      {
+        "criterion": "Git history secret audit commands from Step 3 are run and findings recorded in the review memo (pass-through task; not directly diff-verifiable).",
+        "priority": "should"
+      },
+      {
+        "criterion": "Log audit grep from Step 11 is performed and findings recorded. If no real leak path is found, no log_handler.py code change.",
+        "priority": "should"
+      },
+      {
+        "criterion": "Plan output explicitly states that the P0 prompt-injection premise was already substantially satisfied by prior work, so review does not mark prep as incomplete.",
+        "priority": "should"
+      },
+      {
+        "criterion": "No unrelated refactors or test rewrites beyond what the new behavior strictly requires.",
+        "priority": "should"
+      }
+    ]
+  },
+  "preflight_results": {
+    "project_dir_exists": true,
+    "project_dir_writable": true,
+    "success_criteria_present": true,
+    "claude_available": true,
+    "codex_available": true
+  },
+  "unresolved_flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Payments caps: Recurring debt: the revised amount_token fix still keeps derived USD out of the stored payment row, so admin-chat token-denominated payouts do not reliably participate in the rolling daily USD cap or the success-DM threshold.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The live admin-chat final payout caller at `src/features/admin_chat/admin_chat_cog.py:352-365` passes `amount_token` only. The revised plan's assumptions explicitly say the derived USD is kept local instead of being stamped into `record['amount_usd']`, while Step 7's rolling helper sums stored `amount_usd` and Step 9's success-DM gate reads `payment.get('amount_usd')`.",
+      "raised_in": "critique_v2.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "issue_hints",
+      "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Checked the revised Step 8 and Step 9 together against the real admin-chat final payout caller at `src/features/admin_chat/admin_chat_cog.py:352-365`. The plan now derives USD for amount_token-only requests during cap checks, but its own assumptions say that derived USD is kept local and not written back to `record['amount_usd']`; because `get_rolling_24h_payout_usd` is defined to sum stored `payment_requests.amount_usd` and the success-DM gate in Step 9 checks `payment.get('amount_usd')`, the actual admin-chat payouts would still miss the rolling daily cap and success-DM threshold in the live flow.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Checked the revised Step 8 and Step 9 together against the real admin-chat final payout caller at `src/features/admin_chat/admin_chat_cog.py:352-365`. The plan now derives USD for amount_token-only requests during cap checks, but its own assumptions say that derived USD is kept local and not written back to `record['amount_usd']`; because `get_rolling_24h_payout_usd` is defined to sum stored `payment_requests.amount_usd` and the success-DM gate in Step 9 checks `payment.get('amount_usd')`, the actual admin-chat payouts would still miss the rolling daily cap and success-DM threshold in the live flow.",
+      "raised_in": "critique_v2.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "scope",
+      "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The amount_token issue is broader than the immediate cap check. In this codebase, admin-chat final payouts are token-denominated at creation time, but later observability and rolling-budget logic operate on the stored `amount_usd` field. Because the revised plan keeps the derived USD local, it fixes the one-request calculation while leaving the broader payment-ledger semantics inconsistent for the same admin payout path.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The amount_token issue is broader than the immediate cap check. In this codebase, admin-chat final payouts are token-denominated at creation time, but later observability and rolling-budget logic operate on the stored `amount_usd` field. Because the revised plan keeps the derived USD local, it fixes the one-request calculation while leaving the broader payment-ledger semantics inconsistent for the same admin payout path.",
+      "raised_in": "critique_v2.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": true,
+      "addressed_in": "plan_v2.md",
+      "verified_in": "critique_v2.json"
+    },
+    {
+      "id": "callers-1",
+      "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Checked the real admin payout caller at `src/features/admin_chat/admin_chat_cog.py:352-365`; it passes `amount_token` and omits `amount_usd`, so any cap logic written around the grants-style USD caller alone will miss the exact caller the brief cares about most.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Resolved all 12 open significant flags. (1) Cap enforcement now covers amount_token-only callers (admin_chat final payout): derives USD from provider.get_token_price_usd() and fail-closes to manual_hold if price is unavailable. Added two new tests pinning that path. (2) upsert_wallet blocking is now exception-based (WalletUpdateBlockedError) and both live callers \u2014 admin_chat._handle_wallet_received AND grants_cog._start_payment_flow \u2014 catch it explicitly, eliminating the truthy-sentinel trap. (3) Collision handling is now index-aware with two explicit branches: Branch A inserts a fresh manual_hold row only when every prior row is failed/cancelled (index permits); Branch B returns None without attempting an insert when a prior row still holds a unique-index slot, and the admin DM fires in both cases. Added a new Branch-B test. (4) Step 5's control flow is fixed: the existing-wallet lookup now runs before the guard, and the sample code matches the real call order. (5) PaymentCog success-DM config is now read inside __init__ from env so both construction sites (main.py:233 and the setup() hook at payment_cog.py:503) stay in sync without touching either caller. (6) Test glue expansion is explicit: inline fakes in test_admin_payments.py and test_social_publish_service.py are named as the sites where has_active_payment_or_intent, get_rolling_24h_payout_usd, and WalletUpdateBlockedError stubs must land. (7) Criteria quality: demoted git-history-audit and log-audit from must to should (they are memo tasks, not diff-verifiable); added must criteria for the two new token-path cap tests and the Branch-B collision test. No scope creep; the plan remains aligned with the original P0/P1/P2 brief.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "criteria_quality",
+      "concern": "Are the success criteria well-prioritized and verifiable?: One `must` still overstates what the current plan would prove: 'Cap enforcement covers BOTH amount_usd-supplying callers AND amount_token-only callers' reads as an end-to-end guarantee, but the plan's own assumption that derived USD stays out of the stored row means rolling-daily enforcement and success-DM thresholding are still not fully covered for amount_token-only admin-chat payouts.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "One `must` still overstates what the current plan would prove: 'Cap enforcement covers BOTH amount_usd-supplying callers AND amount_token-only callers' reads as an end-to-end guarantee, but the plan's own assumption that derived USD stays out of the stored row means rolling-daily enforcement and success-DM thresholding are still not fully covered for amount_token-only admin-chat payouts.",
+      "raised_in": "critique_v2.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": true,
+      "addressed_in": "plan_v2.md",
+      "verified_in": "critique_v2.json"
+    },
+    {
+      "id": "correctness",
+      "concern": "Are the proposed changes technically correct?: There is still a correctness gap in the amount_token path. The plan derives a transient `cap_usd` for current-request checks but explicitly keeps that value out of `record['amount_usd']`; as a result, later logic that depends on stored USD, namely the rolling-24h aggregation and the confirmed-payment success-DM threshold, would still behave as if admin-chat token-denominated payouts were worth $0.00.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "There is still a correctness gap in the amount_token path. The plan derives a transient `cap_usd` for current-request checks but explicitly keeps that value out of `record['amount_usd']`; as a result, later logic that depends on stored USD, namely the rolling-24h aggregation and the confirmed-payment success-DM threshold, would still behave as if admin-chat token-denominated payouts were worth $0.00.",
+      "raised_in": "critique_v2.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "all_locations",
+      "concern": "Does the change touch all locations AND supporting infrastructure?: Not all supporting locations are aligned on the amount_token path yet. Step 8 derives USD locally in `PaymentService.request_payment`, Step 7's rolling helper sums stored `payment_requests.amount_usd`, and Step 9's success-DM gate reads `payment.get('amount_usd')`; unless the derived USD is persisted or recomputed in the downstream sites too, the feature is still only partially wired across the repository.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Not all supporting locations are aligned on the amount_token path yet. Step 8 derives USD locally in `PaymentService.request_payment`, Step 7's rolling helper sums stored `payment_requests.amount_usd`, and Step 9's success-DM gate reads `payment.get('amount_usd')`; unless the derived USD is persisted or recomputed in the downstream sites too, the feature is still only partially wired across the repository.",
+      "raised_in": "critique_v2.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "callers",
+      "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Checked the actual admin payout caller and the downstream consumer. `src/features/admin_chat/admin_chat_cog.py:352-365` still creates final payouts with `amount_token` only, while the planned success-DM gate in `PaymentCog` keys off `amount_usd`; with the revised assumption that derived USD stays local instead of being stored, the real caller shape is still not handled end-to-end.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Checked the actual admin payout caller and the downstream consumer. `src/features/admin_chat/admin_chat_cog.py:352-365` still creates final payouts with `amount_token` only, while the planned success-DM gate in `PaymentCog` keys off `amount_usd`; with the revised assumption that derived USD stays local instead of being stored, the real caller shape is still not handled end-to-end.",
+      "raised_in": "critique_v2.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    }
+  ]
+}

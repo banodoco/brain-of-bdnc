@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-10T12:54:50Z",
+  "hash": "sha256:b5604fcba5edf189f4feb5b6e8a9f0c2c6adf130b3e0de9c3993b080b115ce93",
+  "questions": [
+    "Should the admin be able to initiate a payment from a DM with the bot, or only from a guild channel? (Affects how guild_id and source_channel_id are resolved for payment destinations.)",
+    "Should there be a maximum payment amount guardrail (e.g. refuse payments over $X without additional confirmation)?",
+    "For wallet collection: is 'fail if no wallet on file, tell admin to provide it' acceptable for v1, with DM-based collection as a follow-up? Or is DM-based collection a hard requirement for this iteration?",
+    "Should the confirmation button for the final payment go to the recipient in a DM, or to the channel where the admin initiated the payment?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "initiate_payment tool appears in TOOLS list, ADMIN_ONLY_TOOLS set, and the assertion at tools.py:916 passes",
+      "priority": "must"
+    },
+    {
+      "criterion": "Calling initiate_payment with a valid recipient_user_id, amount_usd, and wallet_address creates a test payment via PaymentService.request_payment with producer='admin_chat' and auto-confirms it",
+      "priority": "must"
+    },
+    {
+      "criterion": "Calling initiate_payment without wallet_address when no wallet is on file returns a clear error (fail-closed)",
+      "priority": "must"
+    },
+    {
+      "criterion": "Calling initiate_payment with amount_usd <= 0 or missing/invalid recipient_user_id returns an error (fail-closed)",
+      "priority": "must"
+    },
+    {
+      "criterion": "AdminChatCog.handle_payment_result handles producer='admin_chat' test-confirmed by creating the final payment and posting a confirmation button via PaymentCog.send_confirmation_request",
+      "priority": "must"
+    },
+    {
+      "criterion": "AdminChatCog.handle_payment_result handles test-failed by notifying the admin and NOT creating a final payment (fail-closed)",
+      "priority": "must"
+    },
+    {
+      "criterion": "AdminChatCog.handle_payment_result handles final-confirmed by posting a success notification",
+      "priority": "must"
+    },
+    {
+      "criterion": "producer_ref is unique per payment (includes timestamp or UUID) to satisfy the unique index constraint",
+      "priority": "must"
+    },
+    {
+      "criterion": "All existing tests pass: test_scheduler.py, test_social_route_tools.py, and the full test suite",
+      "priority": "must"
+    },
+    {
+      "criterion": "System prompt in agent.py documents the new tool",
+      "priority": "must"
+    },
+    {
+      "criterion": "The execute_initiate_payment function is under ~100 lines with clear early-return error paths",
+      "priority": "should"
+    },
+    {
+      "criterion": "The handle_payment_result method in AdminChatCog follows the same structure as GrantsCog's version",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke test: admin mentions bot with 'pay @user $5 to wallet ABC', test payment is queued, confirmation button appears after test succeeds",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "Using producer name 'admin_chat' (not 'admin') so PaymentCog's _candidate_producer_cog_names auto-discovers AdminChatCog without modifying PaymentCog.",
+    "Wallet collection via DM is deferred to a follow-up \u2014 v1 requires the admin to provide wallet_address in the tool call if no wallet is on file.",
+    "The admin can initiate payments from both DMs and guild channels. When from a DM, guild_id comes from the resolved context guild. Payment destination channels use resolve_payment_destinations with fallback to a sensible default.",
+    "No maximum payment amount guardrail in v1 \u2014 the admin is trusted.",
+    "The confirmation button for the final payment is posted to the channel resolved by resolve_payment_destinations (same pattern as grants), not DMed to the recipient."
+  ],
+  "structure_warnings": []
+}

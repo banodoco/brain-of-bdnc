@@ -12,6 +12,7 @@ from src.features.payments.payment_service import PaymentActor, PaymentActorKind
 from src.features.payments.solana_provider import SolanaProvider
 from src.features.sharing.models import PublicationSourceContext, SocialPublishRequest
 from src.features.sharing.social_publish_service import SocialPublishService
+from src.features.sharing.providers.youtube_zapier_provider import YouTubeZapierProvider
 from src.features.payments.payment_service import PaymentService
 from src.features.payments.provider import SendResult
 
@@ -59,6 +60,39 @@ class FailingProvider(FakeProvider):
     async def publish(self, request):
         self.publish_calls.append(request)
         raise RuntimeError("provider boom")
+
+
+class FakeZapierResponse:
+    status = 200
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def text(self):
+        return '{"youtube_video_id": "yt-123"}'
+
+    async def json(self, content_type=None):
+        return {"youtube_video_id": "yt-123"}
+
+
+class FakeZapierSession:
+    payloads = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def post(self, url, json):
+        self.payloads.append({"url": url, "json": json})
+        return FakeZapierResponse()
 
 
 class FakeDB:
@@ -137,6 +171,37 @@ def build_request(action="post", scheduled_at=None, target_post_ref=None):
         source_context=PublicationSourceContext(
             source_kind="admin_chat",
             metadata={"user_details": {"username": "poster"}, "original_content": "hello"},
+        ),
+    )
+
+
+def build_youtube_request():
+    return SocialPublishRequest(
+        message_id=10,
+        channel_id=20,
+        guild_id=30,
+        user_id=40,
+        platform="youtube",
+        action="post",
+        route_override={
+            "route_key": "youtube-main",
+            "route_config": {
+                "privacy_status": "unlisted",
+                "default_tags": ["ADOS", "Banodoco"],
+            },
+        },
+        text="Yaron Inger - Your Model Now\nFull ADOS Paris talk.",
+        media_hints=[
+            {
+                "url": "https://cdn.example.com/yaron.mp4",
+                "local_path": "/tmp/yaron.mp4",
+                "content_type": "video/mp4",
+            }
+        ],
+        source_kind="admin_chat",
+        source_context=PublicationSourceContext(
+            source_kind="admin_chat",
+            metadata={"youtube_description": "Custom YouTube description."},
         ),
     )
 
@@ -221,6 +286,52 @@ async def test_publish_now_enqueue_execute_and_delete_branching():
 
     assert await service.delete_publication(retweet_result.publication_id) is False
     assert provider.delete_calls == ["pub-1"]
+
+
+async def test_default_social_publish_service_registers_youtube_provider():
+    service = SocialPublishService(FakeDB(), logger_instance=None)
+
+    assert "youtube" in service.providers
+    assert isinstance(service.providers["youtube"], YouTubeZapierProvider)
+
+
+async def test_youtube_zapier_provider_posts_reachable_media_url(monkeypatch):
+    FakeZapierSession.payloads = []
+    monkeypatch.setenv("ZAPIER_YOUTUBE_URL", "https://hooks.zapier.test/youtube")
+    monkeypatch.setattr(
+        "src.features.sharing.providers.youtube_zapier_provider.aiohttp.ClientSession",
+        FakeZapierSession,
+    )
+
+    provider = YouTubeZapierProvider()
+    result = await provider.publish(build_youtube_request())
+
+    assert result["provider_ref"] == "yt-123"
+    assert result["provider_url"] == "https://www.youtube.com/watch?v=yt-123"
+    assert FakeZapierSession.payloads == [
+        {
+            "url": "https://hooks.zapier.test/youtube",
+            "json": {
+                "platform": "youtube",
+                "action": "post",
+                "title": "Yaron Inger - Your Model Now",
+                "description": "Custom YouTube description.",
+                "media_url": "https://cdn.example.com/yaron.mp4",
+                "media_urls": ["https://cdn.example.com/yaron.mp4"],
+                "privacy_status": "unlisted",
+                "tags": ["ADOS", "Banodoco"],
+                "playlist_id": None,
+                "made_for_kids": False,
+                "message_id": 10,
+                "channel_id": 20,
+                "guild_id": 30,
+                "user_id": 40,
+                "route_key": "youtube-main",
+                "source_kind": "admin_chat",
+                "source_metadata": {"youtube_description": "Custom YouTube description."},
+            },
+        }
+    ]
 
 
 async def test_publish_and_enqueue_resolve_and_persist_route_selection():

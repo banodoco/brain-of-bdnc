@@ -1,0 +1,125 @@
+{
+  "output": "Executed batch 4 tasks T10 and T13, wrote the batch checkpoint, and verified the payment-related regression modules end-to-end.",
+  "files_changed": [
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/conftest.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_4.json"
+  ],
+  "commands_run": [
+    "sed -n '1,220p' /Users/peteromalley/.codex/skills/megaplan/SKILL.md",
+    "python -m megaplan progress --plan harden-the-solana-payment-20260410-2147",
+    "sed -n '140,260p' main.py",
+    "sed -n '1,140p' main.py",
+    "sed -n '1,260p' tests/test_admin_payments.py",
+    "sed -n '260,520p' tests/test_admin_payments.py",
+    "sed -n '520,900p' tests/test_admin_payments.py",
+    "sed -n '1,260p' tests/test_social_publish_service.py",
+    "sed -n '260,520p' tests/test_social_publish_service.py",
+    "sed -n '520,820p' tests/test_social_publish_service.py",
+    "sed -n '1,260p' tests/conftest.py",
+    "sed -n '180,240p' src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '540,610p' src/features/grants/grants_cog.py",
+    "sed -n '2430,2528p' src/features/admin_chat/tools.py",
+    "sed -n '1,260p' src/features/payments/payment_service.py",
+    "sed -n '260,520p' src/features/payments/payment_service.py",
+    "sed -n '610,760p' src/features/grants/grants_cog.py",
+    "sed -n '480,530p' src/features/payments/payment_cog.py",
+    "rg -n \"class Fake|def test_|amount_usd|PaymentService\\(|PaymentCog\\(|WalletUpdateBlockedError|execute_payment|request_payment|confirm_payment|success_dm|upsert_wallet_raises|initiate_payment_tool_rejects_wallet_address_arg\" tests/test_admin_payments.py",
+    "rg -n \"PaymentCog\\(|_dm_admin_payment_failure|_dm_admin_payment_success|handle_terminal_payment|send_confirmation_request|PaymentConfirmView\" tests",
+    "rg -n \"claim_due_payment_requests|PaymentCog|payment_service\" tests/test_scheduler.py",
+    "rg -n \"_handle_wallet_received|_start_payment_flow|WalletUpdateBlockedError|awaiting_test|awaiting_wallet\" src/features/admin_chat/admin_chat_cog.py src/features/grants/grants_cog.py",
+    "rg -n \"def _resolve_payment_destinations|def handle_payment_result|def _notify_payment_result|def _handoff_terminal_result\" src/features/grants/grants_cog.py src/features/payments/payment_cog.py",
+    "rg -n \"class PaymentCog|def setup\\(|_dm_admin_payment_success|_handle_terminal_payment\" src/features/payments/payment_cog.py",
+    "rg -n \"baseline_test_failures\" -S .megaplan/plans/harden-the-solana-payment-20260410-2147 .megaplan",
+    "rg -n \"amount_usd\" tests/test_admin_payments.py tests/test_social_publish_service.py",
+    "sed -n '518,530p' tests/test_admin_payments.py",
+    "sed -n '700,710p' tests/test_admin_payments.py",
+    "sed -n '470,500p' tests/test_social_publish_service.py",
+    "python -m py_compile main.py tests/conftest.py tests/test_admin_payments.py tests/test_social_publish_service.py",
+    "rg -n \"test_confirm_rejects_null_recipient_discord_id|test_confirm_privileged_override_bypasses_null_check|test_confirm_rejects_mismatched_user|test_request_payment_per_payment_cap_manual_holds|test_request_payment_amount_token_path_cap_breach|test_request_payment_amount_token_path_stamps_amount_usd|test_request_payment_amount_token_path_missing_price_holds|test_request_payment_amount_token_uncapped_provider_preserves_none|test_request_payment_rolling_daily_cap_manual_holds|test_request_payment_rolling_daily_cap_sees_derived_usd|test_slot_reuse_collision_detected_after_failure|test_slot_reuse_collision_blocked_when_prior_active|test_slot_reuse_same_wallet_creates_fresh_row_after_failure|test_idempotent_return_for_nonterminal|test_upsert_wallet_raises_during_active_intent|test_upsert_wallet_unblocked_after_terminal|test_admin_success_dm_over_threshold|test_admin_success_dm_sees_derived_usd|test_execute_payment_uses_stored_wallet|test_initiate_payment_tool_rejects_wallet_address_arg\" tests/test_admin_payments.py tests/test_social_publish_service.py",
+    "PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py",
+    "git diff -- main.py tests/conftest.py tests/test_admin_payments.py tests/test_social_publish_service.py",
+    "python -m json.tool .megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_4.json >/dev/null && echo valid",
+    "git diff -- main.py tests/conftest.py tests/test_admin_payments.py tests/test_social_publish_service.py .megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_4.json"
+  ],
+  "deviations": [
+    "Direct pytest collection in this environment still required `PYTHONPATH=.`; full-module verification was run with that prefix.",
+    "main.py already had unrelated uncommitted payment-initialization changes in the working tree around the test-payment amount block; T10 was layered onto that file without reverting those existing edits.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_4.json",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: .megaplan/plans/payment-subsystem-follow-up-20260410-2339",
+    "Advisory quality: tests/test_admin_payments.py grew by 374 lines (threshold 200).",
+    "Advisory quality: tests/test_social_publish_service.py grew by 603 lines (threshold 200).",
+    "Advisory quality: main.py has similar functions _bind_cap_breach_dm and _notify (85% similarity).",
+    "Advisory quality: tests/conftest.py has similar functions __init__ and __init__ (100% similarity).",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/conftest.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, scripts/audit_ghost_confirmed_payments.py, sql/payments.sql, src/common/db_handler.py, src/features/admin_chat/admin_chat_cog.py, src/features/admin_chat/tools.py, src/features/grants/grants_cog.py, src/features/grants/solana_client.py, src/features/payments/payment_cog.py, src/features/payments/payment_service.py, src/features/payments/solana_provider.py, tests/conftest.py, tests/test_admin_payments.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py, tests/test_social_publish_service.py, tests/test_solana_client.py"
+  ],
+  "task_updates": [
+    {
+      "id": "T10",
+      "status": "done",
+      "executor_notes": "Wired admin payout caps into `main.py` by adding `_bind_cap_breach_dm(bot, logger)`, reading `ADMIN_PAYOUT_PER_PAYMENT_USD_CAP` and `ADMIN_PAYOUT_DAILY_USD_CAP`, and passing `per_payment_usd_cap`, `daily_usd_cap`, `capped_providers=('solana_payouts',)`, and `on_cap_breach=_bind_cap_breach_dm(bot, logger)` into `PaymentService(...)`. Added a startup `logger.info` recording the effective caps. Verified the `PaymentCog` setup hook path was left untouched because the batch diff is limited to `main.py` plus tests; `src/features/payments/payment_cog.py:setup()` was not edited. Verified with `python -m py_compile main.py tests/conftest.py tests/test_admin_payments.py tests/test_social_publish_service.py` and `PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py`.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py"
+      ],
+      "commands_run": [
+        "python -m megaplan progress --plan harden-the-solana-payment-20260410-2147",
+        "sed -n '140,260p' main.py",
+        "sed -n '1,140p' main.py",
+        "python -m py_compile main.py tests/conftest.py tests/test_admin_payments.py tests/test_social_publish_service.py",
+        "PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py",
+        "git diff -- main.py tests/conftest.py tests/test_admin_payments.py tests/test_social_publish_service.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T10"
+    },
+    {
+      "id": "T13",
+      "status": "done",
+      "executor_notes": "Before editing, `rg -n \"amount_usd\" tests/test_admin_payments.py tests/test_social_publish_service.py` showed the existing `amount_usd is None` assertions at `tests/test_admin_payments.py:524` and `:707` using uncapped provider `solana`, and `tests/test_social_publish_service.py:496` using uncapped `solana_native` in an `is_test=True` path. Extended the fake DB scaffolding additively in both test modules: `FakeIntentDB`, `FakePaymentRequestDB`, and `FakePaymentDB` now expose `has_active_payment_or_intent`, `get_rolling_24h_payout_usd`, and wallet-upsert blocking support using `WalletUpdateBlockedError`; `FakePaymentProvider` now tracks `price_calls`; and `tests/conftest.py` adds a shared env-clearing fixture for the new cap/DM settings. Added the fail-to-pass regression tests for null-recipient confirmation rejection and privileged override, per-payment and rolling cap holds, derived-USD persistence, missing-price fail-closed behavior, uncapped-provider preservation, idempotency/collision branches, both wallet-blocked caller paths (admin_chat and grants), admin success DM thresholding and derived-USD formatting, stored-wallet execution, and initiate_payment wallet-arg rejection. Verified with `python -m py_compile main.py tests/conftest.py tests/test_admin_payments.py tests/test_social_publish_service.py` and `PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py` (`55 passed, 1 warning`).",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/conftest.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py"
+      ],
+      "commands_run": [
+        "sed -n '1,260p' tests/test_admin_payments.py",
+        "sed -n '260,520p' tests/test_admin_payments.py",
+        "sed -n '520,900p' tests/test_admin_payments.py",
+        "sed -n '1,260p' tests/test_social_publish_service.py",
+        "sed -n '260,520p' tests/test_social_publish_service.py",
+        "sed -n '520,820p' tests/test_social_publish_service.py",
+        "sed -n '1,260p' tests/conftest.py",
+        "rg -n \"amount_usd\" tests/test_admin_payments.py tests/test_social_publish_service.py",
+        "sed -n '518,530p' tests/test_admin_payments.py",
+        "sed -n '700,710p' tests/test_admin_payments.py",
+        "sed -n '470,500p' tests/test_social_publish_service.py",
+        "rg -n \"test_confirm_rejects_null_recipient_discord_id|test_confirm_privileged_override_bypasses_null_check|test_confirm_rejects_mismatched_user|test_request_payment_per_payment_cap_manual_holds|test_request_payment_amount_token_path_cap_breach|test_request_payment_amount_token_path_stamps_amount_usd|test_request_payment_amount_token_path_missing_price_holds|test_request_payment_amount_token_uncapped_provider_preserves_none|test_request_payment_rolling_daily_cap_manual_holds|test_request_payment_rolling_daily_cap_sees_derived_usd|test_slot_reuse_collision_detected_after_failure|test_slot_reuse_collision_blocked_when_prior_active|test_slot_reuse_same_wallet_creates_fresh_row_after_failure|test_idempotent_return_for_nonterminal|test_upsert_wallet_raises_during_active_intent|test_upsert_wallet_unblocked_after_terminal|test_admin_success_dm_over_threshold|test_admin_success_dm_sees_derived_usd|test_execute_payment_uses_stored_wallet|test_initiate_payment_tool_rejects_wallet_address_arg\" tests/test_admin_payments.py tests/test_social_publish_service.py",
+        "python -m py_compile main.py tests/conftest.py tests/test_admin_payments.py tests/test_social_publish_service.py",
+        "PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T13"
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "id": "SC10",
+      "task_id": "T10",
+      "acknowledgment": "Verified `main.py` now passes `per_payment_usd_cap`, `daily_usd_cap`, `capped_providers=('solana_payouts',)`, and an `_bind_cap_breach_dm(bot, logger)` closure into `PaymentService(...)`, logs the effective caps at startup, and leaves `src/features/payments/payment_cog.py:setup()` untouched.",
+      "sense_check_id": "SC10",
+      "executor_note": "(not provided)"
+    },
+    {
+      "id": "SC13",
+      "task_id": "T13",
+      "acknowledgment": "Verified the inline fake DBs in both `tests/test_admin_payments.py` and `tests/test_social_publish_service.py` were extended additively with `has_active_payment_or_intent`, `get_rolling_24h_payout_usd`, and `WalletUpdateBlockedError`-aware upsert support; the pre-edit `amount_usd` grep showed only uncapped `solana` / `solana_native` assertions; all required fail-to-pass tests are present including the four persistence/wiring pins; and the wallet-blocked coverage exercises both admin_chat and grants callers.",
+      "sense_check_id": "SC13",
+      "executor_note": "(not provided)"
+    }
+  ]
+}

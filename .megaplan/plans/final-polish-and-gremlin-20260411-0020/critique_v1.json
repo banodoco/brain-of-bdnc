@@ -1,0 +1,28 @@
+{
+  "checks": [],
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Payment reconciliation: B4/B5 cannot actually reconcile failed/manual_hold rows with the current DB transition guards.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan's reconcile_with_chain flow calls mark_payment_confirmed / mark_payment_failed for rows reached from retry/release/manual-hold paths, but db_handler only allows mark_payment_confirmed from submitted and mark_payment_failed from processing/submitted ([src/common/db_handler.py](/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py#L2147), [src/common/db_handler.py](/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py#L2177)). retry_payment and release_payment operate on failed/manual_hold rows ([src/features/admin_chat/tools.py](/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py#L2355), [src/features/admin_chat/tools.py](/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py#L2392)), so the proposed 'reconciled_confirmed' / 'reconciled_failed' branches will no-op unless the plan also adds explicit DB transitions for those starting states."
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Admin chat payment tools: B4/B5 under-specify the plumbing needed for retry/release/resolve to reach PaymentService.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Today execute_retry_payment and execute_release_payment only accept db_handler and call straight DB mutations ([src/features/admin_chat/tools.py](/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py#L2355), [src/features/admin_chat/tools.py](/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py#L2392)). The dispatcher also passes only db_handler for those tool names ([src/features/admin_chat/tools.py](/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py#L3134)). The plan says these tool paths will call payment_service.reconcile_with_chain, but it does not include the required signature/dispatcher changes or equivalent access path to bot.payment_service, so the operator-facing tool route is incomplete as written."
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Admin-chat idempotency: D11's proposed reproduction path targets the wrong layer and can falsely 'prove safe.'",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan says to reproduce the collision with two calls to execute_initiate_payment and then run both through PaymentService.request_payment. In the actual repo, execute_initiate_payment stops at creating an admin_payment_intent and dedupes per (guild_id, source_channel_id, recipient_user_id) before producer_ref is even used ([src/features/admin_chat/tools.py](/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py#L2465), [src/features/admin_chat/tools.py](/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py#L2486)). PaymentService.request_payment happens later in AdminChatCog._start_admin_payment_flow and handle_payment_result when test/final payment rows are created from the intent's stored producer_ref ([src/features/admin_chat/admin_chat_cog.py](/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py#L246), [src/features/admin_chat/admin_chat_cog.py](/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py#L364)). A same-channel initiate test will be absorbed by intent dedupe and miss the real collision surface; the investigation needs to exercise distinct channels or the downstream payment-creation stage."
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

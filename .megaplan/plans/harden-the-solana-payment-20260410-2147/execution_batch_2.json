@@ -1,0 +1,79 @@
+{
+  "output": "Batch 2 completed. T5 and T8 are done, and the batch checkpoint was written to .megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_2.json. Verification passed with `PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py` plus `python -m py_compile` on all touched Python files.",
+  "files_changed": [
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_2.json"
+  ],
+  "commands_run": [
+    "python -m megaplan progress --plan harden-the-solana-payment-20260410-2147",
+    "git status --short",
+    "rg -n \"class .*Error\\(Exception\\)|WalletUpdateBlockedError\" src/common src/features",
+    "rg -n \"\\.upsert_wallet\\(\" src",
+    "rg -n \"amount_usd\" tests/test_admin_payments.py tests/test_social_publish_service.py",
+    "python -m py_compile src/common/db_handler.py src/features/admin_chat/admin_chat_cog.py src/features/grants/grants_cog.py src/features/payments/payment_service.py",
+    "PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py",
+    "python -m json.tool .megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_2.json >/tmp/execution_batch_2.validated.json && echo validated"
+  ],
+  "deviations": [
+    "Direct pytest collection still requires `PYTHONPATH=.` in this environment; full-module verification was rerun with `PYTHONPATH=.`.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_2.json",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: main.py, scripts/audit_ghost_confirmed_payments.py, src/features/grants/solana_client.py, src/features/payments/solana_provider.py, tests/test_solana_client.py",
+    "Advisory quality: scripts/audit_ghost_confirmed_payments.py grew by 384 lines (threshold 200).",
+    "Advisory quality: scripts/audit_ghost_confirmed_payments.py adds unused imports: sys.",
+    "Advisory quality: src/features/payments/payment_service.py adds unused imports: DatabaseHandler.",
+    "Advisory quality: tests/test_solana_client.py adds unused imports: MagicMock.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, scripts/audit_ghost_confirmed_payments.py, sql/payments.sql, src/common/db_handler.py, src/features/admin_chat/admin_chat_cog.py, src/features/admin_chat/tools.py, src/features/grants/grants_cog.py, src/features/grants/solana_client.py, src/features/payments/payment_cog.py, src/features/payments/payment_service.py, src/features/payments/solana_provider.py, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py, tests/test_solana_client.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Searched for an existing wallet-block exception and found none in `src/common` or `src/features`, so `WalletUpdateBlockedError` was added to `db_handler.py`. `upsert_wallet` still does the existing-wallet lookup first, and now raises `WalletUpdateBlockedError` only when the existing wallet differs from the incoming address and `has_active_payment_or_intent(guild_id, discord_user_id)` is true; identical-address updates and first-time inserts remain unblocked. Grep of `.upsert_wallet(` in `src/` returned only `admin_chat_cog.py` and `grants_cog.py`, and both callers now catch `WalletUpdateBlockedError` with user-facing fail-closed messages. Verified with `python -m py_compile ...` and `PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py`.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py"
+      ],
+      "commands_run": [
+        "rg -n \"class .*Error\\(Exception\\)|WalletUpdateBlockedError\" src/common src/features",
+        "sed -n '1410,1475p' src/common/db_handler.py",
+        "sed -n '188,225p' src/features/admin_chat/admin_chat_cog.py",
+        "sed -n '548,575p' src/features/grants/grants_cog.py",
+        "rg -n \"\\.upsert_wallet\\(\" src",
+        "python -m py_compile src/common/db_handler.py src/features/admin_chat/admin_chat_cog.py src/features/grants/grants_cog.py",
+        "PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py"
+      ]
+    },
+    {
+      "task_id": "T8",
+      "status": "done",
+      "executor_notes": "Before editing, `rg -n \"amount_usd\" tests/test_admin_payments.py tests/test_social_publish_service.py` found three existing `amount_usd is None` assertions: admin payment flow test payload at `tests/test_admin_payments.py:524` uses provider `solana` in an `is_test` path, the direct amount_token payment test at `tests/test_admin_payments.py:707` uses provider `solana`, and the social publish payment test at `tests/test_social_publish_service.py:496` uses provider `solana_native` with `is_test=True`; all are outside the default capped provider set. `PaymentService.__init__` now accepts `per_payment_usd_cap`, `daily_usd_cap`, `capped_providers`, and `on_cap_breach`, normalizing capped providers to a lowercased frozenset. In `request_payment`, the cap block is gated on `if not is_test and provider_key in self.capped_providers:`; the amount_token-only capped path derives USD via `get_token_price_usd() * amount_token`, stamps both the record and `request_payload` mirrors before `create_payment_request`, leaves uncapped and test paths untouched, fails closed with `last_error='cap check unavailable: token price missing'` when price lookup is unavailable, and triggers `_emit_cap_breach(created)` after insert on cap breach. `execute_payment` was left untouched. Verified with `python -m py_compile ...` and `PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py`.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py"
+      ],
+      "commands_run": [
+        "sed -n '1,230p' src/features/payments/payment_service.py",
+        "rg -n \"amount_usd\" tests/test_admin_payments.py tests/test_social_publish_service.py",
+        "sed -n '500,535p' tests/test_admin_payments.py",
+        "sed -n '680,715p' tests/test_admin_payments.py",
+        "sed -n '486,502p' tests/test_social_publish_service.py",
+        "python -m py_compile src/features/payments/payment_service.py",
+        "PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Verified `upsert_wallet` still looks up the existing row first, raises `WalletUpdateBlockedError` only on changed-address plus active-payment state, both admin_chat and grants catch it with user-facing messages, and `rg -n \"\\.upsert_wallet\\(\" src` showed only those two production callers."
+    },
+    {
+      "sense_check_id": "SC8",
+      "executor_note": "Verified the capped amount_token stamping lives inside `if not is_test and provider_key in self.capped_providers`, derived USD/token price are written to both the record and `request_payload` before insert, uncapped `solana` / `solana_native` paths still avoid extra price calls, missing price fails closed with the exact manual_hold error string, and the post-insert cap-breach callback path fires."
+    }
+  ]
+}

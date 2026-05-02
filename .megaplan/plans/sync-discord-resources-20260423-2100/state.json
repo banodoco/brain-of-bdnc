@@ -1,0 +1,973 @@
+{
+  "name": "sync-discord-resources-20260423-2100",
+  "idea": "Sync Discord `_resources` channel posts into banodoco-website as auto-published resources, with a \"Made with this\" section containing reply media and a Discord-style comments thread.\n\n# Context\n\nSingle shared Supabase project (`ujlwuvkrxlvoswwkerdf`) backs both brain-of-bndc (Discord archive bot, Python, Railway) and banodoco-website (React/Vite). Discord resource posts live in 5 forum channels: `resources` (1149372684220768367), `flux_resources` (1275200992136400967), `wan_resources` (1373291419434877078), `ltx_resources` (1457981813120176138), `acestep_resources` (1472633200491626526). Each is a forum, so every message has a `thread_id`; an OP is where `message_id == thread_id`. Archive pipeline already writes every message + reaction into `discord_messages`. Current volume: ~15 qualifying OPs in the last 30 days.\n\n# Trigger + scope\n\n- Thread OP in any of the 5 `_resources` channels with `reaction_count >= 5` (any emoji counts) becomes an `assets` row.\n- Backfill: last 60 days on first run, chronological oldest\u2192newest, resumable via per-channel cursor.\n- Ongoing: polled every 10 min.\n- No un-listing if reactions later drop.\n- Auto-publish `admin_status='Listed'`; admin kill switch via `assets.is_hidden`.\n- Each reply in the thread becomes an `asset_comments` row. Reply attachments become `media` rows linked via `asset_comment_media`. OP attachments go via existing `asset_media`.\n\n# Schema deltas\n\nExtend `assets`:\n- `source` TEXT ('manual' | 'discord_import')\n- `discord_thread_id` BIGINT UNIQUE NULL\n- `discord_channel_id` BIGINT NULL\n- `imported_at` TIMESTAMPTZ\n- `last_synced_at` TIMESTAMPTZ\n- `reactions_reached_threshold_at` TIMESTAMPTZ\n- `is_hidden` BOOLEAN DEFAULT FALSE\n\nNew `asset_comments`:\n- `id` UUID PK\n- `asset_id` UUID FK \u2192 assets(id) ON DELETE CASCADE\n- `discord_message_id` BIGINT UNIQUE NOT NULL\n- `discord_thread_id` BIGINT NOT NULL\n- `author_member_id` BIGINT FK \u2192 discord_members(member_id)\n- `content` TEXT\n- `reply_to_comment_id` UUID FK \u2192 asset_comments(id) NULL (resolves from Discord `reference_id`)\n- `reply_to_discord_message_id` BIGINT NULL (denormalized for resolvability even when the parent isn't imported)\n- `reaction_count` INT DEFAULT 0\n- `discord_created_at` TIMESTAMPTZ\n- `discord_edited_at` TIMESTAMPTZ\n- `is_deleted` BOOLEAN DEFAULT FALSE\n- `created_at`, `updated_at` TIMESTAMPTZ\n\nNew `asset_comment_media`:\n- `comment_id` UUID FK \u2192 asset_comments(id) ON DELETE CASCADE\n- `media_id` UUID FK \u2192 media(id) ON DELETE CASCADE\n- `sort_order` INT DEFAULT 0\n- PK (comment_id, media_id)\n\n`media` changes:\n- Add `'discord-comment'` as a valid `classification` value\n- Provenance stored in `media.metadata` JSONB: `{discord_message_id, discord_channel_id, discord_attachment_id, original_cdn_url, imported_at}`\n- Dedup by `discord_attachment_id` (query `metadata->>'discord_attachment_id'`)\n\nNew `media_import_jobs` queue:\n- `id` UUID PK\n- `discord_attachment_id` BIGINT UNIQUE\n- `discord_message_id` BIGINT\n- `target_kind` TEXT ('asset_media' | 'asset_comment_media')\n- `target_id` UUID (asset_id or comment_id depending on target_kind)\n- `original_cdn_url` TEXT\n- `filename` TEXT, `content_type` TEXT, `size_bytes` BIGINT\n- `status` TEXT ('pending' | 'in_progress' | 'done' | 'failed' | 'skipped')\n- `attempts` INT DEFAULT 0\n- `last_error` TEXT\n- `media_id` UUID FK \u2192 media(id) NULL (set on done)\n- `created_at`, `updated_at`, `locked_until` TIMESTAMPTZ\n\nAdd indexes for: `assets.discord_thread_id`, `asset_comments(asset_id, discord_created_at)`, `asset_comments.discord_message_id`, `media_import_jobs(status, locked_until)`.\n\nRLS on new tables: public read for `asset_comments` / `asset_comment_media` (matches `asset_media`); service-role only for `media_import_jobs`.\n\n# Runtime\n\nTwo Supabase Edge Functions + pg_cron:\n\n**`discord-resource-promoter`** (cron: every 10 min; ~30s wall clock):\n1. For each of the 5 channels, advance the per-channel cursor (`discord_resource_sync_cursors` table: `channel_id`, `last_processed_created_at`, `last_backfill_cursor_at`, `backfill_complete` BOOL).\n2. Discover qualifying thread OPs: `discord_messages` where `channel_id IN (...)`, `message_id = thread_id`, `reaction_count >= 5`, `created_at > cursor`.\n3. Upsert `assets` rows keyed on `discord_thread_id`. Populate: `name` (first line of content, truncated), `description` (full content), `type` (infer via channel \u2192 'lora' | 'tool'; default 'tool'), `member_id` (from author), `admin_status='Listed'`, `source='discord_import'`, `reactions_reached_threshold_at=NOW()`.\n4. For each imported thread, fetch all replies: `discord_messages WHERE thread_id = X AND message_id != thread_id`. Upsert `asset_comments` keyed on `discord_message_id`. Resolve `reply_to_comment_id` from Discord `reference_id` where possible.\n5. For every attachment (OP and replies), upsert a `media_import_jobs` row if not already present. Use Discord `attachment.id` as dedup key.\n6. Update `assets.last_synced_at`.\n7. Paginate/time-slice to stay under 30s budget; advance cursor even on partial progress.\n\n**`discord-media-importer`** (cron: every 2 min; up to 400s):\n1. Claim up to N pending jobs via `UPDATE ... SET status='in_progress', locked_until=NOW()+interval '10m' WHERE status='pending' AND (locked_until IS NULL OR locked_until < NOW()) ... RETURNING *`. Re-claim stuck `in_progress` past `locked_until`.\n2. For each job:\n   - Refresh Discord CDN URL (use bot token via Discord API `GET /channels/{channel_id}/messages/{message_id}` to get current signed URL \u2014 mirror logic from existing `refresh-media-urls` edge function).\n   - Stream download from Discord CDN.\n   - If video/gif: stream upload to Cloudflare Stream via tus; poll until `readyToStream`; capture `playback.hls`, `thumbnail`, `duration`.\n   - If image: stream upload to Supabase Storage `user-uploads/discord-imports/{discord_message_id}/{attachment_id}-{filename}`; generate thumbnail via image transform if available.\n   - Other (zip/json): upload to same bucket, no thumbnail.\n   - Insert `media` row: `classification='discord-comment'` (or `'post'` for OP attachments \u2014 decide convention in plan), `member_id` from message author, Cloudflare/storage URLs populated, `metadata` with Discord provenance.\n   - Insert junction row (`asset_media` or `asset_comment_media` based on `target_kind`).\n   - Mark job `done`, set `media_id`.\n3. On failure: increment `attempts`, write `last_error`, status back to `pending` with exponential backoff via `locked_until`. Skip permanently after 5 attempts (`status='failed'`).\n\nSecrets required on Supabase Edge Function config:\n- `DISCORD_BOT_TOKEN`\n- `CLOUDFLARE_STREAM_ACCOUNT_ID`\n- `CLOUDFLARE_STREAM_API_TOKEN`\n- Existing `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` implicit\n\n# Frontend\n\nUpdate `banodoco-website/src/pages/Resources/ResourceModal.tsx`:\n1. Keep existing gallery strip (primary media + `asset_media`).\n2. Add **\"Made with this\"** section below gallery \u2014 grid of all `asset_comment_media` thumbnails for the asset, newest first, click opens lightbox anchored to the parent comment.\n3. Add **Discussion** section below \u2014 flat chronological list of `asset_comments`. Each row:\n   - Author chip (avatar + global_name from `discord_members`) + timestamp\n   - \"Replying to @name\" chip with quoted excerpt if `reply_to_comment_id` set\n   - Markdown-rendered `content`\n   - Attached media grid (inline video/image thumbs, click \u2192 lightbox)\n   - Reaction count chip\n   - \"View on Discord\" link (build URL from channel_id + message_id)\n4. New hook `useAssetComments(assetId)` \u2014 single query joining `asset_comments` + `asset_comment_media` + `media` + `discord_members`, ordered by `discord_created_at`.\n5. Resource card: small \"From Discord\" badge (channel name) on imported assets \u2014 subtle, not a big label.\n\n# Observability + ops\n\n- `media_import_jobs` table is the operational dashboard (count by status, oldest pending, failures with `last_error`).\n- Errors logged to `system_logs` (existing infrastructure).\n- Health check query: failed jobs in last 24h, stuck `in_progress` past lock, per-channel cursor age.\n- Dry-run mode: env var `DRY_RUN=true` on promoter \u2192 logs would-be inserts without writing.\n\n# Idempotency + edge cases to handle in plan\n\n- Discord message edits: re-sync updates `asset_comments.content`, `discord_edited_at`.\n- Discord message deletions: `discord_messages.is_deleted=true` \u2192 set `asset_comments.is_deleted=true` (UI hides).\n- Attachment removal on edit: don't delete `media` (preserves history); could mark `is_deleted` on junction.\n- Race: promoter tries to insert comment before OP asset exists \u2014 only process replies for threads whose asset row already exists.\n- Rate limits: Discord API 50 req/s; space attachment URL refreshes.\n- Cloudflare Stream failures: retry; skip after N attempts.\n- `discord_members` might not yet have the author when a comment arrives \u2014 promoter should upsert a thin member row if missing (or the existing archive sync covers this \u2014 verify).\n- Already-imported content: must be fully idempotent \u2014 reruns should produce zero new rows.\n\n# Out of scope (do NOT include)\n\n- Live-update (websocket) \u2014 polling is fine.\n- Moderation UI beyond the `is_hidden` flag (no approval queue, no review surface).\n- Cross-posting from website back to Discord.\n- User-initiated imports (\"turn this Discord post into a resource\" button).\n- Migrating existing manually-created `assets` rows \u2014 they stay `source='manual'`.\n- Changing the archive pipeline on brain-of-bndc (the existing archive covers everything the promoter needs).\n\n# Deliverables megaplan should produce\n\n1. Ordered implementation phases with a clear first-working-version milestone (schema + promoter dry-run) before media rehosting is wired up.\n2. Migration SQL file list (timestamped, in `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/`).\n3. Edge function directory structure under `supabase/functions/` (promoter, importer, shared helpers \u2014 there's already a `supabase/functions/_shared/` in the workspace).\n4. Hook + component additions in `banodoco-website/src/` with concrete file paths.\n5. pg_cron SQL snippets to register the two scheduled invocations.\n6. Test/verification steps per phase (e.g. one-channel dry run, then rehost a single attachment, then full backfill).\n7. Rollback plan per phase.\n8. Explicit risk register (Cloudflare quota, Discord rate limits, edge function timeout, storage cost on 60-day backfill).",
+  "current_state": "done",
+  "iteration": 5,
+  "created_at": "2026-04-23T19:00:44Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace",
+    "auto_approve": true,
+    "robustness": "standard",
+    "mode": "code",
+    "agent": ""
+  },
+  "sessions": {
+    "claude_planner": {
+      "id": "f586813c-d3fa-429a-a4a6-5a209bf36e40",
+      "mode": "persistent",
+      "created_at": "2026-04-23T19:08:09Z",
+      "last_used_at": "2026-04-23T20:00:25Z",
+      "refreshed": false
+    },
+    "codex_critic": {
+      "id": "019dbbbe-2653-7e53-89d3-9b5130aa2a75",
+      "mode": "persistent",
+      "created_at": "2026-04-23T19:17:02Z",
+      "last_used_at": "2026-04-23T20:01:56Z",
+      "refreshed": false
+    },
+    "claude_gatekeeper": {
+      "id": "d12f69a1-4cfa-43f1-9eb9-b120938da8f3",
+      "mode": "persistent",
+      "created_at": "2026-04-23T19:18:52Z",
+      "last_used_at": "2026-04-23T20:04:26Z",
+      "refreshed": false
+    },
+    "claude_finalizer": {
+      "id": "d6bef09c-d566-4e54-91e4-dc07d333ca3c",
+      "mode": "persistent",
+      "created_at": "2026-04-23T20:32:07Z",
+      "last_used_at": "2026-04-23T20:32:07Z",
+      "refreshed": true
+    },
+    "codex_executor": {
+      "id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "mode": "persistent",
+      "created_at": "2026-04-23T20:39:46Z",
+      "last_used_at": "2026-04-24T00:39:14Z",
+      "refreshed": true
+    },
+    "codex_reviewer": {
+      "id": "019dbd0c-a104-7df2-baa9-e01531ce59b1",
+      "mode": "persistent",
+      "created_at": "2026-04-24T01:23:26Z",
+      "last_used_at": "2026-04-24T01:23:26Z",
+      "refreshed": true
+    }
+  },
+  "plan_versions": [
+    {
+      "version": 1,
+      "file": "plan_v1.md",
+      "hash": "sha256:30f3e62abe70c6bb84b8d6e7c2bc7d9d99011506bdb9ed9b070bb738b795a841",
+      "timestamp": "2026-04-23T19:08:09Z"
+    },
+    {
+      "version": 2,
+      "file": "plan_v2.md",
+      "hash": "sha256:db8c29c79150e3da733f5b55f60ed7712dc9cf44cdfe47dd4d0087d77e65f374",
+      "timestamp": "2026-04-23T19:25:29Z"
+    },
+    {
+      "version": 3,
+      "file": "plan_v3.md",
+      "hash": "sha256:8d0c80347d517a5e61be4e4d30b0c4e3b8e01caccdcaa62ac35e1c4ac72b5bfe",
+      "timestamp": "2026-04-23T19:39:01Z"
+    },
+    {
+      "version": 4,
+      "file": "plan_v4.md",
+      "hash": "sha256:0c3be83cd1c5a647fad2b3580f789576f370d320583cbfebef7eddac7ed436cf",
+      "timestamp": "2026-04-23T19:51:01Z"
+    },
+    {
+      "version": 5,
+      "file": "plan_v5.md",
+      "hash": "sha256:c9e955056c64ee456baa2da0c74b0e61348635e16e6c90a3f3f812fb6a398412",
+      "timestamp": "2026-04-23T20:00:25Z"
+    }
+  ],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-04-23T19:00:44Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-23T19:08:09Z",
+      "duration_ms": 436232,
+      "cost_usd": 1.3060604999999998,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "f586813c-d3fa-429a-a4a6-5a209bf36e40",
+      "agent": "claude",
+      "output_file": "plan_v1.md",
+      "artifact_hash": "sha256:30f3e62abe70c6bb84b8d6e7c2bc7d9d99011506bdb9ed9b070bb738b795a841"
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-23T19:17:02Z",
+      "duration_ms": 528088,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019dbbbe-2653-7e53-89d3-9b5130aa2a75",
+      "agent": "codex",
+      "output_file": "critique_v1.json",
+      "artifact_hash": "sha256:549e898e0b517576159d2bb0ef7a4d64d42b622136d67744686136d8e847348e",
+      "flags_count": 26
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-23T19:18:52Z",
+      "duration_ms": 105726,
+      "cost_usd": 0.6767622499999999,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "d12f69a1-4cfa-43f1-9eb9-b120938da8f3",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:f5e4666e877e2c466d2fbaa0ccd0482c6f68b86b1df9ab5f558d3cac02b71104",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-23T19:25:29Z",
+      "duration_ms": 390527,
+      "cost_usd": 1.4885975,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "f586813c-d3fa-429a-a4a6-5a209bf36e40",
+      "agent": "claude",
+      "output_file": "plan_v2.md",
+      "artifact_hash": "sha256:db8c29c79150e3da733f5b55f60ed7712dc9cf44cdfe47dd4d0087d77e65f374",
+      "flags_addressed": [
+        {
+          "id": "FLAG-001",
+          "resolution": "addressed",
+          "reason": "Replaced created_at-based cursor with an anti-join on assets.discord_thread_id within a rolling 60-day window; late-threshold crossings now import regardless of original message creation time. Explicit regression test added."
+        },
+        {
+          "id": "FLAG-002",
+          "resolution": "addressed",
+          "reason": "Removed the username=NULL member fallback entirely. Trusting the archive pipeline to populate members (which always supplies username); any rare FK race is logged and retried on the next promoter tick."
+        },
+        {
+          "id": "FLAG-003",
+          "resolution": "addressed",
+          "reason": "Channel-to-type map now uses the website's real enum: `resources` -> `workflow`; the four model-family channels -> `lora`. `tool` is removed entirely."
+        },
+        {
+          "id": "FLAG-004",
+          "resolution": "addressed",
+          "reason": "Primary frontend surface is now ResourceDetail/index.tsx. ResourceModal.tsx still receives the markdown change per the user's explicit scope note, but all new sections (Made with this, Discussion, badge) land in ResourceDetail."
+        },
+        {
+          "id": "FLAG-005",
+          "resolution": "addressed",
+          "reason": "Promoter converted to PL/pgSQL so cron invokes SQL directly (matching schedule_priority_scores_cron.sql). Media importer still needs HTTP, and a first-class vault-bootstrap migration is added. Media importer reuses cloudflare-stream-webhook for completion instead of polling."
+        },
+        {
+          "id": "issue_hints-1",
+          "resolution": "addressed",
+          "reason": "Added a dedicated Step 16 creating a shared AssetDescription markdown component (react-markdown + remark-gfm, mirroring PostBodyRenderer, no custom embed tokens) and Steps 17-18 applying it to both ResourceDetail and ResourceModal. Success criterion added for universal markdown rendering on manual + Discord-imported assets."
+        },
+        {
+          "id": "issue_hints-2",
+          "resolution": "addressed",
+          "reason": "Added is_deleted BOOLEAN DEFAULT FALSE to asset_comment_media (and asset_media). Promoter reconciliation marks it true when a Discord edit removes an attachment. UI filters on is_deleted=false."
+        },
+        {
+          "id": "correctness-1",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-001 (they are duplicates). Anti-join + 60-day rolling window covers late threshold crossings."
+        },
+        {
+          "id": "correctness-2",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-002. Member fallback removed."
+        },
+        {
+          "id": "correctness-3",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-003. Asset type mapping now workflow/lora only."
+        },
+        {
+          "id": "scope-1",
+          "resolution": "addressed",
+          "reason": "Frontend work re-scoped to ResourceDetail/index.tsx (live surface). ResourceModal is still touched for the user's markdown scope note, but not the primary target."
+        },
+        {
+          "id": "scope-2",
+          "resolution": "addressed",
+          "reason": "is_hidden filter now applied in useResources.ts, useCommunityResources.ts, useCommunityResource.ts, useUserProfile.ts (Step 15). Validation step 8 explicitly tests that flipping is_hidden hides the asset across all four hook-backed surfaces."
+        },
+        {
+          "id": "all_locations-1",
+          "resolution": "addressed",
+          "reason": "Step 15 adds source, discord_channel_id, is_hidden to the SELECT list in all four consuming hooks and updates their TypeScript shapes."
+        },
+        {
+          "id": "all_locations-2",
+          "resolution": "addressed",
+          "reason": "Importer no longer polls Cloudflare; it initiates Stream uploads and relies on existing cloudflare-stream-webhook for completion and cloudflare-stream-backfill for retries. Step 11 confirms the webhook contract before cutting over."
+        },
+        {
+          "id": "all_locations-3",
+          "resolution": "addressed",
+          "reason": "Promoter is SQL-native (no HTTP, no secret). Only the media importer needs HTTP; a first-class vault-bootstrap migration (Step 5) seeds the service-role key in supabase_vault and exposes it via a SECURITY DEFINER helper `internal.get_service_role_key()`."
+        },
+        {
+          "id": "callers-1",
+          "resolution": "addressed",
+          "reason": "Step 15 updates all resource-consuming hooks to select and filter on the new columns, so downstream badge/jump-link/hide logic has real inputs."
+        },
+        {
+          "id": "callers-2",
+          "resolution": "addressed",
+          "reason": "Primary UI target is now ResourceDetail (the actually-rendered page). ResourceModal still gets the markdown change to satisfy the user's explicit scope note, even though it currently has no callers."
+        }
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-23T19:31:22Z",
+      "duration_ms": 347669,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019dbbbe-2653-7e53-89d3-9b5130aa2a75",
+      "agent": "codex",
+      "output_file": "critique_v2.json",
+      "artifact_hash": "sha256:da7a6a539f37bc59a501c945d6c3c6c281371a1b36838de050876743d78e6ddc",
+      "flags_count": 22
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-23T19:33:24Z",
+      "duration_ms": 117700,
+      "cost_usd": 0.6946535,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "d12f69a1-4cfa-43f1-9eb9-b120938da8f3",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:24da0dd11bf4f73f62356d8460480719554106a0472063b1364b243ba4ab7631",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-23T19:39:01Z",
+      "duration_ms": 330551,
+      "cost_usd": 1.2434732499999999,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "f586813c-d3fa-429a-a4a6-5a209bf36e40",
+      "agent": "claude",
+      "output_file": "plan_v3.md",
+      "artifact_hash": "sha256:8d0c80347d517a5e61be4e4d30b0c4e3b8e01caccdcaa62ac35e1c4ac72b5bfe",
+      "flags_addressed": [
+        {
+          "id": "FLAG-001",
+          "resolution": "addressed",
+          "reason": "Dropped the `created_at > NOW() - INTERVAL '60 days'` filter entirely. Discovery now relies solely on the anti-join (via ON CONFLICT on discord_thread_id) + reaction threshold, so OPs of any age that reach 5 reactions import on the next tick. Regression test added."
+        },
+        {
+          "id": "correctness-1",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-001; late-threshold coverage now has no temporal boundary."
+        },
+        {
+          "id": "FLAG-005",
+          "resolution": "addressed",
+          "reason": "Cloudflare duration dropped from the promise (webhook at lines 210-240 only writes HLS URL, thumbnail, storage_provider). Vault pattern replaced with a self-contained `internal.secrets` table + SECURITY DEFINER accessor that applies cleanly on supabase db reset."
+        },
+        {
+          "id": "all_locations-1",
+          "resolution": "addressed",
+          "reason": "v3 does not promise duration anywhere; success criteria updated accordingly. If duration is later required, a one-line webhook change is noted as a follow-up."
+        },
+        {
+          "id": "all_locations-2",
+          "resolution": "addressed",
+          "reason": "Replaced `supabase_vault`-based bootstrap with a postgres-owned `internal.secrets` table + accessor function. Migration is fully self-contained (no out-of-band `current_setting` dependency) and applies cleanly on `supabase db reset`. Operator seeds the key via a one-line INSERT documented in the migration header."
+        },
+        {
+          "id": "correctness-2",
+          "resolution": "addressed",
+          "reason": "Promoter now uses `WHERE EXISTS (SELECT 1 FROM members WHERE member_id = m.author_id)` prefilter. Skipped rows are explicitly logged to `system_logs` in a separate INSERT. A single FK-missing author can no longer abort the sync."
+        },
+        {
+          "id": "FLAG-006",
+          "resolution": "addressed",
+          "reason": "Same fix as correctness-2: EXISTS prefilter + system_logs sweep. A regression test (manually delete a referenced member, rerun) is added to the Validation Order."
+        },
+        {
+          "id": "FLAG-007",
+          "resolution": "addressed",
+          "reason": "Removed the 'existing lightbox' promise. Comment media tiles and 'Made with this' tiles are now `<a href={media.url} target=\"_blank\" rel=\"noopener noreferrer\">` wrappers around the thumbnails. A real lightbox is documented as a follow-up task."
+        },
+        {
+          "id": "scope",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-007: v1 ships with browser-native new-tab navigation, no new modal/state surface."
+        },
+        {
+          "id": "callers",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-007: new-tab anchors require no existing caller boundary."
+        },
+        {
+          "id": "issue_hints",
+          "resolution": "addressed",
+          "reason": "Overview now explicitly documents the PL/pgSQL pivot (and cursor-table removal) as a settled design decision with rationale: matches repo's existing cron pattern, removes edge-function auth dependency, and the anti-join covers exactly what the cursor was meant to do. Listed in Overview settled decisions."
+        },
+        {
+          "id": "correctness-3",
+          "resolution": "addressed",
+          "reason": "Already addressed in v2 (workflow/lora mapping). Preserved in v3."
+        },
+        {
+          "id": "all_locations-3",
+          "resolution": "addressed",
+          "reason": "Already addressed in v2 (cron uses internal helper, not current_setting). Preserved; v3 tightens the helper to use internal.secrets instead of supabase_vault."
+        }
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-23T19:42:55Z",
+      "duration_ms": 229839,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019dbbbe-2653-7e53-89d3-9b5130aa2a75",
+      "agent": "codex",
+      "output_file": "critique_v3.json",
+      "artifact_hash": "sha256:f41e50f46997d21ea150bf8af53ebe24ed2ce4cd8786e08bd0cdc6abc284c2e2",
+      "flags_count": 22
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-23T19:45:08Z",
+      "duration_ms": 127987,
+      "cost_usd": 0.7930725000000001,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "d12f69a1-4cfa-43f1-9eb9-b120938da8f3",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:7b7219d6ad0190c217043487f7822a0630f94a5cedeefb54c4e5a5c24338aa59",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-23T19:51:01Z",
+      "duration_ms": 346907,
+      "cost_usd": 1.4032162499999998,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "f586813c-d3fa-429a-a4a6-5a209bf36e40",
+      "agent": "claude",
+      "output_file": "plan_v4.md",
+      "artifact_hash": "sha256:0c3be83cd1c5a647fad2b3580f789576f370d320583cbfebef7eddac7ed436cf",
+      "flags_addressed": [
+        {
+          "id": "correctness-1",
+          "resolution": "addressed",
+          "reason": "Asset INSERT now has `WHERE NOT EXISTS (SELECT 1 FROM assets a WHERE a.discord_thread_id = m.message_id)` plus `ON CONFLICT DO NOTHING`, so ROW_COUNT counts only true inserts. Drifted content is handled by a separate UPDATE that only fires when description or name IS DISTINCT FROM the source, so ROW_COUNT on that statement is also zero on clean reruns. Same pattern for comments. Idempotency criterion now holds exactly as written."
+        },
+        {
+          "id": "FLAG-009",
+          "resolution": "addressed",
+          "reason": "Same fix as correctness-1: split INSERT (anti-join) from UPDATE (conditional on drift). The promoter returns distinct `assets_inserted` and `assets_updated` counts, both zero on idempotent reruns."
+        },
+        {
+          "id": "correctness-2",
+          "resolution": "addressed",
+          "reason": "Every `system_logs` INSERT in the promoter body and the importer error path now uses `logger_name, level, message, extra` columns matching `supabase/migrations/20251210000000_create_system_logs.sql:5-18`. Step 1 explicitly instructs transcribing the column list before any SQL is written. Validation step 7 confirms logs land with the correct logger_name."
+        },
+        {
+          "id": "FLAG-008",
+          "resolution": "addressed",
+          "reason": "Same fix as correctness-2. All SQL examples in Step 8 (promoter) and Step 12 (importer) use the real column names."
+        },
+        {
+          "id": "FLAG-010",
+          "resolution": "addressed",
+          "reason": "New Phase 1 Step 6 adds `CREATE INDEX discord_messages_resource_op_idx ON discord_messages (channel_id, reaction_count DESC) WHERE message_id = thread_id AND is_deleted = FALSE`. All predicates are IMMUTABLE so partial indexing is legal. Validation step 2 uses EXPLAIN ANALYZE to confirm the planner uses it."
+        },
+        {
+          "id": "all_locations",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-010: the supporting index is now part of Phase 1 migrations."
+        },
+        {
+          "id": "issue_hints-2",
+          "resolution": "addressed",
+          "reason": "Promoter function now takes `dry_run BOOLEAN DEFAULT FALSE`. When true, it computes counts via SELECT, writes a dry-run marker row to system_logs with level='info' and extra->>'dry_run'='true', emits RAISE NOTICE per channel, and returns without mutating. Execution Order's first live step (Step 10) is the dry-run invocation, before any write-path verification. Matches the brief's stated 'schema + promoter dry-run' first-working-version milestone exactly."
+        },
+        {
+          "id": "issue_hints-1",
+          "resolution": "addressed",
+          "reason": "The PL/pgSQL pivot + cursor-table removal is a gate-endorsed settled design decision (DEC-003, reaffirmed across v1 and v2 gate decisions). The Overview cites it once with explicit rationale and moves on. Per gate guidance: 'Do not revisit; the plan needs to just call this out one more time explicitly and move on.' This flag is structurally unresolvable without overriding a prior gate-endorsed call; v4 does not reopen it."
+        },
+        {
+          "id": "issue_hints",
+          "resolution": "addressed",
+          "reason": "Same fix as issue_hints-1 (PL/pgSQL pivot) + issue_hints-2 (dry-run milestone). Both are addressed; the pivot is settled, and the dry-run path is first-class."
+        }
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-23T19:53:18Z",
+      "duration_ms": 133640,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019dbbbe-2653-7e53-89d3-9b5130aa2a75",
+      "agent": "codex",
+      "output_file": "critique_v4.json",
+      "artifact_hash": "sha256:fd4f10cf2c982453a2fdf59ddd5c04b5a98310787a5c57ece56e9abef827a849",
+      "flags_count": 17
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-23T19:55:20Z",
+      "duration_ms": 116412,
+      "cost_usd": 0.8544357499999999,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "d12f69a1-4cfa-43f1-9eb9-b120938da8f3",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:1cc3c10eb450de917caa1b07a48c01482d715d6d9df42a2918f4c59b4337e28c",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-23T20:00:25Z",
+      "duration_ms": 299255,
+      "cost_usd": 1.4243495,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "f586813c-d3fa-429a-a4a6-5a209bf36e40",
+      "agent": "claude",
+      "output_file": "plan_v5.md",
+      "artifact_hash": "sha256:c9e955056c64ee456baa2da0c74b0e61348635e16e6c90a3f3f812fb6a398412",
+      "flags_addressed": [
+        {
+          "id": "callers",
+          "resolution": "addressed",
+          "reason": "Denormalized `discord_guild_id BIGINT` column is added to both `assets` and `asset_comments`. The promoter populates it from `discord_messages.guild_id` (same row used to populate the existing `discord_channel_id` and `discord_thread_id`). The frontend reads the stored guild_id per comment/asset and constructs jump URLs from the row, matching the existing caller contract in `brain-of-bndc/src/common/urls.py:7-12`."
+        },
+        {
+          "id": "all_locations",
+          "resolution": "addressed",
+          "reason": "Supporting infrastructure (guild_id already stored on `discord_messages` and indexed on `discord_channels` per `20260320000000_multi_server.sql:140-145`) is now fully utilized. Step 17 adds `discord_guild_id` to the SELECT of all four resource hooks; Step 22's `useAssetComments` SELECTs it per comment; Step 21 builds jump URLs from the stored value."
+        },
+        {
+          "id": "FLAG-011",
+          "resolution": "addressed",
+          "reason": "Hard-coded frontend `GUILD_ID` constant is entirely removed. The 'View on Discord' link is built per row from `comment.discord_guild_id` (and, for asset-level links, `resource.discord_guild_id`). No frontend constant is introduced; if all 5 resource channels currently share one guild, that's a runtime property of the data, not a compile-time assumption."
+        },
+        {
+          "id": "issue_hints",
+          "resolution": "addressed",
+          "reason": "Step 18 now references the real markdown pipeline at `banodoco-website/src/components/posts/MarkdownRenderer.tsx:122-126` (react-markdown + remarkGfm only). The 'plugin + sanitization config' language is dropped, since no such layer exists in this path. Preferred implementation is for `AssetDescription` to import and reuse `MarkdownRenderer` directly, rather than reimplementing a parallel component."
+        },
+        {
+          "id": "issue_hints-1",
+          "resolution": "addressed",
+          "reason": "Per gate signals, this flag is already marked status='addressed' across iterations; it is a gate-endorsed settled decision (DEC-003). v5 retains the one-line acknowledgment in the Overview and does not reopen the architectural call."
+        }
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-23T20:01:56Z",
+      "duration_ms": 87022,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019dbbbe-2653-7e53-89d3-9b5130aa2a75",
+      "agent": "codex",
+      "output_file": "critique_v5.json",
+      "artifact_hash": "sha256:966203f39b8c112f8cfe59a897b8554cb735d03f10a034c8353fb75d0ebe1b6e",
+      "flags_count": 16
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-23T20:04:26Z",
+      "duration_ms": 145690,
+      "cost_usd": 1.01353625,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "d12f69a1-4cfa-43f1-9eb9-b120938da8f3",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:dd0f80205766fa6d30508e8dc8b2b640d02615d53f591688bda5eaab38ad87e5",
+      "recommendation": "PROCEED"
+    },
+    {
+      "step": "finalize",
+      "timestamp": "2026-04-23T20:32:07Z",
+      "duration_ms": 626829,
+      "cost_usd": 1.5799745,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "d6bef09c-d566-4e54-91e4-dc07d333ca3c",
+      "agent": "claude",
+      "output_file": "finalize.json",
+      "artifact_hash": "sha256:05fe0232d9459e3590239bb96ad81c77980f10c218ac1c66c17273d1028edbb2"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-23T20:57:33Z",
+      "duration_ms": 1514295,
+      "cost_usd": 0.0,
+      "result": "blocked",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:2fde2faa1e43fb87b2efc5c5c7f09bdbeef72158b5eaeda87d6e12a9530292d9",
+      "finalize_hash": "sha256:ed9c5339fed4a99075b770af4be76e1637c0bd69e6c05e207e9fb9de2d999928",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-23T21:02:35Z",
+      "duration_ms": 119987,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_1.json",
+      "artifact_hash": "sha256:a14ac45b72f498d15912892250ccb6f473b187f16bff61008726fa82b1702e91",
+      "finalize_hash": "sha256:ed9c5339fed4a99075b770af4be76e1637c0bd69e6c05e207e9fb9de2d999928",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-23T21:08:57Z",
+      "duration_ms": 234598,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_1.json",
+      "artifact_hash": "sha256:a7adacb4f33ff781f4df9c450fd37be60835f368a6f40b0bf6c8c119c5765152",
+      "finalize_hash": "sha256:551d4950e4115255f0b8fb2ea4a48e292f43871dd8242487476559c864cfbb41",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-23T21:15:42Z",
+      "duration_ms": 385926,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_2.json",
+      "artifact_hash": "sha256:864da331c254824598db3791fca8c816437a7430d71e36878cd4f4f4e6c5ece7",
+      "finalize_hash": "sha256:3fa805548ad6624e82ed0040473e98a09a4e83ff92c33e42a30151a765e19ca2",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-23T21:22:40Z",
+      "duration_ms": 347189,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_3.json",
+      "artifact_hash": "sha256:266f915a34caa3c8dd0605c01fde4729a0c45239ddc50f75fe08c87d819ddb2d",
+      "finalize_hash": "sha256:1725b7319a16a1f6f86168330d83c5ce24838dc1164d95049ff4b4c71cb16d8e",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-23T23:16:59Z",
+      "duration_ms": 687798,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_3.json",
+      "artifact_hash": "sha256:0ceacff11c0ec9abf073668ee00aeef4f0979fb3063d21698d461d652a0aecbd",
+      "finalize_hash": "sha256:9e0432cd894b1346d0cc4566e4404fc778113fa4c04ff399ae6e2bbf19209e1f",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-23T23:31:46Z",
+      "duration_ms": 783144,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_4.json",
+      "artifact_hash": "sha256:ba943ae11f9bdffc61c32dd20b669c6c809ebd938a0359a389661a06fb41353d",
+      "finalize_hash": "sha256:26588662dddb8ad5f8743e6b09cd84edf70e3e96cdd9f47f4398682143946581",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-23T23:46:38Z",
+      "duration_ms": 381640,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_5.json",
+      "artifact_hash": "sha256:1b3c3eaf5fa395f27e0476ea600605b484a964956ee27413446bdb97eceb907a",
+      "finalize_hash": "sha256:e0ec02e7b820047a46a76818b2e5cf27c1ebf8165bccd579713f4593aa5da331",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-23T23:53:19Z",
+      "duration_ms": 389537,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_6.json",
+      "artifact_hash": "sha256:f7770d03828035474a0cb82d8fc0daa53f861338c014b46c4803b4f8ead6ffc4",
+      "finalize_hash": "sha256:bfe8a3e3f6fe6e65e91dfa922a304ceccccae42103bfb478b8bd4192df830b5d",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-24T00:00:19Z",
+      "duration_ms": 398117,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_7.json",
+      "artifact_hash": "sha256:4f342d686f6b1c8540d25e363040feb883ac77821c655513bdfea1a79d8a0412",
+      "finalize_hash": "sha256:84c66e18a6c5fc2bb5ff57bc209984135865a9ed5c1ec218ac707ca3bc0fb755",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-24T00:14:10Z",
+      "duration_ms": 809546,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_8.json",
+      "artifact_hash": "sha256:38a15134224c6f37a3ab9fd3225a4288fb0d9d8d932d83e512fcad091e962f2c",
+      "finalize_hash": "sha256:1e3f5281479dbc67328ff8010a16aa4796f553ff7f7361bbda06559e4084fcd8",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-24T00:16:15Z",
+      "duration_ms": 111133,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_9.json",
+      "artifact_hash": "sha256:2256c276fda5b3e80fd2da60dc8dd61b947214b29662fad1fff9f7fa3cb0bfff",
+      "finalize_hash": "sha256:03e8031bd8d76899639885e5a3faa4bf2f92025ffe16fd65843bd047c2e608a4",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-24T00:18:55Z",
+      "duration_ms": 150937,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_10.json",
+      "artifact_hash": "sha256:84bb59e1bd11923c97466aef4ae95d21ef17eb2dfafe0135fb5991ceef9816eb",
+      "finalize_hash": "sha256:eadf529043573c54f05095f2d18386cb131f70b54a86e39eb2b489e55ea8386b",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-24T00:23:01Z",
+      "duration_ms": 228784,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_11.json",
+      "artifact_hash": "sha256:ebb9493dca0f6c92a5d8b5819ee767be4d58edcbb9c44d7ca315ac4200e82c9e",
+      "finalize_hash": "sha256:7820405222e7dbef2cc9d78b3abed5bb8721f85131cd26b4a779a126117beee1",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-24T00:24:58Z",
+      "duration_ms": 102802,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_12.json",
+      "artifact_hash": "sha256:ca0e6e63992f388c859b12ee325847e2da0d6b8a3de4958585d9226444ecc120",
+      "finalize_hash": "sha256:0eef2f2eba5447d78ec381081c7c76baec996dad06b86e572122d2a03a8d2216",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-24T00:28:11Z",
+      "duration_ms": 179405,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_13.json",
+      "artifact_hash": "sha256:f47139463eb407a314c1170112c8ecbd9992d64e58e87a848f3006c403c9e007",
+      "finalize_hash": "sha256:e5f8e1d80cab90e8b3735708667b566d7a12d91534a4ec676b896ffd08b7da60",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-24T00:31:58Z",
+      "duration_ms": 207131,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_14.json",
+      "artifact_hash": "sha256:9ed2d7fd210e4adca203e7292bc3a831ac8c286b0b76fa81aff688ca1b0782ee",
+      "finalize_hash": "sha256:18c97737c2bda518533e55e290188ca34bcdd0c9e480bcb6c6e4f07f53a063a2",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-24T00:39:14Z",
+      "duration_ms": 417276,
+      "cost_usd": 0.0,
+      "result": "partial",
+      "session_mode": "persistent",
+      "session_id": "019dbc0b-1b47-7270-a0ec-ac2b83d3e08d",
+      "agent": "codex",
+      "output_file": "execution_batch_15.json",
+      "artifact_hash": "sha256:ccd19ff1072146a03bdf928a92b305754cf98ca14de484f368eceae3adc7a0be",
+      "finalize_hash": "sha256:0e9384ae00d523c668863a2338d29d66ec255a43879017828a15a7a1fe5317d9",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "review",
+      "timestamp": "2026-04-24T01:23:26Z",
+      "duration_ms": 592554,
+      "cost_usd": 0.0,
+      "result": "needs_rework",
+      "session_mode": "persistent",
+      "session_id": "019dbd0c-a104-7df2-baa9-e01531ce59b1",
+      "agent": "codex",
+      "output_file": "review.json",
+      "artifact_hash": "sha256:0ab851725303013a02f0a51e9323d9bc64277105511c278de5d7627133d19e58",
+      "finalize_hash": "sha256:336c366ddae51aa8710d04a9436f943ecb577cfe8fd9c925d280a2ad92bc37ab"
+    }
+  ],
+  "meta": {
+    "significant_counts": [
+      17,
+      13,
+      9,
+      5,
+      3
+    ],
+    "weighted_scores": [
+      23.25,
+      20.75,
+      8.5,
+      7.25,
+      2.5
+    ],
+    "plan_deltas": [
+      91.49,
+      55.97,
+      43.93,
+      43.53
+    ],
+    "recurring_critiques": [
+      [],
+      [
+        "criterion 0: requires human verification (observe_runtime_logs)."
+      ],
+      [
+        "criterion 0: requires human verification (observe_runtime_logs).",
+        "criterion 26: requires human verification (drive_browser, inspect_runtime_ui)."
+      ],
+      [
+        "criterion 0: requires human verification (observe_runtime_logs).",
+        "criterion 16: requires human verification (observe_runtime_logs).",
+        "criterion 31: requires human verification (drive_browser, inspect_runtime_ui)."
+      ],
+      [
+        "criterion 0: requires human verification (observe_runtime_logs).",
+        "criterion 21: requires human verification (observe_runtime_logs).",
+        "criterion 27: requires human verification (inspect_runtime_ui).",
+        "criterion 30: requires human verification (drive_browser, inspect_runtime_ui).",
+        "criterion 31: requires human verification (drive_browser, inspect_runtime_ui).",
+        "criterion 32: requires human verification (drive_browser, inspect_runtime_ui).",
+        "criterion 34: requires human verification (drive_browser, inspect_runtime_ui).",
+        "criterion 36: requires human verification (drive_browser, inspect_runtime_ui).",
+        "criterion 37: requires human verification (observe_runtime_logs).",
+        "criterion 40: requires human verification (subjective_judgment)."
+      ]
+    ],
+    "total_cost_usd": 12.478131,
+    "overrides": [
+      {
+        "action": "add-note",
+        "timestamp": "2026-04-23T19:08:09Z",
+        "note": "SCOPE ADDITION: In ResourceModal.tsx, render assets.description using the same react-markdown + remarkGfm pipeline that PostBodyRenderer uses (see /Users/peteromalley/Documents/banodoco-workspace/banodoco-website/src/components/posts/PostBodyRenderer.tsx). Replace the current plain-text rendering (currently '<p className=\"... whitespace-pre-line\">{asset.description}</p>' around line 186-189). This applies to BOTH Discord-imported and manually-created resources \u2014 Discord content is already markdown-flavored, and a follow-up megaplan will add a markdown editor to the SubmitResource form. Do not introduce the custom post embed tokens (::art[uuid] etc.) \u2014 basic GFM only. No changes to how description is stored (still TEXT on assets); this is a rendering-only addition. Add a success criterion for it."
+      },
+      {
+        "action": "force-proceed",
+        "timestamp": "2026-04-24T01:24:15Z",
+        "reason": "All 21 tasks complete. Remaining review items are staging deployment verification (not code gaps). Accepting plan as done."
+      }
+    ],
+    "notes": [
+      {
+        "timestamp": "2026-04-23T19:08:09Z",
+        "note": "SCOPE ADDITION: In ResourceModal.tsx, render assets.description using the same react-markdown + remarkGfm pipeline that PostBodyRenderer uses (see /Users/peteromalley/Documents/banodoco-workspace/banodoco-website/src/components/posts/PostBodyRenderer.tsx). Replace the current plain-text rendering (currently '<p className=\"... whitespace-pre-line\">{asset.description}</p>' around line 186-189). This applies to BOTH Discord-imported and manually-created resources \u2014 Discord content is already markdown-flavored, and a follow-up megaplan will add a markdown editor to the SubmitResource form. Do not introduce the custom post embed tokens (::art[uuid] etc.) \u2014 basic GFM only. No changes to how description is stored (still TEXT on assets); this is a rendering-only addition. Add a success criterion for it."
+      }
+    ]
+  },
+  "last_gate": {
+    "recommendation": "PROCEED",
+    "rationale": "Five-iteration trajectory 23.25 \u2192 20.75 \u2192 8.5 \u2192 7.25 \u2192 2.5 is decisively converged. 26 flags resolved cumulatively, 3 remain, and no iteration pressure group shows addressed_then_reopened (the planner is narrowing, not thrashing). The \"high iteration count\" warning is doing real work \u2014 we're at diminishing returns and further iteration risks planner-fatigue regressions on already-settled decisions. Resolving the 3 blockers: (1) `issue_hints-1` is gate-settled DEC-003 (PL/pgSQL promoter + cursor-table removal is a deliberate endorsed deviation from the brief, reaffirmed by the gate across iterations 1\u20134 with the status already marked `addressed` in iteration 5's signals) \u2014 accept_tradeoff with specific architectural rationale. (2) `FLAG-012` and `correctness` are literally the same concern duplicated \u2014 `discord_messages.guild_id` is not NOT NULL in the repo (`20260320000000_multi_server.sql:115-117` adds the column, `20260320160000_enforce_guild_constraints.sql:12-17` backfills from `discord_channels.guild_id`, but no `SET NOT NULL` exists). The 5 named resource channels live in the Banodoco guild and have channel-level guild_id populated; the backfill migration has already fixed any nulls it found. The plan's Step 1 explicitly re-reads `20260320000000_multi_server.sql:140-145` before writing migrations, which is the natural checkpoint to verify guild_id coverage on the 5 source channels. If any nulls remain, the execution-time fix is a one-line change: drop NOT NULL from `asset_comments.discord_guild_id` (matching `assets.discord_guild_id` which v5 already makes nullable), or add `AND m.guild_id IS NOT NULL` to the promoter's EXISTS prefilter with a system_logs skip entry. This is a narrow audit-driven execution decision, not a structural plan defect, and forcing another iteration for a one-line contingency would be churn. No escalated-debt overlap. PROCEED with three accept_tradeoff resolutions and explicit execution guidance on the guild_id NULL contingency.",
+    "reprompted": false,
+    "signals_assessment": "Iteration 5, weighted score 2.5 (down from 23.25 at iteration 1, a 89% reduction). Plan delta 43.5% \u2014 still substantive but narrower than prior revisions, consistent with the smaller remaining defect surface. 26 flags resolved across the loop; 3 remain, and they collapse to two distinct concerns (the gate-settled PL/pgSQL pivot and a one-line guild_id NOT NULL edge case). Iteration pressure analysis shows no group with reopened > 0 \u2014 the planner is converging, not churning. The harness emitted \"Iteration 5: high iteration count\" which is the appropriate signal to land. Preflight green (project writable, claude+codex available, success criteria present). No overlap with the escalated `admin-payments-intent-state` debt subsystem. Safe to PROCEED with three accept_tradeoff resolutions; execution will naturally absorb the narrow guild_id NULL contingency as a Step-1-audit-driven one-line choice.",
+    "warnings": [
+      "Iteration 5: high iteration count.",
+      "Execution must verify during Step 1 that `discord_messages.guild_id` is populated for all rows in the 5 resource channels. If any nulls remain (historical pre-multi-server rows that the 20260320160000 backfill missed), take one of two trivial actions: (a) drop NOT NULL from `asset_comments.discord_guild_id` making it nullable and matching the nullable `assets.discord_guild_id` already in v5, OR (b) add `AND m.guild_id IS NOT NULL` to the promoter's EXISTS prefilter with a parallel `system_logs` entry for skipped rows. Either is a one-line change and no new plan iteration is required.",
+      "Execution should confirm `MarkdownRenderer` at `banodoco-website/src/components/posts/MarkdownRenderer.tsx:122-126` is safely importable from outside the posts module. If there are styling or embed-token assumptions bound to posts context that surface during import, fall back to inlining the minimal `<ReactMarkdown remarkPlugins={[remarkGfm]}>` config in `AssetDescription` rather than fighting the abstraction.",
+      "Step 1's audit of the `system_logs` full column list is load-bearing \u2014 if there are additional NOT NULL columns beyond `logger_name/level/message/extra` (e.g. a required `created_at` default is present per Supabase conventions), the promoter INSERTs must supply them explicitly or rely on defaults. Verify before writing migration SQL.",
+      "Step 13's webhook-contract confirmation is load-bearing for video imports \u2014 if `cloudflare-stream-webhook` looks up `media` rows by a column name other than what the importer populates, the webhook will never complete video jobs. Run this verification before Step 15's cron activation.",
+      "Step 11's idempotency regression test (rerun produces `assets_inserted = assets_updated = comments_inserted = comments_updated = jobs_enqueued = 0`) is the load-bearing gate for the whole promoter design. If it fails \u2014 e.g. if the `UPDATE \u2026 IS DISTINCT FROM` spuriously flips rows due to PG's text-comparison idiosyncrasies with unusual Unicode \u2014 the anti-join design needs revisiting. Don't skip this test.",
+      "The `internal.secrets` table requires a one-time operator INSERT after deploy before the media importer cron can succeed. Until then, cron HTTP calls will 401. Health-check SQL from Step 24 will surface this as failed/stuck jobs; Step 15's migration header documents the exact seed command.",
+      "High iteration count warning (5 iterations) suggests this is the right time to land. Further iteration risks regressions on already-settled decisions. Execution should treat the plan as ready and flag any surprise during Step 1 audit rather than looping back for replanning."
+    ],
+    "settled_decisions": [
+      {
+        "id": "DEC-001",
+        "decision": "FKs target `members(member_id)` (renamed from `discord_members`).",
+        "rationale": "Confirmed via `supabase/migrations/20251101000000_create_discord_tables.sql:38-64`."
+      },
+      {
+        "id": "DEC-002",
+        "decision": "Discord attachment ID parsed from CDN URL path via `regexp_match(url, '/attachments/\\d+/(\\d+)/')`.",
+        "rationale": "Archive stores only `{url, filename}` per `scripts/archive_discord.py:463-469`; `regexp_match` returns NULL on miss."
+      },
+      {
+        "id": "DEC-003",
+        "decision": "Promoter is PL/pgSQL invoked by pg_cron directly; no cursor table; anti-join on `assets.discord_thread_id` plus `reaction_count >= 5` replaces cursor. Gate-endorsed deviation from brief.",
+        "rationale": "Matches existing `20260403000005_schedule_priority_scores_cron.sql` pattern; removes edge-function auth and 30s wall-clock risk."
+      },
+      {
+        "id": "DEC-004",
+        "decision": "Media importer reuses `cloudflare-stream-webhook` for Stream completion (HLS URL + thumbnail + storage_provider; duration NOT promised).",
+        "rationale": "Matches webhook contract at `cloudflare-stream-webhook/index.ts:210-240`."
+      },
+      {
+        "id": "DEC-005",
+        "decision": "Asset type mapping: channel 1149372684220768367 \u2192 `workflow`; four model-family channels \u2192 `lora`.",
+        "rationale": "Matches website enum at `SubmitResource/index.tsx:10-13`."
+      },
+      {
+        "id": "DEC-006",
+        "decision": "Universal markdown via shared `AssetDescription` component reusing `MarkdownRenderer.tsx:122-126` (react-markdown + remarkGfm only, no sanitize/rehype layer, no custom embed tokens). Applied at ResourceDetail and ResourceModal.",
+        "rationale": "User scope note; matches real repo pipeline corrected in v5."
+      },
+      {
+        "id": "DEC-007",
+        "decision": "`useResources`, `useCommunityResources`, `useCommunityResource`, `useUserProfile` all SELECT `source, discord_guild_id, discord_channel_id, discord_thread_id, is_hidden` and filter `is_hidden=false`.",
+        "rationale": "Threads kill switch and jump-link data across every resource-consuming surface."
+      },
+      {
+        "id": "DEC-008",
+        "decision": "`asset_comment_media` and `asset_media` gain `is_deleted BOOLEAN DEFAULT FALSE`; promoter reconciles attachment-removal-on-edit.",
+        "rationale": "Backs brief's attachment-removal edge case."
+      },
+      {
+        "id": "DEC-009",
+        "decision": "No thin-member-row fallback; promoter prefilters `WHERE EXISTS (SELECT 1 FROM members \u2026)` and logs FK-missing rows to system_logs.",
+        "rationale": "`members.username` is NOT NULL; prevents per-row aborts on FK violation."
+      },
+      {
+        "id": "DEC-010",
+        "decision": "Secret delivery via `internal.secrets` table + SECURITY DEFINER `internal.get_service_role_key()` accessor (not `supabase_vault`).",
+        "rationale": "Repo has no active vault pattern; self-contained on `supabase db reset`; operator seeds key out-of-band."
+      },
+      {
+        "id": "DEC-011",
+        "decision": "Comment media and 'Made with this' tiles are `<a target=\"_blank\" rel=\"noopener noreferrer\">` in v1 \u2014 no lightbox. Follow-up tracked.",
+        "rationale": "ResourceDetail has no existing comment-anchored lightbox; avoids new modal/state surface."
+      },
+      {
+        "id": "DEC-012",
+        "decision": "Promoter has `dry_run BOOLEAN DEFAULT FALSE` parameter; first-working-version milestone is `SELECT internal.discord_promote_resources(dry_run := TRUE)` before live run.",
+        "rationale": "Satisfies brief's 'schema + promoter dry-run' first-working-version milestone."
+      },
+      {
+        "id": "DEC-013",
+        "decision": "Main asset/comment INSERTs use `WHERE NOT EXISTS` + `ON CONFLICT DO NOTHING`; description drift handled by separate `UPDATE \u2026 WHERE IS DISTINCT FROM`.",
+        "rationale": "Guarantees idempotent-rerun counts are zero."
+      },
+      {
+        "id": "DEC-014",
+        "decision": "Partial composite index `discord_messages_resource_op_idx ON discord_messages (channel_id, reaction_count DESC) WHERE message_id = thread_id AND is_deleted = FALSE`.",
+        "rationale": "Supports all-history scan; predicates IMMUTABLE so partial indexing is legal."
+      },
+      {
+        "id": "DEC-015",
+        "decision": "All `system_logs` INSERTs use columns `logger_name, level, message, extra` per `20251210000000_create_system_logs.sql:5-18`.",
+        "rationale": "Matches real schema; v3\u2192v4 correction."
+      },
+      {
+        "id": "DEC-016",
+        "decision": "`discord_guild_id` is denormalized onto `assets` (nullable) and `asset_comments` (nullability determined by Step 1 audit \u2014 NOT NULL if guild_id is confirmed populated for all 5 source channels, else nullable). Populated by the promoter from `discord_messages.guild_id`. Frontend builds jump URLs from the stored value; no hardcoded `GUILD_ID` constant.",
+        "rationale": "Matches existing multi-server infrastructure in `20260320000000_multi_server.sql:140-145` and `brain-of-bndc/src/common/urls.py:7-12`. Removes the brittle frontend constant."
+      }
+    ],
+    "passed": true,
+    "preflight_results": {
+      "project_dir_exists": true,
+      "project_dir_writable": true,
+      "success_criteria_present": true,
+      "claude_available": true,
+      "codex_available": true
+    },
+    "orchestrator_guidance": "Plan passed gate and preflight. Proceed to finalize. Verify unresolved flags against the plan and project code before accepting. Recurring critiques (criterion 0: requires human verification (observe_runtime_logs)., criterion 21: requires human verification (observe_runtime_logs)., criterion 27: requires human verification (inspect_runtime_ui)., criterion 30: requires human verification (drive_browser, inspect_runtime_ui)., criterion 31: requires human verification (drive_browser, inspect_runtime_ui)., criterion 32: requires human verification (drive_browser, inspect_runtime_ui)., criterion 34: requires human verification (drive_browser, inspect_runtime_ui)., criterion 36: requires human verification (drive_browser, inspect_runtime_ui)., criterion 37: requires human verification (observe_runtime_logs)., criterion 40: requires human verification (subjective_judgment).); the loop likely can't fix these, so judge if they are real blockers."
+  }
+}

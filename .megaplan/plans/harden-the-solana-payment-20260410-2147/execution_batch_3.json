@@ -1,0 +1,62 @@
+{
+  "output": "Executed batch 3 task T9 and checkpointed the result. Added the admin success-DM path in PaymentCog, kept _dm_admin_payment_failure unchanged, and verified with full payment-related test modules.",
+  "files_changed": [
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_3.json"
+  ],
+  "commands_run": [
+    "python -m megaplan progress --plan harden-the-solana-payment-20260410-2147",
+    "sed -n '1,360p' src/features/payments/payment_cog.py",
+    "sed -n '360,540p' src/features/payments/payment_cog.py",
+    "rg -n \"PaymentCog|_dm_admin_payment_failure|Payment Completed|amount_usd\" tests/test_admin_payments.py tests/test_scheduler.py tests/test_social_publish_service.py",
+    "python -m py_compile src/features/payments/payment_cog.py",
+    "PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py",
+    "git diff -- src/features/payments/payment_cog.py",
+    "nl -ba src/features/payments/payment_cog.py | sed -n '1,360p'",
+    "test -w .megaplan/plans/harden-the-solana-payment-20260410-2147 && echo writable",
+    "test -f .megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_3.json && echo exists || echo missing",
+    "python -m json.tool .megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_3.json >/dev/null && echo valid",
+    "git diff -- .megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_3.json src/features/payments/payment_cog.py"
+  ],
+  "deviations": [
+    "Direct pytest collection in this environment still requires `PYTHONPATH=.`; full-module verification was run with that prefix.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_3.json",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: scripts/audit_ghost_confirmed_payments.py",
+    "Advisory quality: scripts/audit_ghost_confirmed_payments.py adds unused imports: sys.",
+    "Advisory quality: code changes lacked test updates: scripts/audit_ghost_confirmed_payments.py, src/features/payments/payment_cog.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, scripts/audit_ghost_confirmed_payments.py, sql/payments.sql, src/common/db_handler.py, src/features/admin_chat/admin_chat_cog.py, src/features/admin_chat/tools.py, src/features/grants/grants_cog.py, src/features/grants/solana_client.py, src/features/payments/payment_cog.py, src/features/payments/payment_service.py, src/features/payments/solana_provider.py, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py, tests/test_solana_client.py"
+  ],
+  "task_updates": [
+    {
+      "id": "T9",
+      "status": "done",
+      "executor_notes": "Added the admin success-DM sibling in `PaymentCog` without changing `_dm_admin_payment_failure`. `PaymentCog.__init__` now reads `ADMIN_PAYMENT_SUCCESS_DM_THRESHOLD_USD` and `ADMIN_PAYMENT_SUCCESS_DM_PROVIDERS` so both construction sites stay in sync without touching the `setup()` hook. `_handle_terminal_payment` now gates the success DM on `status == 'confirmed'`, `not is_test`, provider membership in `_admin_success_dm_providers`, and `float(payment.get('amount_usd') or 0) >= self._admin_success_dm_threshold_usd`. `_dm_admin_payment_success` uses the required `\u2705 **Payment Completed**` prefix, includes both token and USD amounts, redacts the wallet with `_redact_wallet`, and omits any manual-review language. Verified with `python -m py_compile src/features/payments/payment_cog.py` and `PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py`.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py"
+      ],
+      "commands_run": [
+        "python -m megaplan progress --plan harden-the-solana-payment-20260410-2147",
+        "sed -n '1,360p' src/features/payments/payment_cog.py",
+        "sed -n '360,540p' src/features/payments/payment_cog.py",
+        "rg -n \"PaymentCog|_dm_admin_payment_failure|Payment Completed|amount_usd\" tests/test_admin_payments.py tests/test_scheduler.py tests/test_social_publish_service.py",
+        "python -m py_compile src/features/payments/payment_cog.py",
+        "PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py tests/test_scheduler.py",
+        "git diff -- src/features/payments/payment_cog.py",
+        "nl -ba src/features/payments/payment_cog.py | sed -n '1,360p'"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T9"
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "id": "SC9",
+      "task_id": "T9",
+      "acknowledgment": "Verified `PaymentCog.__init__` reads the success-DM env vars, `_handle_terminal_payment` gates on confirmed + non-test + provider membership + `payment.get('amount_usd')` threshold, `_dm_admin_payment_success` exists with the exact `\u2705 **Payment Completed**` prefix and no manual-review line, and `_dm_admin_payment_failure` was left unchanged.",
+      "sense_check_id": "SC9",
+      "executor_note": "(not provided)"
+    }
+  ]
+}

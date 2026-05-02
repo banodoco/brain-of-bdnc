@@ -1,0 +1,51 @@
+{
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Payment authorization: `PRODUCER_FLOWS` as planned cannot represent the current `admin_chat` final-confirmation behavior, because the live flow accepts both the payment button and a free-text recipient reply for the same payment.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed all three open flags. FLAG-001: Reworked `PRODUCER_FLOWS` so `test_confirmed_by` / `real_confirmed_by` are frozensets of `PaymentActorKind` (not single values), and set `admin_chat.real_confirmed_by = {RECIPIENT_CLICK, RECIPIENT_MESSAGE}` to represent both current confirmation paths. `_authorize_actor` logic now checks set membership. FLAG-002: Added Phase 3 Step 9 subtask to retarget `main.py:65-77 _bind_cap_breach_dm` from `get_cog('PaymentCog')` to `get_cog('PaymentWorkerCog')`, and added explicit grep for other `get_cog('PaymentCog')` references. Added a dedicated test case in Step 12.4 asserting the cap-breach wiring resolves to the worker cog. FLAG-004: Gave `safe_delete_messages` a concrete, tested caller in `PaymentWorkerCog._handle_terminal_payment` against `payment.metadata.cleanup_message_ids` (empty today = no-op, populated by the future admin-DM feature). Added `tests/test_terminal_cleanup_wiring.py` to prove the integration and the no-behavior-change claim. Reordered the execution plan so Step 10 lands before Step 7 (worker cog must import the helper). Overview and success criteria updated to reference the new wiring.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Payment startup wiring: the split plan deletes `PaymentCog` but does not update the existing cap-breach callback in `main.py`, so manual-hold/admin-review DMs would stop working after the split.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed all three open flags. FLAG-001: Reworked `PRODUCER_FLOWS` so `test_confirmed_by` / `real_confirmed_by` are frozensets of `PaymentActorKind` (not single values), and set `admin_chat.real_confirmed_by = {RECIPIENT_CLICK, RECIPIENT_MESSAGE}` to represent both current confirmation paths. `_authorize_actor` logic now checks set membership. FLAG-002: Added Phase 3 Step 9 subtask to retarget `main.py:65-77 _bind_cap_breach_dm` from `get_cog('PaymentCog')` to `get_cog('PaymentWorkerCog')`, and added explicit grep for other `get_cog('PaymentCog')` references. Added a dedicated test case in Step 12.4 asserting the cap-breach wiring resolves to the worker cog. FLAG-004: Gave `safe_delete_messages` a concrete, tested caller in `PaymentWorkerCog._handle_terminal_payment` against `payment.metadata.cleanup_message_ids` (empty today = no-op, populated by the future admin-DM feature). Added `tests/test_terminal_cleanup_wiring.py` to prove the integration and the no-behavior-change claim. Reordered the execution plan so Step 10 lands before Step 7 (worker cog must import the helper). Overview and success criteria updated to reference the new wiring.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Payment confirmation UI: Step 3 changes the button failure message in a way that would misreport backend failures as authorization failures, which violates the no-user-visible-behavior-change constraint.",
+      "category": "correctness",
+      "severity_hint": "likely-minor",
+      "evidence": "Today `PaymentConfirmView` sends \"Only the intended recipient can confirm this payment.\" only for the explicit recipient mismatch check, and sends the generic \"I couldn't queue that payment.\" for other service failures (`src/features/payments/payment_cog.py:57-73`). The plan removes the pre-check and says to show the recipient-only message whenever `confirm_payment()` returns `None`, but `confirm_payment()` can also return `None` for non-auth reasons such as a failed DB update or an unknown producer.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "minor",
+      "verified": false
+    },
+    {
+      "id": "FLAG-004",
+      "concern": "Payment cleanup path: the plan allows `safe_delete_messages` to land without any caller, but the current repo has no existing payment-result thread-cleanup path to automatically pick it up, so that would leave scope item (5) unimplemented.",
+      "category": "completeness",
+      "severity_hint": "uncertain",
+      "evidence": "Addressed all three open flags. FLAG-001: Reworked `PRODUCER_FLOWS` so `test_confirmed_by` / `real_confirmed_by` are frozensets of `PaymentActorKind` (not single values), and set `admin_chat.real_confirmed_by = {RECIPIENT_CLICK, RECIPIENT_MESSAGE}` to represent both current confirmation paths. `_authorize_actor` logic now checks set membership. FLAG-002: Added Phase 3 Step 9 subtask to retarget `main.py:65-77 _bind_cap_breach_dm` from `get_cog('PaymentCog')` to `get_cog('PaymentWorkerCog')`, and added explicit grep for other `get_cog('PaymentCog')` references. Added a dedicated test case in Step 12.4 asserting the cap-breach wiring resolves to the worker cog. FLAG-004: Gave `safe_delete_messages` a concrete, tested caller in `PaymentWorkerCog._handle_terminal_payment` against `payment.metadata.cleanup_message_ids` (empty today = no-op, populated by the future admin-DM feature). Added `tests/test_terminal_cleanup_wiring.py` to prove the integration and the no-behavior-change claim. Reordered the execution plan so Step 10 lands before Step 7 (worker cog must import the helper). Overview and success criteria updated to reference the new wiring.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    }
+  ]
+}

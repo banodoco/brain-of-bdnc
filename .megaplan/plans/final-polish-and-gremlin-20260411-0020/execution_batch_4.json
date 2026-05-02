@@ -1,0 +1,109 @@
+{
+  "task_updates": [
+    {
+      "id": "T9",
+      "status": "done",
+      "executor_notes": "Refactored `PaymentService.request_payment(...)` into a thin orchestrator that now delegates to exactly five helpers: `_normalize_inputs`, `_detect_collision_and_idempotent_row`, `_derive_amounts`, `_enforce_caps`, and `_persist_row`. The public signature stayed unchanged, the existing log messages were preserved as code motion rather than rewritten behavior, and the refactor held under both the targeted payment-module run and the full pytest suite without needing refactor-specific test edits.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_social_publish_service.py tests/test_social_route_tools.py tests/test_scheduler.py tests/test_admin_payments.py tests/test_payment_race.py tests/test_payment_state_machine.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T9"
+    },
+    {
+      "id": "T12",
+      "status": "done",
+      "executor_notes": "The investigation separated the DB claim semantics from the real startup overlap. `claim_due_payment_requests` remains structurally safe at the `queued -> processing` boundary under `FOR UPDATE SKIP LOCKED`, but the worker loop could begin before `recover_inflight()` finished and re-scan fresh `processing/submitted` rows during startup. I added the specified 150-second reclaim guard in `PaymentService.recover_inflight()` and a logical-ordering sanity-check test in `tests/test_payment_race.py`; the new test and the full suite both pass.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_race.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_social_publish_service.py tests/test_social_route_tools.py tests/test_scheduler.py tests/test_admin_payments.py tests/test_payment_race.py tests/test_payment_state_machine.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T12"
+    },
+    {
+      "id": "T13",
+      "status": "done",
+      "executor_notes": "Reproduced the same-recipient admin collision at the downstream flow using two distinct `source_channel_id` values so the intent-dedupe layer was bypassed on purpose. The fix is the required millisecond-precision `producer_ref` in `execute_initiate_payment(...)`, and the regression test drives both intents through `_start_admin_payment_flow` to verify they persist as separate payments. The targeted payment/admin modules and the full suite pass with the fix in place.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_social_publish_service.py tests/test_social_route_tools.py tests/test_scheduler.py tests/test_admin_payments.py tests/test_payment_race.py tests/test_payment_state_machine.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T13"
+    },
+    {
+      "id": "T14",
+      "status": "done",
+      "executor_notes": "Added `hypothesis` to `requirements.txt` and shipped `tests/test_payment_state_machine.py` with a `RuleBasedStateMachine` that exercises `create_payment`, `confirm_payment`, `execute_payment`, `recover_inflight`, `release_payment_hold`, `requeue_payment`, and `reconcile_with_chain`, plus the five required invariants. I attempted the requested `--hypothesis-show-statistics` invocation, but this environment's pytest rejected that flag; the module itself still ran green under plain pytest, and the full suite also passed.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/requirements.txt",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_state_machine.py"
+      ],
+      "commands_run": [
+        "pytest tests/test_payment_reconcile.py tests/test_social_publish_service.py tests/test_social_route_tools.py tests/test_scheduler.py tests/test_admin_payments.py tests/test_payment_race.py tests/test_payment_state_machine.py --tb=no -q --no-header --hypothesis-show-statistics",
+        "pytest tests/test_payment_reconcile.py tests/test_social_publish_service.py tests/test_social_route_tools.py tests/test_scheduler.py tests/test_admin_payments.py tests/test_payment_race.py tests/test_payment_state_machine.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T14"
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "id": "SC9",
+      "executor_note": "Verified `request_payment(...)` now delegates to `_normalize_inputs`, `_detect_collision_and_idempotent_row`, `_derive_amounts`, `_enforce_caps`, and `_persist_row`, with the public signature unchanged. The refactor survived both the targeted payment-module run and the full pytest suite, which is the regression gate for the byte-identical behavior claim.",
+      "verdict": "pass",
+      "sense_check_id": "SC9"
+    },
+    {
+      "id": "SC12",
+      "executor_note": "Verified the verdict comment at the top of `tests/test_payment_race.py` cites `FOR UPDATE SKIP LOCKED` and Postgres read-committed isolation as the DB-level proof boundary, explicitly labels the test a logical-correctness sanity check, and does not contain the forbidden phrase `proven safe by this test`.",
+      "verdict": "pass",
+      "sense_check_id": "SC12"
+    },
+    {
+      "id": "SC13",
+      "executor_note": "Verified the D11 reproduction uses distinct `source_channel_id` values and drives the downstream admin payment flow, not the intent-dedupe layer. The fix in `src/features/admin_chat/tools.py` uses `int(time.time() * 1000)` rather than a UUID suffix, and the regression test carries a verdict comment stating the collision was reproduced and fixed.",
+      "verdict": "pass",
+      "sense_check_id": "SC13"
+    },
+    {
+      "id": "SC14",
+      "executor_note": "Verified `hypothesis` was added to `requirements.txt`, the `RuleBasedStateMachine` includes a `reconcile_with_chain` rule, and the file defines all five invariants. The terminal-state invariant only blocks backward transitions after `confirmed/cancelled`, so reconciliation from `failed/manual_hold` is intentionally not treated as a backward terminal transition.",
+      "verdict": "pass",
+      "sense_check_id": "SC14"
+    }
+  ],
+  "deviations": [
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: .hypothesis, requirements.txt, src/features/admin_chat/tools.py, src/features/grants/solana_client.py, src/features/payments/payment_service.py, src/features/payments/payment_worker_cog.py, src/features/payments/solana_provider.py, tests/test_admin_payments.py, tests/test_payment_race.py, tests/test_payment_state_machine.py, tests/test_solana_client.py",
+    "Advisory quality: tests/test_payment_state_machine.py grew by 458 lines (threshold 200).",
+    "Advisory quality: tests/test_payment_state_machine.py has similar functions confirm_tx and check_status (100% similarity).",
+    "Advisory quality: tests/test_solana_client.py has similar functions __aenter__ and __aenter__ (100% similarity).",
+    "Advisory quality: tests/test_solana_client.py has similar functions __aexit__ and __aexit__ (100% similarity).",
+    "Advisory quality: src/features/payments/payment_service.py adds unused imports: DatabaseHandler.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/requirements.txt, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/check_payment_invariants.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/solana_client.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/solana_provider.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_check_payment_invariants.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_race.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_reconcile.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_state_machine.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_route_tools.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_solana_client.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, requirements.txt, scripts/check_payment_invariants.py, src/common/db_handler.py, src/features/admin_chat/tools.py, src/features/grants/solana_client.py, src/features/payments/payment_service.py, src/features/payments/payment_ui_cog.py, src/features/payments/payment_worker_cog.py, src/features/payments/solana_provider.py, tests/conftest.py, tests/test_admin_payments.py, tests/test_caller_paths.py, tests/test_check_payment_invariants.py, tests/test_notification_delete.py, tests/test_payment_race.py, tests/test_payment_reconcile.py, tests/test_payment_state_machine.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py, tests/test_social_route_tools.py, tests/test_solana_client.py",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC15 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC16 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC19 is missing an executor acknowledgment."
+  ]
+}

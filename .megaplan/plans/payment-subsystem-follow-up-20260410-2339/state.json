@@ -1,0 +1,156 @@
+{
+  "name": "payment-subsystem-follow-up-20260410-2339",
+  "idea": "Payment subsystem follow-up cleanups. Five interrelated refactors surfaced during security/hardening work on the Solana payout flows. Goal: reduce structural complexity before adding further features. NOT a feature-adding plan \u2014 pure cleanup with behavior preservation. Scope:\n\n(1) Consolidate confirmation authorization into PaymentService. Today PaymentService.confirm_payment is called from ~4 different sites (recipient button click via PaymentConfirmView, recipient text message via admin_chat_cog, bot auto-confirm for tests via grants_cog and admin_chat_cog, and soon an admin-DM button). Each site has ad-hoc permission checks. Move all 'who is allowed to confirm' logic into PaymentService itself, parameterized by an explicit actor_kind enum (recipient_click / recipient_message / auto / admin_dm) and actor_id. The service validates the actor kind against the payment's producer + current state, and matches actor_id against the expected identity (recipient_discord_id for recipient kinds, ADMIN_USER_ID for admin_dm). Callers become thin. The existing privileged_override flag should be subsumed into this \u2014 no more out-of-band bypass.\n\n(2) Declarative producer flow configuration. grants_cog and admin_chat_cog currently re-implement nearly the same test-then-real state machine with subtle differences in who confirms what. Define a PRODUCER_FLOWS registry mapping producer name to a structured flow config: {test_confirmed_by: auto|recipient_click|admin_dm, real_confirmed_by: recipient_click|admin_dm, thread_cleanup: bool, notify_admin_dm_on_approval: bool, ...}. PaymentService reads this config when creating a payment and drives state transitions accordingly. Cogs shrink to: call request_payment, implement producer-specific callbacks (handle_payment_result), and supply flow metadata. Grants flow today is effectively {test_confirmed_by: auto, real_confirmed_by: recipient_click}. Admin_chat new flow is {test_confirmed_by: recipient_click, real_confirmed_by: admin_dm}. The registry makes this explicit and testable.\n\n(3) Preserve tx_signature history across retries. db_handler.requeue_payment currently blanks tx_signature when a manual_hold payment is released and retried. That destroys the audit trail. Add a tx_signature_history jsonb column (or equivalent) on payment_requests that appends {signature, status, timestamp, reason, send_phase} on every attempt. The current tx_signature field remains as the 'most recent attempt' pointer but history is preserved. Backfill existing rows with a single-entry history from their current tx_signature where non-null.\n\n(4) Split PaymentCog responsibilities. Today PaymentCog mixes: the worker loop (claim_due, execute, recovery), the PaymentConfirmView Discord component, terminal-payment notification/handoff logic, and the new failure DM escalation. Adding the admin-DM approval view will crowd it further. Split into PaymentWorkerCog (worker loop, recovery, terminal handoff, notify routing) and PaymentUICog (PaymentConfirmView, admin DM escalation, admin approval view). Both depend on PaymentService. The split must preserve restart-safety \u2014 both cogs need to re-register their persistent views on startup.\n\n(5) Thread-cleanup robustness primitive. A thread_cleanup helper (called from the payment result notification path) needs to gracefully handle: missing Manage Messages permission, archived or locked threads, already-deleted messages, bot lost access to the channel, Discord rate limits. Failures must be logged but never propagate to the payment state machine. Build this as a shared primitive (e.g. discord_utils.safe_delete_messages) that takes a list of message IDs and returns counts of (deleted, skipped, errored).\n\nConstraints:\n- NO behavior changes visible to users. Every existing payment flow should work identically after the refactor. Any behavior change should be explicitly called out and flagged as scope creep.\n- Tests must prove equivalence. Where existing tests cover confirmation paths, they should pass unchanged against the new PaymentService API.\n- The refactor must be compatible with the in-flight admin-DM approval feature (a separate megaplan). Specifically, (1) and (2) are prerequisites for cleanly landing the admin-DM feature \u2014 so this cleanup plan should ship first.\n- Backward-compat on db schema: the tx_signature_history addition is additive only.\n- Do not touch solana_client.py or solana_provider.py \u2014 those are handled by a separate P0 hotfix batch and are out of scope here.\n\nSuccess criteria:\n- PaymentService.confirm_payment has a single well-typed entrypoint with actor_kind/actor_id\n- PRODUCER_FLOWS registry exists and drives flow decisions\n- requeue_payment preserves signature history\n- PaymentCog split lands without breaking persistent views on restart\n- safe_delete_messages exists and is used by the thread cleanup path\n- No regression in existing grants or admin_chat payment flows",
+  "current_state": "done",
+  "iteration": 2,
+  "created_at": "2026-04-10T21:39:15Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc",
+    "auto_approve": true,
+    "robustness": "light",
+    "agent": ""
+  },
+  "sessions": {
+    "claude_planner": {
+      "id": "437d1485-a79d-4e7c-87ff-c6dfe412da44",
+      "mode": "persistent",
+      "created_at": "2026-04-10T21:44:36Z",
+      "last_used_at": "2026-04-10T22:06:25Z",
+      "refreshed": false
+    },
+    "codex_critic": {
+      "id": "019d7967-28b1-7cd2-92dd-8b77cd1fcd3b",
+      "mode": "persistent",
+      "created_at": "2026-04-10T22:02:00Z",
+      "last_used_at": "2026-04-10T22:02:00Z",
+      "refreshed": false
+    },
+    "claude_finalizer": {
+      "id": "b0b8057d-a330-4f99-ab0c-0bea62a22126",
+      "mode": "persistent",
+      "created_at": "2026-04-10T22:12:42Z",
+      "last_used_at": "2026-04-10T22:12:42Z",
+      "refreshed": false
+    },
+    "codex_executor": {
+      "id": "019d7974-6d2a-76a1-afd3-4ac6c55db5fd",
+      "mode": "persistent",
+      "created_at": "2026-04-10T22:17:05Z",
+      "last_used_at": "2026-04-10T22:44:34Z",
+      "refreshed": false
+    }
+  },
+  "plan_versions": [
+    {
+      "version": 1,
+      "file": "plan_v1.md",
+      "hash": "sha256:8e15e9cff002737ae064dac6b5b10d4cc81d0c85929323604ef0707e4d4d2893",
+      "timestamp": "2026-04-10T21:44:36Z"
+    },
+    {
+      "version": 2,
+      "file": "plan_v2.md",
+      "hash": "sha256:9dec9846924e09423faa10c94138af31ac3422936b5b9578f42d5dc9c3401721",
+      "timestamp": "2026-04-10T22:06:25Z"
+    }
+  ],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-04-10T21:39:15Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-10T21:44:36Z",
+      "duration_ms": 315969,
+      "cost_usd": 1.07565395,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "437d1485-a79d-4e7c-87ff-c6dfe412da44",
+      "agent": "claude",
+      "output_file": "plan_v1.md",
+      "artifact_hash": "sha256:8e15e9cff002737ae064dac6b5b10d4cc81d0c85929323604ef0707e4d4d2893"
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-10T22:02:00Z",
+      "duration_ms": 225379,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7967-28b1-7cd2-92dd-8b77cd1fcd3b",
+      "agent": "codex",
+      "output_file": "critique_v1.json",
+      "artifact_hash": "sha256:f668472dcee0dab13520b7d765729fb9c4c3d73b413cd77beb4ff0b42e3b4542",
+      "flags_count": 4
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-10T22:06:25Z",
+      "duration_ms": 262015,
+      "cost_usd": 1.0803652499999998,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "437d1485-a79d-4e7c-87ff-c6dfe412da44",
+      "agent": "claude",
+      "output_file": "plan_v2.md",
+      "artifact_hash": "sha256:9dec9846924e09423faa10c94138af31ac3422936b5b9578f42d5dc9c3401721",
+      "flags_addressed": [
+        "FLAG-001",
+        "FLAG-002",
+        "FLAG-004"
+      ]
+    },
+    {
+      "step": "finalize",
+      "timestamp": "2026-04-10T22:12:42Z",
+      "duration_ms": 366249,
+      "cost_usd": 0.96086225,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "b0b8057d-a330-4f99-ab0c-0bea62a22126",
+      "agent": "claude",
+      "output_file": "finalize.json",
+      "artifact_hash": "sha256:d5a93a620c6c288e2d80860f31c05f0189703cdf4e6cc369562b99f5090dca8b"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-10T22:44:34Z",
+      "duration_ms": 1907707,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7974-6d2a-76a1-afd3-4ac6c55db5fd",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:f942392bc9693a2ead286a8f426f9f121df0069fc7730498b1513dd2a26d9f25",
+      "finalize_hash": "sha256:9034b92c8652aa6c37184b9e3de19a45e7d2817a5483375379eebdbcde935c13",
+      "approval_mode": "auto_approve"
+    }
+  ],
+  "meta": {
+    "significant_counts": [
+      3
+    ],
+    "weighted_scores": [],
+    "plan_deltas": [
+      52.89
+    ],
+    "recurring_critiques": [
+      []
+    ],
+    "total_cost_usd": 3.116881,
+    "overrides": [],
+    "notes": []
+  },
+  "last_gate": {
+    "recommendation": "ITERATE"
+  }
+}

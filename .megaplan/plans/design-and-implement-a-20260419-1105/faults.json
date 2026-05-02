@@ -1,0 +1,51 @@
+{
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Reaction moderation: the plan only marks bot-initiated removals in ReactorCog's restricted-emoji branch, but the repo already has other bot `message.remove_reaction(...)` paths. Those removals will still flow through `on_raw_reaction_remove` without a marker and be misclassified as `user_self_removal`.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed three significant flags: (1) Added a shared `register_bot_removal` marker mechanism on ReactorCog and inserted 4 call sites in `src/features/curating/curator.py` so curator `\u274c` cleanups are classified as `bot_curator_reject` rather than misclassified as self-removals. (2) Renamed `bot_clear_all`/`bot_clear_emoji` to `moderator_cleared_all`/`moderator_cleared_emoji` \u2014 the clear events lack actor info but the repo has no bot clear calls, so mod attribution is accurate; added enumeration of active reactors via a new `get_active_reactors` DB helper so each cleared reaction produces its own row. (3) Added a `message_deleted_cascade` classification and a new `on_raw_message_delete` listener on ReactorCog that enumerates active reactors and writes one row each, using a new `get_message_snapshot` DB helper to fetch author/content (preserved by LoggerCog's soft-delete). Updated CHECK constraint, expanded test scenarios, and clarified that the marker-consumer (on_raw_reaction_remove) is the sole writer for curator path (the restricted-emoji branch still writes eagerly because it has live objects in hand).",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Reaction moderation: `bot_clear_all` / `bot_clear_emoji` are not supportable from the clear-event payloads. The event does not identify who cleared the reactions, so those classifications would over-claim bot attribution and be wrong for moderator/manual clears.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed three significant flags: (1) Added a shared `register_bot_removal` marker mechanism on ReactorCog and inserted 4 call sites in `src/features/curating/curator.py` so curator `\u274c` cleanups are classified as `bot_curator_reject` rather than misclassified as self-removals. (2) Renamed `bot_clear_all`/`bot_clear_emoji` to `moderator_cleared_all`/`moderator_cleared_emoji` \u2014 the clear events lack actor info but the repo has no bot clear calls, so mod attribution is accurate; added enumeration of active reactors via a new `get_active_reactors` DB helper so each cleared reaction produces its own row. (3) Added a `message_deleted_cascade` classification and a new `on_raw_message_delete` listener on ReactorCog that enumerates active reactors and writes one row each, using a new `get_message_snapshot` DB helper to fetch author/content (preserved by LoggerCog's soft-delete). Updated CHECK constraint, expanded test scenarios, and clarified that the marker-consumer (on_raw_reaction_remove) is the sole writer for curator path (the restricted-emoji branch still writes eagerly because it has live objects in hand).",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Reaction moderation: message-delete cascades are actually distinguishable in this codebase, so dropping them leaves a real coverage gap against the brief.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed three significant flags: (1) Added a shared `register_bot_removal` marker mechanism on ReactorCog and inserted 4 call sites in `src/features/curating/curator.py` so curator `\u274c` cleanups are classified as `bot_curator_reject` rather than misclassified as self-removals. (2) Renamed `bot_clear_all`/`bot_clear_emoji` to `moderator_cleared_all`/`moderator_cleared_emoji` \u2014 the clear events lack actor info but the repo has no bot clear calls, so mod attribution is accurate; added enumeration of active reactors via a new `get_active_reactors` DB helper so each cleared reaction produces its own row. (3) Added a `message_deleted_cascade` classification and a new `on_raw_message_delete` listener on ReactorCog that enumerates active reactors and writes one row each, using a new `get_message_snapshot` DB helper to fetch author/content (preserved by LoggerCog's soft-delete). Updated CHECK constraint, expanded test scenarios, and clarified that the marker-consumer (on_raw_reaction_remove) is the sole writer for curator path (the restricted-emoji branch still writes eagerly because it has live objects in hand).",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "verifiability-0",
+      "concern": "Criterion 12: requires human verification (inspect_runtime_ui).",
+      "category": "other",
+      "severity_hint": "likely-minor",
+      "evidence": "",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "minor",
+      "verified": false
+    }
+  ]
+}

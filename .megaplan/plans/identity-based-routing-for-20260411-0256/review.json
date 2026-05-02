@@ -1,0 +1,612 @@
+{
+  "review_verdict": "approved",
+  "checks": [
+    {
+      "id": "implementation_alignment",
+      "question": "Does the final diff implement the identity-routed admin-chat payment flow, admin-DM approval gate, batch atomicity, and orphan-sweep behavior described in the approved plan?",
+      "guidance": "Review the implementation files directly and confirm the settled decisions are reflected in code, not just in executor notes.",
+      "findings": [
+        {
+          "detail": "Core flow changes are present in code: identity-only routing and deterministic recipient state machine in `src/features/admin_chat/admin_chat_cog.py`, batch insert/orphan-sweep helpers in `src/common/db_handler.py`, and admin-DM approval handling in `src/features/payments/payment_ui_cog.py`.",
+          "flagged": false,
+          "status": "confirmed",
+          "evidence_file": "src/features/admin_chat/admin_chat_cog.py"
+        },
+        {
+          "detail": "The Rev-5 execution-time requirement was implemented: `PaymentUICog` now has `@tasks.loop(minutes=5) _orphan_sweep_loop`, started in `cog_load()` and cancelled in `cog_unload()`.",
+          "flagged": false,
+          "status": "confirmed",
+          "evidence_file": "src/features/payments/payment_ui_cog.py"
+        },
+        {
+          "detail": "No protected production files outside scope were changed: `main.py`, grants flow files, and Solana provider/client files are untouched in the final diff.",
+          "flagged": false,
+          "status": "confirmed",
+          "evidence_file": "src/features/payments/producer_flows.py"
+        }
+      ],
+      "prior_findings": []
+    },
+    {
+      "id": "regression_coverage",
+      "question": "Does the final diff add the direct regression coverage previously called out as missing?",
+      "guidance": "Look for concrete tests covering AdminApprovalView behavior, restart-filter suppression, and the new admin tools.",
+      "findings": [
+        {
+          "detail": "Direct AdminApprovalView persistence/click coverage was added in `tests/test_admin_payments.py` with tests for re-registration, admin-only click rejection, queued-for-sending click behavior, and cleanup of both prompt IDs.",
+          "flagged": false,
+          "status": "confirmed",
+          "evidence_file": "tests/test_admin_payments.py"
+        },
+        {
+          "detail": "Direct restart-filter and PaymentConfirmView suppression coverage was added in `tests/test_admin_payments.py`, and orphan-sweep ordering / no-admin-chat bootstrap coverage was added in `tests/test_payment_cog_split.py`.",
+          "flagged": false,
+          "status": "confirmed",
+          "evidence_file": "tests/test_payment_cog_split.py"
+        },
+        {
+          "detail": "Direct admin-tool coverage was added in `tests/test_social_route_tools.py` for `query_payment_state`, `query_wallet_state`, `list_recent_payments`, `upsert_wallet_for_user`, and `resolve_admin_intent`.",
+          "flagged": false,
+          "status": "confirmed",
+          "evidence_file": "tests/test_social_route_tools.py"
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "`REVIEW-T19_REGRESSION_COVERAGE-001` previously noted missing direct tests for AdminApprovalView, restart-filter suppression, and admin-tool paths.",
+          "flagged": true,
+          "status": "previously_open"
+        }
+      ]
+    },
+    {
+      "id": "validation_evidence",
+      "question": "Do command evidence and current repo state support the executor's pass claims?",
+      "guidance": "Prefer current repo state and local reruns; treat audit noise as advisory unless it contradicts the implementation claims.",
+      "findings": [
+        {
+          "detail": "A fresh focused rerun passed locally: `pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_scheduler.py tests/test_social_route_tools.py -q --tb=no --maxfail=1` -> 103 passed, 0 failed.",
+          "flagged": false,
+          "status": "confirmed",
+          "evidence_file": "tests/test_admin_payments.py"
+        },
+        {
+          "detail": "The execution audit's extra dirty-worktree files are advisory only; the reviewed implementation files in the final diff match the approved feature set and do not contradict task claims.",
+          "flagged": false,
+          "status": "advisory_only",
+          "evidence_file": "sql/admin_payment_intents.sql"
+        }
+      ],
+      "prior_findings": []
+    }
+  ],
+  "pre_check_flags": [
+    {
+      "id": "PRECHECK-DIFF_SIZE_SANITY",
+      "check": "diff_size_sanity",
+      "detail": "Diff size looks larger than expected: changed_lines=4644, expected\u224810, ratio=464.40, files=101, hunks=156.",
+      "severity": "significant",
+      "evidence_file": ".gitignore"
+    }
+  ],
+  "verified_flag_ids": [
+    "FLAG-001",
+    "FLAG-002",
+    "FLAG-003",
+    "FLAG-004",
+    "FLAG-005",
+    "FLAG-006",
+    "FLAG-007",
+    "FLAG-008",
+    "FLAG-009",
+    "FLAG-010",
+    "FLAG-011",
+    "FLAG-012",
+    "FLAG-013",
+    "FLAG-014",
+    "FLAG-015",
+    "FLAG-016",
+    "REVIEW-CONFIRMATION_CLASSIFIER_OVERLAP-001",
+    "REVIEW-CONFIRMATION_CLASSIFIER_OVERLAP-002",
+    "REVIEW-T19_REGRESSION_COVERAGE-001"
+  ],
+  "disputed_flag_ids": [],
+  "criteria": [
+    {
+      "name": "Identity router in on_message has exactly three branches keyed on author.id: admin -> agent path (no _is_directed_at_bot gate), active-intent recipient -> state machine, else -> return.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/admin_chat/admin_chat_cog.py` routes `ADMIN_USER_ID` directly to `_handle_admin_message`, non-admin guild messages with an active intent to `_handle_pending_recipient_message`, and otherwise returns. The old `_is_directed_at_bot` and `_can_user_message_bot` gates are not used in `on_message()`. Direct tests cover admin, pending-recipient, fallthrough, and approved-member no-longer-routed paths in `tests/test_admin_payments.py`."
+    },
+    {
+      "name": "SQL migration extends admin_payment_intents CHECK to include awaiting_test_receipt_confirmation, awaiting_admin_approval, awaiting_admin_init (NEW Rev-5), and manual_review; adds ambiguous_reply_count and receipt_prompt_message_id columns; is idempotent. Unique partial index is NOT modified.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`sql/admin_payment_intents.sql` adds `ambiguous_reply_count` and `receipt_prompt_message_id`, redefines `admin_payment_intents_status_check` with the new statuses, and leaves `uq_admin_payment_intents_active_recipient_channel` unchanged (`where status not in ('completed', 'failed', 'cancelled')`)."
+    },
+    {
+      "name": "manual_review remains a BLOCKING state across all callers. Admin clears via resolve_admin_intent.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "The active unique index still blocks all non-terminal statuses; `git diff` shows no edits to `has_active_payment_or_intent`, `get_active_intent_for_recipient`, or `list_active_intents`. `tests/test_admin_payments.py::test_manual_review_blocks_new_intents` verifies new initiations are still blocked until explicit admin resolution."
+    },
+    {
+      "name": "awaiting_admin_init is a new transient state that is BLOCKING (in the active set), silently ignored by the state-machine dispatch (no recipient-facing handler), and used exclusively by the batch fan-out path. A recipient posting a Solana address while in awaiting_admin_init never reopens the test-payment path. Verified by a dedicated unit test.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`awaiting_admin_init` is present in the schema, batch creation writes verified recipients into that state in `src/features/admin_chat/tools.py`, and `src/features/admin_chat/admin_chat_cog.py::_handle_pending_recipient_message` explicitly treats it as silent-ignore. `tests/test_admin_payments.py::test_state_machine_silently_ignores_awaiting_admin_init` covers the regression."
+    },
+    {
+      "name": "resolve_admin_intent: cancel-only (no resolution parameter), cascade-cancels linked test_payment_id and final_payment_id via existing cancel_payment, refuses non-cancellable linked payments, admin-only via both sets, explicit admin DM.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/admin_chat/tools.py::execute_resolve_admin_intent` rejects `resolution`, cancels linked payments through `db_handler.cancel_payment`, refuses `submitted`/`confirmed`/`manual_hold`, requires injected `admin_user_id`, is listed in `ADMIN_ONLY_TOOLS`, and DMs via `_dm_admin_user`. Direct regression coverage is in `tests/test_social_route_tools.py::test_resolve_admin_intent_cascade_cancels_linked_payments` and related admin-tool assertions."
+    },
+    {
+      "name": "producer_flows.py adds PaymentActorKind.ADMIN_DM to admin_chat.real_confirmed_by. No new enum value.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/payments/producer_flows.py` adds the existing `PaymentActorKind.ADMIN_DM` to `admin_chat.real_confirmed_by`. `src/features/payments/payment_service.py` already defines `ADMIN_DM`; no new enum was added."
+    },
+    {
+      "name": "Orphan-payment reconciliation sweep lives in PaymentUICog as `_reconcile_admin_chat_orphans`. It uses ONLY self.db_handler, self.payment_service, self.bot, and self._send_admin_approval_dm. It does NOT reference bot.admin_chat_cog or any AdminChatCog method. main.py, tests/test_payment_cog_split.py, and tests/test_scheduler.py are NOT modified.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/payments/payment_ui_cog.py` implements `_reconcile_admin_chat_orphans()` entirely within `PaymentUICog`; a repo search shows no `bot.admin_chat_cog` dependency there. `main.py` and `tests/test_scheduler.py` have no diff. `tests/test_payment_cog_split.py` only gains additive tests; the harness itself is unchanged."
+    },
+    {
+      "name": "PaymentUICog.cog_load order: (1) _reconcile_admin_chat_orphans FIRST, (2) _register_pending_confirmation_views SECOND (state-aware filter), (3) _register_pending_admin_approval_views THIRD. Test asserts this exact call order.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/payments/payment_ui_cog.py::cog_load` calls the three methods in the required order, then starts `_orphan_sweep_loop`. `tests/test_payment_cog_split.py::test_orphan_sweep_runs_before_view_registration` asserts the exact ordering."
+    },
+    {
+      "name": "PaymentUICog.cog_load() works correctly when instantiated with a FakeBot that has NO admin_chat_cog attribute. This is validated by a dedicated regression test `test_payment_ui_cog_loads_without_admin_chat_cog` in tests/test_payment_cog_split.py.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`tests/test_payment_cog_split.py::test_payment_ui_cog_loads_without_admin_chat_cog` instantiates `PaymentUICog` without any `admin_chat_cog` attribute and awaits `cog_load()` successfully."
+    },
+    {
+      "name": "Orphan sweep handles six cases correctly: (a) auto-skip crash (no intent) -> cancel orphan via cancel_payment; (b) already wired awaiting_admin_approval -> leave alone; (c) legacy awaiting_confirmation -> leave alone; (d) test-receipt or batch-fan-out crash (intent in awaiting_test_receipt_confirmation or awaiting_admin_init with stale payment) -> complete intent update + fire admin DM; (e) stale awaiting_admin_init with NO payment row (batch-fan-out crash before request_payment) -> cancel intent (fail-closed); anomalous cases -> cancel orphan.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/payments/payment_ui_cog.py::_reconcile_admin_chat_orphans` implements all branches. Direct tests cover no-intent cancel, test-receipt recovery, legacy `awaiting_confirmation`, stale `awaiting_admin_init`, and the uptime sweep path in `tests/test_payment_cog_split.py`; the already-wired `awaiting_admin_approval` path is the explicit `continue` branch when an intent is already linked to the payment."
+    },
+    {
+      "name": "Single initiate_payment verified path: NO intent is ever observed in status='awaiting_wallet' or 'awaiting_admin_init'. The intent is created via _gate_fresh_intent_atomic with status='awaiting_admin_approval' AND final_payment_id set in the initial create call.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/admin_chat/tools.py::execute_initiate_payment` dispatches verified wallets to `_gate_fresh_intent_atomic`, and `src/features/admin_chat/admin_chat_cog.py::_gate_fresh_intent_atomic` creates the payment first, then inserts the intent with `status='awaiting_admin_approval'` and `final_payment_id` already populated. `tests/test_admin_payments.py::test_gate_fresh_intent_atomic_creates_awaiting_admin_approval_intent` covers this."
+    },
+    {
+      "name": "initiate_batch_payment atomicity: validation phase is all-or-none; the atomic insert uses a SINGLE create_admin_payment_intents_batch call for ALL entries (verified + unverified). On any validation failure OR on DB insert rejection, ZERO intent rows are persisted. This satisfies the brief's fail_to_pass test_initiate_batch_payment_atomic_all_or_none.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/admin_chat/tools.py::execute_initiate_batch_payment` validates the entire batch before any DB write, then performs one `db_handler.create_admin_payment_intents_batch(prepared_records, guild_id=...)` call. `src/common/db_handler.py::create_admin_payment_intents_batch` performs a single Supabase `.insert(payload).execute()`. `tests/test_admin_payments.py::test_initiate_batch_payment_atomic_all_or_none` verifies zero writes on validation failure."
+    },
+    {
+      "name": "initiate_batch_payment fan-out: after the atomic insert, verified entries iterate per-entry through _gate_existing_intent (NOT through _gate_fresh_intent_atomic). Each verified entry transitions from awaiting_admin_init to awaiting_admin_approval with a final_payment_id set, and fires an admin DM. A 16-payment all-verified batch produces 16 admin DMs in the happy path.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/admin_chat/tools.py::execute_initiate_batch_payment` inserts verified rows as `awaiting_admin_init` and then fans them out via `cog._gate_existing_intent(...)`. `tests/test_admin_payments.py::test_initiate_batch_payment_verified_fan_out_uses_gate_existing_intent` asserts verified entries use `_gate_existing_intent` and that created records start as `awaiting_admin_init`."
+    },
+    {
+      "name": "initiate_batch_payment fan-out crash recovery: if request_payment fails mid-fan-out, the remaining entries stay in awaiting_admin_init with no final_payment_id. On the next orphan sweep run (within 5 minutes via the staleness cutoff), these are cancelled fail-closed. No orphan payment_requests rows are created because the payment is only created inside _gate_existing_intent AFTER the intent already exists.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/payments/payment_ui_cog.py::_reconcile_admin_chat_orphans` cancels stale `awaiting_admin_init` rows older than 5 minutes, and `_orphan_sweep_loop` runs every 5 minutes. `tests/test_payment_cog_split.py::test_initiate_batch_payment_fan_out_crash_leaves_awaiting_admin_init_for_sweep` and `::test_orphan_sweep_loop_cancels_stale_awaiting_admin_init_during_uptime` cover the cancellation path. The no-orphan-payment part follows directly from the code path: `request_payment` is only called inside `_gate_existing_intent`, after the intent already exists."
+    },
+    {
+      "name": "PaymentConfirmView is NEVER re-registered for a NEW-flow admin_chat real payment. The only admin_chat case the restart filter handles is legacy awaiting_confirmation. The orphan sweep handles all other cases.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/payments/payment_ui_cog.py::_register_pending_confirmation_views` skips admin-chat real payments when the linked intent is `awaiting_admin_approval` or `awaiting_admin_init` and only re-registers legacy `awaiting_confirmation`. `tests/test_admin_payments.py::test_restart_filter_state_aware` covers this matrix."
+    },
+    {
+      "name": "State-aware restart-recovery filter in _register_pending_confirmation_views: admin_chat real payments whose linked intent is awaiting_admin_approval or awaiting_admin_init -> NOT re-registered; linked intent is legacy awaiting_confirmation -> IS re-registered; grants -> always re-registered.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Implemented exactly in `src/features/payments/payment_ui_cog.py::_register_pending_confirmation_views`, with direct coverage in `tests/test_admin_payments.py::test_restart_filter_state_aware`."
+    },
+    {
+      "name": "Pending-recipient state machine makes zero Anthropic API calls on any path.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/admin_chat/admin_chat_cog.py::_handle_pending_recipient_message` only calls deterministic parsing/handler methods and never touches the Anthropic client. `tests/test_admin_payments.py::test_identity_router_routes_pending_recipient_without_agent_calls` asserts the pending-recipient path does not enter agent chat at all."
+    },
+    {
+      "name": "wallet_registry.verified_at is set only via mark_wallet_verified and only after on-chain test confirmation AND recipient text-ack.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "The only verification write in the new flow is `mark_wallet_verified()` inside `src/features/admin_chat/admin_chat_cog.py::_handle_test_receipt_positive`. The test-confirmed branch in `handle_payment_result()` only moves the intent to `awaiting_test_receipt_confirmation`. `execute_upsert_wallet_for_user` forces wallets back to unverified. Covered by `tests/test_admin_payments.py::test_handle_test_receipt_positive_marks_wallet_verified_and_queues_admin_approval` and `tests/test_social_route_tools.py::test_upsert_wallet_for_user_dms_admin_and_leaves_wallet_unverified`."
+    },
+    {
+      "name": "_parse_wallet_from_text extracts wallets wrapped in punctuation/markdown delimiters.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/admin_chat/admin_chat_cog.py::_parse_wallet_from_text` uses the tolerant delimiter regex and trailing punctuation trim before `is_valid_solana_address()`. `tests/test_admin_payments.py::test_parse_wallet_from_text_extracts_wrapped_address` covers wrapped and punctuated inputs."
+    },
+    {
+      "name": "Admin DM approval gate (AdminApprovalView) fires exactly once per real admin_chat payment, never for is_test=True, never for producer='grants'. A batch of N produces exactly N admin DMs in the happy path.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/payments/payment_ui_cog.py::_send_admin_approval_dm` explicitly returns early for tests and non-`admin_chat` producers. The only new-flow callers are `_gate_existing_intent` and `_gate_fresh_intent_atomic`. Batch verified fan-out uses one `_gate_existing_intent` call per verified row. The restart filter prevents recipient-facing `PaymentConfirmView` fallback for new-flow admin-chat real payments."
+    },
+    {
+      "name": "AdminApprovalView click handler posts 'queued for sending' (NOT 'Payment sent') and calls confirm_payment with PaymentActorKind.ADMIN_DM. safe_delete_messages is called with BOTH prompt_message_id AND receipt_prompt_message_id.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/payments/payment_ui_cog.py::AdminApprovalView._confirm_button_pressed` edits the DM to `\u2705 approved \u2014 queued for sending`, calls `confirm_payment(... actor=PaymentActor(PaymentActorKind.ADMIN_DM, ...))`, posts the queued thread update, and calls `_cleanup_admin_intent_messages()`, which deletes both `prompt_message_id` and `receipt_prompt_message_id`. `tests/test_admin_payments.py::test_admin_approval_view_click_queues_payment_and_cleans_both_prompts` asserts all of this."
+    },
+    {
+      "name": "AdminApprovalView is persistent (timeout=None) and re-registered on PaymentUICog.cog_load after the orphan sweep runs.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`AdminApprovalView` sets `timeout=None`, `PaymentUICog.cog_load()` calls `_register_pending_admin_approval_views()` after the orphan sweep, and `tests/test_admin_payments.py::test_admin_approval_view_re_registers_pending_admin_approval_intents` verifies the persistent view is re-added with the expected `custom_id`."
+    },
+    {
+      "name": "send_confirmation_request is NOT invoked for NEW-flow producer='admin_chat' real payments; IS still invoked for producer='grants'; IS still invoked via restart recovery for LEGACY admin_chat rows whose intent is in awaiting_confirmation.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "The admin-chat real-payment path now uses `_send_admin_approval_dm` rather than `send_confirmation_request`; `handle_payment_result()` for confirmed tests only parks the intent in `awaiting_test_receipt_confirmation`, and restart filtering only re-registers legacy `awaiting_confirmation` admin-chat rows while leaving grants alone. `tests/test_admin_payments.py::test_payment_confirm_view_not_sent_for_admin_chat_real_payments` and `::test_restart_filter_state_aware` cover the admin-chat suppression and grants/legacy behavior."
+    },
+    {
+      "name": "Auto-skip path for SINGLE initiate_payment uses _gate_fresh_intent_atomic (payment-first ordering with single atomic insert). Auto-skip path for batch verified entries uses _gate_existing_intent after the atomic batch insert. Neither path creates an is_test=True row.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Single verified initiations route to `_gate_fresh_intent_atomic` in `src/features/admin_chat/tools.py::execute_initiate_payment`; batch verified initiations route to `_gate_existing_intent` after the batch insert in `execute_initiate_batch_payment`. Both helpers create real payments with `is_test=False`. Covered by `tests/test_admin_payments.py::test_initiate_payment_wallet_on_file`, `::test_gate_fresh_intent_atomic_creates_awaiting_admin_approval_intent`, and `::test_initiate_batch_payment_verified_fan_out_uses_gate_existing_intent`."
+    },
+    {
+      "name": "Negative recipient ack and second-ambiguous recipient ack both tag the admin and transition the intent to manual_review.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/admin_chat/admin_chat_cog.py::_handle_test_receipt_negative` posts an admin-tagged thread message and sets `status='manual_review'`; `_handle_test_receipt_ambiguous` escalates on the second ambiguous reply by calling the negative handler. Covered by `tests/test_admin_payments.py::test_handle_test_receipt_negative_moves_to_manual_review`, `::test_pending_recipient_not_received_escalates_immediately`, and `::test_handle_test_receipt_ambiguous_escalates_on_second_reply`."
+    },
+    {
+      "name": "24h timeout sweep at \u22655-minute intervals transitions stale awaiting_test_receipt_confirmation intents to manual_review.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/admin_chat/admin_chat_cog.py` defines `@tasks.loop(minutes=15) _sweep_stale_test_receipts`, updates stale intents to `manual_review`, and DMs the admin. `tests/test_admin_payments.py::test_24h_timeout_sweep_escalates_stuck_test_receipt` covers the behavior."
+    },
+    {
+      "name": "upsert_wallet_for_user executor explicitly calls bot.fetch_user(ADMIN_USER_ID).send(...).",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/admin_chat/tools.py::execute_upsert_wallet_for_user` calls `_dm_admin_user(...)`, and `_dm_admin_user()` directly performs `admin_user = await bot.fetch_user(admin_user_id); await admin_user.send(message)`. `tests/test_social_route_tools.py::test_upsert_wallet_for_user_dms_admin_and_leaves_wallet_unverified` asserts the DM call."
+    },
+    {
+      "name": "upsert_wallet_for_user is admin-only, validates wallet via is_valid_solana_address, never sets verified_at, surfaces WalletUpdateBlockedError.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`execute_upsert_wallet_for_user` requires injected admin identity, validates `wallet_address` with `is_valid_solana_address`, returns `WalletUpdateBlockedError` text unchanged, and forces the stored wallet back to `verified_at=None` via `_force_wallet_unverified`. Direct tests cover admin-only rejection and unverified persistence in `tests/test_social_route_tools.py`."
+    },
+    {
+      "name": "Three new query tools are read-only, apply redaction, reject LLM-injected wallet params via pop-and-warn.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`execute_query_payment_state`, `execute_query_wallet_state`, and `execute_list_recent_payments` all begin with `_pop_and_warn_wallet_override(...)`, only read from the DB, and return redacted rows. Direct coverage is in `tests/test_social_route_tools.py::test_query_payment_state_reads_canonical_db_rows`, `::test_query_wallet_state_reads_wallet_registry_rows`, and `::test_list_recent_payments_reads_recent_rows_with_redaction`."
+    },
+    {
+      "name": "All six new tools are in ADMIN_ONLY_TOOLS; module assert holds.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/admin_chat/tools.py::ADMIN_ONLY_TOOLS` includes `initiate_batch_payment`, `query_payment_state`, `query_wallet_state`, `list_recent_payments`, `upsert_wallet_for_user`, and `resolve_admin_intent`. The module-level disjointness/exhaustiveness asserts remain in place. `tests/test_social_route_tools.py::test_admin_tool_registration_and_identity_injection_sets` verifies the set membership."
+    },
+    {
+      "name": "agent.py _ADMIN_IDENTITY_INJECTED_TOOLS frozenset includes initiate_payment, initiate_batch_payment, upsert_wallet_for_user, AND resolve_admin_intent.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/admin_chat/agent.py` defines `_ADMIN_IDENTITY_INJECTED_TOOLS` with exactly those four tools, and the agent injects `admin_user_id` before dispatch. `tests/test_social_route_tools.py::test_admin_tool_registration_and_identity_injection_sets` checks the exact set."
+    },
+    {
+      "name": "All pass_to_pass test suites remain green: test_payment_state_machine, test_payment_cog_split, test_solana_client, test_payment_race, test_payment_reconcile, test_payment_authorization, test_safe_delete_messages, test_check_payment_invariants, test_tx_signature_history, test_scheduler.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Executor evidence reports full `pytest` green at 201 passed, which covers the named pass-to-pass suites. I also reran the focused admin/payment/scheduler subset locally and got 103 passed, 0 failed."
+    },
+    {
+      "name": "All fail_to_pass tests pass after implementation, including the brief's test_initiate_batch_payment_atomic_all_or_none (single atomic insert, zero writes on any validation failure).",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`tests/test_admin_payments.py::test_initiate_batch_payment_atomic_all_or_none` is present in the final diff and passed in the focused rerun. Executor evidence also reports full-suite success."
+    },
+    {
+      "name": "Hardening + cleanup + polish invariants preserved.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "The protected Solana/grants files are untouched, the active-intent helpers remain unchanged, and executor evidence reports the full test suite passing. No diff shows regressions in the named hardening/cleanup/polish surfaces."
+    },
+    {
+      "name": "solana_client.py, solana_provider.py, grants_cog.py, main.py, tests/test_payment_cog_split.py harness, and tests/test_scheduler.py harness are NOT modified.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`git diff` is empty for `main.py`, `src/features/grants/solana_client.py`, `src/features/grants/solana_provider.py`, and grants-cog paths. `tests/test_scheduler.py` is untouched. `tests/test_payment_cog_split.py` only has additive test cases appended after the existing harness; existing harness code is unchanged."
+    },
+    {
+      "name": "has_active_payment_or_intent is NOT modified.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`git diff --unified=0 -- src/common/db_handler.py` shows changes only in the newly added admin-intent helper section; there is no diff touching `has_active_payment_or_intent` at line 1576."
+    },
+    {
+      "name": "Confirmation keyword parser is hardcoded with case-insensitive whole-word matching and emoji substring.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`src/features/admin_chat/admin_chat_cog.py::_classify_confirmation` uses regex whole-word span matching for keyword sets and a direct substring check for `\ud83d\udc4d`. `tests/test_admin_payments.py::test_classify_confirmation_keywords` and `::test_classify_confirmation_negative_phrase_beats_embedded_positive_keyword` verify the intended behavior, including the prior overlap bug."
+    },
+    {
+      "name": "AdminApprovalView custom_id does not collide with payment_confirm custom_id.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`PaymentConfirmView` uses `payment_confirm:{payment_id}` while `AdminApprovalView` uses `payment_admin_approve:{payment_id}` in `src/features/payments/payment_ui_cog.py`. `tests/test_admin_payments.py::test_admin_approval_view_re_registers_pending_admin_approval_intents` asserts the new custom id."
+    },
+    {
+      "name": "_classify_payment_reply and _check_pending_payment_reply are removed once reconciler stops calling them.",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "A repo search over `src/features/admin_chat/admin_chat_cog.py` and `tests/test_admin_payments.py` finds no remaining `_classify_payment_reply` or `_check_pending_payment_reply` symbols."
+    },
+    {
+      "name": "MEMBER_SYSTEM_PROMPT, _can_user_message_bot, _is_directed_at_bot remain as documented dead code.",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "`MEMBER_SYSTEM_PROMPT` still exists in `src/features/admin_chat/agent.py`, `_can_user_message_bot` and `_is_directed_at_bot` still exist in `src/features/admin_chat/admin_chat_cog.py`, and `_handle_admin_message` now contains an explicit comment documenting them as retained dead code."
+    },
+    {
+      "name": "18 manual smoke-test scenarios pass in dev guild: (a) first-time unverified recipient; (b) verified recipient single auto-skip; (c) crash between request_payment and atomic intent insert for single auto-skip -> startup sweep cancels orphan; (d) crash between test-receipt positive payment creation and intent update -> startup sweep recovers and DMs admin; (e) batch of 3 mixed verified/unverified; (f) batch of 5 all-verified; (g) batch fan-out crash mid-way (kill bot on 3rd entry) -> startup sweep cancels stale awaiting_admin_init rows; (h) negative ack -> manual_review; (i) ambiguous 2x -> manual_review; (j) admin DM click -> queued message; (k) restart mid awaiting_admin_approval -> AdminApprovalView re-registered; (l) restart with legacy awaiting_confirmation -> PaymentConfirmView re-registered; (m) 24h timeout sweep; (n) upsert success + admin DM from public channel; (o) upsert during active intent blocked; (p) grants unchanged; (q) query tools; (r) resolve_admin_intent cascade-cancels linked pending payment and clears intent.",
+      "priority": "info",
+      "pass": "waived",
+      "evidence": "These are manual QA scenarios. The automated coverage now exercises the major state-machine, UI, restart-recovery, orphan-sweep, query/upsert/resolve, and batch-atomicity paths, but the full dev-guild smoke checklist cannot be re-verified from static review alone."
+    }
+  ],
+  "issues": [],
+  "rework_items": [],
+  "summary": "Approved. All must criteria pass against the final diff. The implementation matches the settled Rev-5 design, the previously open T19 regression-coverage flag is resolved by direct tests in `tests/test_admin_payments.py`, `tests/test_payment_cog_split.py`, and `tests/test_social_route_tools.py`, and a fresh focused rerun passed locally (103 passed) while executor evidence reports the full suite green at 201 passed.",
+  "task_verdicts": [
+    {
+      "task_id": "T1",
+      "reviewer_verdict": "Pass. The schema file includes the new statuses and columns and leaves the active unique index unchanged.",
+      "evidence_files": [
+        "sql/admin_payment_intents.sql"
+      ]
+    },
+    {
+      "task_id": "T2",
+      "reviewer_verdict": "Pass. The DB helper additions are present, and the existing active-intent helpers were not modified.",
+      "evidence_files": [
+        "src/common/db_handler.py"
+      ]
+    },
+    {
+      "task_id": "T3",
+      "reviewer_verdict": "Pass. `admin_chat.real_confirmed_by` includes the existing `ADMIN_DM` actor kind and grants remain unchanged.",
+      "evidence_files": [
+        "src/features/payments/producer_flows.py",
+        "src/features/payments/payment_service.py"
+      ]
+    },
+    {
+      "task_id": "T4",
+      "reviewer_verdict": "Pass. The restart filter is state-aware and skips new-flow admin-chat real payments while preserving legacy/grants behavior.",
+      "evidence_files": [
+        "src/features/payments/payment_ui_cog.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T5",
+      "reviewer_verdict": "Pass. Deterministic wallet/confirmation parsers are in place, and the negative-overlap bug is fixed in code and tests.",
+      "evidence_files": [
+        "src/features/admin_chat/admin_chat_cog.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T6",
+      "reviewer_verdict": "Pass. `on_message` now implements the requested identity router with no admin mention gate.",
+      "evidence_files": [
+        "src/features/admin_chat/admin_chat_cog.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T7",
+      "reviewer_verdict": "Pass. Pending-recipient dispatch is deterministic and silently ignores `awaiting_admin_init` and the other non-routable states.",
+      "evidence_files": [
+        "src/features/admin_chat/admin_chat_cog.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T8",
+      "reviewer_verdict": "Pass. Confirmed test payments park in `awaiting_test_receipt_confirmation` and no longer create a real payment inline.",
+      "evidence_files": [
+        "src/features/admin_chat/admin_chat_cog.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T9",
+      "reviewer_verdict": "Pass. `_gate_existing_intent` and `_gate_fresh_intent_atomic` follow the intended ordering and are exercised by focused tests.",
+      "evidence_files": [
+        "src/features/admin_chat/admin_chat_cog.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T10",
+      "reviewer_verdict": "Pass. `AdminApprovalView`, `_send_admin_approval_dm`, and pending-admin-approval view re-registration are implemented and directly tested.",
+      "evidence_files": [
+        "src/features/payments/payment_ui_cog.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T11",
+      "reviewer_verdict": "Pass. Verified-wallet single initiate uses `_gate_fresh_intent_atomic()` and skips the test-payment flow.",
+      "evidence_files": [
+        "src/features/admin_chat/tools.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T12",
+      "reviewer_verdict": "Pass. The three query tools are present, read-only, redacted, and covered by direct tests.",
+      "evidence_files": [
+        "src/features/admin_chat/tools.py",
+        "tests/test_social_route_tools.py"
+      ]
+    },
+    {
+      "task_id": "T13",
+      "reviewer_verdict": "Pass. Batch initiate performs one atomic intent insert and verified fan-out through `_gate_existing_intent()`.",
+      "evidence_files": [
+        "src/features/admin_chat/tools.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T14",
+      "reviewer_verdict": "Pass. `upsert_wallet_for_user` is admin-only, validates Solana addresses, forces unverified state, and DMs the admin.",
+      "evidence_files": [
+        "src/features/admin_chat/tools.py",
+        "tests/test_social_route_tools.py"
+      ]
+    },
+    {
+      "task_id": "T15",
+      "reviewer_verdict": "Pass. Tool registration, channel-posting metadata, admin identity injection, and prompt updates are all present.",
+      "evidence_files": [
+        "src/features/admin_chat/tools.py",
+        "src/features/admin_chat/agent.py",
+        "tests/test_social_route_tools.py"
+      ]
+    },
+    {
+      "task_id": "T16",
+      "reviewer_verdict": "Pass. Orphan recovery lives in `PaymentUICog`, runs before view registration, and includes the required 5-minute periodic sweep.",
+      "evidence_files": [
+        "src/features/payments/payment_ui_cog.py",
+        "src/features/admin_chat/admin_chat_cog.py",
+        "tests/test_payment_cog_split.py"
+      ]
+    },
+    {
+      "task_id": "T17",
+      "reviewer_verdict": "Pass. The stale test-receipt sweep is wired into `cog_load`/`cog_unload` and escalates to `manual_review`.",
+      "evidence_files": [
+        "src/features/admin_chat/admin_chat_cog.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T18",
+      "reviewer_verdict": "Pass. `resolve_admin_intent` is cancel-only, cascade-cancels linked payments, and DMs the admin.",
+      "evidence_files": [
+        "src/features/admin_chat/tools.py",
+        "tests/test_social_route_tools.py"
+      ]
+    },
+    {
+      "task_id": "T19",
+      "reviewer_verdict": "Pass. The missing direct regression coverage called out in review is now present for AdminApprovalView behavior, restart filtering, PaymentConfirmView suppression, and the query/upsert/resolve admin-tool paths.",
+      "evidence_files": [
+        "tests/test_admin_payments.py",
+        "tests/test_payment_cog_split.py",
+        "tests/test_social_route_tools.py"
+      ]
+    },
+    {
+      "task_id": "T20",
+      "reviewer_verdict": "Pass. Validation evidence is credible: executor reports full-suite success, and a fresh focused rerun passed locally with 103 tests green.",
+      "evidence_files": [
+        "tests/test_admin_payments.py",
+        "tests/test_payment_cog_split.py",
+        "tests/test_scheduler.py",
+        "tests/test_social_route_tools.py"
+      ]
+    }
+  ],
+  "sense_check_verdicts": [
+    {
+      "sense_check_id": "SC1",
+      "verdict": "Confirmed. The schema file contains the new statuses and columns and leaves the unique partial index unchanged."
+    },
+    {
+      "sense_check_id": "SC2",
+      "verdict": "Confirmed. The batch insert helper uses one Supabase insert call, and the stale-`awaiting_admin_init` helper filters by status plus cutoff."
+    },
+    {
+      "sense_check_id": "SC3",
+      "verdict": "Confirmed. `ADMIN_DM` is added in producer flows without any new enum value or grants change."
+    },
+    {
+      "sense_check_id": "SC4",
+      "verdict": "Confirmed. The restart filter covers the three intended scenarios and runs after the orphan sweep in `cog_load()`."
+    },
+    {
+      "sense_check_id": "SC5",
+      "verdict": "Confirmed. The wallet parser strips delimiters before validation, and the confirmation classifier uses whole-word matching plus emoji fallback."
+    },
+    {
+      "sense_check_id": "SC6",
+      "verdict": "Confirmed. `on_message` is the strict identity router and no longer calls `_check_pending_payment_reply`."
+    },
+    {
+      "sense_check_id": "SC7",
+      "verdict": "Confirmed. `awaiting_admin_init` is silently ignored and directly tested."
+    },
+    {
+      "sense_check_id": "SC8",
+      "verdict": "Confirmed. The admin-chat test-success path stores `receipt_prompt_message_id` and no longer sends `send_confirmation_request` for the new flow."
+    },
+    {
+      "sense_check_id": "SC9",
+      "verdict": "Confirmed. `_gate_existing_intent` follows A->B->C ordering, and `_gate_fresh_intent_atomic` creates the intent with both status and `final_payment_id` in the same insert."
+    },
+    {
+      "sense_check_id": "SC10",
+      "verdict": "Confirmed. `AdminApprovalView` uses `timeout=None`, the non-colliding custom id, queued wording, and both prompt IDs in cleanup; DM send failures are fail-closed in code."
+    },
+    {
+      "sense_check_id": "SC11",
+      "verdict": "Confirmed. Verified-wallet single initiate routes through `_gate_fresh_intent_atomic()` and leaves the unverified path unchanged."
+    },
+    {
+      "sense_check_id": "SC12",
+      "verdict": "Confirmed. The query tools are read-only, redacted, and guarded against injected wallet params."
+    },
+    {
+      "sense_check_id": "SC13",
+      "verdict": "Confirmed. Batch initiate uses one atomic intent insert and verified fan-out via `_gate_existing_intent()` rather than `_gate_fresh_intent_atomic()`."
+    },
+    {
+      "sense_check_id": "SC14",
+      "verdict": "Confirmed. `upsert_wallet_for_user` requires admin identity, validates the wallet, leaves it unverified, and explicitly DMs the admin."
+    },
+    {
+      "sense_check_id": "SC15",
+      "verdict": "Confirmed. All six tools are registered in `ADMIN_ONLY_TOOLS`, and the identity-injection set is correct."
+    },
+    {
+      "sense_check_id": "SC16",
+      "verdict": "Confirmed. Orphan reconciliation stays in `PaymentUICog`, has no `admin_chat_cog` dependency, and includes the 5-minute loop."
+    },
+    {
+      "sense_check_id": "SC17",
+      "verdict": "Confirmed. The stale receipt sweep runs every 15 minutes and moves stale intents to `manual_review`."
+    },
+    {
+      "sense_check_id": "SC18",
+      "verdict": "Confirmed. `resolve_admin_intent` is cancel-only and cascade-cancels linked cancellable payments."
+    },
+    {
+      "sense_check_id": "SC19",
+      "verdict": "Confirmed. The previously missing direct coverage now exists for AdminApprovalView, restart filtering / PaymentConfirmView suppression, and the new admin-tool paths."
+    },
+    {
+      "sense_check_id": "SC20",
+      "verdict": "Confirmed. The required focused quartet passed in a fresh rerun, and executor evidence for full-suite success is consistent with the repo state."
+    }
+  ]
+}

@@ -1,0 +1,204 @@
+{
+  "version": 4,
+  "timestamp": "2026-04-11T01:47:05Z",
+  "hash": "sha256:882aaa25f820c64d735592e06810c0b609ba631b9f3613feabdbbb8285db454d",
+  "changes_summary": "Revision 4 applies three surgical fixes to address iteration-3 gate flags: (1) **Eliminated the `awaiting_wallet` placeholder for verified-wallet fast path.** Step 9 now defines TWO helpers: `_gate_existing_intent` (for test-receipt positive, intent already exists \u2192 request_payment \u2192 atomic update with status+final_payment_id \u2192 admin DM) and `_gate_fresh_intent_atomic` (for auto-skip, no intent yet \u2192 duplicate check \u2192 request_payment \u2192 atomic INSERT of intent with status='awaiting_admin_approval' AND final_payment_id in one call \u2192 admin DM). Steps 11 and 13 use the new helper instead of placeholder state. No intent is EVER observed in `awaiting_wallet` during the verified-wallet path. Closes FLAG-013, correctness-1, callers-1, issue_hints-2, all_locations-2. (2) **Added a startup orphan-payment reconciliation sweep** in new Step 18 (`_reconcile_admin_chat_orphan_payments`). Runs BEFORE `_register_pending_confirmation_views` via a new `cog_load` ordering dependency from PaymentUICog \u2192 AdminChatCog. Four cases: auto-skip crash (no intent \u2192 cancel orphan via existing `cancel_payment`); test-receipt crash (intent in awaiting_test_receipt_confirmation \u2192 complete the intent update + fire admin DM); legacy `awaiting_confirmation` \u2192 leave alone for PaymentConfirmView re-registration; already wired \u2192 leave alone for AdminApprovalView re-registration. Crash-safety no longer requires falling back to PaymentConfirmView for new-flow admin_chat real payments. Closes FLAG-012, issue_hints-1, scope-1. (3) **`resolve_admin_intent` now cascade-cancels linked `payment_requests`** via the existing `db_handler.cancel_payment(payment_id, guild_id)` primitive (mirrors `admin_chat_cog.py:616-620`). Cascade runs BEFORE the intent update; refuses to act if any linked payment is in `submitted`/`confirmed`/`manual_hold` status (operator must use `/payment-resolve` first). Closes FLAG-014, correctness-2, scope-2, all_locations-1, callers-2. Also added `find_admin_chat_intent_by_payment_id` DB helper (Step 2.6) as a fallback lookup for the orphan sweep. Added four new orphan-sweep tests and three new resolve-cascade tests in Step 21. Updated success criteria: removed the criterion about `awaiting_wallet` placeholder (no longer exists); added an explicit \"no placeholder state\" criterion; updated the crash-safety criterion to describe the sweep-based recovery rather than PaymentConfirmView fallback; added a resolve-cascade criterion.",
+  "flags_addressed": [
+    "FLAG-012",
+    "FLAG-013",
+    "FLAG-014",
+    "issue_hints-1",
+    "issue_hints-2",
+    "correctness-1",
+    "correctness-2",
+    "scope-1",
+    "scope-2",
+    "all_locations-1",
+    "all_locations-2",
+    "callers-1",
+    "callers-2"
+  ],
+  "questions": [
+    "Is it acceptable for `_gate_fresh_intent_atomic` to generate `intent_id` via `uuid4()` client-side? `create_admin_payment_intent` at `db_handler.py:1805` passes the record dict to Supabase `.insert` verbatim, and the table default is `gen_random_uuid()`, so supplying the id client-side should work. I'm assuming YES. Confirm.",
+    "Should the orphan sweep's test-receipt recovery path (case b: complete the intent update) also re-post a thread ack to the recipient, or silently recover? I'm assuming silent recovery \u2014 the admin DM is the notification \u2014 to avoid duplicate thread noise after a restart. Confirm.",
+    "For the batch tool's verified-entry crash recovery: if the admin initiates a batch of 10 verified payments and the bot dies after entries 1..5 have been processed, the orphan sweep will cancel entries 6..10 on restart. The admin must then re-run the batch for entries 6..10 (or the full batch, idempotently via duplicate check). Is this acceptable, or should the plan specify a per-entry retry/resume mechanism? I'm assuming the former for minimum scope. Confirm.",
+    "For `resolve_admin_intent` refusing to act on non-cancellable linked payments: the error message directs the admin to `/payment-resolve` first. Is `/payment-resolve` the correct tool name (I verified it exists at `payment_ui_cog.py:160`), or should the agent tool itself call `reconcile_with_chain` under the hood? I'm assuming the former \u2014 keep `resolve_admin_intent` surgical and let the admin chain the tools explicitly. Confirm."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "Identity router in on_message has exactly three branches keyed on author.id: admin \u2192 agent path (no _is_directed_at_bot content gate), active-intent recipient \u2192 state machine, else \u2192 return.",
+      "priority": "must"
+    },
+    {
+      "criterion": "SQL migration extends admin_payment_intents CHECK to include awaiting_test_receipt_confirmation, awaiting_admin_approval, manual_review; adds ambiguous_reply_count and receipt_prompt_message_id columns; is idempotent. Unique partial index is NOT modified.",
+      "priority": "must"
+    },
+    {
+      "criterion": "manual_review remains a BLOCKING state across all callers (get_active_intent_for_recipient, list_active_intents, has_active_payment_or_intent, unique partial index). Admin clears via resolve_admin_intent.",
+      "priority": "must"
+    },
+    {
+      "criterion": "resolve_admin_intent: (a) tool schema has NO `resolution` parameter \u2014 always cancels; (b) executor cascade-cancels linked test_payment_id and final_payment_id via existing db_handler.cancel_payment primitive BEFORE updating the intent; (c) refuses to act if any linked payment is in submitted/confirmed/manual_hold; (d) admin-only via ADMIN_ONLY_TOOLS + _ADMIN_IDENTITY_INJECTED_TOOLS; (e) explicit admin DM via bot.fetch_user.send.",
+      "priority": "must"
+    },
+    {
+      "criterion": "producer_flows.py adds PaymentActorKind.ADMIN_DM to admin_chat.real_confirmed_by. No new PaymentActorKind enum value is added.",
+      "priority": "must"
+    },
+    {
+      "criterion": "PaymentUICog.cog_load ordering: (1) orphan sweep (Step 18) runs FIRST, (2) _register_pending_confirmation_views runs SECOND (applying state-aware filter), (3) _register_pending_admin_approval_views runs THIRD. Test asserts this exact call order.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Startup orphan sweep handles four cases correctly: (a) auto-skip crash (no intent) \u2192 cancel orphan via cancel_payment; (b) test-receipt crash (intent in awaiting_test_receipt_confirmation) \u2192 complete intent update + fire admin DM; (c) legacy awaiting_confirmation \u2192 leave alone for PaymentConfirmView; (d) already wired awaiting_admin_approval \u2192 leave alone for AdminApprovalView.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Verified-wallet fast path: NO intent is ever observed in status='awaiting_wallet' during the auto-skip flow. The intent is INSERTED in one atomic write with status='awaiting_admin_approval' AND final_payment_id set. A test asserts the intent does not pass through any intermediate state.",
+      "priority": "must"
+    },
+    {
+      "criterion": "PaymentConfirmView is NEVER re-registered for a NEW-flow admin_chat real payment (one whose intent is awaiting_admin_approval). The only admin_chat case the restart filter handles is legacy awaiting_confirmation. The orphan sweep handles all other cases without PaymentConfirmView fallback.",
+      "priority": "must"
+    },
+    {
+      "criterion": "State-aware restart-recovery filter in _register_pending_confirmation_views: admin_chat real payments whose linked intent is awaiting_admin_approval \u2192 NOT re-registered; linked intent is legacy awaiting_confirmation \u2192 IS re-registered; grants \u2192 always re-registered.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Pending-recipient state machine makes zero Anthropic API calls on any path.",
+      "priority": "must"
+    },
+    {
+      "criterion": "wallet_registry.verified_at is set only via mark_wallet_verified and only after on-chain test confirmation AND recipient text-ack.",
+      "priority": "must"
+    },
+    {
+      "criterion": "_parse_wallet_from_text extracts wallets wrapped in backticks, quotes, parentheses, square brackets, markdown formatting, or trailing punctuation.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Admin DM approval gate (AdminApprovalView) fires exactly once per real admin_chat payment, never for is_test=True, never for producer='grants'. A batch of N produces exactly N admin DMs (modulo per-entry crash recovery for verified batch).",
+      "priority": "must"
+    },
+    {
+      "criterion": "AdminApprovalView click handler posts 'queued for sending' (NOT 'Payment sent') and calls confirm_payment with PaymentActorKind.ADMIN_DM. safe_delete_messages is called with BOTH prompt_message_id AND receipt_prompt_message_id.",
+      "priority": "must"
+    },
+    {
+      "criterion": "AdminApprovalView is persistent (timeout=None) and re-registered on PaymentUICog.cog_load for every admin_payment_intent with status=awaiting_admin_approval.",
+      "priority": "must"
+    },
+    {
+      "criterion": "send_confirmation_request is NOT invoked for NEW-flow producer='admin_chat' real payments (call at admin_chat_cog.py:393 deleted); IS still invoked for producer='grants' at grants_cog.py:719; IS still invoked via restart recovery for LEGACY admin_chat rows whose intent is in awaiting_confirmation.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Auto-skip path (both initiate_payment and initiate_batch_payment verified entries) uses the _gate_fresh_intent_atomic helper: duplicate check \u2192 request_payment \u2192 atomic intent insert with status=awaiting_admin_approval+final_payment_id \u2192 admin DM. No is_test=True row is created.",
+      "priority": "must"
+    },
+    {
+      "criterion": "initiate_batch_payment: validation phase is all-or-none; unverified entries use atomic batch insert; verified entries iterate per-entry through _gate_fresh_intent_atomic; mid-batch crash leaves recoverable orphans handled by the startup sweep.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Negative recipient ack and second-ambiguous recipient ack both tag the admin and transition the intent to manual_review. The admin must call resolve_admin_intent to clear it before any new initiation succeeds.",
+      "priority": "must"
+    },
+    {
+      "criterion": "24h timeout sweep is a background task at \u22655-minute intervals that transitions stale awaiting_test_receipt_confirmation intents to manual_review and DMs admin.",
+      "priority": "must"
+    },
+    {
+      "criterion": "upsert_wallet_for_user executor explicitly calls bot.fetch_user(ADMIN_USER_ID).send(...). Test asserts the DM is sent regardless of invoking channel.",
+      "priority": "must"
+    },
+    {
+      "criterion": "upsert_wallet_for_user is admin-only, validates wallet via is_valid_solana_address, never sets verified_at, surfaces WalletUpdateBlockedError.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Three new query tools are read-only, apply redaction, reject LLM-injected wallet_address/recipient_wallet params via pop-and-warn.",
+      "priority": "must"
+    },
+    {
+      "criterion": "All six new tools (query_payment_state, query_wallet_state, list_recent_payments, initiate_batch_payment, upsert_wallet_for_user, resolve_admin_intent) are in ADMIN_ONLY_TOOLS; module assert holds.",
+      "priority": "must"
+    },
+    {
+      "criterion": "agent.py _ADMIN_IDENTITY_INJECTED_TOOLS frozenset includes initiate_payment, initiate_batch_payment, upsert_wallet_for_user, AND resolve_admin_intent.",
+      "priority": "must"
+    },
+    {
+      "criterion": "All pass_to_pass test suites remain green.",
+      "priority": "must"
+    },
+    {
+      "criterion": "All fail_to_pass tests pass after implementation, including: orphan sweep (four scenarios), no-awaiting_wallet-placeholder, resolve cascade, resolve refuse-non-cancellable, state-aware restart filter.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Hardening invariants preserved.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Cleanup + polish invariants preserved.",
+      "priority": "must"
+    },
+    {
+      "criterion": "solana_client.py and solana_provider.py are not modified.",
+      "priority": "must"
+    },
+    {
+      "criterion": "grants_cog.py is not modified.",
+      "priority": "must"
+    },
+    {
+      "criterion": "has_active_payment_or_intent is not modified.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Confirmation keyword parser is hardcoded, case-insensitive, whole-word for single tokens, emoji substring for \ud83d\udc4d. No LLM fallback.",
+      "priority": "must"
+    },
+    {
+      "criterion": "AdminApprovalView custom_id f'payment_admin_approve:{payment_id}' does not collide with f'payment_confirm:{payment_id}'.",
+      "priority": "must"
+    },
+    {
+      "criterion": "_classify_payment_reply and _check_pending_payment_reply are removed once the reconciler stops calling them.",
+      "priority": "should"
+    },
+    {
+      "criterion": "MEMBER_SYSTEM_PROMPT, _can_user_message_bot, _is_directed_at_bot remain as documented dead code.",
+      "priority": "should"
+    },
+    {
+      "criterion": "17 manual smoke-test scenarios pass in dev guild: (a) first-time unverified recipient; (b) verified recipient auto-skip; (c) crash between request_payment and intent insert for auto-skip \u2192 startup sweep cancels orphan; (d) crash between test-receipt positive payment creation and intent update \u2192 startup sweep recovers and DMs admin; (e) batch of 3 mixed; (f) negative ack \u2192 manual_review; (g) ambiguous 2x \u2192 manual_review; (h) admin DM click \u2192 queued message; (i) restart mid awaiting_admin_approval \u2192 AdminApprovalView re-registered and PaymentConfirmView NOT re-registered; (j) restart with legacy awaiting_confirmation \u2192 PaymentConfirmView IS re-registered; (k) 24h timeout sweep; (l) upsert success + explicit admin DM from public channel; (m) upsert during active intent blocked; (n) grants unchanged; (o) query tools; (p) resolve_admin_intent cascade-cancels linked pending payment and clears intent; (q) resolve_admin_intent refuses to touch an intent whose linked payment is in submitted status.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "Verified-wallet fast path: the intent row is INSERTED (not updated) with `status='awaiting_admin_approval'` and `final_payment_id` set in ONE atomic `create_admin_payment_intent` call. No prior placeholder intent exists at any point. The DB unique partial index on (guild_id, channel_id, recipient_user_id) WHERE status NOT IN (terminal) provides atomicity against concurrent rapid-fire initiations.",
+    "`create_admin_payment_intent` at `src/common/db_handler.py:1805-1819` accepts arbitrary fields in the record dict (it passes them verbatim to Supabase `.insert`). Both `status` and `final_payment_id` can be set in the initial insert. If this assumption fails, the helper can generate `intent_id` client-side and use a single `.upsert` instead.",
+    "The `metadata.intent_id` field on `payment_requests` is the canonical link from payment \u2192 intent. For the fresh-intent fast path, the client generates `intent_id` via `uuid4()` BEFORE calling `request_payment` and passes it in metadata AND uses it as the intent primary key.",
+    "Startup orphan sweep runs in `AdminChatCog._ensure_startup_reconciled` and is awaited by `PaymentUICog.cog_load` via a new `bot.admin_chat_cog.reconcile_orphan_payments_for_ui_cog()` accessor. Ordering guarantee: sweep completes before ANY `PaymentConfirmView` or `AdminApprovalView` is registered.",
+    "The orphan sweep cancels orphans via the existing `db_handler.cancel_payment(payment_id, guild_id)` primitive at `src/common/db_handler.py:2402-2420` \u2014 no new cancellation path is introduced.",
+    "`resolve_admin_intent` cascade refuses to act if any linked payment is in non-cancellable status (`submitted`, `confirmed`, `manual_hold`). Operator must use `/payment-resolve` first to reconcile such payments.",
+    "`initiate_batch_payment` splits verified and unverified partitions. UNVERIFIED entries use the atomic batch insert (true all-or-none). VERIFIED entries iterate per-entry through `_gate_fresh_intent_atomic`, which is atomic per-entry but not atomic-across-entries; a mid-batch crash leaves some verified payments as orphans that the sweep cancels on restart. This is a documented trade-off.",
+    "`manual_review` remains a BLOCKING state. `has_active_payment_or_intent`, `get_active_intent_for_recipient`, `list_active_intents`, and the unique partial index all treat it as active. Admin clears via `resolve_admin_intent(intent_id)` which cascade-cancels any linked payment then marks the intent cancelled.",
+    "`receipt_prompt_message_id` is a new column distinct from `prompt_message_id`; safe-delete clears both.",
+    "`PaymentActorKind.ADMIN_DM` is reused; no new enum value.",
+    "`PRODUCER_FLOWS['admin_chat'].real_confirmed_by` is extended to `{RECIPIENT_CLICK, RECIPIENT_MESSAGE, ADMIN_DM}`. RECIPIENT_* stay as safety-belt for legacy rows.",
+    "`send_confirmation_request` is unchanged; gating happens at the removed call site (`admin_chat_cog.py:393`) and via the state-aware restart filter (Step 4) + the orphan sweep (Step 18).",
+    "`MEMBER_SYSTEM_PROMPT`, `_can_user_message_bot`, `_is_directed_at_bot` stay as dead code.",
+    "Batch tool accepts 1..20 payments per call.",
+    "24h timeout sweep at 15-minute intervals in `AdminChatCog`.",
+    "AdminApprovalView click handler posts 'queued for sending'; the existing `handle_payment_result` emits the 'Payment sent.' message after worker completion.",
+    "`upsert_wallet_for_user` executor explicitly DMs the admin via `bot.fetch_user(ADMIN_USER_ID).send(...)` wrapped in try/except.",
+    "Wallet parser uses tolerant delimiter regex + `is_valid_solana_address`.",
+    "Query tools apply existing redaction helpers."
+  ],
+  "delta_from_previous_percent": 74.0,
+  "structure_warnings": []
+}

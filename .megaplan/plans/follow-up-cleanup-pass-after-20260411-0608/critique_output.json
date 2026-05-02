@@ -1,0 +1,14 @@
+{
+  "checks": [],
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Admin-chat cleanup: The plan's repo-wide zero-hit grep for `_can_user_message_bot` is not achievable within the stated scope, because `src/features/admin/admin_cog.py` still defines and uses its own live `_can_user_message_bot` for DM routing.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan's Steps 7 and 12 say to grep `src/` and `tests/` and expect zero hits for `_can_user_message_bot`, but `src/features/admin/admin_cog.py:211` defines `async def _can_user_message_bot(...)` and `src/features/admin/admin_cog.py:363` still calls it. Satisfying the plan literally would require touching an out-of-scope file or weakening the verification target to the admin_chat package."
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

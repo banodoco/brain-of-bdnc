@@ -1,0 +1,99 @@
+{
+  "output": "Implemented batch 5. Added the pg_cron migration for `discord-resource-promoter`, created a null-safe `AssetDescription` wrapper that reuses the existing markdown pipeline, and added `useAssetComments` with a single nested Supabase query for comments, authors, and comment media. `banodoco-website` build/tests pass; repo-wide `pytest --tb=no -q --no-header` still ends with the same 7 pre-existing failures already observed in earlier batches.",
+  "files_changed": [
+    "/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/20260424000000_schedule_discord_promoter.sql",
+    "/Users/peteromalley/Documents/banodoco-workspace/banodoco-website/src/components/resources/AssetDescription.tsx",
+    "/Users/peteromalley/Documents/banodoco-workspace/banodoco-website/src/hooks/useAssetComments.ts",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_5.json"
+  ],
+  "commands_run": [
+    "git status --short",
+    "rg -n \"discord_promote_resources|schedule_priority_scores_cron|MarkdownRenderer|AssetDescription|useAssetComments|asset_comments|asset_comment_media\" supabase banodoco-website/src -g '*.sql' -g '*.ts' -g '*.tsx'",
+    "sed -n '1,220p' supabase/migrations/20260423000005_discord_promoter_fn.sql",
+    "sed -n '1,160p' supabase/migrations/20260403000005_schedule_priority_scores_cron.sql",
+    "sed -n '1,220p' banodoco-website/src/components/posts/MarkdownRenderer.tsx",
+    "sed -n '1,260p' banodoco-website/src/pages/Resources/ResourceModal.tsx",
+    "sed -n '1,240p' banodoco-website/src/hooks/useCommunityResource.ts",
+    "sed -n '1,220p' banodoco-website/src/hooks/useCommunityResources.ts",
+    "sed -n '1,240p' banodoco-website/src/pages/Resources/types.ts",
+    "sed -n '1,220p' supabase/migrations/20260423000001_asset_comments.sql",
+    "ls -la banodoco-website/src/components",
+    "ls -la banodoco-website/src/hooks",
+    "mkdir -p banodoco-website/src/components/resources",
+    "sed -n '1,160p' supabase/migrations/20260424000000_schedule_discord_promoter.sql",
+    "sed -n '1,120p' banodoco-website/src/components/resources/AssetDescription.tsx",
+    "sed -n '1,260p' banodoco-website/src/hooks/useAssetComments.ts",
+    "git status --short -- supabase/migrations/20260424000000_schedule_discord_promoter.sql",
+    "git -C banodoco-website status --short -- src/components/resources/AssetDescription.tsx src/hooks/useAssetComments.ts",
+    "npm run build",
+    "npm test -- --run",
+    "pytest --tb=no -q --no-header"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: banodoco-website/src/components/resources/AssetDescription.tsx, banodoco-website/src/hooks/useAssetComments.ts, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_5.json",
+    "Advisory audit finding: Executor claimed changed files not present in git status: banodoco-website/src/components/resources/AssetDescription.tsx, banodoco-website/src/hooks/useAssetComments.ts, banodoco-website/src/hooks/useCommunityResource.ts, banodoco-website/src/hooks/useCommunityResources.ts, banodoco-website/src/hooks/useUserProfile.ts, banodoco-website/src/pages/Resources/types.ts, banodoco-website/src/pages/Resources/useResources.ts, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_1.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_10.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_11.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_12.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_13.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_14.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_15.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_3.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_6.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_7.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_8.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_9.json",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .claude/, .hypothesis/, .megaplan/, README.md, docs/discord-update-audio-reactivity.md, docs/task-resources-media-showcase.md, docs/videos/, downloads/, equity-review/, hackathon-video/, node_modules/, structure.md, supabase/audits/dry_run_verification_20260405.sql, supabase/functions/_shared/, supabase/functions/admin-switch-session/, supabase/functions/agent-proxy/, supabase/functions/ai-voice-prompt/, supabase/functions/cloudflare-stream-backfill/, supabase/functions/cloudflare-stream-ingest/, supabase/functions/cloudflare-stream-webhook/, supabase/functions/impersonate-user/, supabase/functions/issue-preview-token/, supabase/functions/process-bundle/, supabase/functions/refresh-media-urls/index.ts, supabase/functions/serve-bundle/, supabase/migrations/20260329000000_add_cloudflare_stream_to_submission_details.sql, supabase/migrations/20260330233000_upsert_entry_analytics.sql, supabase/migrations/20260330234000_add_entry_analytics_anonymous_id.sql, supabase/migrations/20260330234100_create_user_analytics_summary_view.sql, supabase/migrations/20260331000000_secure_analytics.sql, supabase/migrations/20260331010000_add_assets_to_submission_details.sql, supabase/migrations/20260331020000_add_admin_hidden.sql, supabase/migrations/20260331030000_sync_admin_users.sql, supabase/migrations/20260331040000_fix_is_admin_source.sql, supabase/migrations/20260331050000_drop_admin_users_table.sql, supabase/migrations/20260331060000_add_cloudflare_ingest_attempts.sql, supabase/migrations/20260331070000_restore_admin_hide_policy.sql, supabase/migrations/20260331080000_prefer_user_thumbnail.sql, supabase/migrations/20260331090000_add_web_friendly_serving.sql, supabase/migrations/20260401090000_add_subtitle_url.sql, supabase/migrations/20260401100000_create_hidden_entries.sql, supabase/migrations/20260402090000_add_thumbnail_placeholder.sql, supabase/migrations/20260403000000_foundation_voters.sql, supabase/migrations/20260403000001_entry_priority_scores.sql, supabase/migrations/20260403000002_force_random_order.sql, supabase/migrations/20260403000003_add_priority_score_to_submission_details.sql, supabase/migrations/20260403000004_compute_priority_scores_function.sql, supabase/migrations/20260403000005_schedule_priority_scores_cron.sql, supabase/migrations/20260403000006_add_ip_address_to_analytics.sql, supabase/migrations/20260403000007_exclude_self_votes_from_priority.sql, supabase/migrations/20260403000008_fix_self_vote_exclusion.sql, supabase/migrations/20260405000000_unify_votes_into_scores.sql, supabase/migrations/20260405100000_scores_fraud_detection.sql, supabase/migrations/20260405200000_final_results_dashboard.sql, supabase/migrations/20260406000000_two_level_confidence_system.sql, supabase/migrations/20260406100000_grant_anon_discord_messages.sql, supabase/migrations/20260411220000_backfill_payments.sql, supabase/migrations/20260411220100_backfill_admin_payment_intents.sql, supabase/migrations/20260411220200_backfill_social_publications.sql, supabase/migrations/20260412180000_retrospective_tables.sql, supabase/migrations/20260419120000_add_featured_in_forge_flag.sql, supabase/migrations/20260419130000_flag_forge_curated_ed2.sql, supabase/migrations/20260420220000_extend_posts_for_authoring.sql, supabase/migrations/20260421000000_bundle_mode_posts.sql, supabase/migrations/20260422000000_vibe_usage.sql, supabase/migrations/20260422100000_vibe_ship_auto_approve.sql, tools/"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Created `supabase/migrations/20260424000000_schedule_discord_promoter.sql` using the repo's existing `pg_cron` DO-block pattern. The migration schedules `discord-resource-promoter` every 10 minutes with direct SQL `SELECT internal.discord_promote_resources();` and does not use `net.http_post` or Authorization headers. Verification was file-level for this task: I re-opened the new migration and confirmed the scheduled body is direct SQL. Cross-batch verification after the edit: `banodoco-website` still builds and its full Vitest suite passes; repo-wide `pytest --tb=no -q --no-header` still reports the same 7 pre-existing failures already documented in prior batches.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/20260424000000_schedule_discord_promoter.sql"
+      ],
+      "commands_run": [
+        "sed -n '1,220p' supabase/migrations/20260423000005_discord_promoter_fn.sql",
+        "sed -n '1,160p' supabase/migrations/20260403000005_schedule_priority_scores_cron.sql",
+        "sed -n '1,160p' supabase/migrations/20260424000000_schedule_discord_promoter.sql",
+        "pytest --tb=no -q --no-header"
+      ]
+    },
+    {
+      "task_id": "T14",
+      "status": "done",
+      "executor_notes": "Created `banodoco-website/src/components/resources/AssetDescription.tsx` as a thin wrapper around the existing `MarkdownRenderer`, with the requested single `markdown` prop and null-safe empty handling via `markdown ?? ''`. This keeps the exact existing `react-markdown` + `remarkGfm` pipeline and adds no sanitize/rehype layer or embed-token behavior. Verification: `npm run build` succeeds and `npm test -- --run` passes with 17 test files / 100 tests.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/banodoco-website/src/components/resources/AssetDescription.tsx"
+      ],
+      "commands_run": [
+        "sed -n '1,220p' banodoco-website/src/components/posts/MarkdownRenderer.tsx",
+        "ls -la banodoco-website/src/components",
+        "mkdir -p banodoco-website/src/components/resources",
+        "sed -n '1,120p' banodoco-website/src/components/resources/AssetDescription.tsx",
+        "npm run build",
+        "npm test -- --run"
+      ]
+    },
+    {
+      "task_id": "T16",
+      "status": "done",
+      "executor_notes": "Created `banodoco-website/src/hooks/useAssetComments.ts` with a single Supabase query rooted at `asset_comments` that joins the author member row and nested `asset_comment_media -> media` rows. The hook filters `asset_comments.is_deleted = false` and `asset_comment_media.is_deleted = false`, orders comments by `discord_created_at ASC`, orders nested media by `sort_order`, and returns `discord_guild_id`, `discord_thread_id`, `discord_message_id`, `reply_to_comment_id`, `reply_to_discord_message_id`, `reaction_count`, `content`, and `discord_edited_at` on each normalized comment row. Verification: `npm run build` succeeds after the hook was added, `npm test -- --run` passes with 17 test files / 100 tests, and repo-wide `pytest --tb=no -q --no-header` still shows only the same 7 pre-existing failures from earlier batches.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/banodoco-website/src/hooks/useAssetComments.ts"
+      ],
+      "commands_run": [
+        "sed -n '1,240p' banodoco-website/src/hooks/useCommunityResource.ts",
+        "sed -n '1,220p' supabase/migrations/20260423000001_asset_comments.sql",
+        "sed -n '1,260p' banodoco-website/src/hooks/useAssetComments.ts",
+        "npm run build",
+        "npm test -- --run",
+        "pytest --tb=no -q --no-header"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Yes. `20260424000000_schedule_discord_promoter.sql` schedules `discord-resource-promoter` every 10 minutes via `cron.schedule(..., $$ SELECT internal.discord_promote_resources(); $$)` inside a `pg_cron` DO block, with no `net.http_post` and no Authorization header."
+    },
+    {
+      "sense_check_id": "SC14",
+      "executor_note": "Yes. `AssetDescription` was created at `banodoco-website/src/components/resources/AssetDescription.tsx` and reuses the existing `MarkdownRenderer`, so it keeps the established `react-markdown` + `remarkGfm` pipeline only, with no sanitize/rehype plugins and no custom embed-token implementation."
+    },
+    {
+      "sense_check_id": "SC16",
+      "executor_note": "Yes. `useAssetComments` now issues a single `asset_comments` query with nested author and `asset_comment_media -> media` joins, filters `is_deleted=false` on both the comment and junction layers, orders by `discord_created_at ASC`, and includes `discord_guild_id`, `discord_thread_id`, `discord_message_id`, `reply_to_comment_id`, and `reply_to_discord_message_id` on each normalized comment row."
+    }
+  ]
+}

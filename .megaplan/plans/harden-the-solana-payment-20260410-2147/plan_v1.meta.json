@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-10T20:04:10Z",
+  "hash": "sha256:abe1d19ff09fada593261a833c5fb1b553acfc73cc101006f180453a5a363070",
+  "questions": [
+    "Error-surfacing convention for the new `upsert_wallet` blocked path: should it return a structured `{'__error__': ...}` sentinel (matches some existing db_handler helpers' return-None style loosely), or raise a dedicated `WalletUpdateBlockedError`? I can pick the structured sentinel to minimize surface area, but if the codebase has a preferred exception pattern for block/policy violations please point me at an example.",
+    "Should the cap-breach admin DM fire from inside `PaymentService.request_payment` (requires wiring a DM callback into the service constructor) or from `PaymentCog` via a post-insert terminal-handler hook (requires the newly-inserted manual_hold row to be routed through `_handle_terminal_payment`, which may not currently fire on insertion)? Default assumption: wire a callback into `PaymentService.__init__` and pass `payment_cog._dm_admin_payment_failure` from `main.py`.",
+    "For the rolling 24h cap, should `confirmed` rows count against the window (preventing a burst of fresh requests from slipping under the cap when prior payouts have already settled) or should the window be non-terminal only (so completed payouts free the budget)? Default: include `confirmed` in the window for fail-closed semantics. Confirm this matches the intent.",
+    "Should `manual_hold` rows count against the rolling daily cap? Default: NO \u2014 held rows represent money that was blocked, not committed, so excluding them keeps the cap semantically 'committed + in-flight USD'. Confirm.",
+    "Default env var names \u2014 is `ADMIN_PAYOUT_PER_PAYMENT_USD_CAP`, `ADMIN_PAYOUT_DAILY_USD_CAP`, `ADMIN_PAYMENT_SUCCESS_DM_THRESHOLD_USD` acceptable, or do you prefer a different prefix to match existing naming (e.g., `PAYMENTS_*`, `SOLANA_PAYOUTS_*`)?",
+    "Should the cap enforcement also apply to amount_token-denominated requests (i.e., when the caller passes `amount_token` directly instead of `amount_usd`)? The admin_chat final payout at `admin_chat_cog.py:360` passes `amount_token=float(intent['requested_amount_sol'])` with no `amount_usd`. Default: derive `amount_usd` from `amount_token * token_price_usd` for cap-check purposes when the provider is capped and is_test is False, so the cap applies to ALL admin payouts regardless of denomination. Confirm \u2014 otherwise admin_chat payouts bypass the USD cap entirely, which defeats the point.",
+    "Does `_handle_terminal_payment` (`payment_cog.py:267`) currently get invoked for payments inserted directly in `manual_hold` status, or only for payments that *transition* into a terminal status via the scheduler? If the former, the cap-breach DM + collision DM can reuse it; if the latter, we need to fire the DM explicitly from `request_payment` via the callback pattern."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "All existing tests in tests/test_admin_payments.py, tests/test_scheduler.py, and tests/test_social_publish_service.py still pass unchanged (default None caps preserve existing PaymentService construction).",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test test_confirm_rejects_null_recipient_discord_id passes: confirm_payment with recipient_discord_id=None returns None and logs WARN.",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test verifying privileged_override=True still bypasses null-recipient check passes.",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test test_confirm_rejects_mismatched_user passes: confirm_payment with a non-matching confirmed_by_user_id returns None.",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test test_request_payment_per_payment_cap_manual_holds passes: amount_usd over per-payment cap lands the row as manual_hold with cap-breach last_error; grants provider is unaffected.",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test test_request_payment_rolling_daily_cap_manual_holds passes: rolling 24h aggregation across non-test solana_payouts rows in (pending_confirmation, queued, processing, submitted, confirmed) drives the cap; grants are unaffected.",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test test_slot_reuse_collision_detected passes: prior row with different recipient_wallet triggers manual_hold creation plus admin DM, NOT silent replacement.",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test test_slot_reuse_same_wallet_creates_fresh_row_after_failure passes: when the only prior rows are terminal and the wallet matches, a new pending_confirmation row is created (pins reordered early-return).",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test test_idempotent_return_for_nonterminal passes: non-terminal prior row is returned unchanged.",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test test_upsert_wallet_blocked_during_active_intent passes: upsert_wallet refuses updates while a non-terminal payment_request or active admin_payment_intent exists and _handle_wallet_received surfaces the error.",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test test_upsert_wallet_unblocked_after_terminal passes: upsert proceeds when only terminal rows exist.",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test test_admin_success_dm_over_threshold passes: confirmed, non-test, solana_payouts, amount_usd >= threshold triggers _dm_admin_payment_success; under-threshold does not; failure DM path is unchanged.",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test test_execute_payment_uses_stored_wallet passes: execute_payment passes payment['recipient_wallet'] to provider.send even when wallet_registry has been updated (regression pin).",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test test_initiate_payment_tool_rejects_wallet_address_arg passes: wallet_address key in params is popped and ignored; wallet is resolved exclusively via db_handler.get_wallet.",
+      "priority": "must"
+    },
+    {
+      "criterion": "PaymentService constructor accepts per_payment_usd_cap, daily_usd_cap, capped_providers kwargs; all default to None so existing construction sites remain compatible.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Cap enforcement in PaymentService runs only in request_payment, never in execute_payment; scheduler path (claim_due_payment_requests -> execute_payment) is untouched.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Cap-breach, collision, and null-recipient paths create a manual_hold row (or reject for null) AND trigger an admin DM; no silent rejection path for these failure modes.",
+      "priority": "must"
+    },
+    {
+      "criterion": "_dm_admin_payment_success is a new sibling method with distinct prefix/emoji from _dm_admin_payment_failure; _dm_admin_payment_failure itself is unchanged.",
+      "priority": "must"
+    },
+    {
+      "criterion": "main.py wires per_payment_usd_cap, daily_usd_cap, capped_providers=('solana_payouts',), and admin_success_dm_threshold from env vars with defaults $500/$2000/$100.",
+      "priority": "must"
+    },
+    {
+      "criterion": "upsert_wallet blocks the update only when the incoming address differs from the stored address AND an active payment/intent exists; identical-address upserts and upserts without active intents remain unblocked.",
+      "priority": "must"
+    },
+    {
+      "criterion": "sql/payments.sql has a top-of-file comment block documenting the RLS posture (RLS already enabled, anon/authenticated revoked, service-role bypass); no ALTER TABLE changes.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Git history secret audit commands from Step 3 are run and findings recorded in the review output (even if empty).",
+      "priority": "must"
+    },
+    {
+      "criterion": "Log audit grep from Step 11 is performed and findings recorded. If no real leak path found, no log_handler.py code change.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Admin success DM is provider-scoped to capped_providers (solana_payouts) and threshold-gated; solana_grants payouts never trigger admin success DMs.",
+      "priority": "must"
+    },
+    {
+      "criterion": "pytest tests/ runs green end-to-end.",
+      "priority": "must"
+    },
+    {
+      "criterion": "New cap/collision/DM code paths redact wallets via existing _redact_wallet helpers and never log env-var values or key material.",
+      "priority": "should"
+    },
+    {
+      "criterion": "has_active_payment_or_intent uses the same non-terminal predicate ('completed','failed','cancelled' for intents; 'confirmed','failed','manual_hold','cancelled' for payments) as existing helpers \u2014 no ad-hoc drift.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Inline comment at the collision-detection + idempotent-return reorder explains WHY terminal rows must not short-circuit the early return.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Rolling-24h cap helper includes a comment documenting the residual burst-race window under non-serializable Supabase REST access.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Plan output explicitly states that the P0 prompt-injection premise was already substantially satisfied by prior work, to prevent the review agent from marking prep as incomplete.",
+      "priority": "should"
+    },
+    {
+      "criterion": "No unrelated refactors or test rewrites beyond what the new behavior strictly requires.",
+      "priority": "should"
+    }
+  ],
+  "assumptions": [
+    "The existing get_payment_requests_by_producer helper already returns all statuses (no terminal filter), so collision detection can reuse it directly; a new get_payment_requests_for_ref_all alias is documentation only, not a new query.",
+    "admin_payment_intents 'active' predicate is `status NOT IN ('completed','failed','cancelled')`, matching the existing get_active_intent_for_recipient query at db_handler.py:1754.",
+    "payment_requests 'active/non-terminal' predicate is `status NOT IN ('confirmed','failed','manual_hold','cancelled')`, covering pending_confirmation, queued, processing, submitted.",
+    "Rolling 24h cap window INCLUDES confirmed rows (not just in-flight) to enforce fail-closed semantics against burst requests; excludes manual_hold and failed/cancelled.",
+    "Default cap thresholds are per_payment=$500, daily=$2000/guild, success DM=$100, all env-overridable. capped_providers defaults to frozenset({'solana_payouts'}).",
+    "The cap-breach admin DM will be routed via a callback wired from main.py into PaymentService.__init__, invoking payment_cog._dm_admin_payment_failure. This is cleaner than relying on _handle_terminal_payment which is triggered by transitions, not inserts.",
+    "For admin_chat final payouts that pass amount_token (not amount_usd) at admin_chat_cog.py:360, cap enforcement will derive a usd-equivalent from the provider's get_token_price_usd() for the cap check so the cap applies uniformly. If token price is unavailable, the request is held as manual_hold (fail-closed). Will confirm this assumption before landing.",
+    "upsert_wallet error surfacing uses a structured `{'__error__': 'active_payment_or_intent'}` sentinel rather than raising, matching the general return-None-on-failure pattern of neighboring db_handler helpers. If an exception pattern is found to be more idiomatic during implementation, will switch.",
+    "RLS is already enabled on payment_requests, wallet_registry, and payment_channel_routes (confirmed at sql/payments.sql:192-199); the RLS 'doc' step is comment-only, not a schema change.",
+    "Git history secret audit is a command-run + memo task; if a real secret is found, the plan escalates to user for rotation rather than attempting history-rewrite automatically.",
+    "P0 prompt-injection hardening is verification + defensive pop-and-warn + regression test, not a rewrite \u2014 the initiate_payment tool schema at tools.py:580-599 already omits wallet_address.",
+    "privileged_override=True is NOT currently used in admin_chat test-payment auto-confirmation (the call at admin_chat_cog.py:258-262 passes confirmed_by='auto' + recipient_user_id instead); under the tightened confirm_payment rule, the call still succeeds because recipient_user_id matches the row's recipient_discord_id set at line 244. No change needed at that call site \u2014 will add a clarifying comment.",
+    "execute_payment's stored-wallet behavior at payment_service.py:244 is code-unchanged; the work for that brief item is a regression test only.",
+    "conftest.py (currently untracked per git status) likely provides the shared in-memory fake db pattern already used by test_admin_payments.py; will inspect and extend rather than duplicate."
+  ],
+  "structure_warnings": []
+}

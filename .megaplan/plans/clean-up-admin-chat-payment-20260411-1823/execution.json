@@ -1,0 +1,254 @@
+{
+  "output": "Aggregated execute batches: completed 5/5.\nBatch 1: Completed batch 1 tasks T1-T3. Added the idempotent `status_message_id` migration, narrowed `update_admin_payment_intent` to retry once only for missing `status_message_id` column errors while preserving the existing `None`-on-failure contract, and suppressed the generic public payment result card only for `producer='admin_chat'`. Verification: `pytest tests/test_admin_payments.py tests/test_terminal_cleanup_wiring.py -q` passed with `62 passed`, and a direct runtime simulation confirmed the DB retry/fallback behavior for both the status-message column case and unrelated DB errors. Checkpoint written to `.megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_1.json`.\nBatch 2: Completed batch 2 task T4 in `src/features/admin_chat/admin_chat_cog.py`. The admin-chat payout flow now reuses a single in-channel status message via `_set_intent_status_message`, persists `status_message_id` on first send, retries once after `discord.NotFound`, edits in place with `suppress=True`, and sends the final success notification as a reply with `mention_author=True` and `suppress_embeds=True`. Verification included `python -m py_compile src/features/admin_chat/admin_chat_cog.py` and an inline lifecycle simulation that confirmed one status message, three edits, one final reply, and `receipt_prompt_message_id == status_message_id`. The current `tests/test_admin_payments.py` module now has three expected assertion failures because it still checks the pre-T4 message text; those fixture/assertion updates are explicitly scheduled in T6.\nBatch 3: Completed batch 3 task T5 in `src/features/payments/payment_ui_cog.py`. Admin approval thread updates now edit the shared admin-chat status message in place when `status_message_id` is available and fetchable, falling back to the legacy channel send only when the status message is missing or cannot be fetched. Cleanup now preserves `status_message_id`, so a shared `receipt_prompt_message_id == status_message_id` survives the admin-approval cleanup path. Verification included `python -m py_compile src/features/payments/payment_ui_cog.py`, `pytest tests/test_payment_cog_split.py tests/test_admin_payments.py -q`, and an inline runtime simulation that confirmed one in-place edit, zero fallback sends, and cleanup deleting only the non-shared prompt id.\nBatch 4: Completed batch 4 task T6 in `tests/test_admin_payments.py`. The admin-payments test doubles now support the shared status-message flow end-to-end: `FakeChannel` returns editable/reply-capable/fetchable message objects that record suppress flags and reply metadata, and `FakeIntentDB` now carries a minimal Supabase stub plus a `reject_status_message_id` toggle so the real `DatabaseHandler.update_admin_payment_intent` retry path can be exercised. I updated the stale assertions for the new in-place status-message behavior and added the six requested coverage tests for admin-chat result-card suppression, non-admin-chat preservation, the missing-column retry contract, full lifecycle reuse, post-approval status-message edits, and cleanup preservation. Verification: `python -m py_compile tests/test_admin_payments.py` passed and `pytest tests/test_admin_payments.py -q` passed with `67 passed`.\nBatch 5: Completed batch 5 task T7. Validation passed in the required order: (1) `pytest tests/test_admin_payments.py -k 'status_message or suppresses_result_card or tolerates_missing_status or reused_across_transitions or post_admin_approval_thread_update_edits or cleanup_admin_intent_messages_preserves' -x` passed (`5 passed`), (2) `pytest tests/test_admin_payments.py -x` passed (`67 passed`), and (3) `pytest -x` passed for the full repo (`217 passed`). I also created a throwaway `/tmp/admin_chat_status_message_repro.py` script, ran it to confirm the lifecycle produces one sent status message, three edits, and one reply, and then deleted it. No baseline failures needed special handling because `baseline_test_failures` was empty and the final runs were green.",
+  "files_changed": [
+    "sql/admin_payment_intents.sql",
+    "src/common/db_handler.py",
+    "src/features/payments/payment_worker_cog.py",
+    ".megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_1.json",
+    "src/features/admin_chat/admin_chat_cog.py",
+    ".megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_2.json",
+    "src/features/payments/payment_ui_cog.py",
+    ".megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_3.json",
+    "tests/test_admin_payments.py",
+    ".megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_4.json",
+    ".megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_5.json"
+  ],
+  "commands_run": [
+    "sed -n '1,140p' sql/admin_payment_intents.sql",
+    "sed -n '2120,2185p' src/common/db_handler.py",
+    "sed -n '120,210p' src/features/payments/payment_worker_cog.py",
+    "rg -n \"_handle_terminal_payment|notify_payment_result|admin_chat|update_admin_payment_intent|status_message_id\" tests src/features src/common tests/test_admin_payments.py",
+    "sed -n '2245,2315p' tests/test_admin_payments.py",
+    "sed -n '1,130p' tests/test_terminal_cleanup_wiring.py",
+    "rg -n \"pytestmark|DatabaseHandler|update_admin_payment_intent\\(\" tests/test_admin_payments.py tests/test_terminal_cleanup_wiring.py",
+    "git diff -- sql/admin_payment_intents.sql src/common/db_handler.py src/features/payments/payment_worker_cog.py",
+    "pytest tests/test_admin_payments.py tests/test_terminal_cleanup_wiring.py -q",
+    "python - <<'PY'\nfrom types import SimpleNamespace\nfrom src.common.db_handler import DatabaseHandler\n\nclass FakeQuery:\n    def __init__(self, client):\n        self.client = client\n        self.payload = None\n    def update(self, payload):\n        self.payload = dict(payload)\n        self.client.calls.append(dict(payload))\n        return self\n    def eq(self, *_args):\n        return self\n    def execute(self):\n        if self.client.failures:\n            failure = self.client.failures.pop(0)\n            if failure is not None:\n                raise Exception(failure)\n        return SimpleNamespace(data=[dict(self.payload, intent_id='intent-1')])\n\nclass FakeSupabase:\n    def __init__(self, failures):\n        self.failures = list(failures)\n        self.calls = []\n    def table(self, name):\n        assert name == 'admin_payment_intents'\n        return FakeQuery(self)\n\nretry_db = DatabaseHandler.__new__(DatabaseHandler)\nretry_db.supabase = FakeSupabase(['column status_message_id does not exist', None])\nretry_db._gate_check = lambda guild_id: True\nretry_db._serialize_supabase_value = lambda payload: dict(payload)\nretry_result = retry_db.update_admin_payment_intent('intent-1', {'status': 'queued', 'status_message_id': 42}, 1)\nprint('retry_result', retry_result)\nprint('retry_calls', retry_db.supabase.calls)\n\nfail_db = DatabaseHandler.__new__(DatabaseHandler)\nfail_db.supabase = FakeSupabase(['column some_other_field does not exist'])\nfail_db._gate_check = lambda guild_id: True\nfail_db._serialize_supabase_value = lambda payload: dict(payload)\nfail_result = fail_db.update_admin_payment_intent('intent-1', {'status': 'queued', 'status_message_id': 42}, 1)\nprint('fail_result', fail_result)\nprint('fail_calls', fail_db.supabase.calls)\nPY",
+    "test -w /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/clean-up-admin-chat-payment-20260411-1823 && echo writable",
+    "nl -ba sql/admin_payment_intents.sql | sed -n '50,70p'",
+    "nl -ba src/common/db_handler.py | sed -n '2143,2175p'",
+    "nl -ba src/features/payments/payment_worker_cog.py | sed -n '149,172p'",
+    "ls -1 /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/clean-up-admin-chat-payment-20260411-1823 | rg '^execution_batch_1\\.json$'",
+    "sed -n '300,860p' src/features/admin_chat/admin_chat_cog.py",
+    "rg -n \"suppress_embeds|suppress=True|fetch_message\\(|receipt_prompt_message_id|queued a small test payment|Confirmation received|Payment sent\\.|Payout sending|handle_payment_result\" src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py src/features/curating/curator.py tests/test_admin_payments.py",
+    "sed -n '1,140p' src/features/admin_chat/admin_chat_cog.py",
+    "rg -n \"def _fetch_intent_channel|def _notify_admin_review|def _notify_intent_admin|def _resolve_payment_destinations|def _get_payment_ui_cog\" src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '220,320p' src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '140,220p' src/features/curating/curator.py",
+    "sed -n '1,130p' tests/test_admin_payments.py",
+    "sed -n '1440,1525p' tests/test_admin_payments.py",
+    "sed -n '2070,2195p' tests/test_admin_payments.py",
+    "sed -n '320,430p' tests/test_admin_payments.py",
+    "rg -n \"list_stale_test_receipt_intents|receipt_prompt_message_id|status_message_id|get_admin_payment_intent\" src/common/db_handler.py tests/test_admin_payments.py",
+    "rg -n \"awaiting_confirmation|_handle_confirmation_received|confirmed', 'resolved_by_message_id'|final payout confirmation\" src/features/admin_chat/admin_chat_cog.py src/features/payments src/features/admin_chat/tools.py tests/test_admin_payments.py",
+    "sed -n '950,985p' src/features/admin_chat/admin_chat_cog.py",
+    "git diff -- src/features/admin_chat/admin_chat_cog.py",
+    "python -m py_compile src/features/admin_chat/admin_chat_cog.py",
+    "pytest tests/test_admin_payments.py -q",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '286,340p'",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '416,472p'",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '632,882p'",
+    "python - <<'PY'\nfrom importlib.util import module_from_spec, spec_from_file_location\nfrom pathlib import Path\nfrom types import SimpleNamespace\nimport asyncio\n\nspec = spec_from_file_location('test_admin_payments', Path('tests/test_admin_payments.py'))\nmodule = module_from_spec(spec)\nspec.loader.exec_module(module)\n\nFakeAuthor = module.FakeAuthor\nFakeBot = module.FakeBot\nFakeIntentDB = module.FakeIntentDB\nFakeAdminPaymentService = module.FakeAdminPaymentService\nFakePaymentUICog = module.FakePaymentUICog\nFakeMessage = module.FakeMessage\nVALID_SOL_ADDRESS = module.VALID_SOL_ADDRESS\nAdminChatCog = __import__('src.features.admin_chat.admin_chat_cog', fromlist=['AdminChatCog']).AdminChatCog\n\nclass StatusMessage(SimpleNamespace):\n    def __init__(self, channel, message_id, content, kwargs):\n        super().__init__(id=message_id, channel=channel, content=content, kwargs=kwargs, edits=[], replies=[])\n    async def edit(self, *, content=None, suppress=None):\n        self.edits.append({'content': content, 'suppress': suppress})\n        if content is not None:\n            self.content = content\n        return self\n    async def reply(self, content, **kwargs):\n        reply = SimpleNamespace(content=content, kwargs=kwargs, reference=self.id)\n        self.replies.append(reply)\n        self.channel.sent_messages.append(reply)\n        return reply\n\nclass StatusChannel:\n    def __init__(self):\n        self.id = 55\n        self.guild = SimpleNamespace(id=1)\n        self.parent_id = None\n        self.sent_messages = []\n        self._messages = {}\n    async def send(self, content, **kwargs):\n        message_id = 900 + len(self._messages)\n        message = StatusMessage(self, message_id, content, kwargs)\n        self.sent_messages.append(message)\n        self._messages[message_id] = message\n        return message\n    async def fetch_message(self, message_id):\n        return self._messages[message_id]\n\nasync def main():\n    channel = StatusChannel()\n    db = FakeIntentDB()\n    db.wallets[(1, 42, 'solana')] = {\n        'wallet_id': 'wallet-1',\n        'guild_id': 1,\n        'discord_user_id': 42,\n        'chain': 'solana',\n        'wallet_address': VALID_SOL_ADDRESS,\n        'verified_at': None,\n    }\n    intent = db.create_admin_payment_intent({\n        'channel_id': 55,\n        'admin_user_id': 999,\n        'recipient_user_id': 42,\n        'requested_amount_sol': 1.75,\n        'producer_ref': '1_42_123',\n        'wallet_id': 'wallet-1',\n        'status': 'awaiting_test',\n    }, guild_id=1)\n    payment_service = FakeAdminPaymentService()\n    payment_ui_cog = FakePaymentUICog()\n    bot = FakeBot(channel, payment_service=payment_service, payment_ui_cog=payment_ui_cog)\n    cog = AdminChatCog(bot, db, sharer=object())\n    cog.payment_service = payment_service\n\n    await cog._start_admin_payment_flow(channel, intent)\n    await cog.handle_payment_result({\n        'payment_id': 'payment-test',\n        'producer': 'admin_chat',\n        'guild_id': 1,\n        'is_test': True,\n        'status': 'confirmed',\n        'amount_token': 0.001,\n        'tx_signature': 'sig-test',\n        'metadata': {'intent_id': intent['intent_id']},\n    })\n    await cog._handle_test_receipt_positive(FakeMessage(1004, FakeAuthor(42), channel, channel.guild, 'confirmed'), db.get_admin_payment_intent(intent['intent_id'], 1))\n    final_intent = db.get_admin_payment_intent(intent['intent_id'], 1)\n    await cog.handle_payment_result({\n        'payment_id': final_intent['final_payment_id'],\n        'producer': 'admin_chat',\n        'guild_id': 1,\n        'is_test': False,\n        'status': 'confirmed',\n        'amount_token': 1.75,\n        'tx_signature': 'sig-final',\n        'metadata': {'intent_id': intent['intent_id']},\n    })\n\n    status_messages = [m for m in channel.sent_messages if hasattr(m, 'edits')]\n    replies = [m for m in channel.sent_messages if not hasattr(m, 'edits')]\n    print('status_message_count', len(status_messages))\n    print('status_message_ids', [m.id for m in status_messages])\n    print('edit_count', len(status_messages[0].edits))\n    print('latest_status_content', status_messages[0].content)\n    print('replies', [(r.content, r.kwargs, r.reference) for r in replies])\n    print('intent_status_message_id', db.get_admin_payment_intent(intent['intent_id'], 1).get('status_message_id'))\n    print('intent_receipt_prompt_message_id', db.get_admin_payment_intent(intent['intent_id'], 1).get('receipt_prompt_message_id'))\n\nasyncio.run(main())\nPY",
+    "sed -n '500,620p' src/features/payments/payment_ui_cog.py",
+    "rg -n \"_post_admin_approval_thread_update|_cleanup_admin_intent_messages|status_message_id|receipt_prompt_message_id|Payout queued for sending|queued for sending\" src/features/payments/payment_ui_cog.py tests/test_admin_payments.py tests/test_payment_cog_split.py",
+    "sed -n '1940,2015p' tests/test_admin_payments.py",
+    "sed -n '330,370p' tests/test_payment_cog_split.py",
+    "sed -n '1,80p' src/features/payments/payment_ui_cog.py",
+    "rg -n \"async def _resolve_destination|safe_delete_messages\" src/features/payments/payment_ui_cog.py",
+    "sed -n '430,505p' src/features/payments/payment_ui_cog.py",
+    "git diff -- src/features/payments/payment_ui_cog.py",
+    "python -m py_compile src/features/payments/payment_ui_cog.py",
+    "pytest tests/test_payment_cog_split.py tests/test_admin_payments.py -q",
+    "python - <<'PY'\nfrom importlib.util import module_from_spec, spec_from_file_location\nfrom pathlib import Path\nfrom types import SimpleNamespace\nimport asyncio\n\nspec = spec_from_file_location('test_admin_payments', Path('tests/test_admin_payments.py'))\nmodule = module_from_spec(spec)\nspec.loader.exec_module(module)\n\nFakeBot = module.FakeBot\nFakeIntentDB = module.FakeIntentDB\nFakeAdminPaymentService = module.FakeAdminPaymentService\nPaymentUICog = __import__('src.features.payments.payment_ui_cog', fromlist=['PaymentUICog']).PaymentUICog\npayment_ui_module = __import__('src.features.payments.payment_ui_cog', fromlist=['safe_delete_messages'])\n\nclass StatusMessage(SimpleNamespace):\n    def __init__(self, channel, message_id, content='', kwargs=None):\n        super().__init__(id=message_id, channel=channel, content=content, kwargs=kwargs or {}, edits=[])\n    async def edit(self, *, content=None, suppress=None):\n        self.edits.append({'content': content, 'suppress': suppress})\n        if content is not None:\n            self.content = content\n        return self\n\nclass StatusChannel:\n    def __init__(self):\n        self.id = 55\n        self.guild = SimpleNamespace(id=1)\n        self.parent_id = None\n        self.sent_messages = []\n        self._messages = {900: StatusMessage(self, 900, 'Confirmation received. Awaiting admin approval for the final payout.')}\n    async def send(self, content, **kwargs):\n        message = StatusMessage(self, 901 + len(self.sent_messages), content, kwargs)\n        self.sent_messages.append(message)\n        return message\n    async def fetch_message(self, message_id):\n        return self._messages[message_id]\n\nasync def main():\n    channel = StatusChannel()\n    bot = FakeBot(channel, payment_service=FakeAdminPaymentService())\n    db = FakeIntentDB()\n    intent = db.create_admin_payment_intent({\n        'channel_id': 55,\n        'recipient_user_id': 42,\n        'prompt_message_id': 901,\n        'receipt_prompt_message_id': 900,\n        'status_message_id': 900,\n        'final_payment_id': 'payment-final',\n        'status': 'awaiting_admin_approval',\n        'producer_ref': '1_42_123',\n        'requested_amount_sol': 1.75,\n    }, guild_id=1)\n    db.find_admin_chat_intent_by_payment_id = lambda payment_id: dict(intent) if payment_id == 'payment-final' else None\n    ui_cog = PaymentUICog(bot, db, payment_service=bot.payment_service)\n\n    delete_calls = []\n    async def fake_safe_delete_messages(channel_obj, message_ids, *, logger):\n        delete_calls.append((channel_obj, list(message_ids)))\n        return None\n\n    original_safe_delete = payment_ui_module.safe_delete_messages\n    payment_ui_module.safe_delete_messages = fake_safe_delete_messages\n    try:\n        await ui_cog._post_admin_approval_thread_update({'payment_id': 'payment-final', 'recipient_discord_id': 42})\n        await ui_cog._cleanup_admin_intent_messages({'payment_id': 'payment-final'})\n    finally:\n        payment_ui_module.safe_delete_messages = original_safe_delete\n\n    status_message = channel._messages[900]\n    print('status_edits', status_message.edits)\n    print('sent_messages', [m.content for m in channel.sent_messages])\n    print('delete_calls', [(call[0].id, call[1]) for call in delete_calls])\n\nasyncio.run(main())\nPY",
+    "nl -ba src/features/payments/payment_ui_cog.py | sed -n '546,592p'",
+    "sed -n '1,220p' tests/test_admin_payments.py",
+    "sed -n '260,460p' tests/test_admin_payments.py",
+    "sed -n '1585,1655p' tests/test_admin_payments.py",
+    "sed -n '1945,2025p' tests/test_admin_payments.py",
+    "sed -n '2140,2325p' tests/test_admin_payments.py",
+    "sed -n '2320,2495p' tests/test_admin_payments.py",
+    "sed -n '460,560p' tests/test_admin_payments.py",
+    "sed -n '1880,1965p' tests/test_admin_payments.py",
+    "python -m py_compile tests/test_admin_payments.py",
+    "rg -n \"test_handle_payment_result_suppresses_result_card_for_admin_chat|test_handle_payment_result_still_notifies_non_admin_chat_producers|test_update_admin_payment_intent_tolerates_missing_status_message_column|test_admin_chat_status_message_reused_across_transitions|test_post_admin_approval_thread_update_edits_status_message|test_cleanup_admin_intent_messages_preserves_status_message_id\" tests/test_admin_payments.py",
+    "nl -ba tests/test_admin_payments.py | sed -n '40,150p'",
+    "nl -ba tests/test_admin_payments.py | sed -n '290,420p'",
+    "nl -ba tests/test_admin_payments.py | sed -n '1460,1665p'",
+    "nl -ba tests/test_admin_payments.py | sed -n '1945,2165p'",
+    "nl -ba tests/test_admin_payments.py | sed -n '2140,2675p'",
+    "pytest tests/test_admin_payments.py -k 'status_message or suppresses_result_card or tolerates_missing_status or reused_across_transitions or post_admin_approval_thread_update_edits or cleanup_admin_intent_messages_preserves' -x",
+    "pytest tests/test_admin_payments.py -x",
+    "pytest -x",
+    "python /tmp/admin_chat_status_message_repro.py",
+    "test ! -e /tmp/admin_chat_status_message_repro.py && echo deleted"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_1.json",
+    "Advisory quality: code changes lacked test updates: src/common/db_handler.py, src/features/payments/payment_worker_cog.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "`pytest tests/test_admin_payments.py -q` is not fully green in this batch because three existing assertions still expect the old pre-T4 channel text. Failing tests: `tests/test_admin_payments.py::test_handle_payment_result_test_confirmed`, `tests/test_admin_payments.py::test_handle_test_receipt_positive_marks_wallet_verified_and_queues_admin_approval`, and `tests/test_admin_payments.py::test_handle_payment_result_test_failed`. Those expectation updates are part of planned task T6 and were not edited in this batch.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_2.json",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/admin_chat_cog.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "`pytest tests/test_payment_cog_split.py tests/test_admin_payments.py -q` still reports the same three already-known stale-text assertion failures introduced by the planned T4 behavior change and scheduled for T6 test updates: `tests/test_admin_payments.py::test_handle_payment_result_test_confirmed`, `tests/test_admin_payments.py::test_handle_test_receipt_positive_marks_wallet_verified_and_queues_admin_approval`, and `tests/test_admin_payments.py::test_handle_payment_result_test_failed`. No additional failures were introduced by T5.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_3.json",
+    "Advisory quality: src/features/payments/payment_ui_cog.py has similar functions _disable_all_items and _disable_all_items (100% similarity).",
+    "Advisory quality: code changes lacked test updates: src/features/payments/payment_ui_cog.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_4.json",
+    "Advisory quality: tests/test_admin_payments.py grew by 382 lines (threshold 200).",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_5.json",
+    "Advisory: done tasks rely on commands_run without files_changed (FLAG-006 softening): T7",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "Appended exactly one additive migration block for `status_message_id bigint` in `sql/admin_payment_intents.sql` immediately after the existing additive `add column if not exists` blocks and before the constraint reset. Verified by diff and line inspection that indexes, constraints, and the status enum were otherwise unchanged.",
+      "files_changed": [
+        "sql/admin_payment_intents.sql"
+      ],
+      "commands_run": [
+        "sed -n '1,140p' sql/admin_payment_intents.sql",
+        "git diff -- sql/admin_payment_intents.sql src/common/db_handler.py src/features/payments/payment_worker_cog.py",
+        "nl -ba sql/admin_payment_intents.sql | sed -n '50,70p'"
+      ]
+    },
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Added the nested try inside `update_admin_payment_intent` so only `status_message_id` column errors retry once after logging at info and removing that key. A direct runtime simulation confirmed the retry path succeeds without `status_message_id`, while unrelated column failures still reach the existing outer handler and return `None`.",
+      "files_changed": [
+        "src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "sed -n '2120,2185p' src/common/db_handler.py",
+        "git diff -- sql/admin_payment_intents.sql src/common/db_handler.py src/features/payments/payment_worker_cog.py",
+        "python - <<'PY'\nfrom types import SimpleNamespace\nfrom src.common.db_handler import DatabaseHandler\n\nclass FakeQuery:\n    def __init__(self, client):\n        self.client = client\n        self.payload = None\n    def update(self, payload):\n        self.payload = dict(payload)\n        self.client.calls.append(dict(payload))\n        return self\n    def eq(self, *_args):\n        return self\n    def execute(self):\n        if self.client.failures:\n            failure = self.client.failures.pop(0)\n            if failure is not None:\n                raise Exception(failure)\n        return SimpleNamespace(data=[dict(self.payload, intent_id='intent-1')])\n\nclass FakeSupabase:\n    def __init__(self, failures):\n        self.failures = list(failures)\n        self.calls = []\n    def table(self, name):\n        assert name == 'admin_payment_intents'\n        return FakeQuery(self)\n\nretry_db = DatabaseHandler.__new__(DatabaseHandler)\nretry_db.supabase = FakeSupabase(['column status_message_id does not exist', None])\nretry_db._gate_check = lambda guild_id: True\nretry_db._serialize_supabase_value = lambda payload: dict(payload)\nretry_result = retry_db.update_admin_payment_intent('intent-1', {'status': 'queued', 'status_message_id': 42}, 1)\nprint('retry_result', retry_result)\nprint('retry_calls', retry_db.supabase.calls)\n\nfail_db = DatabaseHandler.__new__(DatabaseHandler)\nfail_db.supabase = FakeSupabase(['column some_other_field does not exist'])\nfail_db._gate_check = lambda guild_id: True\nfail_db._serialize_supabase_value = lambda payload: dict(payload)\nfail_result = fail_db.update_admin_payment_intent('intent-1', {'status': 'queued', 'status_message_id': 42}, 1)\nprint('fail_result', fail_result)\nprint('fail_calls', fail_db.supabase.calls)\nPY",
+        "nl -ba src/common/db_handler.py | sed -n '2143,2175p'"
+      ]
+    },
+    {
+      "task_id": "T3",
+      "status": "done",
+      "executor_notes": "Updated `_handle_terminal_payment` so `_notify_payment_result` is skipped only when a confirmed payment normalizes to `producer == 'admin_chat'`. Verified the surrounding DM success/failure hooks, producer handoff, and cleanup flow were left intact, and module-level tests covering payment worker behavior still pass.",
+      "files_changed": [
+        "src/features/payments/payment_worker_cog.py"
+      ],
+      "commands_run": [
+        "sed -n '120,210p' src/features/payments/payment_worker_cog.py",
+        "sed -n '2245,2315p' tests/test_admin_payments.py",
+        "sed -n '1,130p' tests/test_terminal_cleanup_wiring.py",
+        "pytest tests/test_admin_payments.py tests/test_terminal_cleanup_wiring.py -q",
+        "git diff -- sql/admin_payment_intents.sql src/common/db_handler.py src/features/payments/payment_worker_cog.py",
+        "nl -ba src/features/payments/payment_worker_cog.py | sed -n '149,172p'"
+      ]
+    },
+    {
+      "task_id": "T4",
+      "status": "done",
+      "executor_notes": "Implemented `_set_intent_status_message` at `src/features/admin_chat/admin_chat_cog.py:295-333` so one status message is created or edited per intent, `status_message_id` is persisted on first send with mutation fallback if the DB update returns `None`, `discord.NotFound` clears the cached id and retries once, and embed suppression uses `suppress_embeds` / `suppress=True`. Replaced the status-message sends in `_start_admin_payment_flow` (`:467-471`), the recipient test-receipt confirmation path (`:647-651`), and the terminal payment handling branches (`:777-883`). Verification: `python -m py_compile src/features/admin_chat/admin_chat_cog.py` passed; `pytest tests/test_admin_payments.py -q` produced only three stale-text assertion failures scheduled for T6; an inline lifecycle simulation confirmed a single sent status message, three edits, one final reply, and shared `status_message_id` / `receipt_prompt_message_id`.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "git diff -- src/features/admin_chat/admin_chat_cog.py",
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py",
+        "pytest tests/test_admin_payments.py -q",
+        "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '286,340p'",
+        "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '416,472p'",
+        "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '632,882p'",
+        "python - <<'PY' ... inline admin-chat lifecycle simulation with fetch/edit/reply-capable fake channel ... PY"
+      ]
+    },
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Rewrote `_post_admin_approval_thread_update` at `src/features/payments/payment_ui_cog.py:550-579` so it resolves the linked admin intent, fetches `status_message_id`, and edits that message to `Payout queued for sending.` with `suppress=True`; it falls back to the existing `channel.send(...)` path only when the status message id is absent or fetch fails with `discord.NotFound` / `discord.HTTPException`. Updated `_cleanup_admin_intent_messages` at `:581-595` to filter `status_message_id` out of the delete list so a shared `receipt_prompt_message_id == status_message_id` survives cleanup. Verification: `python -m py_compile src/features/payments/payment_ui_cog.py` passed; `pytest tests/test_payment_cog_split.py tests/test_admin_payments.py -q` showed only the three pre-existing stale-text assertion failures from T4; an inline runtime simulation confirmed one in-place edit, zero fallback sends, and cleanup deleting only the non-shared prompt id.",
+      "files_changed": [
+        "src/features/payments/payment_ui_cog.py"
+      ],
+      "commands_run": [
+        "git diff -- src/features/payments/payment_ui_cog.py",
+        "python -m py_compile src/features/payments/payment_ui_cog.py",
+        "pytest tests/test_payment_cog_split.py tests/test_admin_payments.py -q",
+        "python - <<'PY' ... inline payment_ui status-message edit and cleanup simulation ... PY",
+        "nl -ba src/features/payments/payment_ui_cog.py | sed -n '546,592p'"
+      ]
+    },
+    {
+      "task_id": "T6",
+      "status": "done",
+      "executor_notes": "Extended `tests/test_admin_payments.py` with richer Discord message/channel doubles and the planned retry-capable DB stub. `FakeChannel` now returns stored message objects with `edit`, `reply`, and `fetch_message` support plus recorded `suppress_embeds` / reply kwargs (`tests/test_admin_payments.py:71-133`). `FakeIntentDB` now exposes a minimal Supabase stub with `reject_status_message_id`, `supabase_failures`, and `supabase_calls` so `DatabaseHandler.update_admin_payment_intent` can be exercised directly (`:336-411`). Updated the stale admin-chat payment assertions for the shared status-message lifecycle (`:1557-1612`, `:1686-1725`, `:2255-2297`, `:2331-2376`) and added the six requested coverage tests for admin-chat worker suppression, non-admin-chat notification preservation, missing-column retry/FLAG-002, full status-message reuse, post-approval edits, and cleanup preservation (`:2109-2178`, `:2514-2623`, `:2627-2700`). Verification: `python -m py_compile tests/test_admin_payments.py` passed and `pytest tests/test_admin_payments.py -q` passed (`67 passed`).",
+      "files_changed": [
+        "tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "python -m py_compile tests/test_admin_payments.py",
+        "rg -n \"test_handle_payment_result_suppresses_result_card_for_admin_chat|test_handle_payment_result_still_notifies_non_admin_chat_producers|test_update_admin_payment_intent_tolerates_missing_status_message_column|test_admin_chat_status_message_reused_across_transitions|test_post_admin_approval_thread_update_edits_status_message|test_cleanup_admin_intent_messages_preserves_status_message_id\" tests/test_admin_payments.py",
+        "pytest tests/test_admin_payments.py -q",
+        "nl -ba tests/test_admin_payments.py | sed -n '40,150p'",
+        "nl -ba tests/test_admin_payments.py | sed -n '290,420p'",
+        "nl -ba tests/test_admin_payments.py | sed -n '1460,1665p'",
+        "nl -ba tests/test_admin_payments.py | sed -n '1945,2165p'",
+        "nl -ba tests/test_admin_payments.py | sed -n '2140,2675p'"
+      ]
+    },
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "Ran the validation sequence in the approved order and all stages passed. Focused selector: `pytest tests/test_admin_payments.py -k 'status_message or suppresses_result_card or tolerates_missing_status or reused_across_transitions or post_admin_approval_thread_update_edits or cleanup_admin_intent_messages_preserves' -x` -> `5 passed`. Full admin-payments module: `pytest tests/test_admin_payments.py -x` -> `67 passed`. Full repo: `pytest -x` -> `217 passed`. The required throwaway `/tmp/admin_chat_status_message_repro.py` script also ran successfully and printed the expected single-send + three-edits + one-reply lifecycle before being deleted. No baseline failures needed to be separated because the plan\u2019s `baseline_test_failures` list was empty and the final runs were green.",
+      "files_changed": [],
+      "commands_run": [
+        "pytest tests/test_admin_payments.py -k 'status_message or suppresses_result_card or tolerates_missing_status or reused_across_transitions or post_admin_approval_thread_update_edits or cleanup_admin_intent_messages_preserves' -x",
+        "pytest tests/test_admin_payments.py -x",
+        "pytest -x",
+        "python /tmp/admin_chat_status_message_repro.py",
+        "test ! -e /tmp/admin_chat_status_message_repro.py && echo deleted"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "Yes. `sql/admin_payment_intents.sql` now has exactly one `add column if not exists status_message_id bigint;` block at lines 59-60, immediately after the other additive migration blocks. No indexes, constraints, or status enum values were changed beyond that insertion point."
+    },
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "Yes. In `update_admin_payment_intent`, the nested retry triggers only when `status_message_id` exists in both the original payload and the exception text. Any other error re-raises to the existing outer handler, which still logs and returns `None`. No generic unknown-column helper was introduced."
+    },
+    {
+      "sense_check_id": "SC3",
+      "executor_note": "Yes. In `PaymentWorkerCog._handle_terminal_payment`, `_notify_payment_result` is skipped only for normalized `producer == 'admin_chat'`. `_dm_admin_payment_success`, `_dm_admin_payment_failure`, `_handoff_terminal_result`, and cleanup still run on their original conditions, and behavior for non-`admin_chat` producers remains unchanged."
+    },
+    {
+      "sense_check_id": "SC4",
+      "executor_note": "Yes. `_set_intent_status_message` now creates or edits a single status message per intent, persists `status_message_id` on first send with in-place mutation fallback if the DB update returns `None`, uses `suppress_embeds` / `suppress=True`, and handles `discord.NotFound` by clearing the cached id and retrying once. `_start_admin_payment_flow`, the recipient test-receipt confirmation path, and `handle_payment_result` now route their visible transitions through that helper. The test-confirmed branch sets `receipt_prompt_message_id = status_message_id`, and the final-confirmed branch edits to `Payout sending\u2026` before replying from the status message with `mention_author=True` and `suppress_embeds=True`. An inline lifecycle simulation verified one status message, three edits, one reply, and shared `status_message_id` / `receipt_prompt_message_id`."
+    },
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Yes. `_post_admin_approval_thread_update` now resolves the admin intent, fetches `status_message_id`, and edits that message with `content='Payout queued for sending.'` and `suppress=True`; it falls back to `channel.send(...)` only when the id is absent or fetch fails with `discord.NotFound` / `discord.HTTPException`. `_cleanup_admin_intent_messages` now excludes `status_message_id` from the ids passed to `safe_delete_messages`, including the shared `receipt_prompt_message_id == status_message_id` case. An inline runtime simulation confirmed one edit, no fallback send, and cleanup deleting only the non-shared prompt id."
+    },
+    {
+      "sense_check_id": "SC6",
+      "executor_note": "Yes. `tests/test_admin_payments.py` now contains the `FakeChannel` send/edit/reply/fetch_message extensions (`:71-133`), the `FakeIntentDB` Supabase-backed retry stub with `reject_status_message_id` (`:336-411`), the updated existing assertions for the shared status-message flow (`:1557-1612`, `:1686-1725`, `:2255-2297`, `:2331-2376`), and all six requested new tests (`:2109-2178`, `:2514-2623`, `:2627-2700`). The DB retry test explicitly asserts both the `status_message_id` retry omission and the unrelated-column `None` return contract, and the lifecycle test asserts exactly one base status message, three edits, and one reply."
+    },
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "Yes. The focused selector passed, the full `tests/test_admin_payments.py` module passed, and the full repo `pytest -x` run passed (`217 passed`). The throwaway `/tmp` repro script confirmed the single-send + multi-edit + one-reply behavior and was then deleted. No baseline failures needed special handling because `baseline_test_failures` was empty and all final validation runs were green."
+    }
+  ]
+}

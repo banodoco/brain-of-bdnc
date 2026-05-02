@@ -1,0 +1,374 @@
+{
+  "robustness": "heavy",
+  "signals": {
+    "iteration": 1,
+    "idea": "Harden the Solana payment subsystem against the attack vectors found by the adversarial security review. Fix P0: git history secret audit, prompt-injection hardening in admin_chat (remove LLM-sourced wallet addresses from initiate_payment tool; wallets must come from wallet_registry keyed by mentioned Discord user), null recipient_discord_id confirmation bypass (fail-closed). Fix P1: wallet swap window between test and final payment (verify execute_payment uses stored recipient_wallet string; reject or warn on upsert_wallet during active intents), idempotency slot reuse after forced failure (warn/DM on producer_ref collision with prior failed row having different wallet), per-payment and rolling daily USD cap on admin-triggered payouts enforced in PaymentService (default $500/payment, $2000/day/guild, exceeding goes to manual_hold), admin DM on successful admin_chat payouts over threshold (default $100, differentiated from failure DMs). Fix P2: log audit for secret leakage, document RLS posture at top of sql/payments.sql. Already using Helius so RPC attacks out of scope. Two wallets already split into solana_grants and solana_payouts providers. Think carefully about wallet-swap and idempotency \u2014 they are subtle and easy to half-fix. Goal is end-to-end hardening.",
+    "significant_flags": 12,
+    "unresolved_flags": [
+      {
+        "id": "FLAG-001",
+        "concern": "Solana payout caps: Step 8 still leaves admin-chat final payouts uncapped because it keys cap enforcement off `normalized_amount_usd`, while the live final-payout caller passes `amount_token` only.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-002",
+        "concern": "Wallet registry updates: The proposed `upsert_wallet` blocked-path sentinel is only handled in admin chat, but `grants_cog` is another live caller and would treat a truthy sentinel dict as a successful wallet record.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-003",
+        "concern": "Payment idempotency: The collision path over-assumes it can insert a new `manual_hold` row for any prior-wallet mismatch, but the active unique index still blocks inserts when the prior row is not `failed` or `cancelled`.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "issue_hints",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Checked the required payout-cap item against the real admin payout caller in `src/features/admin_chat/admin_chat_cog.py:352-365`; that path calls `request_payment(... amount_token=float(intent['requested_amount_sol']), amount_usd=None ...)`, but Step 8 in the plan says cap logic runs only when `normalized_amount_usd is not None`, so the plan as written does not fully cover the main admin-triggered payout path called out in the brief.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "correctness-1",
+        "concern": "Are the proposed changes technically correct?: Step 5 says to add the active-payment guard in `upsert_wallet` before the existing-wallet lookup, but the sample code branches on `existing` before `existing = self.get_wallet(...)` has run. That control flow is not implementable as written and needs to be reordered or rewritten.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "correctness-2",
+        "concern": "Are the proposed changes technically correct?: The collision path in Step 6 assumes it can create a fresh `manual_hold` row whenever any prior `(producer, producer_ref, is_test)` row has a different wallet, but `sql/payments.sql:126-128` still enforces uniqueness for every status except `failed` and `cancelled`. If the differing prior row is `pending_confirmation`, `queued`, `processing`, `submitted`, `confirmed`, or `manual_hold`, the insert cannot succeed, so the plan needs an explicit non-insert branch instead of assuming a new held row can always be created.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "scope",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: `upsert_wallet` is shared outside admin chat: `src/features/grants/grants_cog.py:557-603` also uses it during grant wallet verification. The plan only describes surfacing the blocked-update path in `admin_chat_cog._handle_wallet_received`, so the broader caller surface is not fully accounted for.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "all_locations-1",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The plan says to grep for `PaymentCog(` and find a single construction site, but there are two repo instantiations today: `main.py:233` and `src/features/payments/payment_cog.py:503`. If the constructor grows success-DM configuration, both locations need to stay in sync.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "all_locations-2",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The supporting test glue is broader than the plan currently describes. The fake databases and bot doubles that would need to absorb helper or return-shape changes live inline in `tests/test_admin_payments.py` and `tests/test_social_publish_service.py`, not only in `tests/conftest.py`.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "callers-1",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Checked the real admin payout caller at `src/features/admin_chat/admin_chat_cog.py:352-365`; it passes `amount_token` and omits `amount_usd`, so any cap logic written around the grants-style USD caller alone will miss the exact caller the brief cares about most.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "callers-2",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Checked `upsert_wallet` callers and found both `src/features/admin_chat/admin_chat_cog.py:193-201` and `src/features/grants/grants_cog.py:557-562`. A truthy sentinel such as `{'__error__': ...}` would be caught in admin chat only if the new branch is added there, but grants would still treat that dict as a valid wallet record and continue.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "criteria_quality",
+        "concern": "Are the success criteria well-prioritized and verifiable?: Several `must` criteria are not directly verifiable from code, tests, or diff inspection alone, especially the requirements that the git-history audit commands and log-audit grep be run and that their findings be recorded. Those are useful review tasks, but they are not strong `must` gates for an automated review pipeline.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      }
+    ],
+    "resolved_flags": [],
+    "weighted_score": 19.0,
+    "weighted_history": [],
+    "plan_delta_from_previous": null,
+    "recurring_critiques": [],
+    "scope_creep_flags": [],
+    "loop_summary": "Iteration 1. Weighted score trajectory: 19.0. Plan deltas: n/a. Recurring critiques: 0. Resolved flags: 0. Open significant flags: 12.",
+    "debt_overlaps": [],
+    "escalated_debt_subsystems": []
+  },
+  "warnings": [],
+  "criteria_check": {
+    "count": 31,
+    "items": [
+      {
+        "criterion": "All existing tests in tests/test_admin_payments.py, tests/test_scheduler.py, and tests/test_social_publish_service.py still pass unchanged (default None caps preserve existing PaymentService construction).",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_confirm_rejects_null_recipient_discord_id passes: confirm_payment with recipient_discord_id=None returns None and logs WARN.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test verifying privileged_override=True still bypasses null-recipient check passes.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_confirm_rejects_mismatched_user passes: confirm_payment with a non-matching confirmed_by_user_id returns None.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_request_payment_per_payment_cap_manual_holds passes: amount_usd over per-payment cap lands the row as manual_hold with cap-breach last_error; grants provider is unaffected.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_request_payment_rolling_daily_cap_manual_holds passes: rolling 24h aggregation across non-test solana_payouts rows in (pending_confirmation, queued, processing, submitted, confirmed) drives the cap; grants are unaffected.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_slot_reuse_collision_detected passes: prior row with different recipient_wallet triggers manual_hold creation plus admin DM, NOT silent replacement.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_slot_reuse_same_wallet_creates_fresh_row_after_failure passes: when the only prior rows are terminal and the wallet matches, a new pending_confirmation row is created (pins reordered early-return).",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_idempotent_return_for_nonterminal passes: non-terminal prior row is returned unchanged.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_upsert_wallet_blocked_during_active_intent passes: upsert_wallet refuses updates while a non-terminal payment_request or active admin_payment_intent exists and _handle_wallet_received surfaces the error.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_upsert_wallet_unblocked_after_terminal passes: upsert proceeds when only terminal rows exist.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_admin_success_dm_over_threshold passes: confirmed, non-test, solana_payouts, amount_usd >= threshold triggers _dm_admin_payment_success; under-threshold does not; failure DM path is unchanged.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_execute_payment_uses_stored_wallet passes: execute_payment passes payment['recipient_wallet'] to provider.send even when wallet_registry has been updated (regression pin).",
+        "priority": "must"
+      },
+      {
+        "criterion": "New test test_initiate_payment_tool_rejects_wallet_address_arg passes: wallet_address key in params is popped and ignored; wallet is resolved exclusively via db_handler.get_wallet.",
+        "priority": "must"
+      },
+      {
+        "criterion": "PaymentService constructor accepts per_payment_usd_cap, daily_usd_cap, capped_providers kwargs; all default to None so existing construction sites remain compatible.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Cap enforcement in PaymentService runs only in request_payment, never in execute_payment; scheduler path (claim_due_payment_requests -> execute_payment) is untouched.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Cap-breach, collision, and null-recipient paths create a manual_hold row (or reject for null) AND trigger an admin DM; no silent rejection path for these failure modes.",
+        "priority": "must"
+      },
+      {
+        "criterion": "_dm_admin_payment_success is a new sibling method with distinct prefix/emoji from _dm_admin_payment_failure; _dm_admin_payment_failure itself is unchanged.",
+        "priority": "must"
+      },
+      {
+        "criterion": "main.py wires per_payment_usd_cap, daily_usd_cap, capped_providers=('solana_payouts',), and admin_success_dm_threshold from env vars with defaults $500/$2000/$100.",
+        "priority": "must"
+      },
+      {
+        "criterion": "upsert_wallet blocks the update only when the incoming address differs from the stored address AND an active payment/intent exists; identical-address upserts and upserts without active intents remain unblocked.",
+        "priority": "must"
+      },
+      {
+        "criterion": "sql/payments.sql has a top-of-file comment block documenting the RLS posture (RLS already enabled, anon/authenticated revoked, service-role bypass); no ALTER TABLE changes.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Git history secret audit commands from Step 3 are run and findings recorded in the review output (even if empty).",
+        "priority": "must"
+      },
+      {
+        "criterion": "Log audit grep from Step 11 is performed and findings recorded. If no real leak path found, no log_handler.py code change.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Admin success DM is provider-scoped to capped_providers (solana_payouts) and threshold-gated; solana_grants payouts never trigger admin success DMs.",
+        "priority": "must"
+      },
+      {
+        "criterion": "pytest tests/ runs green end-to-end.",
+        "priority": "must"
+      },
+      {
+        "criterion": "New cap/collision/DM code paths redact wallets via existing _redact_wallet helpers and never log env-var values or key material.",
+        "priority": "should"
+      },
+      {
+        "criterion": "has_active_payment_or_intent uses the same non-terminal predicate ('completed','failed','cancelled' for intents; 'confirmed','failed','manual_hold','cancelled' for payments) as existing helpers \u2014 no ad-hoc drift.",
+        "priority": "should"
+      },
+      {
+        "criterion": "Inline comment at the collision-detection + idempotent-return reorder explains WHY terminal rows must not short-circuit the early return.",
+        "priority": "should"
+      },
+      {
+        "criterion": "Rolling-24h cap helper includes a comment documenting the residual burst-race window under non-serializable Supabase REST access.",
+        "priority": "should"
+      },
+      {
+        "criterion": "Plan output explicitly states that the P0 prompt-injection premise was already substantially satisfied by prior work, to prevent the review agent from marking prep as incomplete.",
+        "priority": "should"
+      },
+      {
+        "criterion": "No unrelated refactors or test rewrites beyond what the new behavior strictly requires.",
+        "priority": "should"
+      }
+    ]
+  },
+  "preflight_results": {
+    "project_dir_exists": true,
+    "project_dir_writable": true,
+    "success_criteria_present": true,
+    "claude_available": true,
+    "codex_available": true
+  },
+  "unresolved_flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Solana payout caps: Step 8 still leaves admin-chat final payouts uncapped because it keys cap enforcement off `normalized_amount_usd`, while the live final-payout caller passes `amount_token` only.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The live caller in `src/features/admin_chat/admin_chat_cog.py:352-365` sends `amount_token=float(intent['requested_amount_sol'])` and omits `amount_usd`, but the plan's cap step is written to run only when `normalized_amount_usd is not None`.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Wallet registry updates: The proposed `upsert_wallet` blocked-path sentinel is only handled in admin chat, but `grants_cog` is another live caller and would treat a truthy sentinel dict as a successful wallet record.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/admin_chat/admin_chat_cog.py:193-201` and `src/features/grants/grants_cog.py:557-562` both call `upsert_wallet`; the plan only adds blocked-path handling to admin chat while proposing a truthy `{'__error__': ...}` return shape.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Payment idempotency: The collision path over-assumes it can insert a new `manual_hold` row for any prior-wallet mismatch, but the active unique index still blocks inserts when the prior row is not `failed` or `cancelled`.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`sql/payments.sql:126-128` keeps `(producer, producer_ref, is_test)` unique for `pending_confirmation`, `queued`, `processing`, `submitted`, `confirmed`, and `manual_hold`, while Step 6 describes creating a fresh held row for any mismatched prior wallet.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "issue_hints",
+      "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Checked the required payout-cap item against the real admin payout caller in `src/features/admin_chat/admin_chat_cog.py:352-365`; that path calls `request_payment(... amount_token=float(intent['requested_amount_sol']), amount_usd=None ...)`, but Step 8 in the plan says cap logic runs only when `normalized_amount_usd is not None`, so the plan as written does not fully cover the main admin-triggered payout path called out in the brief.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Checked the required payout-cap item against the real admin payout caller in `src/features/admin_chat/admin_chat_cog.py:352-365`; that path calls `request_payment(... amount_token=float(intent['requested_amount_sol']), amount_usd=None ...)`, but Step 8 in the plan says cap logic runs only when `normalized_amount_usd is not None`, so the plan as written does not fully cover the main admin-triggered payout path called out in the brief.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "correctness-1",
+      "concern": "Are the proposed changes technically correct?: Step 5 says to add the active-payment guard in `upsert_wallet` before the existing-wallet lookup, but the sample code branches on `existing` before `existing = self.get_wallet(...)` has run. That control flow is not implementable as written and needs to be reordered or rewritten.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Step 5 says to add the active-payment guard in `upsert_wallet` before the existing-wallet lookup, but the sample code branches on `existing` before `existing = self.get_wallet(...)` has run. That control flow is not implementable as written and needs to be reordered or rewritten.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "correctness-2",
+      "concern": "Are the proposed changes technically correct?: The collision path in Step 6 assumes it can create a fresh `manual_hold` row whenever any prior `(producer, producer_ref, is_test)` row has a different wallet, but `sql/payments.sql:126-128` still enforces uniqueness for every status except `failed` and `cancelled`. If the differing prior row is `pending_confirmation`, `queued`, `processing`, `submitted`, `confirmed`, or `manual_hold`, the insert cannot succeed, so the plan needs an explicit non-insert branch instead of assuming a new held row can always be created.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The collision path in Step 6 assumes it can create a fresh `manual_hold` row whenever any prior `(producer, producer_ref, is_test)` row has a different wallet, but `sql/payments.sql:126-128` still enforces uniqueness for every status except `failed` and `cancelled`. If the differing prior row is `pending_confirmation`, `queued`, `processing`, `submitted`, `confirmed`, or `manual_hold`, the insert cannot succeed, so the plan needs an explicit non-insert branch instead of assuming a new held row can always be created.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "scope",
+      "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: `upsert_wallet` is shared outside admin chat: `src/features/grants/grants_cog.py:557-603` also uses it during grant wallet verification. The plan only describes surfacing the blocked-update path in `admin_chat_cog._handle_wallet_received`, so the broader caller surface is not fully accounted for.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "`upsert_wallet` is shared outside admin chat: `src/features/grants/grants_cog.py:557-603` also uses it during grant wallet verification. The plan only describes surfacing the blocked-update path in `admin_chat_cog._handle_wallet_received`, so the broader caller surface is not fully accounted for.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "all_locations-1",
+      "concern": "Does the change touch all locations AND supporting infrastructure?: The plan says to grep for `PaymentCog(` and find a single construction site, but there are two repo instantiations today: `main.py:233` and `src/features/payments/payment_cog.py:503`. If the constructor grows success-DM configuration, both locations need to stay in sync.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan says to grep for `PaymentCog(` and find a single construction site, but there are two repo instantiations today: `main.py:233` and `src/features/payments/payment_cog.py:503`. If the constructor grows success-DM configuration, both locations need to stay in sync.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "all_locations-2",
+      "concern": "Does the change touch all locations AND supporting infrastructure?: The supporting test glue is broader than the plan currently describes. The fake databases and bot doubles that would need to absorb helper or return-shape changes live inline in `tests/test_admin_payments.py` and `tests/test_social_publish_service.py`, not only in `tests/conftest.py`.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The supporting test glue is broader than the plan currently describes. The fake databases and bot doubles that would need to absorb helper or return-shape changes live inline in `tests/test_admin_payments.py` and `tests/test_social_publish_service.py`, not only in `tests/conftest.py`.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "callers-1",
+      "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Checked the real admin payout caller at `src/features/admin_chat/admin_chat_cog.py:352-365`; it passes `amount_token` and omits `amount_usd`, so any cap logic written around the grants-style USD caller alone will miss the exact caller the brief cares about most.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Checked the real admin payout caller at `src/features/admin_chat/admin_chat_cog.py:352-365`; it passes `amount_token` and omits `amount_usd`, so any cap logic written around the grants-style USD caller alone will miss the exact caller the brief cares about most.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "callers-2",
+      "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Checked `upsert_wallet` callers and found both `src/features/admin_chat/admin_chat_cog.py:193-201` and `src/features/grants/grants_cog.py:557-562`. A truthy sentinel such as `{'__error__': ...}` would be caught in admin chat only if the new branch is added there, but grants would still treat that dict as a valid wallet record and continue.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Checked `upsert_wallet` callers and found both `src/features/admin_chat/admin_chat_cog.py:193-201` and `src/features/grants/grants_cog.py:557-562`. A truthy sentinel such as `{'__error__': ...}` would be caught in admin chat only if the new branch is added there, but grants would still treat that dict as a valid wallet record and continue.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "criteria_quality",
+      "concern": "Are the success criteria well-prioritized and verifiable?: Several `must` criteria are not directly verifiable from code, tests, or diff inspection alone, especially the requirements that the git-history audit commands and log-audit grep be run and that their findings be recorded. Those are useful review tasks, but they are not strong `must` gates for an automated review pipeline.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Several `must` criteria are not directly verifiable from code, tests, or diff inspection alone, especially the requirements that the git-history audit commands and log-audit grep be run and that their findings be recorded. Those are useful review tasks, but they are not strong `must` gates for an automated review pipeline.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    }
+  ]
+}

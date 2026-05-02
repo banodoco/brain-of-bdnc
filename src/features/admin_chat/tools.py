@@ -187,7 +187,7 @@ TOOLS = [
     },
     {
         "name": "share_to_social",
-        "description": "Share or schedule a Discord message to social media (currently X/Twitter). Supports standalone posts, thread replies, and retweets. Use schedule_for for queued publishing with an ISO-8601 timestamp. Use action plus target_post for replies/retweets. reply_to_tweet remains supported as a reply-only alias and replies still default to text_only=true unless you explicitly set text_only=false. Publishing resolves the configured social route for the message channel unless you supply route_key to force a specific route. Also supports direct posting with media_urls + tweet_text, bypassing Discord message lookup. Immediate success returns tweet_url/tweet_id/publication_id; scheduled success returns publication_id with queued status.",
+        "description": "Share or schedule a Discord message to social media. Supports X/Twitter posts, replies, retweets, and quote tweets, plus YouTube posts via Zapier. Use schedule_for for queued publishing with an ISO-8601 timestamp. Use action plus target_post for X replies/retweets. reply_to_tweet remains supported as a reply-only alias and replies still default to text_only=true unless you explicitly set text_only=false. Publishing resolves the configured social route for the message channel unless you supply route_key to force a specific route. Also supports direct posting with media_urls + tweet_text, bypassing Discord message lookup. Immediate success returns provider_url/provider_ref plus legacy tweet_url/tweet_id aliases when applicable; scheduled success returns publication_id with queued status.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -233,7 +233,7 @@ TOOLS = [
                 },
                 "platform": {
                     "type": "string",
-                    "description": "Optional platform override. Currently only twitter/x is supported."
+                    "description": "Optional platform override. Supported: twitter/x and youtube."
                 },
                 "route_key": {
                     "type": "string",
@@ -251,7 +251,7 @@ TOOLS = [
             "properties": {
                 "platform": {
                     "type": "string",
-                    "description": "Optional platform filter. Defaults to twitter."
+                    "description": "Optional platform filter. Defaults to twitter. Supported: twitter/x and youtube."
                 },
                 "channel_id": {
                     "type": "string",
@@ -271,13 +271,13 @@ TOOLS = [
     },
     {
         "name": "create_social_route",
-        "description": "Create a social route row for a guild default or a specific channel. Omit channel_id for the guild-default route. route_config is a JSON object describing the outbound target, such as {\"account\": \"main\"}.",
+        "description": "Create a social route row for a guild default or a specific channel. Omit channel_id for the guild-default route. For twitter, route_config needs {\"account\": \"main\"}. For youtube, route_config can include privacy_status, default_tags, playlist_id, made_for_kids, and webhook_env_var.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "platform": {
                     "type": "string",
-                    "description": "Platform name. Defaults to twitter."
+                    "description": "Platform name. Defaults to twitter. Supported: twitter/x and youtube."
                 },
                 "channel_id": {
                     "type": "string",
@@ -289,7 +289,7 @@ TOOLS = [
                 },
                 "route_config": {
                     "type": "object",
-                    "description": "JSON route config payload, for example {\"account\": \"main\"}."
+                    "description": "JSON route config payload, for example {\"account\": \"main\"} for twitter or {\"privacy_status\": \"private\", \"default_tags\": [\"ADOS\"]} for youtube."
                 }
             },
             "required": []
@@ -1137,6 +1137,19 @@ def _normalize_social_platform(platform: Any) -> str:
     return normalized
 
 
+def _social_posted_message(platform: Any, action: str, provider_url: Optional[str]) -> str:
+    normalized = _normalize_social_platform(platform)
+    if normalized == 'youtube':
+        return f"Queued YouTube upload via Zapier: {provider_url or 'URL pending from Zapier'}"
+    if action == 'reply':
+        return f"Posted tweet: {provider_url} (reply in thread)"
+    if action == 'retweet':
+        return f"Retweeted post: {provider_url}"
+    if action == 'quote':
+        return f"Quote tweeted: {provider_url}"
+    return f"Posted tweet: {provider_url}"
+
+
 def _normalize_payment_producer(producer: Any) -> str:
     normalized = str(producer or '').strip().lower()
     if not normalized:
@@ -1920,8 +1933,10 @@ async def execute_share_to_social(
     platform = str(params.get('platform') or 'twitter').strip().lower()
     if platform == 'x':
         platform = 'twitter'
-    if platform != 'twitter':
+    if platform not in {'twitter', 'youtube'}:
         return {"success": False, "error": f"Unsupported platform: {platform}"}
+    if platform == 'youtube' and action != 'post':
+        return {"success": False, "error": "YouTube only supports action=post"}
 
     route_override = None
     if raw_route_override not in (None, ''):
@@ -2036,23 +2051,21 @@ async def execute_share_to_social(
             if not result.success:
                 return {"success": False, "error": result.error or "Sharing failed"}
 
+            provider_url = result.provider_url or result.tweet_url
+            provider_ref = result.provider_ref or result.tweet_id
             tweet_url = result.tweet_url
             tweet_id = result.tweet_id
             publication_id = result.publication_id
 
-            response_message = f"Posted tweet: {tweet_url}"
-            if action == 'reply':
-                response_message += " (reply in thread)"
-            elif action == 'retweet':
-                response_message = f"Retweeted post: {tweet_url}"
-            elif action == 'quote':
-                response_message = f"Quote tweeted: {tweet_url}"
+            response_message = _social_posted_message(platform, action, provider_url)
 
             return {
                 "success": True,
                 "message": response_message,
                 "tweet_url": tweet_url,
                 "tweet_id": tweet_id,
+                "provider_url": provider_url,
+                "provider_ref": provider_ref,
                 "publication_id": publication_id,
                 "already_shared": False,
             }
@@ -2123,13 +2136,15 @@ async def execute_share_to_social(
             source_kind='admin_chat',
         )
         if existing_publication:
-            tweet_url = existing_publication.get('provider_url')
-            tweet_id = existing_publication.get('provider_ref')
+            provider_url = existing_publication.get('provider_url')
+            provider_ref = existing_publication.get('provider_ref')
             return {
                 "success": True,
-                "message": f"Already shared: {tweet_url}",
-                "tweet_url": tweet_url,
-                "tweet_id": tweet_id,
+                "message": f"Already shared: {provider_url}",
+                "tweet_url": provider_url if platform == 'twitter' else None,
+                "tweet_id": provider_ref if platform == 'twitter' else None,
+                "provider_url": provider_url,
+                "provider_ref": provider_ref,
                 "publication_id": existing_publication.get('publication_id'),
                 "already_shared": True,
             }
@@ -2206,11 +2221,13 @@ async def execute_share_to_social(
         if not result.success:
             return {"success": False, "error": result.error or "Sharing failed"}
 
+        provider_url = result.provider_url or result.tweet_url
+        provider_ref = result.provider_ref or result.tweet_id
         tweet_url = result.tweet_url
         tweet_id = result.tweet_id
         publication_id = result.publication_id
 
-        if tweet_url:
+        if platform == 'twitter' and tweet_url:
             await sharer._announce_tweet_url(
                 tweet_url,
                 message.author.display_name,
@@ -2222,7 +2239,7 @@ async def execute_share_to_social(
 
         from src.features.sharing.subfeatures.notify_user import send_post_share_notification
 
-        is_first_share = sharer.db_handler.mark_member_first_shared(message.author.id, guild_id=guild_id)
+        is_first_share = platform == 'twitter' and sharer.db_handler.mark_member_first_shared(message.author.id, guild_id=guild_id)
         if is_first_share:
             await send_post_share_notification(
                 bot=bot,
@@ -2234,19 +2251,15 @@ async def execute_share_to_social(
                 db_handler=sharer.db_handler,
             )
 
-        response_message = f"Posted tweet: {tweet_url}"
-        if action == 'reply':
-            response_message += " (reply in thread)"
-        elif action == 'retweet':
-            response_message = f"Retweeted post: {tweet_url}"
-        elif action == 'quote':
-            response_message = f"Quote tweeted: {tweet_url}"
+        response_message = _social_posted_message(platform, action, provider_url)
 
         return {
             "success": True,
             "message": response_message,
             "tweet_url": tweet_url,
             "tweet_id": tweet_id,
+            "provider_url": provider_url,
+            "provider_ref": provider_ref,
             "publication_id": publication_id,
             "already_shared": False,
         }

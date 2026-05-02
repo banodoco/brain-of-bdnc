@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/solana_provider.py
+# hypothesis_version: 6.151.11
+
+[60.0, 10000, 1000000000, 'DiscordBot', 'SOL', 'SolanaProvider', 'ambiguous', 'confirmed', 'failed', 'pre_submit', 'submitted', 'timeout']

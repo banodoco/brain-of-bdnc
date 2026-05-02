@@ -1,0 +1,44 @@
+{
+  "output": "Implemented batch 2 / T2 by adding `src/features/sharing/models.py` with dataclass contracts for `PublicationSourceContext`, `SocialPublishRequest`, and `SocialPublishResult`. Verification passed after adjusting for the repository\u2019s Python runtime compatibility: the module compiles, imports cleanly, and the required `publication_id` plus caller-policy fields are present.",
+  "files_changed": [
+    "src/features/sharing/models.py",
+    ".megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_2.json"
+  ],
+  "commands_run": [
+    "python -m py_compile src/features/sharing/models.py",
+    "python - <<'PY'\nfrom src.features.sharing.models import SocialPublishRequest, SocialPublishResult\n\nrequest = SocialPublishRequest(\n    message_id=1,\n    channel_id=2,\n    guild_id=3,\n    user_id=4,\n    platform='x',\n    source_kind='summary',\n)\nresult = SocialPublishResult(publication_id='pub-1', success=True)\nassert request.source_context is not None\nassert request.source_context.source_kind == 'summary'\nassert hasattr(result, 'publication_id')\nassert hasattr(request, 'duplicate_policy')\nassert hasattr(request, 'text_only')\nassert hasattr(request, 'announce_policy')\nassert hasattr(request, 'first_share_notification_policy')\nassert hasattr(request, 'legacy_shared_post_policy')\nprint('ok')\nPY",
+    "git status --short -- src/features/sharing/models.py"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_2.json",
+    "Advisory quality: code changes lacked test updates: src/features/sharing/models.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: main.py, sql/social_publications.sql, src/common/server_config.py, src/features/admin_chat/agent.py, src/features/admin_chat/tools.py, src/features/reacting/subfeatures/tweet_sharer_bridge.py, src/features/sharing/providers/__init__.py, src/features/sharing/providers/x_provider.py, src/features/sharing/sharer.py, src/features/sharing/sharing_cog.py, src/features/sharing/social_publish_service.py, src/features/sharing/subfeatures/notify_user.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment."
+  ],
+  "task_updates": [
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Created `src/features/sharing/models.py` with dataclass contracts for `PublicationSourceContext`, `SocialPublishRequest`, and `SocialPublishResult`. Verified the module with `python -m py_compile src/features/sharing/models.py` and a full import/instantiation check confirming `publication_id` and the required request policy fields are available on the runtime in this repository.",
+      "files_changed": [
+        "src/features/sharing/models.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/models.py",
+        "python - <<'PY'\nfrom src.features.sharing.models import SocialPublishRequest, SocialPublishResult\n\nrequest = SocialPublishRequest(\n    message_id=1,\n    channel_id=2,\n    guild_id=3,\n    user_id=4,\n    platform='x',\n    source_kind='summary',\n)\nresult = SocialPublishResult(publication_id='pub-1', success=True)\nassert request.source_context is not None\nassert request.source_context.source_kind == 'summary'\nassert hasattr(result, 'publication_id')\nassert hasattr(request, 'duplicate_policy')\nassert hasattr(request, 'text_only')\nassert hasattr(request, 'announce_policy')\nassert hasattr(request, 'first_share_notification_policy')\nassert hasattr(request, 'legacy_shared_post_policy')\nprint('ok')\nPY",
+        "git status --short -- src/features/sharing/models.py"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "Confirmed `SocialPublishResult` includes `publication_id` as a first-class field. Confirmed `SocialPublishRequest` includes `duplicate_policy`, `text_only`, `announce_policy`, `first_share_notification_policy`, and `legacy_shared_post_policy`, while `PublicationSourceContext` carries caller-specific source metadata."
+    }
+  ]
+}

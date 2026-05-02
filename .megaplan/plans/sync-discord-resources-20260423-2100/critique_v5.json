@@ -1,0 +1,233 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "guidance": "Cross-check the result against explicit user notes, critique corrections, and watch items. Flag anything the implementation ignored, contradicted, or only partially covered.",
+      "findings": [
+        {
+          "detail": "Checked the two issue-hint mismatches from the previous round against v5 and both are now genuinely addressed. The plan keeps the promoter dry-run milestone and redirects the markdown implementation note to the real website pipeline at `banodoco-website/src/components/posts/MarkdownRenderer.tsx:122-126`, rather than referring to a nonexistent sanitization layer inside `PostBodyRenderer`.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the user\u2019s explicit scope additions against v4 and the prior repo evidence. The plan now restores the missing promoter dry-run milestone and still preserves the markdown-rendering change for both `banodoco-website/src/pages/ResourceDetail/index.tsx:166-169` and `banodoco-website/src/pages/Resources/ResourceModal.tsx:186-189`, so those earlier issue-hint gaps are genuinely closed.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "There is still a smaller repo mismatch in the markdown guidance. v4 says `AssetDescription` should mirror `PostBodyRenderer.tsx`'s 'plugin + sanitization config', but `banodoco-website/src/components/posts/PostBodyRenderer.tsx:22-50` just hands text segments to `MarkdownTextSegment`, and `banodoco-website/src/components/posts/MarkdownRenderer.tsx:122-126` uses `react-markdown` with `remarkGfm` only; there is no separate sanitize/rehype config in this path today. The implementation note should point to the real `MarkdownRenderer` reuse path instead of a nonexistent sanitization layer.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "guidance": "Look for logic errors, invalid assumptions, broken invariants, schema mismatches, or behavior that would fail at runtime. When the fix adds a conditional branch, check whether it handles all relevant cases \u2014 not just the one reported in the issue.",
+      "findings": [
+        {
+          "detail": "The new `discord_guild_id` propagation is not fully supported by the actual schema guarantees. `supabase/migrations/20260320000000_multi_server.sql:115-117` only adds `guild_id` to `discord_messages`, and `20260320160000_enforce_guild_constraints.sql:12-17` backfills some nulls from `discord_channels`, but the repository never sets `discord_messages.guild_id` to `NOT NULL`. V5 then makes `asset_comments.discord_guild_id BIGINT NOT NULL` and says the promoter copies `m.guild_id` directly, so historical messages with a still-null guild_id would either fail inserts or need an explicit skip/log path that the plan does not yet spell out.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the two concrete correctness defects from the previous iteration against v4 and those fixes are real. The plan now splits INSERT from UPDATE for assets/comments so rerun counters can stay at zero on clean data, and all example `system_logs` writes now target the actual schema columns `logger_name`, `level`, `message`, and `extra` from `supabase/migrations/20251210000000_create_system_logs.sql:5-18`.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "guidance": "Look at how the changed function is used across the codebase. Does the fix only address one caller's scenario while others remain broken? Flag missing required work or out-of-scope edits. A minimal patch is often right, but check whether the underlying problem is bigger than what the issue describes.",
+      "findings": [
+        {
+          "detail": "Checked the UI/data surface against v5 and the broader scope now looks contained. The plan no longer hard-codes a guild constant, keeps the lightweight `<a target=\"_blank\">` interaction model that fits `ResourceDetail`'s existing state, and limits the new data shape to denormalized Discord identifiers already adjacent to the resource/comment rows.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the earlier UI-surface scope issue against the v4 simplification and it remains resolved. `ResourceDetail` still only manages inline `activeMedia` state, so v4\u2019s continued use of ordinary `<a target=\"_blank\">` tiles for discussion media and 'Made with this' fits the real surface without introducing an unsupported modal/lightbox subsystem.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "guidance": "Search for all instances of the symbol/pattern being changed. Also ask: does this feature require setup, registration, or integration code beyond the core logic? Missing glue code causes test failures even when the core fix is correct.",
+      "findings": [
+        {
+          "detail": "Checked the supporting infrastructure paths that were previously missing and v5 now uses the right ones. It keeps the partial `discord_messages` OP index from v4, reads guild-aware jump-link data from row fields instead of a constant, and points the markdown work at the real `MarkdownRenderer` path the website already ships.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the previously missing support work and v4 does add the missing index migration. The repo originally had only the single-column `discord_messages` indexes from `supabase/migrations/20251101000000_create_discord_tables.sql:29-36`, and the new plan now explicitly adds a partial composite index for forum OP scans, which closes that earlier infrastructure gap.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "The plan still skips over existing guild-aware infrastructure when building Discord jump links. This codebase already persists `guild_id` on `discord_messages` and `discord_channels` and indexes it (`supabase/migrations/20260320000000_multi_server.sql:140-145`), but Step 21 still proposes a hard-coded frontend `GUILD_ID` constant instead of selecting the real guild from data. That is a brittle supporting-infrastructure mismatch rather than a necessity imposed by the repository.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "guidance": "Grep for call sites. For each caller, check what values it passes \u2014 especially edge cases like None, zero, empty, or composite inputs. Then ask: should this change be here, or in a caller, callee, or new method?",
+      "findings": [
+        {
+          "detail": "Checked the concrete caller/data path for Discord jump links and v5 now matches it cleanly. The repo already has a guild-aware URL helper in `brain-of-bndc/src/common/urls.py:7-12`, and the plan now passes stored `discord_guild_id` / `discord_thread_id` / `discord_message_id` through the resource and comment rows rather than inventing a frontend constant.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the primary caller path and the simplified interaction model now fits it cleanly. `ResourceDetail` remains the live routed surface, `ResourceModal` still has no live callers, and the anchor-tag media behavior no longer depends on any nonexistent modal state or caller boundary.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "I also checked the actual data callers for Discord jump links. The repository already has guild-aware URL building in `brain-of-bndc/src/common/urls.py:7-12`, and the archive layer writes `guild_id` onto Discord rows, so v4\u2019s plan to hard-code a single `GUILD_ID` constant in the frontend is still weaker than the data already available to callers. The safer caller contract is to pass through stored `guild_id` rather than invent a constant.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "id": "FLAG-012",
+      "concern": "Discord guild propagation: v5 assumes `discord_messages.guild_id` is always populated, but the repository does not enforce that invariant before copying it into the new `asset_comments.discord_guild_id BIGINT NOT NULL` column.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`supabase/migrations/20260320000000_multi_server.sql:115-117` only adds `guild_id` to `discord_messages`, and `supabase/migrations/20260320160000_enforce_guild_constraints.sql:12-17` backfills some nulls, but there is no `ALTER TABLE discord_messages ALTER COLUMN guild_id SET NOT NULL` anywhere in the repo."
+    },
+    {
+      "id": "verifiability-0",
+      "concern": "Criterion 0: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-1",
+      "concern": "Criterion 15: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-2",
+      "concern": "Criterion 20: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-3",
+      "concern": "Criterion 21: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-4",
+      "concern": "Criterion 26: requires human verification (inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-5",
+      "concern": "Criterion 27: requires human verification (inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-6",
+      "concern": "Criterion 29: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-7",
+      "concern": "Criterion 30: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-8",
+      "concern": "Criterion 31: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-9",
+      "concern": "Criterion 32: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-10",
+      "concern": "Criterion 34: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-11",
+      "concern": "Criterion 36: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-12",
+      "concern": "Criterion 37: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-13",
+      "concern": "Criterion 40: requires human verification (subjective_judgment).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    }
+  ],
+  "verified_flag_ids": [
+    "FLAG-001",
+    "FLAG-005",
+    "FLAG-006",
+    "FLAG-007",
+    "issue_hints-2",
+    "correctness-1",
+    "correctness-2",
+    "FLAG-008",
+    "FLAG-009",
+    "FLAG-010",
+    "all_locations",
+    "callers",
+    "FLAG-011",
+    "issue_hints"
+  ],
+  "disputed_flag_ids": []
+}

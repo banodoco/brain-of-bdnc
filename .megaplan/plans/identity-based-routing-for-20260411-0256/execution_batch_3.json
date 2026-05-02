@@ -1,0 +1,79 @@
+{
+  "output": "Batch 3 executed for T4, T7, and T17. Added the state-aware pending-confirmation view filter in `PaymentUICog`, replaced the pending-recipient entrypoint with deterministic status-based dispatch in `AdminChatCog`, and wired the 15-minute stale test-receipt sweep into the admin chat cog lifecycle. Verification passed with `python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py` and `pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x` (29 passed). Checkpoint written to `.megaplan/plans/identity-based-routing-for-20260411-0256/execution_batch_3.json`.",
+  "files_changed": [
+    "src/features/admin_chat/admin_chat_cog.py",
+    "src/features/payments/payment_ui_cog.py",
+    ".megaplan/plans/identity-based-routing-for-20260411-0256/execution_batch_3.json"
+  ],
+  "commands_run": [
+    "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py",
+    "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x"
+  ],
+  "deviations": [
+    "T4\u2019s explicit 'run after orphan sweep' ordering remains deferred to T16, which owns the orphan sweep implementation and `cog_load` reordering.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/identity-based-routing-for-20260411-0256/execution_batch_3.json",
+    "Advisory quality: src/features/payments/payment_ui_cog.py has similar functions _disable_all_items and _disable_all_items (100% similarity).",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/admin_chat_cog.py, src/features/payments/payment_ui_cog.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC13 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC15 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC16 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC19 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC20 is missing an executor acknowledgment."
+  ],
+  "task_updates": [
+    {
+      "task_id": "T4",
+      "status": "done",
+      "executor_notes": "Updated PaymentUICog._register_pending_confirmation_views to apply the state-aware admin_chat filter: grants remain unaffected, admin_chat real payments in awaiting_admin_approval or awaiting_admin_init are skipped, legacy awaiting_confirmation rows still re-register, and anything else is skipped defensively. Verified with py_compile and focused payment pytest modules; the final 'after orphan sweep' call ordering is still owned by T16.",
+      "files_changed": [
+        "src/features/payments/payment_ui_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x"
+      ]
+    },
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "Replaced the temporary pending-recipient wrapper with a deterministic status dispatch that uses _parse_wallet_from_text for awaiting_wallet, _classify_confirmation for awaiting_test_receipt_confirmation, and silent returns for awaiting_test, awaiting_admin_init, awaiting_admin_approval, manual_review, awaiting_confirmation, and confirmed. The _processing_intents dedupe set is reused, and the legacy _check_pending_payment_reply helper remains only for compatibility with the current pre-T19 test surface. Verified with py_compile and focused payment pytest modules.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x"
+      ]
+    },
+    {
+      "task_id": "T17",
+      "status": "done",
+      "executor_notes": "Added the 15-minute stale test-receipt sweep loop in AdminChatCog, wired it into cog_load/cog_unload, and wrapped the body plus per-intent processing in try/except. The sweep moves stale awaiting_test_receipt_confirmation intents to manual_review and DMs the admin with intent, recipient, wallet, and tx signature context. Verified with py_compile and focused payment pytest modules.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC4",
+      "executor_note": "Confirmed the new state-aware filter now skips admin_chat real pending_confirmation payments whose linked intent is awaiting_admin_approval or awaiting_admin_init, keeps legacy awaiting_confirmation rows, and leaves grants untouched. The explicit post-orphan-sweep call ordering remains part of T16, which owns the orphan sweep itself."
+    },
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "Confirmed _handle_pending_recipient_message now silently returns for awaiting_admin_init and the other non-routable states, so a wallet post in awaiting_admin_init no longer reopens wallet collection. The dedicated regression test for that path is still scheduled in T19."
+    },
+    {
+      "sense_check_id": "SC17",
+      "executor_note": "Confirmed the new _sweep_stale_test_receipts loop runs at 15-minute intervals, moves stale awaiting_test_receipt_confirmation intents to manual_review, and is started in cog_load and cancelled in cog_unload with try/except protection around the sweep body."
+    }
+  ]
+}

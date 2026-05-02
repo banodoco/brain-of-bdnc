@@ -1,0 +1,153 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "guidance": "Cross-check the result against explicit user notes, critique corrections, and watch items. Flag anything the implementation ignored, contradicted, or only partially covered.",
+      "findings": [
+        {
+          "detail": "Checked Revision 4 Step 13 against the explicit brief and fail-to-pass expectation for `initiate_batch_payment` to be atomic all-or-none. The revised plan now partitions verified recipients out of the single Supabase batch insert and processes them one-by-one through `_gate_fresh_intent_atomic(...)`, so a mixed or all-verified batch can partially succeed before a later verified entry errors or the process dies. That is still a real divergence from the original batch contract, even though the plan documents it as a tradeoff.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked prior `FLAG-012` against Revision 4 Steps 4 and 18. The plan no longer falls back to `PaymentConfirmView` for new-flow `producer='admin_chat'` real payments after a crash; instead it runs an orphan-payment sweep before view registration and leaves `PaymentConfirmView` only for legacy `awaiting_confirmation` rows. That addresses the earlier regression where crash recovery reintroduced recipient confirmation for the new admin-only approval flow.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked Revision 3's crash-safety argument in Step 9.1 against the explicit constraint that `PaymentConfirmView` must no longer fire for admin_chat real payments. The plan now relies on `PaymentConfirmView` as a fallback for an orphaned new-flow admin_chat `pending_confirmation` payment when the bot crashes between `request_payment(...)` and the intent update, which reintroduces the very recipient-confirmation path the brief said must be removed for admin_chat real payments.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked the verified-wallet fast path against the task's 'recipient total: 0 interactions' requirement. Steps 11 and 13 use `status='awaiting_wallet'` as a transient placeholder for verified-wallet intents, which means the live intent state still says 'waiting for recipient wallet' even though a verified wallet already exists; during that window the recipient can still be routed through the wallet-collection branch if they speak in-channel, so the plan is not truly zero-interaction on every path.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "guidance": "Look for logic errors, invalid assumptions, broken invariants, schema mismatches, or behavior that would fail at runtime. When the fix adds a conditional branch, check whether it handles all relevant cases \u2014 not just the one reported in the issue.",
+      "findings": [
+        {
+          "detail": "Checked Step 18's startup-ordering guarantee against current bootstrap and test setup. In `main.py:257-274`, `PaymentUICog` is added before `AdminChatCog`, and `tests/test_payment_cog_split.py:58-63` plus `tests/test_scheduler.py:423-431` call `PaymentUICog.cog_load()` with no admin-chat cog loaded at all. A new `PaymentUICog.cog_load()` dependency on `bot.admin_chat_cog.reconcile_orphan_payments_for_ui_cog()` would therefore fail unless the plan also changes bootstrap order or makes the UI cog tolerant of the admin-chat cog being absent.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked prior `FLAG-014` against Revision 4 Step 20 and the existing linked-payment cleanup path in `src/features/admin_chat/admin_chat_cog.py:616-620` plus `src/common/db_handler.py:2402-2420`. The revised plan now cascade-cancels linked `test_payment_id` and `final_payment_id` before writing the intent row to `cancelled`, which matches the repo's current recipient-decline semantics and closes the earlier orphan-payment gap in `resolve_admin_intent`.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the new `awaiting_wallet` placeholder against current routing and reconciliation code. In the repository today, `awaiting_wallet` is a live wallet-collection state: `src/features/admin_chat/admin_chat_cog.py:551-552` replays it during reconciliation, and `:585-593` routes recipient messages through `_handle_wallet_received(...)`, which transitions to `awaiting_test` and starts the test-payment flow at `:198-232`. Using that same status as a verified-wallet placeholder means a stray or replayed wallet message can incorrectly reopen the test path for a user who should have been auto-skipped.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked Step 20's cancel-only `resolve_admin_intent` against the linked payment lifecycle already present in the repo. Current code explicitly cancels `final_payment_id` when a recipient declines in `src/features/admin_chat/admin_chat_cog.py:616-620`, and `src/common/db_handler.py:2402-2420` has a supported `cancel_payment(...)` path for pending/queued rows, but the new operator tool only updates the intent row to `cancelled` and never cancels `final_payment_id` or `test_payment_id`. For intents in `awaiting_admin_approval` or legacy `awaiting_confirmation`, that leaves orphan `payment_requests` rows and potentially stale approval UI behind.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "guidance": "Look at how the changed function is used across the codebase. Does the fix only address one caller's scenario while others remain broken? Flag missing required work or out-of-scope edits. A minimal patch is often right, but check whether the underlying problem is bigger than what the issue describes.",
+      "findings": [
+        {
+          "detail": "Checked the broader storage/transaction model behind Revision 4's batch design. The repo only has single-table atomicity here (`create_admin_payment_intent(...)` inserts one intent row and the only payment-side atomic helper is the unrelated `claim_due_payment_requests` RPC), so the plan works around that by giving `initiate_batch_payment` two different semantics: unverified entries are atomic as a group, while verified entries are only atomic per entry and rely on later orphan cancellation. That is a broader contract change to the batch feature, not just an internal implementation choice, and it should stay flagged until the plan either restores whole-batch atomicity or explicitly changes the requirement.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked prior `FLAG-013` against Revision 4 Steps 9, 11, and 13 and the current `awaiting_wallet` routing in `src/features/admin_chat/admin_chat_cog.py:546-553` and `src/features/admin_chat/admin_chat_cog.py:585-593`. Revision 4 removes the verified-wallet placeholder in `awaiting_wallet`, so the earlier risk of a verified recipient being re-routed into wallet collection or test-payment startup during reconciliation is actually gone.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the broader architecture implied by Step 9.1. Revision 3 fixes the happy-path admin-DM gate, but under its crash-safety design a new-flow admin_chat real payment can still become recipient-confirmable via `PaymentConfirmView` if the process dies at the wrong point, so the architecture broadens back to a mixed admin/recipient approval model for failure paths rather than fully replacing the recipient gate.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked the new `resolve_admin_intent` operator surface against existing admin tools. The repo already has a separate `cancel_payment(...)` tool for `payment_requests`, and the revision adds a second cancellation surface that only mutates `admin_payment_intents`; without an explicit linked-payment cancellation step, operators now have to reason about two partially overlapping lifecycles for the same payout flow.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "guidance": "Search for all instances of the symbol/pattern being changed. Also ask: does this feature require setup, registration, or integration code beyond the core logic? Missing glue code causes test failures even when the core fix is correct.",
+      "findings": [
+        {
+          "detail": "Checked all supporting locations touched by the new orphan-sweep dependency. Besides `PaymentUICog.cog_load`, the change also needs bootstrap and harness updates because `main.py:257-274` loads `PaymentUICog` before `AdminChatCog`, `tests/test_payment_cog_split.py:58-63` exercises `PaymentUICog.cog_load()` without any admin-chat cog, and `tests/test_scheduler.py:423-431` does the same. Revision 4 describes the new accessor and ordering guarantee, but it does not explicitly include these supporting locations in the work, so the integration glue is incomplete as written.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked all locations that must be updated when an admin intent is force-resolved. Because an admin intent can carry `test_payment_id` and/or `final_payment_id` (`sql/admin_payment_intents.sql:18-19` and `src/features/admin_chat/admin_chat_cog.py:269,406`), a safe cancel flow needs linked `payment_requests` cleanup as well as the intent-row update. Revision 3 only describes the intent update + DM in Step 20, so the supporting payment cleanup path is missing.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked supporting infrastructure for the verified-wallet placeholder idea. The revision updates the fast path itself, but it does not account for startup reconciliation still treating every `awaiting_wallet` intent as replayable history in `src/features/admin_chat/admin_chat_cog.py:546-553`; a placeholder row written for crash-safety is therefore visible to unrelated recovery code as if it were a genuine wallet-collection flow.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "guidance": "Grep for call sites. For each caller, check what values it passes \u2014 especially edge cases like None, zero, empty, or composite inputs. Then ask: should this change be here, or in a caller, callee, or new method?",
+      "findings": [
+        {
+          "detail": "Checked the actual callers of `PaymentUICog.cog_load()` and the bot contract they provide. Current callers instantiate `PaymentUICog(bot, ...)` and await `cog_load()` directly; the `FakeBot` used in `tests/test_payment_cog_split.py:31-45` exposes `get_cog(...)` but no `admin_chat_cog` attribute or reconciliation accessor, and production startup in `main.py` likewise reaches `PaymentUICog` before `AdminChatCog`. If Step 18 is implemented at the caller boundary exactly as written, those callers will break until they are updated or the dependency is inverted.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the callers of `get_active_intent_for_recipient(...)` against the new placeholder state. `on_message` uses that helper before any content checks (`src/features/admin_chat/admin_chat_cog.py:568` today), so a verified-wallet intent parked temporarily in `awaiting_wallet` will still be treated by callers as an active recipient-wallet exchange and routed into `_handle_wallet_received(...)` if the recipient posts an address-shaped message. The plan does not account for that caller behavior.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked the arguments available to the new `resolve_admin_intent` caller path. When an intent is in `awaiting_admin_approval` or legacy `awaiting_confirmation`, the caller has access to `final_payment_id` on the intent, and the repo already exposes `cancel_payment(payment_id, ...)` for exactly that case; the revised plan still omits passing those linked payment ids into any cancellation path, so the caller-side handling is incomplete for the statuses it claims to support.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "id": "FLAG-015",
+      "concern": "Payment UI startup ordering: Revision 4 makes `PaymentUICog.cog_load()` depend on an `AdminChatCog` orphan-sweep accessor, but the current bootstrap and test harness load `PaymentUICog` before or without `AdminChatCog`, so the plan misses required bootstrap/test updates or a fallback path.",
+      "category": "correctness",
+      "severity_hint": "significant",
+      "evidence": "main.py:257-274 loads PaymentUICog before AdminChatCog; tests/test_payment_cog_split.py:58-63 and tests/test_scheduler.py:423-431 call PaymentUICog.cog_load() with no admin-chat cog present."
+    },
+    {
+      "id": "FLAG-016",
+      "concern": "Admin-chat batch payments: Revision 4 weakens `initiate_batch_payment` from an all-or-none batch into split semantics where verified entries are processed per-entry and can partially succeed or orphan/cancel later, which diverges from the brief and stated test expectation that the batch is atomic across all requested payments.",
+      "category": "correctness",
+      "severity_hint": "significant",
+      "evidence": "Revision 4 Step 13 sends verified recipients through per-entry `_gate_fresh_intent_atomic(...)` instead of the single `create_admin_payment_intents_batch(...)` path, while the brief/test expectation says `test_initiate_batch_payment_atomic_all_or_none` should persist zero intents on failure and treat the batch as atomic."
+    }
+  ],
+  "verified_flag_ids": [
+    "FLAG-012",
+    "FLAG-013",
+    "FLAG-014"
+  ],
+  "disputed_flag_ids": []
+}

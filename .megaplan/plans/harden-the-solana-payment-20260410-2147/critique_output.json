@@ -1,0 +1,225 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "guidance": "Cross-check the result against explicit user notes, critique corrections, and watch items. Flag anything the implementation ignored, contradicted, or only partially covered.",
+      "findings": [
+        {
+          "detail": "Checked the revised amount_token path against the real admin-chat final payout caller at `src/features/admin_chat/admin_chat_cog.py:352-365`, the rolling-helper design in Step 7, and the success-DM gate in Step 9. Persisting derived USD into capped-provider rows closes the specific end-to-end gap from the prior iteration: the same admin-chat payout can now be seen by both the daily-cap aggregation and the success-DM threshold without changing uncapped-provider behavior.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked the prompt-injection and wallet-lock items against the repo. The plan still treats `initiate_payment` as verification-only hardening, and it continues to cover both live `upsert_wallet` callers (`admin_chat_cog` and `grants_cog`) with an exception-based blocked path, which remains aligned with the brief and the actual code surface.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the revised Step 8 and Step 9 together against the real admin-chat final payout caller at `src/features/admin_chat/admin_chat_cog.py:352-365`. The plan now derives USD for amount_token-only requests during cap checks, but its own assumptions say that derived USD is kept local and not written back to `record['amount_usd']`; because `get_rolling_24h_payout_usd` is defined to sum stored `payment_requests.amount_usd` and the success-DM gate in Step 9 checks `payment.get('amount_usd')`, the actual admin-chat payouts would still miss the rolling daily cap and success-DM threshold in the live flow.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked the prompt-injection and inflight-wallet items against the repo. The revised plan now correctly treats `initiate_payment` as verification-only hardening, and it explicitly covers both live `upsert_wallet` callers (`admin_chat_cog` and `grants_cog`) with an exception-based blocked path, which resolves the earlier one-caller-only gap.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "guidance": "Look for logic errors, invalid assumptions, broken invariants, schema mismatches, or behavior that would fail at runtime. When the fix adds a conditional branch, check whether it handles all relevant cases — not just the one reported in the issue.",
+      "findings": [
+        {
+          "detail": "The revised amount_token plan is technically coherent with the repository. Stamping `record['amount_usd']` and `record['token_price_usd']` only inside the capped-provider branch preserves the current uncapped assertions in `tests/test_admin_payments.py:684-709` and `tests/test_social_publish_service.py:474-497`, while making the stored row match what Step 7 and Step 9 actually read later.",
+          "flagged": false
+        },
+        {
+          "detail": "The index-aware collision branching remains correct against `sql/payments.sql:126-128`: Branch A only inserts when prior rows are excluded by the partial index, and Branch B avoids an impossible insert when a non-excluded prior row still owns the uniqueness slot.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "The revised index-aware collision branching is technically consistent with `sql/payments.sql:126-128`: Branch A only inserts when every prior row is excluded by the partial index (`failed` or `cancelled`), and Branch B avoids an impossible insert when a live or settled non-excluded row still holds the uniqueness slot. That resolves the prior uniqueness mismatch cleanly.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "There is still a correctness gap in the amount_token path. The plan derives a transient `cap_usd` for current-request checks but explicitly keeps that value out of `record['amount_usd']`; as a result, later logic that depends on stored USD, namely the rolling-24h aggregation and the confirmed-payment success-DM threshold, would still behave as if admin-chat token-denominated payouts were worth $0.00.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "guidance": "Look at how the changed function is used across the codebase. Does the fix only address one caller's scenario while others remain broken? Flag missing required work or out-of-scope edits. A minimal patch is often right, but check whether the underlying problem is bigger than what the issue describes.",
+      "findings": [
+        {
+          "detail": "The revised plan contains the scope correctly. `solana_payouts` remains the only capped provider, `solana_grants` stays out of the cap/success-DM path, and both real `upsert_wallet` callers are included without broadening the wallet-lock behavior beyond the payment subsystem described in the brief.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "The revised plan now covers the broader `upsert_wallet` surface correctly: `src/features/grants/grants_cog.py:557-603` is explicitly included, and the sentinel-return trap from the first iteration is gone.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "The amount_token issue is broader than the immediate cap check. In this codebase, admin-chat final payouts are token-denominated at creation time, but later observability and rolling-budget logic operate on the stored `amount_usd` field. Because the revised plan keeps the derived USD local, it fixes the one-request calculation while leaving the broader payment-ledger semantics inconsistent for the same admin payout path.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "guidance": "Search for all instances of the symbol/pattern being changed. Also ask: does this feature require setup, registration, or integration code beyond the core logic? Missing glue code causes test failures even when the core fix is correct.",
+      "findings": [
+        {
+          "detail": "The revised plan now aligns the supporting locations that mattered in the prior critique: PaymentService persists the derived USD into the stored row and mirrored request payload, Step 7's helper sums stored `amount_usd`, and Step 9's success-DM gate reads the same stored field. That closes the repository-wide wiring gap for amount_token-only admin-chat payouts.",
+          "flagged": false
+        },
+        {
+          "detail": "The construction-site handling also remains sound: success-DM env reads live inside `PaymentCog.__init__`, so both `main.py:233` and `src/features/payments/payment_cog.py:503` stay covered without duplicate edits.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "The prior constructor-site drift issue is resolved: the revised plan moves success-DM env loading into `PaymentCog.__init__`, which covers both `main.py:233` and `src/features/payments/payment_cog.py:503` without duplicate wiring.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Not all supporting locations are aligned on the amount_token path yet. Step 8 derives USD locally in `PaymentService.request_payment`, Step 7's rolling helper sums stored `payment_requests.amount_usd`, and Step 9's success-DM gate reads `payment.get('amount_usd')`; unless the derived USD is persisted or recomputed in the downstream sites too, the feature is still only partially wired across the repository.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "guidance": "Grep for call sites. For each caller, check what values it passes — especially edge cases like None, zero, empty, or composite inputs. Then ask: should this change be here, or in a caller, callee, or new method?",
+      "findings": [
+        {
+          "detail": "Checked the real admin payout caller again: `src/features/admin_chat/admin_chat_cog.py:352-365` still passes `amount_token` only, and the revised Step 8 now explicitly handles that caller by deriving and persisting USD only for capped providers. That fixes the earlier caller-shape mismatch without perturbing the uncapped test providers (`solana`, `solana_native`).",
+          "flagged": false
+        },
+        {
+          "detail": "Checked the `upsert_wallet` callers again. The plan still catches `WalletUpdateBlockedError` in both `src/features/admin_chat/admin_chat_cog.py:193-201` and `src/features/grants/grants_cog.py:557-562`, so the blocked-path handling remains complete at the call sites that exist in the repo.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the `upsert_wallet` callers again. The revised plan now explicitly catches the blocked-update exception in both `src/features/admin_chat/admin_chat_cog.py:193-201` and `src/features/grants/grants_cog.py:557-562`, so the earlier caller mismatch is fixed.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Checked the actual admin payout caller and the downstream consumer. `src/features/admin_chat/admin_chat_cog.py:352-365` still creates final payouts with `amount_token` only, while the planned success-DM gate in `PaymentCog` keys off `amount_usd`; with the revised assumption that derived USD stays local instead of being stored, the real caller shape is still not handled end-to-end.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "conventions",
+      "question": "Does the approach match how the codebase solves similar problems?",
+      "guidance": "Check not just naming/style but how similar PROBLEMS are solved in this codebase. If the codebase adds new methods for similar cases, the plan should too. Do not spend findings on trivial stylistic preferences.",
+      "findings": [
+        {
+          "detail": "The revised plan still fits the surrounding conventions better than the earlier sentinel approach. Raising `WalletUpdateBlockedError` for a policy violation is explicit and safe, while keeping the normal success/failure return shapes for standard `DatabaseHandler` calls intact.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "The revised plan no longer uses the truthy `{'__error__': ...}` sentinel that conflicted with current `DatabaseHandler` return conventions. Switching to an explicit `WalletUpdateBlockedError` is a safer fit for a policy-violation path because callers cannot accidentally treat it as a successful wallet record.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "verification",
+      "question": "Is there convincing verification for the change?",
+      "guidance": "Flag missing tests or weak validation. If verification tests exist, trace the test's execution path through your patch — does every branch it exercises produce the expected result? A patch can look correct but fail because it misses one code path the test covers. If you manually verify an edge case because existing tests don't cover it, also test the cases next to it.",
+      "findings": [
+        {
+          "detail": "The revised test plan now covers the previously missing end-to-end cases. In addition to the direct amount_token cap-breach test, it adds a persistence pin (`test_request_payment_amount_token_path_stamps_amount_usd`), a rolling-helper pin (`test_request_payment_rolling_daily_cap_sees_derived_usd`), and a success-DM pin (`test_admin_success_dm_sees_derived_usd`), which together exercise the exact stored-USD path that the prior critique found missing.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "The revised plan does address the two prior verification gaps: it adds amount_token-path cap tests and it adds grants-caller coverage for the wallet-block exception path.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "There is still no test that an amount_token-only admin-chat payout contributes to the rolling-24h USD total or that a confirmed amount_token-only payout can cross the success-DM threshold. Because the revised plan keeps derived USD out of the stored row, those two real behaviors can still be wrong while every newly listed test passes.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "criteria_quality",
+      "question": "Are the success criteria well-prioritized and verifiable?",
+      "guidance": "Check that each `must` criterion has a clear yes/no answer verifiable from code, tests, or git diff. Subjective goals, numeric guidelines, and aspirational targets should be `should`, not `must`. Criteria requiring manual testing or human judgment should be `info`. Flag any `must` criterion that is ambiguous, subjective, or unverifiable in the review pipeline.",
+      "findings": [
+        {
+          "detail": "The previous overstatement about amount_token end-to-end coverage is fixed. The relevant `must` criteria now explicitly require persisted derived USD, rolling-helper coverage, and success-DM coverage, so the verification bar matches what the revised plan actually intends to implement.",
+          "flagged": false
+        },
+        {
+          "detail": "One remaining `must` is still broader than the concrete plan steps: the criterion that 'Cap-breach, collision (Branch A insert and Branch B reject), and null-recipient paths trigger an admin DM via on_cap_breach or equivalent path' is not backed by a corresponding null-recipient DM step. Step 1 only logs and returns `None`, and the current caller paths in `payment_cog`, `admin_chat_cog`, and `grants_cog` do not define a single uniform admin-DM mechanism for that rejection.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "The revised criteria are materially better: the memo and audit tasks were demoted to `should`, and most of the new `must` items are concrete code or test outcomes that can be checked directly.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "One `must` still overstates what the current plan would prove: 'Cap enforcement covers BOTH amount_usd-supplying callers AND amount_token-only callers' reads as an end-to-end guarantee, but the plan's own assumption that derived USD stays out of the stored row means rolling-daily enforcement and success-DM thresholding are still not fully covered for amount_token-only admin-chat payouts.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "id": "FLAG-004",
+      "concern": "Confirmation flow: null-recipient rejection is not actually wired to a uniform admin-DM path even though a `must` success criterion claims it is.",
+      "category": "completeness",
+      "severity_hint": "minor",
+      "evidence": "Step 1 only tightens `confirm_payment` to log and return `None`. The revised plan does not add an `on_cap_breach`-style callback or any other shared admin-DM mechanism for null-recipient rejections, while the `must` criteria still say that null-recipient paths trigger an admin DM."
+    }
+  ],
+  "verified_flag_ids": [
+    "FLAG-001",
+    "issue_hints",
+    "scope",
+    "correctness",
+    "all_locations",
+    "callers",
+    "callers-1",
+    "verification-1",
+    "verification",
+    "criteria_quality"
+  ],
+  "disputed_flag_ids": []
+}

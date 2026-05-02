@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/../src/features/logging/logger_cog.py
+# hypothesis_version: 6.151.11
+
+['# Daily Summary - ', 'BOT_USER_ID', 'Logger cog loaded', 'LoggerCog is ready', 'Summary', 'Summary thread for ', '_reaction_rows', 'add', 'attachments', 'author_avatar_url', 'author_discriminator', 'author_id', 'author_name', 'category', 'category_id', 'channel_id', 'channel_name', 'content', 'created_at', 'db_handler', 'dev_mode', 'display_name', 'edited_at', 'edited_timestamp', 'embeds', 'emoji', 'filename', 'flags', 'global_name', 'guild', 'guild_id', 'id', 'is_deleted', 'is_pinned', 'logger', 'logging', 'message_id', 'message_type', 'parent', 'reaction_count', 'reactions', 'reactors', 'reference_id', 'remove', 'server_config', 'thread_id', 'thread_type', 'url', 'user_id']

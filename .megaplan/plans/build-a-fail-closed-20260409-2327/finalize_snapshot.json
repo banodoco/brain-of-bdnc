@@ -1,0 +1,394 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Add the payment database foundation in `sql/payments.sql`: create `wallet_registry`, `payment_channel_routes`, and `payment_requests`; add updated-at triggers, RLS/permission hardening, indexes including the active-payment uniqueness guard, and the `claim_due_payment_requests(claim_limit, claim_guild_ids)` RPC using the existing `social_publications` claim pattern with `FOR UPDATE SKIP LOCKED`.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql"
+      ],
+      "commands_run": [],
+      "evidence_files": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/social_publications.sql"
+      ],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T2",
+      "description": "Extend `src/common/db_handler.py` with wallet-registry helpers, payment-route CRUD, payment-request creation/query methods, payment state-transition methods, and recovery/pending-confirmation fetches. Keep all methods guild-scoped, preserve `_gate_check()` conventions, and enforce the admin-safe state machine boundaries in the handler methods without exposing secret-bearing tables to generic query surfaces.",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py"
+      ],
+      "commands_run": [],
+      "evidence_files": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py"
+      ],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T3",
+      "description": "Add payment-route resolution to `src/common/server_config.py` by mirroring the social-route hierarchy: exact channel route, then parent channel route, then guild default. Implement `resolve_payment_route()`, `_get_payment_route_row()`, and `resolve_payment_destinations()` so producers can persist the resolved route key plus confirm/notify destinations.",
+      "depends_on": [
+        "T1",
+        "T2"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/server_config.py"
+      ],
+      "commands_run": [],
+      "evidence_files": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/server_config.py"
+      ],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T4",
+      "description": "Create the payments provider layer under `src/features/payments/`: add the package, define `SendResult` and the `PaymentProvider` ABC in `provider.py`, and implement `SolanaProvider` in `solana_provider.py` as a thin fail-closed adapter over the existing `SolanaClient` that distinguishes `pre_submit`, `submitted`, and `ambiguous` send outcomes without changing key-handling behavior.",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/__init__.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/provider.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/solana_provider.py"
+      ],
+      "commands_run": [],
+      "evidence_files": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/solana_client.py"
+      ],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T5",
+      "description": "Implement `src/features/payments/payment_service.py` as the core fail-closed orchestration layer: idempotent `request_payment`, confirmation queuing, execution logic for fixed-SOL test payments versus price-derived final payments, immediate persistence of submitted signatures, manual-hold behavior for all ambiguous/timeout states, safe recovery of inflight payments, and pending-confirmation lookup for restart-safe views.",
+      "depends_on": [
+        "T2",
+        "T3",
+        "T4"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py"
+      ],
+      "commands_run": [],
+      "evidence_files": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/sharing/social_publish_service.py"
+      ],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T6",
+      "description": "Add `src/features/payments/payment_cog.py` with the queue worker, startup recovery, persistent `PaymentConfirmView` registration via `bot.add_view(...)`, result notifications, and the direct `bot.get_cog()` producer handoff for terminal payment outcomes. Keep the worker pattern aligned with `sharing_cog.py` and make interval/batch-size env-configurable.",
+      "depends_on": [
+        "T5"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py"
+      ],
+      "commands_run": [],
+      "evidence_files": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/sharing/sharing_cog.py"
+      ],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T7",
+      "description": "Wire the admin surfaces for the payment subsystem: add payment-route CRUD, redacted payment-query/status/control tools, and wallet-query tools in `src/features/admin_chat/tools.py`; keep payment tables off `QUERYABLE_TABLES`; and update the hand-written tool catalog in `src/features/admin_chat/agent.py` so the new tools are reachable from admin chat.",
+      "depends_on": [
+        "T2",
+        "T3",
+        "T5"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/agent.py"
+      ],
+      "commands_run": [],
+      "evidence_files": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/agent.py"
+      ],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T8",
+      "description": "Refactor grants to become a payment producer: replace inline Solana sends in `src/features/grants/grants_cog.py` with payment-service requests, resolve route-configured destinations with fallback to the source thread only when no route exists, auto-confirm the fixed dust test payment, add `handle_payment_result()` for test/final outcomes, retire grants-specific inflight recovery, move grant statuses to `payment_requested` and `paid`, and update active-grant checks plus the assessor prompt to treat `payment_requested` as active.",
+      "depends_on": [
+        "T3",
+        "T5",
+        "T6"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/assessor.py"
+      ],
+      "commands_run": [],
+      "evidence_files": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/assessor.py"
+      ],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T9",
+      "description": "Wire application startup in `main.py`: instantiate `SolanaProvider`, build `PaymentService` with `PAYMENT_TEST_AMOUNT_SOL`, attach it to the bot, and register/load `PaymentCog` so all producers can access the shared payment subsystem without constructor churn.",
+      "depends_on": [
+        "T4",
+        "T5",
+        "T6"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py"
+      ],
+      "commands_run": [],
+      "evidence_files": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py"
+      ],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T10",
+      "description": "Add or extend automated coverage in the existing test suite for the new state machine and routing behavior: cover request idempotency, confirm transitions, submitted/pre-submit/ambiguous outcomes, timeout/manual-hold behavior, recovery rules, admin state boundaries, wallet verification, route persistence, fixed-SOL test-payment semantics, and at least a lightweight check of pending-confirmation view re-registration. Reuse existing test modules rather than introducing a brand-new test file.",
+      "depends_on": [
+        "T5",
+        "T6",
+        "T7",
+        "T8",
+        "T9"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests"
+      ],
+      "commands_run": [],
+      "evidence_files": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_route_tools.py"
+      ],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T11",
+      "description": "Run verification end to end as the final step: execute the most relevant focused pytest selections for the touched areas, then full `pytest`; write a short throwaway reproduction script for the original payment-safety bug, run it to confirm the fail-closed behavior, delete the script afterward, and if any check fails, fix the implementation and rerun until the suite is green. Also capture the manual staging smoke checklist for route-configured flow, fallback flow, restart recovery, and admin control paths.",
+      "depends_on": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6",
+        "T7",
+        "T8",
+        "T9",
+        "T10"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [
+        "pytest -k payment -v",
+        "pytest -k grants -v",
+        "pytest -q"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    }
+  ],
+  "watch_items": [
+    "Fail-closed invariant is the top priority: any ambiguous post-submit state or confirmation timeout must land in `manual_hold`, never in auto-retry.",
+    "Persist `tx_signature` and send-phase audit data before waiting on confirmation; do not leave a submitted payment recoverable only from memory.",
+    "Keep `payment_requests`, `wallet_registry`, and `payment_channel_routes` off generic admin-table querying; dedicated tools must redact wallet addresses and never expose key material.",
+    "Do not log, serialize, or store private keys anywhere; the provider must only hold the in-memory `SolanaClient`/keypair already used by the grants flow.",
+    "Route resolution must mirror existing social-route behavior exactly: exact channel, then parent channel, then guild default; only if nothing resolves should grants fall back to the source thread.",
+    "Test and final payments must remain distinct ledger entries linked by `(producer, producer_ref, is_test)` so restart and recovery logic can disambiguate phases.",
+    "`release_payment` must remain the only path out of `manual_hold`; `retry_payment` must remain blocked for `submitted` and `manual_hold`.",
+    "Update both the runtime logic and the admin-chat discoverability layer; adding tools without updating `agent.py` leaves the controls effectively unreachable.",
+    "`payment_requested` must be treated as an active grant state everywhere that gates duplicate applications, not just in the grants cog happy path.",
+    "Persistent Discord confirmations are a known verification gap in the approved plan; add lightweight automation for `PaymentConfirmView`/`bot.add_view(...)` recovery if feasible and do not regress it during implementation.",
+    "Mirror the existing `social_publications` queue and `social_channel_routes` patterns rather than inventing a second queue/routing style; the repo already has debt from mixed DB access patterns.",
+    "Supabase RPC behavior is a known repo-wide risk area; validate the new claim RPC carefully and keep the implementation close to the working social-publications template.",
+    "Do not introduce any Codex-to-Claude automatic fallback behavior on backend failures; the user explicitly locked that out.",
+    "Preserve historical grant payout columns for old records, but ensure new payment execution flows only through the payment ledger."
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Does `sql/payments.sql` define all three tables, the claim RPC, indexes, triggers, and RLS/permission hardening needed for a reusable fail-closed payment queue?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Do the new `db_handler` methods cover wallet registry, route CRUD, ledger queries, state transitions, and recovery fetches while preserving guild scoping and admin-safe state boundaries?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Does payment-route resolution now follow the same exact-channel -> parent-channel -> guild-default hierarchy as social routing, and does it return resolved confirm/notify destinations plus the route key?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Does the provider layer cleanly separate `pre_submit`, `submitted`, and `ambiguous` outcomes without changing how the Solana keypair is stored or used?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC5",
+      "task_id": "T5",
+      "question": "Does `PaymentService` enforce the fail-closed state machine, including idempotent requests, fixed-SOL test payments, immediate submitted-state persistence, and safe recovery behavior?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "question": "Does `PaymentCog` claim work atomically, re-register persistent confirmation views on startup, send result notifications, and hand terminal results back to producers via direct `bot.get_cog()` calls?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC7",
+      "task_id": "T7",
+      "question": "Are payment admin tools reachable from the admin agent, do they provide the required route and ledger controls, and do they avoid exposing secret-bearing tables or full wallet addresses?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC8",
+      "task_id": "T8",
+      "question": "Has the grants flow stopped sending Solana payments inline and been fully converted into test-then-final payment requests, with `payment_requested` treated as an active grant state?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC9",
+      "task_id": "T9",
+      "question": "Is the payment subsystem fully wired at startup with provider, service, env-configured dust amount, and cog registration, without forcing constructor changes across existing cogs?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC10",
+      "task_id": "T10",
+      "question": "Does the existing automated test suite now cover the critical payment state machine, routing, admin-control, recovery, and restart-registration behavior without adding a new test file?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC11",
+      "task_id": "T11",
+      "question": "Have focused tests, full `pytest`, and the throwaway bug-reproduction script all passed after any required fix-and-rerun loop, and is the manual staging smoke checklist captured for the remaining runtime-only paths?",
+      "executor_note": "",
+      "verdict": ""
+    }
+  ],
+  "meta_commentary": "Execute in the listed order and do not blur the safety boundaries to save time. The highest-risk mistakes are all state-machine mistakes: if a payment may have been submitted, freeze it; if the chain definitively rejected it, then and only then make it retryable. Mirror the existing social queue/routing patterns closely so the new subsystem fits repo conventions and does not deepen the current DB-access debt. Treat admin-chat exposure as part of the core implementation, not a follow-up, because the current generic table query surface is unsafe for new wallet/payment tables. For testing, the remaining critique from planning was weak automation around persistent-view recovery, so add a lightweight assertion for `PaymentConfirmView` re-registration if the existing harness makes that practical. The approved plan referenced a new dedicated payment test file, but this finalize brief intentionally adapts that into extending the existing test suite because the execution constraint here is to avoid creating new test files while still delivering equivalent coverage and the same safety checks.",
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Create payment ledger, wallet registry, routes, and claim RPC schema",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Add payment, wallet, and route methods to the DB handler",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Add hierarchical payment-route resolution to server config",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "Create the generic payment provider interface",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      },
+      {
+        "plan_step_summary": "Wrap the existing Solana client in a fail-closed provider adapter",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      },
+      {
+        "plan_step_summary": "Implement the core payment service and recovery logic",
+        "finalize_task_ids": [
+          "T5"
+        ]
+      },
+      {
+        "plan_step_summary": "Create the payment worker cog and restart-safe Discord flow",
+        "finalize_task_ids": [
+          "T6"
+        ]
+      },
+      {
+        "plan_step_summary": "Add admin route/payment controls and expose them to admin chat",
+        "finalize_task_ids": [
+          "T7"
+        ]
+      },
+      {
+        "plan_step_summary": "Refactor grants into a producer that uses the payment subsystem",
+        "finalize_task_ids": [
+          "T8"
+        ]
+      },
+      {
+        "plan_step_summary": "Wire provider, service, and cog startup in main",
+        "finalize_task_ids": [
+          "T9"
+        ]
+      },
+      {
+        "plan_step_summary": "Add automated coverage for the payment subsystem",
+        "finalize_task_ids": [
+          "T10",
+          "T11"
+        ]
+      },
+      {
+        "plan_step_summary": "Run integration verification and document manual smoke checks",
+        "finalize_task_ids": [
+          "T11"
+        ]
+      }
+    ],
+    "orphan_tasks": [],
+    "completeness_notes": "All 12 approved plan steps are mapped. The only deliberate deviation is Step 11's wording about creating `tests/test_payment_service.py`: this finalize brief preserves the same test intent and coverage but directs the executor to extend existing test modules instead, because the execution constraint for this step is to avoid adding new test files. The reviewer should verify that the resulting focused pytest targets still cover the full fail-closed state machine, routing, admin controls, recovery logic, and persistent-view registration path.",
+    "coverage_complete": true
+  }
+}

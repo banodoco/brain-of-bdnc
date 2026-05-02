@@ -1,0 +1,28 @@
+{
+  "checks": [],
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Reaction moderation: the plan only marks bot-initiated removals in ReactorCog's restricted-emoji branch, but the repo already has other bot `message.remove_reaction(...)` paths. Those removals will still flow through `on_raw_reaction_remove` without a marker and be misclassified as `user_self_removal`.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The proposed marker is attached only around `src/features/reacting/reactor_cog.py`'s restricted branch (`message.remove_reaction` at line 345). The repository already removes user reactions from bot code in `src/features/curating/curator.py:296`, `:339`, `:460`, and `:472` (`❌` cleanup during rejection flows). Under the plan, those paths have no bot marker, so their later raw-remove events would be logged as self-removals."
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Reaction moderation: `bot_clear_all` / `bot_clear_emoji` are not supportable from the clear-event payloads. The event does not identify who cleared the reactions, so those classifications would over-claim bot attribution and be wrong for moderator/manual clears.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan relies on `on_raw_reaction_clear` / `on_raw_reaction_clear_emoji` for actor classification. In the installed discord.py 2.6.3 used here, `RawReactionClearEvent` only has `message_id`, `channel_id`, `guild_id`, and `RawReactionClearEmojiEvent` only adds `emoji`; there is no actor/user field to distinguish bot vs moderator. The repo also has no alternative actor source in these handlers."
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Reaction moderation: message-delete cascades are actually distinguishable in this codebase, so dropping them leaves a real coverage gap against the brief.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/logging/logger_cog.py:140-158` already handles `on_raw_message_delete` with `message_id`, `channel_id`, and `guild_id`. Separately, `src/common/db_handler.py:626-736` maintains per-user active reaction rows in `discord_reactions` and soft-deletes them via `removed_at`. That means the implementation can enumerate active reactions for the deleted message and write one moderation row per removed reaction before/while clearing DB state; the plan's explicit 'out of scope' assumption would miss those removals."
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

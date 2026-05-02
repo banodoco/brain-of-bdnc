@@ -1,0 +1,144 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Update tool schema and plumbing: (1) Add `media_urls` property to the `share_to_social` input schema in tools.py around line 205. (2) Append direct-posting documentation to the tool description at line 190. (3) Update the `execute_share_to_social` signature at line 1799 to accept `guild_id: Optional[int] = None`. (4) Update the dispatcher call at line 3957 to pass `guild_id=trusted_guild_id`. See plan Steps 1-2 for exact schema shape and wording.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [
+        "src/features/admin_chat/tools.py"
+      ],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T2",
+      "description": "Implement direct-post branch in `execute_share_to_social` (plan Step 3). When neither `message_link` nor `message_id` is provided, enter direct mode. Key implementation points:\n\n1. Extract `media_urls = params.get('media_urls') or []` near line 1807.\n2. Replace the else-clause at line 1894-1895 with the direct-post branch:\n   - Validate: retweet requires `target_post_id`, rejects `tweet_text`/`media_urls`; post/reply require `tweet_text`.\n   - Resolve `guild_id` from the new parameter. Error if missing.\n   - Download media via `sharer._download_media_from_url(url, 'direct', index)` for each URL. Fail if any download fails.\n   - Construct `SocialPublishRequest` with sentinel IDs (`message_id=0, channel_id=0, user_id=0`), `user_details: {'direct_post': True}` in source_context metadata, disabled announce/first-share/legacy/duplicate policies.\n   - If `scheduled_at`: call `social_publish_service.enqueue(request)` and return (do NOT clean up temp files).\n   - If immediate: call `social_publish_service.publish_now(request)` in try/finally that cleans up temp files.\n   - Skip `_announce_tweet_url` and first-share notification.\n   - Return same response shape: `{success, message, tweet_url, tweet_id, publication_id, already_shared: False}`.\n3. Existing message-based branch stays completely unchanged (just indented into the if-block). If `media_urls` provided alongside a message reference, ignore `media_urls`.\n\nCritical details from plan: `user_details: {'direct_post': True}` satisfies XProvider guard at x_provider.py:31-33. `_build_tweet_caption` uses provided `tweet_text` as-is (social_poster.py:111-112). Target code size: under 80 new lines.",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [
+        "src/features/admin_chat/tools.py"
+      ],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T3",
+      "description": "Update the admin chat agent system prompt (plan Step 4). In `src/features/admin_chat/agent.py` around line 141, expand the `share_to_social` instruction to mention direct posting:\n\n`- Share to social media with `share_to_social`, including scheduled posts/replies/retweets. Supports direct posting without a Discord message: provide tweet_text and optionally media_urls (e.g. Supabase video links). For retweets, provide action=retweet and target_post. Use the returned `publication_id` for canonical tracking, and if `already_shared` is true, report the existing `tweet_url`.`",
+      "depends_on": [
+        "T2"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [
+        "src/features/admin_chat/agent.py"
+      ],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T4",
+      "description": "Run existing tests and validate (plan Step 5). Run `python -m pytest tests/ -x -q` and confirm all pass. Then manually trace the direct-post code path for correctness:\n- `media_urls` + `tweet_text` -> downloads -> SocialPublishRequest -> publish_now/enqueue\n- `tweet_text` alone (no media) -> text-only SocialPublishRequest -> publish_now\n- `action=retweet` + `target_post` (no tweet_text, no media_urls) -> retweet via XProvider._retweet\n- Missing `tweet_text` with `media_urls` for post action -> clear error\n- `media_urls` alongside `message_link` -> message-based flow (media_urls ignored)\n\nWrite a short throwaway script that imports and calls `execute_share_to_social` with direct-mode params (mocked sharer/bot) to verify the branch is entered and validation works, run it, then delete it. If any test fails, read the error, fix the code, and re-run until all pass.",
+      "depends_on": [
+        "T3"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [
+        "python -m pytest tests/ -x -q"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    }
+  ],
+  "watch_items": [
+    "XProvider.publish() guard at x_provider.py:31-33 requires truthy `user_details` \u2014 direct mode must set `{'direct_post': True}` in source_context metadata",
+    "Scheduled direct posts must NOT clean up temp files (matches existing message-based scheduled behavior). Immediate posts MUST clean up in finally block.",
+    "media_hints entries from `_download_media_from_url` already include the original `url` field \u2014 this preserves the source URL in stored payloads for future re-download",
+    "message_id=0, channel_id=0, user_id=0 are sentinel values \u2014 verify no FK constraints in social_publications table reject them",
+    "route_key is recommended but not required in direct mode \u2014 without it, route resolution uses guild_id + channel_id=0 which falls through to guild default",
+    "When media_urls is provided alongside message_link/message_id, the message-based flow takes precedence and media_urls is silently ignored",
+    "Do NOT make admin-chat-classification debt worse \u2014 anthropic client initialization timing is fragile",
+    "Do NOT make social-channel-routes debt worse \u2014 route management tooling gap is pre-existing",
+    "Do NOT make db-handler-social-publications debt worse \u2014 keep to existing access patterns"
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Does the new `media_urls` schema property use type=array with items.type=string, and is the tool description updated to document direct-post mode?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Does the direct-post branch correctly construct SocialPublishRequest with `user_details: {'direct_post': True}` in source_context.metadata, and does it disable announce/first-share/legacy/duplicate policies?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Does the updated agent prompt mention both `tweet_text` and `media_urls` as parameters for direct posting, and does it mention direct retweet support?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Do all existing tests pass without modification, and has the direct-post code path been traced for the five scenarios listed in the task?",
+      "executor_note": "",
+      "verdict": ""
+    }
+  ],
+  "meta_commentary": "This is a focused 4-task execution: schema+plumbing, core implementation, prompt update, then validation. The core risk is getting the SocialPublishRequest construction right for direct mode \u2014 the sentinel IDs (0) and the `user_details` stub must satisfy downstream guards. The executor should read `x_provider.py:31-33` and `social_poster.py:111-112` before writing T2 to confirm the plan's assumptions about those guards still hold. The direct-post branch should be kept compact (under 80 lines) and structurally parallel to the existing message-based branch to minimize review surface. The `_download_media_from_url` method is already battle-tested in tweet_sharer_bridge.py \u2014 reuse it identically. For T2, the cleanest approach is to turn the existing `if message_link: ... elif message_id: ... else: error` block into `if message_link: ... elif message_id: ... else: [direct mode]` \u2014 the else-clause replaces a one-line error with the new branch, and the rest of the message-based flow stays in its original position inside the try block.",
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Step 1: Update tool schema with media_urls property and description",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 2: Pass guild context to execute_share_to_social",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 3: Implement direct-post branch in execute_share_to_social",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 4: Update admin chat system prompt",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 5: Validate with tests and manual trace",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      }
+    ],
+    "orphan_tasks": [],
+    "completeness_notes": "All 5 plan steps mapped to tasks. Steps 1-2 are combined into T1 since they're both small schema/plumbing changes in the same file with no behavioral impact. Steps 3-5 map 1:1 to T2-T4.",
+    "coverage_complete": true
+  },
+  "baseline_test_command": "pytest --tb=no -q --no-header",
+  "baseline_test_failures": [],
+  "baseline_test_note": "Baseline test run should be performed by executor before making changes. All 17 test files in tests/ should pass. If any fail before changes, those are pre-existing failures to note and exclude from regression assessment."
+}

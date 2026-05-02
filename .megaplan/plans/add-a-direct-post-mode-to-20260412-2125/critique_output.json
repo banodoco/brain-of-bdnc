@@ -1,0 +1,28 @@
+{
+  "checks": [],
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Sharing pipeline: direct mode's scheduled media path is not viable if it only downloads external URLs to temp files and enqueues the existing request payload.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan says direct mode should download each media URL to a temp file, support scheduled posts, and clean temp files in a finally block. But `SocialPublishService.enqueue()` persists `request_payload` as-is (`src/features/sharing/social_publish_service.py:128-144, 325-329`), `execute_publication()` later reconstructs the request from that payload (`src/features/sharing/social_publish_service.py:150-188, 464-485`), and the X posting path requires each attachment's `local_path` to still exist when the queued job runs (`src/features/sharing/subfeatures/social_poster.py:418-426`). A queued direct post with downloaded temp media will therefore fail once those files are cleaned up or disappear between processes."
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Social publishing metadata: the proposed direct request shape drops `user_details`, but the X provider currently refuses to publish without it.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan's direct branch constructs `source_context` with only `{'guild_id': guild_id}` and uses `user_id=0`. In the actual pipeline, `XProvider.publish()` reads `metadata.get('user_details')` and returns failure if it is missing (`src/features/sharing/providers/x_provider.py:29-33`). The current admin-chat message path explicitly loads member data and passes it through `source_context.metadata['user_details']` (`src/features/admin_chat/tools.py:1944-2008`). Passing only `guild_id` is not enough to reach a successful publish."
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Admin chat social sharing: the plan narrows direct mode to `media_urls`-driven posts/replies and explicitly errors on retweets, which does not match the requested no-Discord direct mode support for `action` including `retweet`.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The requested behavior says the tool should support direct posting without a Discord message while still supporting `action (post/reply/retweet)`, `target_post`, and route override. The proposed branch only enters direct mode when `media_urls` is present, otherwise it keeps the current `message_link/message_id` requirement, and it additionally proposes returning an error for `action='retweet'`. That means retweets without a Discord message still are not supported, and text-only direct replies/posts without `media_urls` would also fall back to the old message-based requirement."
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

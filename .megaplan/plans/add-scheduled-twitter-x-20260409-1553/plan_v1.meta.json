@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-09T14:00:06Z",
+  "hash": "sha256:4adf6dba8a3fbd88f84549743d812ba7c87ecd423be43d16f83a79a250f6f7f1",
+  "questions": [
+    "Should the scheduler post at fixed times (e.g., every day at 2pm UTC) or respect per-post scheduled_for timestamps? The plan assumes per-post timestamps for maximum flexibility, but a simpler 'daily batch at X time' approach is also viable.",
+    "For retweets/quote tweets: Twitter API v2 supports quote tweets (pass quote_tweet_id to create_tweet). Should we support native retweets (just amplifying someone else's tweet) or only quote tweets (your own text + embedded tweet)?",
+    "Should there be a confirmation step before scheduled posts go live? E.g., the bot DMs admin 30 min before posting for final approval, or should queued posts publish automatically without further interaction?",
+    "When scheduling posts sourced from Discord messages, should the bot resolve and cache the media URL at schedule time (to avoid expired CDN URLs), or download-on-publish (simpler but Discord CDN URLs expire)?",
+    "Is there a desired daily posting cadence/limit? E.g., max 3 tweets per day, spaced 2+ hours apart \u2014 or just fire everything that's due?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "A scheduled_posts table exists in Supabase with the required columns and an index on (status, scheduled_for)",
+      "priority": "must"
+    },
+    {
+      "criterion": "Admin can schedule a tweet via DM with the bot (schedule_tweet tool) specifying tweet text, optional media source, optional reply target, and a publish time",
+      "priority": "must"
+    },
+    {
+      "criterion": "A tasks.loop scheduler in SharingCog polls for due posts and publishes them using the existing sharing pipeline (finalize_sharing or post_tweet)",
+      "priority": "must"
+    },
+    {
+      "criterion": "Posted tweets are recorded in shared_posts and announced to the announcement channel, same as manually triggered tweets",
+      "priority": "must"
+    },
+    {
+      "criterion": "Admin can list pending scheduled posts and cancel them via DM tools",
+      "priority": "must"
+    },
+    {
+      "criterion": "Failed posts are marked as failed with error details and admin is notified via DM",
+      "priority": "must"
+    },
+    {
+      "criterion": "Thread replies work: admin can schedule a reply to an existing tweet ID",
+      "priority": "must"
+    },
+    {
+      "criterion": "Text-only tweets work: admin can schedule a tweet with just text and no media source",
+      "priority": "must"
+    },
+    {
+      "criterion": "Scheduler loop runs every 1 minute and correctly identifies posts where scheduled_for <= now()",
+      "priority": "must"
+    },
+    {
+      "criterion": "No duplicate posting: status transitions (pending -> posting -> posted/failed) prevent double-publishing",
+      "priority": "must"
+    },
+    {
+      "criterion": "scheduled_posts is in QUERYABLE_TABLES so admin can inspect it via query_table",
+      "priority": "should"
+    },
+    {
+      "criterion": "schedule_tweet supports relative time inputs like 'tomorrow 2pm' in addition to ISO timestamps",
+      "priority": "should"
+    },
+    {
+      "criterion": "Each new file stays under ~300 lines; existing files grow minimally",
+      "priority": "should"
+    },
+    {
+      "criterion": "No changes to existing social_poster.post_tweet or Sharer.finalize_sharing signatures",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual end-to-end test: schedule a post 2 min in the future, verify it publishes correctly",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "The admin is the sole user of the scheduling system \u2014 no multi-user queue management needed.",
+    "Per-post scheduled_for timestamps (not a fixed daily batch time) \u2014 this is more flexible and the 1-min polling loop is cheap.",
+    "Posts publish automatically when due, without a pre-publish confirmation step from admin.",
+    "Media is downloaded at publish time (not schedule time) to keep the queue lightweight \u2014 Discord CDN URLs from recent messages should still be valid within a day or two. If this is a problem, we can add prefetch later.",
+    "Native retweets are out of scope; only original tweets, replies, and quote tweets are supported.",
+    "No rate limiting beyond what Twitter enforces \u2014 admin is responsible for not over-scheduling.",
+    "The Supabase migration will be applied manually (or via existing migration tooling) \u2014 there's no automated migration runner in the bot.",
+    "quote_tweet_url support requires passing quote_tweet_id to tweepy's create_tweet \u2014 this is a small addition to social_poster.post_tweet but is worth including.",
+    "The scheduler runs in the same process as the Discord bot via discord.ext.tasks \u2014 no separate worker process needed."
+  ],
+  "structure_warnings": [
+    "Each step section should reference at least one file in backticks."
+  ]
+}

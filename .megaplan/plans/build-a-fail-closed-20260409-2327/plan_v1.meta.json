@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-09T21:35:22Z",
+  "hash": "sha256:9bed5b34d492af03515f5177ae15cc4b2a39faa2a402f30e654a562cf236b5b0",
+  "questions": [
+    "Should test payments send actual dust (e.g. 0.000001 SOL) to validate the wallet is receivable on-chain, or just validate the address format locally? Real dust costs a tx fee (~0.000005 SOL) per grant but gives true chain-level validation.",
+    "Is there a preference for how the Discord confirmation flow works \u2014 a button/reaction on the thread message, or a DM to the applicant? Currently grants collect the wallet inline in the forum thread.",
+    "Should the payment worker support multiple concurrent providers (e.g. future SPL token payouts, USDC on Solana), or is native SOL the only chain target for v1? This affects whether the provider dict is overkill vs. just right.",
+    "For the admin retry flow: should retry re-fetch the current SOL price (amount may differ from original) or use the originally quoted price? Re-fetching is safer for the org but the applicant sees a different amount.",
+    "Is there an existing Supabase migration workflow (e.g. a migrations directory, a CI step that applies SQL), or is sql/ just reference scripts applied manually?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "payment_requests table exists with all specified columns, constraints, indexes, and RLS policies",
+      "priority": "must"
+    },
+    {
+      "criterion": "claim_due_payment_requests RPC uses FOR UPDATE SKIP LOCKED and atomically transitions status to processing",
+      "priority": "must"
+    },
+    {
+      "criterion": "After tx submission (status=submitted), ambiguous chain status (not_found) transitions to manual_hold \u2014 never auto-retry",
+      "priority": "must"
+    },
+    {
+      "criterion": "Only chain-definitive failure (status check returns 'failed') allows automatic transition to failed state",
+      "priority": "must"
+    },
+    {
+      "criterion": "Private keys never appear in DB columns, log messages, or admin chat tool responses",
+      "priority": "must"
+    },
+    {
+      "criterion": "payment_requests table is NOT in QUERYABLE_TABLES; dedicated query_payments tool redacts wallet addresses",
+      "priority": "must"
+    },
+    {
+      "criterion": "Admin retry_payment only works from failed or manual_hold states \u2014 submitted state is blocked",
+      "priority": "must"
+    },
+    {
+      "criterion": "Unique partial index prevents two active (non-failed, non-cancelled) payments for the same producer + producer_ref + is_test combination",
+      "priority": "must"
+    },
+    {
+      "criterion": "On bot restart, recover_inflight correctly resolves processing (no tx_sig \u2192 requeue) and submitted (check chain \u2192 confirm/fail/hold) states",
+      "priority": "must"
+    },
+    {
+      "criterion": "Grants cog produces payment requests instead of calling solana_client directly; grant status flow updated accordingly",
+      "priority": "must"
+    },
+    {
+      "criterion": "All new unit tests pass (pytest tests/test_payment_service.py)",
+      "priority": "must"
+    },
+    {
+      "criterion": "Full pytest suite passes with no regressions",
+      "priority": "must"
+    },
+    {
+      "criterion": "PaymentProvider ABC is minimal \u2014 only send, check_status, get_token_price_usd, token_name methods",
+      "priority": "should"
+    },
+    {
+      "criterion": "Worker loop follows sharing_cog pattern: @tasks.loop, claim batch, sequential process, env-configurable interval and batch size",
+      "priority": "should"
+    },
+    {
+      "criterion": "New files stay under ~300 lines each; payment_service.py may be up to ~400 given the state machine complexity",
+      "priority": "should"
+    },
+    {
+      "criterion": "Test and final payment flows are distinct: is_test flag on payment_requests, test payments can auto-confirm",
+      "priority": "should"
+    },
+    {
+      "criterion": "Discord confirmation uses button interaction (not just message reply) for better UX",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual staging smoke test: full grant \u2192 test-payment \u2192 confirm \u2192 final-payment \u2192 confirmed flow",
+      "priority": "info"
+    },
+    {
+      "criterion": "Manual staging test: kill bot mid-payment, restart, verify recovery",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "v1 targets native SOL transfers only \u2014 SPL token support (USDC etc.) is a future extension, but the provider abstraction accommodates it without code changes.",
+    "No separate wallet_registry table in v1. Recipient wallets are stored per-payment. A shared wallet registry can be layered on later when multiple producers need it.",
+    "The existing SolanaClient class remains unchanged; SolanaProvider is a thin adapter wrapping it.",
+    "grant_applications columns (payment_status, wallet_address, tx_signature, sol_amount, sol_price_usd) are left in the table for historical records but new payments flow through payment_requests exclusively.",
+    "SQL migrations are applied manually to Supabase \u2014 there is no automated migration runner in CI.",
+    "The Discord confirmation flow uses the existing forum thread (where the grant lives) rather than DMs \u2014 consistent with current UX where wallet submission happens in-thread.",
+    "Test payments send real dust (0.000001 SOL) on-chain to validate the wallet, not just local format checks \u2014 the cost is trivial and the assurance is high.",
+    "The payment worker runs in the same bot process as the sharing worker \u2014 no separate deployment.",
+    "Admin chat tools follow the existing Anthropic tool-call format used by other tools in tools.py."
+  ],
+  "structure_warnings": []
+}

@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/discord_utils.py
+# hypothesis_version: 6.151.11
+
+[1.0, 429, 'DatabaseHandler', 'DiscordBot', 'NO_SHARING_ROLE_ID', 'attachments', 'channel_id', 'content_type', 'db_handler', 'deleted', 'errored', 'filename', 'guilds', 'height', 'id', 'message_id', 'no_sharing_role_id', 'proxy_url', 'retry_after', 'safe_send_message', 'server_config', 'size', 'skipped', 'status', 'success', 'unknown', 'url', 'width']

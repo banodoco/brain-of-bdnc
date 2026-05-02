@@ -1,0 +1,289 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "guidance": "Cross-check the result against explicit user notes, critique corrections, and watch items. Flag anything the implementation ignored, contradicted, or only partially covered.",
+      "findings": [
+        {
+          "detail": "Checked the user\u2019s explicit markdown-rendering scope addition against v3 and the repo. That part is still correctly covered: the plan keeps the shared `AssetDescription` change for both `banodoco-website/src/pages/ResourceDetail/index.tsx:166-169` and `banodoco-website/src/pages/Resources/ResourceModal.tsx:186-189`, which matches the note and the actual plain-text call sites.",
+          "flagged": false
+        },
+        {
+          "detail": "The plan still intentionally diverges from the approved runtime shape, and that remains a flag. The brief asked for two Supabase Edge Functions, a promoter directory under `supabase/functions/`, and a resumable cursor table; v3 still replaces the promoter with PL/pgSQL and removes the cursor table entirely. Documenting the deviation is useful, but it does not make it cease to be a deviation from the approved deliverables.",
+          "flagged": true
+        },
+        {
+          "detail": "The revision also drops the requested first-working-version milestone of 'schema + promoter dry-run' before media rehosting. The brief explicitly calls for promoter dry-run behavior, and the repo has multiple existing dry-run patterns in scripts, but v3 has no promoter preview mode at all and jumps straight to live `SELECT internal.discord_promote_resources()` validation.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the user\u2019s markdown-rendering scope addition against the revised plan and the repo. This part is now explicitly covered: the plan adds a shared `AssetDescription` component and says it will replace the plain-text description blocks in both `banodoco-website/src/pages/ResourceDetail/index.tsx:166-169` and `banodoco-website/src/pages/Resources/ResourceModal.tsx:186-189`, which matches the user note and closes the earlier gap.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "The revision diverges from the user\u2019s stated runtime/deliverable shape in a way that still needs to be flagged. The brief asked for two Supabase Edge Functions plus pg_cron, with a promoter function directory under `supabase/functions/`, and a resumable per-channel cursor table; v2 replaces the promoter with PL/pgSQL and removes the cursor table entirely. That may be a pragmatic simplification, but it is still a requirements change rather than a straight implementation of the approved shape.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "guidance": "Look for logic errors, invalid assumptions, broken invariants, schema mismatches, or behavior that would fail at runtime. When the fix adds a conditional branch, check whether it handles all relevant cases \u2014 not just the one reported in the issue.",
+      "findings": [
+        {
+          "detail": "Checked the revised resource type mapping against the website code and that part is still correct. `banodoco-website/src/pages/SubmitResource/index.tsx:10-13` only supports `lora | workflow`, and v3 keeps the `resources -> workflow` / other four channels -> `lora` mapping that matches the repo.",
+          "flagged": false
+        },
+        {
+          "detail": "The main promoter insert still does not implement the anti-join behavior the overview claims. In Step 7, the valid asset insert selects every qualifying OP with an existing member and relies on `ON CONFLICT (discord_thread_id) DO UPDATE`; because there is no `NOT EXISTS` filter on the insert path, every rerun will re-update already imported assets and `GET DIAGNOSTICS v_a = ROW_COUNT` will not stay at zero, which conflicts with the plan\u2019s own idempotency/counting claims.",
+          "flagged": true
+        },
+        {
+          "detail": "The observability SQL in the plan is still mismatched to the actual schema. `supabase/migrations/20251210000000_create_system_logs.sql:5-18` defines `system_logs` with `logger_name` and `extra` columns, not `component` and `payload`, yet v3 still proposes inserts like `INSERT INTO public.system_logs (component, level, message, payload) ...`. As written, those logging statements would fail until the column names are corrected.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the revised type mapping against the repo and that specific defect is fixed. The plan now maps Discord resource posts to `workflow` or `lora`, which matches the website\u2019s real resource enum in `banodoco-website/src/pages/SubmitResource/index.tsx:10-13` and the current filter/card branches that key off `workflow`.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "The replacement for FLAG-001 is still incomplete. V2 no longer uses `created_at > cursor`, but it still limits discovery to `discord_messages.created_at > NOW() - INTERVAL '60 days'`; a thread created 61+ days ago that only later reaches 5 reactions would still never import, even though the product rule says any qualifying OP becomes an asset and the ongoing sync is not scoped to recent posts only.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "The plan\u2019s failure-handling story for missing members is not technically sufficient in SQL form. It says an FK miss will be 'logged and skipped', but the proposed promoter logic is a set-based `INSERT ... SELECT` inside one PL/pgSQL function; if one row violates the `members(member_id)` FK, PostgreSQL aborts the statement unless the plan introduces row-level exception isolation, so one bad author can block the whole promoter run rather than just one asset/comment.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "guidance": "Look at how the changed function is used across the codebase. Does the fix only address one caller's scenario while others remain broken? Flag missing required work or out-of-scope edits. A minimal patch is often right, but check whether the underlying problem is bigger than what the issue describes.",
+      "findings": [
+        {
+          "detail": "Checked the earlier UI-surface problem against the v3 simplification and that particular scope gap is resolved. `ResourceDetail` still has only inline `activeMedia` state at `banodoco-website/src/pages/ResourceDetail/index.tsx:59-74`, so downgrading comment/media interaction to ordinary `<a target=\"_blank\">` links now fits the real surface instead of inventing an unsupported lightbox boundary.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the prior surface-scope problems against the revised repo references and those specific fixes are in place at the plan level. V2 moves the primary UI work to `banodoco-website/src/pages/ResourceDetail/index.tsx`, which is the actual routed surface, and it explicitly threads `is_hidden` through `useResources`, `useCommunityResources`, `useCommunityResource`, and `useUserProfile` instead of leaving the kill switch modal-local.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "The discussion/media interaction work is still broader than the plan acknowledges. `ResourceDetail` currently only swaps `activeMedia` inline (`banodoco-website/src/pages/ResourceDetail/index.tsx:59-74, 228-245`) and the resource area has no existing comment lightbox component to reuse; the plan nevertheless says comment thumbnails will open an 'existing lightbox' anchored to the parent comment. That means a non-trivial new modal/state/navigation surface is still missing from the scoped implementation steps.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "guidance": "Search for all instances of the symbol/pattern being changed. Also ask: does this feature require setup, registration, or integration code beyond the core logic? Missing glue code causes test failures even when the core fix is correct.",
+      "findings": [
+        {
+          "detail": "Checked the proposed storage bucket/path against the shared Supabase setup and that part lines up. The shared workspace already creates a public `user-uploads` bucket in `supabase/migrations/20260326000000_consolidate_workspace.sql:39-75`, and the website already writes to `user-uploads` from places like `banodoco-website/src/pages/SubmitArt/index.tsx:62-73`.",
+          "flagged": false
+        },
+        {
+          "detail": "The new all-history promoter strategy is still missing supporting index work. `supabase/migrations/20251101000000_create_discord_tables.sql:29-36` gives `discord_messages` only single-column indexes on `channel_id`, `created_at`, `author_id`, `reference_id`, `synced_at`, `thread_id`, and `is_deleted`; there is no composite or partial index backing the new every-10-min scan of `channel_id` plus `message_id = thread_id` plus `reaction_count >= 5` plus `is_deleted = FALSE`. v3 calls that scan 'cheap' and 'trivially small', but the repository does not currently provide the index support for that claim.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the previously missing glue paths and that part of the revision is covered. The plan now explicitly updates `useResources`, `useCommunityResources`, `useCommunityResource`, and `useUserProfile`, so the earlier missing `source`/`discord_channel_id`/`is_hidden` propagation problem is addressed at the plan level.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "The Cloudflare reuse story is still incomplete against the actual repository code. `supabase/functions/cloudflare-stream-webhook/index.ts:210-240` only writes `cloudflare_playback_hls_url`, `cloudflare_thumbnail_url`, and `storage_provider`; it does not persist duration, even though the revised plan and success criteria say the existing webhook will populate HLS, thumbnail, and duration for imported videos. That supporting-infrastructure contract is still inaccurate unless the plan adds a webhook change or drops duration from the promise.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "The new vault bootstrap step is not yet self-contained enough to satisfy the plan\u2019s own `supabase db reset` criterion. There is no existing `vault.create_secret`, `internal.get_service_role_key`, or secret-seeding pattern anywhere under `supabase/`, and the proposed migration depends on an out-of-band `current_setting('app.settings.service_role_key_value', true)` value that the repo never sets. As written, the bootstrap is still an infrastructure gap rather than a ready migration recipe.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "guidance": "Grep for call sites. For each caller, check what values it passes \u2014 especially edge cases like None, zero, empty, or composite inputs. Then ask: should this change be here, or in a caller, callee, or new method?",
+      "findings": [
+        {
+          "detail": "Checked the concrete caller path again and the revised interaction model now matches it. `ResourceDetail` only owns `activeMedia` switching and `rg -n \"ResourceModal\" banodoco-website/src` still finds no live callers for the modal, so the new-tab anchor approach no longer depends on any nonexistent caller boundary or modal state.",
+          "flagged": false
+        },
+        {
+          "detail": "I also re-checked the data-loading callers that feed these surfaces. The four hooks identified in earlier iterations remain the right fan-out points for `source`, `discord_channel_id`, and `is_hidden`, so v3\u2019s choice to thread the new fields through `useResources`, `useCommunityResources`, `useCommunityResource`, and `useUserProfile` is consistent with the real caller graph.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the prior caller propagation defect against the revised plan and that part is addressed. The plan now explicitly revises the four existing resource-consuming hooks (`useResources`, `useCommunityResources`, `useCommunityResource`, `useUserProfile`) so the real callers that feed cards, detail pages, and profile counts would at least receive `source`, `discord_channel_id`, and `is_hidden`.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "I also checked the concrete caller that would need to host the new interaction model. `ResourceDetail` currently has only `activeMedia`/`setActiveMedia` state and no comment-modal or lightbox caller boundary (`banodoco-website/src/pages/ResourceDetail/index.tsx:59-74`), while `rg -n \"ResourceModal\" banodoco-website/src` still shows no imports/usages for the modal. The plan\u2019s promise of an 'existing lightbox' anchored to a parent comment therefore still lacks a real caller path in the current codebase.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "id": "issue_hints",
+      "concern": "Discord resource sync planning: v3 still diverges from the approved deliverable shape and drops the requested promoter dry-run / first-working-version milestone.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The brief explicitly asks for two Supabase Edge Functions, a promoter directory under `supabase/functions/`, a resumable cursor table, and a first milestone of `schema + promoter dry-run`; v3 keeps the PL/pgSQL promoter/no-cursor pivot and has no promoter dry-run path."
+    },
+    {
+      "id": "FLAG-008",
+      "concern": "Discord sync logging: the revised plan still targets nonexistent `system_logs` columns, so the proposed promoter/importer logging SQL would fail against the actual schema.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`supabase/migrations/20251210000000_create_system_logs.sql:5-18` defines `logger_name` and `extra`, not `component` and `payload`, while v3 Step 7 and Step 23 still use `component`/`payload` in example inserts."
+    },
+    {
+      "id": "FLAG-009",
+      "concern": "Discord promoter idempotency: the revised main insert path still lacks the claimed anti-join, so reruns will update every already-imported qualifying OP and its row-count/idempotency claims will not hold as written.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "In v3 Step 7, the valid asset insert filters only on channel, OP/thread identity, reaction threshold, deletion state, and member existence, then uses `ON CONFLICT (discord_thread_id) DO UPDATE`; it does not include `NOT EXISTS` on `assets.discord_thread_id` for the main insert path."
+    },
+    {
+      "id": "FLAG-010",
+      "concern": "Discord promoter performance: the new all-history OP scan is not backed by a matching composite or partial index in `discord_messages`.",
+      "category": "performance",
+      "severity_hint": "uncertain",
+      "evidence": "`supabase/migrations/20251101000000_create_discord_tables.sql:29-36` only creates single-column indexes on `discord_messages`; there is no index tailored to `channel_id` + OP rows + `reaction_count >= 5` + `is_deleted = FALSE`, even though v3 removes the time window and runs every 10 minutes."
+    },
+    {
+      "id": "verifiability-0",
+      "concern": "Criterion 0: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-1",
+      "concern": "Criterion 10: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-2",
+      "concern": "Criterion 16: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-3",
+      "concern": "Criterion 17: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-4",
+      "concern": "Criterion 22: requires human verification (inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-5",
+      "concern": "Criterion 23: requires human verification (inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-6",
+      "concern": "Criterion 25: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-7",
+      "concern": "Criterion 26: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-8",
+      "concern": "Criterion 27: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-9",
+      "concern": "Criterion 29: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-10",
+      "concern": "Criterion 31: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-11",
+      "concern": "Criterion 32: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-12",
+      "concern": "Criterion 35: requires human verification (subjective_judgment).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    }
+  ],
+  "verified_flag_ids": [
+    "FLAG-001",
+    "FLAG-005",
+    "correctness-1",
+    "correctness-2",
+    "correctness-3",
+    "all_locations-1",
+    "all_locations-2",
+    "all_locations-3",
+    "FLAG-006",
+    "FLAG-007",
+    "scope",
+    "callers"
+  ],
+  "disputed_flag_ids": []
+}

@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-19T09:09:45Z",
+  "hash": "sha256:2d25522d929ef1982402758e196944a49e4ff44e11c2008ce6ea7d5570faa526",
+  "questions": [
+    "Is `moderation_decisions` intended to be long-lived analytics (retained indefinitely) or operational (short TTL)? Assuming long-lived; no retention policy will be added.",
+    "Confirm the suspicious emoji set is exactly {\ud83e\udd2e, \ud83d\udc4e, \ud83d\ude2d}, or should it also include \ud83d\udca9, \ud83d\ude44, etc.? Proceeding with the three listed in the brief.",
+    "Should the admin DM include a jump link to the message, or just a plain text summary? Assuming jump link + reactor mention + emoji + content snippet.",
+    "Is there an existing workspace-level Supabase migrations repo I should check the exact filename-prefix convention for, or is the current `.migrations_staging/` timestamp format authoritative? Assuming the latter."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "A new `moderation_decisions` migration SQL file exists under `.migrations_staging/` with columns for message/channel/guild IDs, reactor info, message author info, content snippet, classification (CHECK constraint covering the 4 values), reason, is_suspicious, removed_at, and appropriate indexes.",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`DatabaseHandler.record_moderation_decision` exists in `src/common/db_handler.py`, is gated via `_gate_check`, and inserts into the `moderation_decisions` table.",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "The restricted-emoji branch in `reactor_cog.on_raw_reaction_add` records a `bot_auto_restricted` moderation_decision with reason in {flag, political, religious} before returning.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "`on_raw_reaction_remove` writes a `user_self_removal` decision when no bot-initiated marker is present, and is a no-op (for moderation_decisions) when the marker is present.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Self-removal of \ud83e\udd2e, \ud83d\udc4e, or \ud83d\ude2d sets `is_suspicious=true` and DMs `ADMIN_USER_ID` via the base_bot.py admin-DM pattern.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "`on_raw_reaction_clear` and `on_raw_reaction_clear_emoji` listeners exist on ReactorCog and write `bot_clear_all` / `bot_clear_emoji` decisions respectively.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "`tests/test_moderation_decisions.py` passes and covers the five scenarios listed in Step 4.2.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Full existing test suite (`pytest -q`) still passes with no regressions in reactor or logger tests.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "No new config surfaces, env vars, or feature flags added beyond reusing existing ADMIN_USER_ID.",
+      "priority": "must",
+      "requires": [
+        "parse_diff",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Message content snippet is truncated to 200 characters at the call site.",
+      "priority": "should",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "In-memory pending-removals set has opportunistic pruning (entries older than ~60s are dropped) to bound memory.",
+      "priority": "should",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`_is_restricted_emoji` is refactored into `_classify_restricted_emoji` returning the category; boolean callers updated.",
+      "priority": "should",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Manual smoke test in dev Discord: flag-emoji reaction \u2192 row with bot_auto_restricted; \ud83e\udd2e self-retract \u2192 admin DM received.",
+      "priority": "info",
+      "requires": [
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Migration file is manually copied into `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` before deploy (handoff step, not automatable from the brain-of-bndc repo).",
+      "priority": "info",
+      "requires": [
+        "run_shell"
+      ]
+    }
+  ],
+  "assumptions": [
+    "`moderation_decisions` is a new net table, not a view over `discord_reaction_log`, because the log lacks classification, reason, message author, and content snippet \u2014 a view cannot synthesize those.",
+    "No backfill is required; the table tracks events forward-only from deploy time.",
+    "Single-reaction removals cannot be attributed to a moderator via Discord gateway events (payload.user_id is the reaction owner, not the actor). All non-bot-marked single removes are classified as `user_self_removal`. Moderator-driven removals are only distinguishable when they come through `reaction_clear` / `reaction_clear_emoji`.",
+    "Bot-initiated removals are tagged by registering (message_id, user_id, emoji) in a short-lived in-memory dict on the cog before calling `message.remove_reaction`; entries auto-prune after ~60s.",
+    "Suspicious emoji set is exactly {\ud83e\udd2e, \ud83d\udc4e, \ud83d\ude2d} per the brief.",
+    "Admin DM reuses the pattern at `src/common/base_bot.py:176-183` (ADMIN_USER_ID env + fetch_user + create_dm); no new config.",
+    "Migration SQL is staged to `.migrations_staging/` with timestamp-prefixed filename, matching the existing handoff pattern, and must be manually copied into the workspace-level `supabase/migrations/` repo before deploy.",
+    "Writes are gated by the existing `_gate_check(guild_id)` path \u2014 if the table doesn't exist yet in prod the insert will error and be caught by the try/except; migration-first deploy order mitigates this.",
+    "Message content snippet = `message.content[:200]`; no sanitization beyond truncation.",
+    "Content cascading from message deletion is out of scope (no reliable single-event signal to distinguish it from user self-removal)."
+  ],
+  "structure_warnings": []
+}

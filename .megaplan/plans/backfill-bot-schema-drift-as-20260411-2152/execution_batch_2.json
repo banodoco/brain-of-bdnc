@@ -1,0 +1,61 @@
+{
+  "output": "Completed batch 2 task `T2`. Updated the bot-repo docs to point at the canonical workspace-level Supabase migration path, removed the fictitious bot-local `supabase/` tree from `structure.md`, rewrote all ten legacy `sql/payments.sql:NNN` references in `docs/payments.md` to stable section-name anchors under `../supabase/migrations/20260411220000_backfill_payments.sql`, updated `.cursorrules` to the requested wording, fixed the stale `brain-of-bndc/supabase/migrations/` reference in `docs/arca-gidan-shared-supabase-cutover.md`, and verified no `CLAUDE.md` was created. Wrote the batch checkpoint to `.megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/execution_batch_2.json`.",
+  "files_changed": [
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/README.md",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/structure.md",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.cursorrules",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/execution_batch_2.json"
+  ],
+  "commands_run": [
+    "sed -n '60,120p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/README.md",
+    "sed -n '90,120p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/structure.md",
+    "sed -n '1,340p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md",
+    "sed -n '45,70p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.cursorrules",
+    "sed -n '1,40p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md",
+    "rg -n \"sql/payments\\.sql|brain-of-bndc/supabase/migrations/\" /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/README.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/structure.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.cursorrules /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md",
+    "rg -n \"20260411220000_backfill_payments\\.sql|Database migrations|../supabase/migrations/\" /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/README.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/structure.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.cursorrules /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md",
+    "git -C /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc status --short README.md structure.md docs/payments.md .cursorrules docs/arca-gidan-shared-supabase-cutover.md",
+    "test -e /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/CLAUDE.md && echo exists || echo missing",
+    "python -m json.tool /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/execution_batch_2.json >/dev/null && echo json_ok"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/execution_batch_2.json",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.cursorrules, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.gitignore, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220000_backfill_payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220100_backfill_admin_payment_intents.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220200_backfill_social_publications.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/README.md, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/README.md, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/structure.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .cursorrules, .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, README.md, docs/arca-gidan-shared-supabase-cutover.md, docs/payments.md, structure.md, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment."
+  ],
+  "task_updates": [
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Updated the documentation set to make the workspace-level Supabase repo the canonical migration source. `README.md` now has a `Database migrations` subsection under `Database Storage` with the separate-repo path, timestamp naming, idempotency rules, `supabase db push` / `supabase db reset`, and a warning against using a bot-local `sql/` folder. `structure.md` no longer shows a fictitious bot-local `supabase/` tree. `docs/payments.md` replaced all ten `sql/payments.sql:NNN` references with stable section-name anchors into `../supabase/migrations/20260411220000_backfill_payments.sql`. `.cursorrules` now uses the requested `../supabase/migrations/` wording, `docs/arca-gidan-shared-supabase-cutover.md` no longer points at the retired `brain-of-bndc/supabase/migrations/` path, and `CLAUDE.md` remains absent. Verification: scoped grep found zero remaining `sql/payments.sql` or `brain-of-bndc/supabase/migrations/` matches across the edited docs, and git status shows exactly the five expected modified documentation files for this batch.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/README.md",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/structure.md",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.cursorrules",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md"
+      ],
+      "commands_run": [
+        "sed -n '60,120p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/README.md",
+        "sed -n '90,120p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/structure.md",
+        "sed -n '1,340p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md",
+        "sed -n '45,70p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.cursorrules",
+        "sed -n '1,40p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md",
+        "rg -n \"sql/payments\\.sql|brain-of-bndc/supabase/migrations/\" /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/README.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/structure.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.cursorrules /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md",
+        "rg -n \"20260411220000_backfill_payments\\.sql|Database migrations|../supabase/migrations/\" /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/README.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/structure.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.cursorrules /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/arca-gidan-shared-supabase-cutover.md",
+        "git -C /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc status --short README.md structure.md docs/payments.md .cursorrules docs/arca-gidan-shared-supabase-cutover.md",
+        "test -e /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/CLAUDE.md && echo exists || echo missing"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "All five documentation edits are complete. `README.md` now documents the separate workspace-level migration repo, timestamp naming, idempotency requirements, and `supabase db push` / `supabase db reset`. `structure.md` no longer claims a bot-local `supabase/` tree. `docs/payments.md` rewrites the ten legacy `sql/payments.sql:NNN` references to `../supabase/migrations/20260411220000_backfill_payments.sql` with section-name anchors. `.cursorrules` matches the requested `../supabase/migrations/` wording, and `docs/arca-gidan-shared-supabase-cutover.md` no longer references `brain-of-bndc/supabase/migrations/`."
+    }
+  ]
+}

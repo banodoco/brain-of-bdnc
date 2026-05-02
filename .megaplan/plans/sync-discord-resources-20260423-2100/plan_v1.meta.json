@@ -1,0 +1,212 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-23T19:08:09Z",
+  "hash": "sha256:30f3e62abe70c6bb84b8d6e7c2bc7d9d99011506bdb9ed9b070bb738b795a841",
+  "questions": [
+    "Members table name: `brain-of-bndc/src/common/storage_handler.py:190-209` writes to `members`, not `discord_members`. The brief repeatedly says `discord_members`. Should all new FK references target `members(member_id)` (my assumption), or does the website already use a `discord_members` view/table I can't see from this sandbox?",
+    "Attachment ID source: the archive stores only `{url, filename}` per attachment (no Discord `attachment.id`). Is it acceptable to derive `discord_attachment_id` by parsing the `/attachments/{channel_id}/{attachment_id}/{filename}` segment of the CDN URL (stable across URL-signature refreshes), with `(discord_message_id, filename)` as a secondary dedup if parsing fails?",
+    "OP attachment classification: the brief adds `'discord-comment'` to `media.classification` for reply attachments but says 'decide convention in plan' for OP attachments. What value should OP imports use \u2014 an existing value already present in the `media.classification` enum (e.g. `'post'` / `'primary'` / whatever manual uploads use), or a new `'discord-post'` value?",
+    "Asset column shape: the brief writes `member_id`, `name`, `description`, `type`, `admin_status` into `assets`. Is `admin_status='Listed'` a valid value in the existing CHECK/enum, and is `type` a free-text column or an enum constrained to `('lora','tool', ...)`?",
+    "pg_cron secret pattern: does the shared Supabase project already use `vault.secrets` + `app.settings.service_role_key` for authenticated `net.http_post` from cron (my assumption), or is there a different pattern I should match?",
+    "Markdown rendering on the website: does `banodoco-website` already depend on a markdown renderer I should reuse for comment `content`, or do I need to add `react-markdown`? (Couldn't inspect the website repo from this sandbox.)",
+    "Guild ID for the Discord jump link: the 5 resource channels all live in one guild \u2014 can I hard-code that guild ID in shared config, or should it be stored per-channel (e.g. read from `discord_channels.guild_id` if that table exists on the shared project)?",
+    "Where should SQL health-check snippets live \u2014 a new `banodoco-website/docs/sql/` or directly in `supabase/` at the workspace root?",
+    "`system_logs` insert shape: the brief mentions 'existing infrastructure' but I couldn't inspect it from this sandbox \u2014 what columns does it require (component, level, payload JSON, message, etc.)?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "All migrations in Phase 1 apply cleanly via `supabase db reset` on a scratch branch with no errors",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "`assets` table gains all 7 new columns (source, discord_thread_id, discord_channel_id, imported_at, last_synced_at, reactions_reached_threshold_at, is_hidden) and a unique partial index on `discord_thread_id`",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`asset_comments`, `asset_comment_media`, `media_import_jobs`, and `discord_resource_sync_cursors` tables exist with the columns, constraints, and indexes described in Steps 3\u20134",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "RLS is enabled on `asset_comments`, `asset_comment_media`, `media_import_jobs`, and `discord_resource_sync_cursors`; `asset_comments`/`asset_comment_media` have public-read SELECT policies; the latter two have no policies (service-role only)",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Promoter edge function with `DRY_RUN=true` logs the set of assets/comments/media-jobs it would write and performs zero DB mutations",
+      "priority": "must",
+      "requires": [
+        "observe_runtime_logs",
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "A live run of the promoter produces `assets` rows with `source='discord_import'`, `admin_status='Listed'`, correct `type` per channel, populated `discord_thread_id`/`discord_channel_id`, and corresponding `asset_comments` rows for replies",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Running the promoter twice in a row produces zero net new `assets`, `asset_comments`, or `media_import_jobs` rows (full idempotency)",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Media importer processes a single seeded `media_import_jobs` row end-to-end: creates a `media` row with the correct classification + populated Cloudflare/Storage URL, creates the matching `asset_media` or `asset_comment_media` junction row, and sets job `status='done'` with `media_id`",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files",
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "Rehosted video URLs return a valid HLS playlist (HTTP 200 with `#EXTM3U` in body); rehosted image URLs return HTTP 200 with a supported image content-type",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "A failed job (simulated by pointing at a deleted Discord message) increments `attempts`, records a `last_error`, and is re-queued with a growing `locked_until`; after 5 attempts it moves to `status='failed'` and stops retrying",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "pg_cron has two registered schedules (`discord-resource-promoter` every 10 min, `discord-media-importer` every 2 min) both invoking the correct edge-function URLs with service-role auth",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "After a full backfill cycle, qualifying OPs from all 5 channels (thread_id == message_id, reaction_count >= 5, within 60-day window) are represented in `assets` with `source='discord_import'`, and no OPs below the threshold are imported",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "A Discord message edit after import updates `asset_comments.content` and `discord_edited_at` on the next promoter run; a Discord message deletion sets `asset_comments.is_deleted=true`",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "ResourceModal shows the new 'Made with this' grid and 'Discussion' thread only for assets where `source='discord_import'`; existing manual assets render unchanged",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Each rendered comment shows author avatar + name from `members`, markdown-rendered content, reply chip when applicable, inline attachment thumbnails with a working lightbox, reaction count, and a 'View on Discord' link that opens the correct message",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "`useAssetComments` fetches the joined data in a single Supabase query and returns comments ordered by `discord_created_at` ascending, excluding deleted rows",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Resource cards show a subtle 'From Discord' badge with the channel name for imported assets",
+      "priority": "should",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "`assets.is_hidden=true` suppresses the asset from the website listing and modal",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Existing website tests and Supabase type generation still pass after schema additions",
+      "priority": "must",
+      "requires": [
+        "run_tests",
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Promoter wall-clock stays under 30s per invocation; importer stays under 400s \u2014 observed in edge-function logs across several runs",
+      "priority": "should",
+      "requires": [
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "Health-check SQL snippets return usable output (stuck jobs, 24h failures, cursor staleness) against the live tables",
+      "priority": "should",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "No Cloudflare Stream quota / storage cost surprises during 60-day backfill \u2014 monitored via Cloudflare + Supabase dashboards after first full cycle",
+      "priority": "info",
+      "requires": [
+        "subjective_judgment"
+      ]
+    },
+    {
+      "criterion": "Per-phase rollback documentation exists and accurately reflects the migrations, cron jobs, and edge functions introduced",
+      "priority": "should",
+      "requires": [
+        "read_files"
+      ]
+    }
+  ],
+  "assumptions": [
+    "Members table on the shared Supabase project is named `members` (confirmed from `brain-of-bndc/src/common/storage_handler.py:190-209`); all new FKs target `members(member_id)`. If the website already uses a `discord_members` alias, add a view rather than renaming.",
+    "Discord `attachment.id` is derived at import time by parsing the CDN URL path (`/attachments/{channel_id}/{attachment_id}/{filename}`), since the archive pipeline preserves only `{url, filename}` per `scripts/archive_discord.py:463-469`. Fallback dedup: `(discord_message_id, filename)` when parsing fails.",
+    "OP attachments use the website's existing manual-upload classification value (likely `'post'` or similar) rather than a new enum value; only reply attachments use the new `'discord-comment'` classification per the brief.",
+    "`admin_status='Listed'` and asset `type` values `'lora'` and `'tool'` are already valid in the existing `assets` CHECK constraints / enums on the website.",
+    "Migration files live in `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` with the standard `<timestamp>_<slug>.sql` naming; Edge Functions live in `/Users/peteromalley/Documents/banodoco-workspace/supabase/functions/` with the existing `_shared/` directory.",
+    "pg_cron invokes edge functions via `net.http_post` with the service-role key read from `app.settings.service_role_key` (a Supabase-vault-backed setting) \u2014 no literal key in migrations.",
+    "The `refresh-media-urls` edge function (documented in `brain-of-bndc/structure.md:196-226`) is available on the shared Supabase project and can be called by `discord-media-importer` to refresh expired Discord CDN signatures; Discord CDN URLs with a valid `?ex=` timestamp are reused as-is.",
+    "All 5 resource channels share a single guild ID, which will be hard-coded as a shared constant for building 'View on Discord' jump links.",
+    "Cloudflare Stream (tus upload) is the existing destination for video assets on the website; Supabase Storage `user-uploads` bucket handles images and other file types. Discord imports use path prefix `user-uploads/discord-imports/{discord_message_id}/{attachment_id}-{filename}`.",
+    "`system_logs` accepts at minimum `{component TEXT, level TEXT, message TEXT, payload JSONB}` \u2014 both edge functions log failures there; exact shape verified when implementing.",
+    "Discord messages' `reaction_count` column on `discord_messages` is maintained by the existing archive (any emoji counts toward the total per `brain-of-bndc/src/common/db_handler.py:783-828`), so the `>= 5` threshold is evaluated directly without joining `discord_reactions`.",
+    "The banodoco-website `ResourceModal.tsx` uses a single `Asset` record from Supabase and has an existing gallery strip for primary media + `asset_media`; the new sections slot in below that gallery and render only when `asset.source === 'discord_import'`.",
+    "A markdown renderer (likely `react-markdown` or equivalent) is already present in the website; if not, adding it is an in-scope dependency addition.",
+    "Storage cost of a 60-day Discord backfill across 5 forum channels with ~15 qualifying OPs / 30 days is under the Cloudflare Stream free-tier + Supabase Storage allowance thresholds currently in use \u2014 monitored rather than enforced up front.",
+    "Archive pipeline in brain-of-bndc is out of scope; the promoter reads `discord_messages` / `discord_reactions` / `members` as they exist today and upserts a thin `members` row only when FK validation would otherwise fail."
+  ],
+  "structure_warnings": []
+}

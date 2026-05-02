@@ -1,0 +1,64 @@
+{
+  "output": "Completed batch 2 task T4 in `src/features/admin_chat/admin_chat_cog.py`. The admin-chat payout flow now reuses a single in-channel status message via `_set_intent_status_message`, persists `status_message_id` on first send, retries once after `discord.NotFound`, edits in place with `suppress=True`, and sends the final success notification as a reply with `mention_author=True` and `suppress_embeds=True`. Verification included `python -m py_compile src/features/admin_chat/admin_chat_cog.py` and an inline lifecycle simulation that confirmed one status message, three edits, one final reply, and `receipt_prompt_message_id == status_message_id`. The current `tests/test_admin_payments.py` module now has three expected assertion failures because it still checks the pre-T4 message text; those fixture/assertion updates are explicitly scheduled in T6.",
+  "files_changed": [
+    "src/features/admin_chat/admin_chat_cog.py",
+    ".megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_2.json"
+  ],
+  "commands_run": [
+    "sed -n '300,860p' src/features/admin_chat/admin_chat_cog.py",
+    "rg -n \"suppress_embeds|suppress=True|fetch_message\\(|receipt_prompt_message_id|queued a small test payment|Confirmation received|Payment sent\\.|Payout sending|handle_payment_result\" src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py src/features/curating/curator.py tests/test_admin_payments.py",
+    "sed -n '1,140p' src/features/admin_chat/admin_chat_cog.py",
+    "rg -n \"def _fetch_intent_channel|def _notify_admin_review|def _notify_intent_admin|def _resolve_payment_destinations|def _get_payment_ui_cog\" src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '220,320p' src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '140,220p' src/features/curating/curator.py",
+    "sed -n '1,130p' tests/test_admin_payments.py",
+    "sed -n '1440,1525p' tests/test_admin_payments.py",
+    "sed -n '2070,2195p' tests/test_admin_payments.py",
+    "sed -n '320,430p' tests/test_admin_payments.py",
+    "rg -n \"list_stale_test_receipt_intents|receipt_prompt_message_id|status_message_id|get_admin_payment_intent\" src/common/db_handler.py tests/test_admin_payments.py",
+    "rg -n \"awaiting_confirmation|_handle_confirmation_received|confirmed', 'resolved_by_message_id'|final payout confirmation\" src/features/admin_chat/admin_chat_cog.py src/features/payments src/features/admin_chat/tools.py tests/test_admin_payments.py",
+    "sed -n '950,985p' src/features/admin_chat/admin_chat_cog.py",
+    "git diff -- src/features/admin_chat/admin_chat_cog.py",
+    "python -m py_compile src/features/admin_chat/admin_chat_cog.py",
+    "pytest tests/test_admin_payments.py -q",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '286,340p'",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '416,472p'",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '632,882p'",
+    "python - <<'PY'\nfrom importlib.util import module_from_spec, spec_from_file_location\nfrom pathlib import Path\nfrom types import SimpleNamespace\nimport asyncio\n\nspec = spec_from_file_location('test_admin_payments', Path('tests/test_admin_payments.py'))\nmodule = module_from_spec(spec)\nspec.loader.exec_module(module)\n\nFakeAuthor = module.FakeAuthor\nFakeBot = module.FakeBot\nFakeIntentDB = module.FakeIntentDB\nFakeAdminPaymentService = module.FakeAdminPaymentService\nFakePaymentUICog = module.FakePaymentUICog\nFakeMessage = module.FakeMessage\nVALID_SOL_ADDRESS = module.VALID_SOL_ADDRESS\nAdminChatCog = __import__('src.features.admin_chat.admin_chat_cog', fromlist=['AdminChatCog']).AdminChatCog\n\nclass StatusMessage(SimpleNamespace):\n    def __init__(self, channel, message_id, content, kwargs):\n        super().__init__(id=message_id, channel=channel, content=content, kwargs=kwargs, edits=[], replies=[])\n    async def edit(self, *, content=None, suppress=None):\n        self.edits.append({'content': content, 'suppress': suppress})\n        if content is not None:\n            self.content = content\n        return self\n    async def reply(self, content, **kwargs):\n        reply = SimpleNamespace(content=content, kwargs=kwargs, reference=self.id)\n        self.replies.append(reply)\n        self.channel.sent_messages.append(reply)\n        return reply\n\nclass StatusChannel:\n    def __init__(self):\n        self.id = 55\n        self.guild = SimpleNamespace(id=1)\n        self.parent_id = None\n        self.sent_messages = []\n        self._messages = {}\n    async def send(self, content, **kwargs):\n        message_id = 900 + len(self._messages)\n        message = StatusMessage(self, message_id, content, kwargs)\n        self.sent_messages.append(message)\n        self._messages[message_id] = message\n        return message\n    async def fetch_message(self, message_id):\n        return self._messages[message_id]\n\nasync def main():\n    channel = StatusChannel()\n    db = FakeIntentDB()\n    db.wallets[(1, 42, 'solana')] = {\n        'wallet_id': 'wallet-1',\n        'guild_id': 1,\n        'discord_user_id': 42,\n        'chain': 'solana',\n        'wallet_address': VALID_SOL_ADDRESS,\n        'verified_at': None,\n    }\n    intent = db.create_admin_payment_intent({\n        'channel_id': 55,\n        'admin_user_id': 999,\n        'recipient_user_id': 42,\n        'requested_amount_sol': 1.75,\n        'producer_ref': '1_42_123',\n        'wallet_id': 'wallet-1',\n        'status': 'awaiting_test',\n    }, guild_id=1)\n    payment_service = FakeAdminPaymentService()\n    payment_ui_cog = FakePaymentUICog()\n    bot = FakeBot(channel, payment_service=payment_service, payment_ui_cog=payment_ui_cog)\n    cog = AdminChatCog(bot, db, sharer=object())\n    cog.payment_service = payment_service\n\n    await cog._start_admin_payment_flow(channel, intent)\n    await cog.handle_payment_result({\n        'payment_id': 'payment-test',\n        'producer': 'admin_chat',\n        'guild_id': 1,\n        'is_test': True,\n        'status': 'confirmed',\n        'amount_token': 0.001,\n        'tx_signature': 'sig-test',\n        'metadata': {'intent_id': intent['intent_id']},\n    })\n    await cog._handle_test_receipt_positive(FakeMessage(1004, FakeAuthor(42), channel, channel.guild, 'confirmed'), db.get_admin_payment_intent(intent['intent_id'], 1))\n    final_intent = db.get_admin_payment_intent(intent['intent_id'], 1)\n    await cog.handle_payment_result({\n        'payment_id': final_intent['final_payment_id'],\n        'producer': 'admin_chat',\n        'guild_id': 1,\n        'is_test': False,\n        'status': 'confirmed',\n        'amount_token': 1.75,\n        'tx_signature': 'sig-final',\n        'metadata': {'intent_id': intent['intent_id']},\n    })\n\n    status_messages = [m for m in channel.sent_messages if hasattr(m, 'edits')]\n    replies = [m for m in channel.sent_messages if not hasattr(m, 'edits')]\n    print('status_message_count', len(status_messages))\n    print('status_message_ids', [m.id for m in status_messages])\n    print('edit_count', len(status_messages[0].edits))\n    print('latest_status_content', status_messages[0].content)\n    print('replies', [(r.content, r.kwargs, r.reference) for r in replies])\n    print('intent_status_message_id', db.get_admin_payment_intent(intent['intent_id'], 1).get('status_message_id'))\n    print('intent_receipt_prompt_message_id', db.get_admin_payment_intent(intent['intent_id'], 1).get('receipt_prompt_message_id'))\n\nasyncio.run(main())\nPY",
+    "test -w /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/clean-up-admin-chat-payment-20260411-1823 && echo writable"
+  ],
+  "deviations": [
+    "`pytest tests/test_admin_payments.py -q` is not fully green in this batch because three existing assertions still expect the old pre-T4 channel text. Failing tests: `tests/test_admin_payments.py::test_handle_payment_result_test_confirmed`, `tests/test_admin_payments.py::test_handle_test_receipt_positive_marks_wallet_verified_and_queues_admin_approval`, and `tests/test_admin_payments.py::test_handle_payment_result_test_failed`. Those expectation updates are part of planned task T6 and were not edited in this batch.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_2.json",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/admin_chat_cog.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment."
+  ],
+  "task_updates": [
+    {
+      "task_id": "T4",
+      "status": "done",
+      "executor_notes": "Implemented `_set_intent_status_message` at `src/features/admin_chat/admin_chat_cog.py:295-333` so one status message is created or edited per intent, `status_message_id` is persisted on first send with mutation fallback if the DB update returns `None`, `discord.NotFound` clears the cached id and retries once, and embed suppression uses `suppress_embeds` / `suppress=True`. Replaced the status-message sends in `_start_admin_payment_flow` (`:467-471`), the recipient test-receipt confirmation path (`:647-651`), and the terminal payment handling branches (`:777-883`). Verification: `python -m py_compile src/features/admin_chat/admin_chat_cog.py` passed; `pytest tests/test_admin_payments.py -q` produced only three stale-text assertion failures scheduled for T6; an inline lifecycle simulation confirmed a single sent status message, three edits, one final reply, and shared `status_message_id` / `receipt_prompt_message_id`.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "git diff -- src/features/admin_chat/admin_chat_cog.py",
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py",
+        "pytest tests/test_admin_payments.py -q",
+        "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '286,340p'",
+        "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '416,472p'",
+        "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '632,882p'",
+        "python - <<'PY' ... inline admin-chat lifecycle simulation with fetch/edit/reply-capable fake channel ... PY"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC4",
+      "executor_note": "Yes. `_set_intent_status_message` now creates or edits a single status message per intent, persists `status_message_id` on first send with in-place mutation fallback if the DB update returns `None`, uses `suppress_embeds` / `suppress=True`, and handles `discord.NotFound` by clearing the cached id and retrying once. `_start_admin_payment_flow`, the recipient test-receipt confirmation path, and `handle_payment_result` now route their visible transitions through that helper. The test-confirmed branch sets `receipt_prompt_message_id = status_message_id`, and the final-confirmed branch edits to `Payout sending\u2026` before replying from the status message with `mention_author=True` and `suppress_embeds=True`. An inline lifecycle simulation verified one status message, three edits, one reply, and shared `status_message_id` / `receipt_prompt_message_id`."
+    }
+  ]
+}

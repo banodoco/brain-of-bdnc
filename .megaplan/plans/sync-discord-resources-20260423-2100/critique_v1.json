@@ -1,0 +1,184 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "findings": [
+        {
+          "detail": "The user\u2019s added scope note about markdown-rendering resource descriptions is only partially reflected in the plan. The repo does have the exact plain-text `ResourceModal` block the note calls out at `banodoco-website/src/pages/Resources/ResourceModal.tsx:186-189`, but the plan never adds a concrete step for that rendering change or the requested success criterion; it only mentions using the existing markdown renderer for comment content.",
+          "flagged": true
+        },
+        {
+          "detail": "One of the explicit edge cases in the brief, attachment removal on Discord edit, is still unresolved in the plan. The proposed schema for `asset_comment_media` only has `(comment_id, media_id, sort_order)` and no visibility/deleted flag, so the plan\u2019s note that it 'could mark `is_deleted` on junction' is not actually backed by any migration or follow-up step.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "findings": [
+        {
+          "detail": "The cursor strategy in the promoter is not technically correct for the stated trigger. `discord_messages.reaction_count` is a denormalized field that gets recomputed from `discord_reactions` by the `sync_message_reactors` trigger (`supabase/migrations/20260319100000_fix_sync_reactors_trigger.sql:1-22`), so an older thread can cross the 5-reaction threshold long after its `created_at`. A promoter that only scans `created_at > cursor` will permanently miss those late-promoted OPs once the cursor advances past their creation time.",
+          "flagged": true
+        },
+        {
+          "detail": "The fallback member-write described in Phase 2 would violate the current schema. `members` is the renamed `discord_members` table, and its original definition still requires `username TEXT NOT NULL` (`supabase/migrations/20251101000000_create_discord_tables.sql:38-64`); the archive writer in `brain-of-bndc/src/common/storage_handler.py:190-209` also always supplies a username. The plan\u2019s 'insert only member_id, username=NULL' fallback would fail the FK-prep path instead of rescuing it.",
+          "flagged": true
+        },
+        {
+          "detail": "The proposed asset type mapping (`lora` or `tool`) does not match the website\u2019s current resource model. Manual resource creation only offers `lora` and `workflow` (`banodoco-website/src/pages/SubmitResource/index.tsx:10-13`), and the cards/filters branch on `asset.type === 'workflow'` (`ResourceModal.tsx:151-156`, `ResourceCard.tsx:151-154`, `useResourceFilters.ts:159-160`). Importing Discord rows with `type='tool'` would render them as LoRAs in some places and make them unfilterable in others.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "findings": [
+        {
+          "detail": "The plan scopes the frontend work around `ResourceModal`, but `rg -n \"ResourceModal\" banodoco-website/src` only finds the component definition and no callers. The live resource surface is `banodoco-website/src/pages/ResourceDetail/index.tsx`, which still renders `resource.description` as plain text at lines 166-169 and already owns the visible 'Made with this' gallery. Limiting the change to the dead modal leaves the actual resource page behavior unchanged.",
+          "flagged": true
+        },
+        {
+          "detail": "The broader 'resource visibility' surface is larger than the plan accounts for. Resource lists and profile counts currently come from `useResources.ts`, `useCommunityResources.ts`, `useCommunityResource.ts`, and `useUserProfile.ts`, all of which filter only on `admin_status` and never consider a future `assets.is_hidden` kill switch (`useResources.ts:51-74`, `useCommunityResources.ts:118-127`, `useCommunityResource.ts:103-113`, `useUserProfile.ts:125-133`). If `is_hidden` is meant to hide imported assets globally, the change needs to reach those callers too, not just one modal/card.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "findings": [
+        {
+          "detail": "The plan does not thread the new asset metadata through the existing data loaders that would need it for the requested UI. `useResources.ts`, `useCommunityResources.ts`, and `useCommunityResource.ts` currently select neither `source` nor `discord_channel_id` nor `is_hidden` (`useResources.ts:51-65`, `useCommunityResources.ts:118-124`, `useCommunityResource.ts:103-109`), so the proposed 'From Discord' badge and hide switch cannot work until those queries and their TypeScript shapes are expanded.",
+          "flagged": true
+        },
+        {
+          "detail": "The media-import plan also skips over existing Cloudflare support that already owns part of this lifecycle. The repo has `cloudflare-stream-webhook` for writing HLS/thumbnail URLs from a Stream UID and `cloudflare-stream-backfill` for retrying unfinished ingests (`supabase/functions/cloudflare-stream-backfill/index.ts:35-114`), but the new plan introduces a separate importer that polls Cloudflare to readiness itself. That duplication is a supporting-infrastructure gap unless the plan explicitly says which path becomes canonical and how the existing webhook/backfill jobs are reused or retired.",
+          "flagged": true
+        },
+        {
+          "detail": "The cron registration snippet assumes a secret-delivery pattern that is not present elsewhere in the repo. Existing pg_cron usage schedules local SQL directly (`supabase/migrations/20260403000005_schedule_priority_scores_cron.sql:4-23`), and `supabase/config.toml:45-46` only contains a commented `db.vault` stub. A migration that references `current_setting('app.settings.service_role_key')` without first establishing that setting will not be self-contained.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "findings": [
+        {
+          "detail": "I traced the current callers that consume resource rows, and they all pass through the existing hooks with narrow assumptions about the payload: `useResources.ts` reads `id, type, name, description, admin_status, ...`, `useCommunityResources.ts` reads `id, name, description, type, lora_link, ...`, and `useCommunityResource.ts` reads `id, name, description, type, ...` (`useResources.ts:51-65`, `useCommunityResources.ts:118-124`, `useCommunityResource.ts:103-109`). None of those callers request `source`, `discord_channel_id`, or `is_hidden`, so the downstream badge, jump-link, and hide logic proposed in the plan would have no inputs unless the callers themselves are revised.",
+          "flagged": true
+        },
+        {
+          "detail": "I also checked the direct callers of the UI surface the plan wants to edit. `rg -n \"ResourceModal\" banodoco-website/src` returns only the component definition and no imports/usages, which means there are currently no callers passing assets into that modal at all. The meaningful caller path today is the route-driven `ResourceDetail` page, so the proposed fix is landing at the wrong boundary unless the plan also restores or introduces actual `ResourceModal` usage.",
+          "flagged": true
+        }
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Discord resource promoter: created_at-based cursors will miss older threads that cross the reaction threshold after the cursor has advanced.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan proposes qualifying OP discovery with `created_at > cursor`, but `discord_messages.reaction_count` is updated later by the `sync_message_reactors` trigger in `supabase/migrations/20260319100000_fix_sync_reactors_trigger.sql:1-22`."
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Discord member fallback: the proposed thin upsert is incompatible with the current members schema because username is still required.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`discord_members` was created with `username TEXT NOT NULL` in `supabase/migrations/20251101000000_create_discord_tables.sql:38-64`, then renamed to `members`; the archive writer also always supplies username in `brain-of-bndc/src/common/storage_handler.py:190-209`."
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Resource typing: importing assets as `tool` conflicts with the website\u2019s existing `lora`/`workflow` assumptions.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`SubmitResource` only offers `lora` and `workflow` (`banodoco-website/src/pages/SubmitResource/index.tsx:10-13`), and filters/cards branch on `asset.type === \"workflow\"` in `ResourceModal.tsx`, `ResourceCard.tsx`, and `useResourceFilters.ts`."
+    },
+    {
+      "id": "FLAG-004",
+      "concern": "Resource frontend surface: the plan targets an effectively unused modal and does not cover the route-driven ResourceDetail page that users actually hit.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "`rg -n \"ResourceModal\" banodoco-website/src` finds only the component definition, while `banodoco-website/src/pages/ResourceDetail/index.tsx:166-169` still renders resource descriptions as plain text and owns the active gallery UI."
+    },
+    {
+      "id": "FLAG-005",
+      "concern": "Edge scheduling/infrastructure: the plan introduces new cron auth and Cloudflare polling paths without reconciling existing pg_cron and Stream webhook/backfill patterns.",
+      "category": "maintainability",
+      "severity_hint": "uncertain",
+      "evidence": "Current cron usage is direct SQL in `supabase/migrations/20260403000005_schedule_priority_scores_cron.sql:4-23`; `supabase/config.toml:45-46` has no active vault setup; and the repo already ships `cloudflare-stream-webhook` plus `cloudflare-stream-backfill` for Stream completion/retry handling."
+    },
+    {
+      "id": "verifiability-0",
+      "concern": "Criterion 0: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-1",
+      "concern": "Criterion 4: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-2",
+      "concern": "Criterion 7: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-3",
+      "concern": "Criterion 13: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-4",
+      "concern": "Criterion 14: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-5",
+      "concern": "Criterion 16: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-6",
+      "concern": "Criterion 17: requires human verification (drive_browser, inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-7",
+      "concern": "Criterion 19: requires human verification (observe_runtime_logs).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-8",
+      "concern": "Criterion 21: requires human verification (subjective_judgment).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

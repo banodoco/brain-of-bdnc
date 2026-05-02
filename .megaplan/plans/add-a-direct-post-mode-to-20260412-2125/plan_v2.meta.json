@@ -1,0 +1,78 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-12T19:34:32Z",
+  "hash": "sha256:639eb626b5142f185864f6ae0531280c501b096012b2467650c8c5ff51d4f8b1",
+  "changes_summary": "Addressed three significant flags: (1) FLAG-001 \u2014 clarified that scheduled direct posts match existing message-based behavior (temp files left for executor, not cleaned up), and that media_hints preserves original URLs for future re-download support; (2) FLAG-002 \u2014 added `user_details: {'direct_post': True}` to source_context metadata to satisfy XProvider's guard, since _build_tweet_caption uses provided tweet_text as-is when base_description is set; (3) FLAG-003 \u2014 changed direct mode entry condition from \"has media_urls\" to \"no message_link and no message_id\", which naturally supports text-only posts, direct retweets (action=retweet + target_post only), and media posts alike.",
+  "flags_addressed": [
+    "FLAG-001",
+    "FLAG-002",
+    "FLAG-003"
+  ],
+  "questions": [
+    "For the publication record, is message_id=0 acceptable for the database schema (e.g. foreign key constraints, unique indexes on message_id+platform+action), or should we use a synthetic ID like a hash of the tweet_text?",
+    "Should route_key be required in direct-post mode (since there's no channel to resolve a route from), or is falling through to the guild's default route acceptable?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "share_to_social accepts tweet_text (and optionally media_urls) without message_link/message_id and posts a tweet through the existing pipeline",
+      "priority": "must"
+    },
+    {
+      "criterion": "Existing message-based share_to_social flow is completely unchanged \u2014 all current parameters and behaviors work identically",
+      "priority": "must"
+    },
+    {
+      "criterion": "Direct-post mode supports scheduled_at, action (post/reply/retweet), target_post, and route_key parameters",
+      "priority": "must"
+    },
+    {
+      "criterion": "Direct retweet (action=retweet + target_post, no message reference) works without tweet_text or media_urls",
+      "priority": "must"
+    },
+    {
+      "criterion": "Direct post/reply returns error if tweet_text is missing",
+      "priority": "must"
+    },
+    {
+      "criterion": "XProvider.publish() succeeds for direct posts \u2014 user_details stub passes the truthy guard at x_provider.py:31-33",
+      "priority": "must"
+    },
+    {
+      "criterion": "Media files are cleaned up from temp directory after immediate publish (both success and failure)",
+      "priority": "must"
+    },
+    {
+      "criterion": "Scheduled direct posts leave temp files for the executor, matching existing message-based scheduled behavior",
+      "priority": "must"
+    },
+    {
+      "criterion": "All existing tests pass without modification",
+      "priority": "must"
+    },
+    {
+      "criterion": "New code path adds fewer than 80 lines to execute_share_to_social",
+      "priority": "should"
+    },
+    {
+      "criterion": "Tool schema description clearly documents direct-post mode and when to use media_urls vs message_link/message_id",
+      "priority": "should"
+    },
+    {
+      "criterion": "Direct-post mode tested end-to-end with a real Supabase media URL posting to Twitter",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "media_urls will be a JSON array of URL strings; we will not accept a single string (the LLM can wrap it in an array)",
+    "route_key is recommended but not required in direct-post mode \u2014 if omitted, route resolution uses guild_id + channel_id=0 which falls through to the guild's default route if one exists",
+    "message_id=0 and channel_id=0 are safe sentinel values for the publication record (no FK constraints in the social_publications table that would reject them)",
+    "user_id=0 is acceptable for direct posts since there is no Discord user associated with external media",
+    "The existing _download_media_from_url on sharer is reliable for Supabase URLs and does not need modification",
+    "Direct-post mode does not need duplicate detection since there is no stable message_id to deduplicate against",
+    "{'direct_post': True} as user_details satisfies the XProvider truthy guard and _build_tweet_caption uses the provided tweet_text as-is (line 111-112 of social_poster.py) without depending on user_details fields",
+    "Scheduled direct posts inherit the same temp-file persistence behavior as existing scheduled message-based posts \u2014 this is a known pre-existing limitation, not a new regression",
+    "When media_urls is provided alongside message_link/message_id, the message-based flow takes precedence and media_urls is ignored (no ambiguous dual-source behavior)"
+  ],
+  "delta_from_previous_percent": 59.41,
+  "structure_warnings": []
+}

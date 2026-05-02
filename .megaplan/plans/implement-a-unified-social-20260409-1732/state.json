@@ -1,0 +1,47 @@
+{
+  "name": "implement-a-unified-social-20260409-1732",
+  "idea": "Implement a unified social publishing system that preserves current immediate Twitter/X posting, adds scheduled queueing for tweets/replies/retweets, tracks success and failure, and is extensible to multiple outbound channels/platforms with per-channel routing and configuration.",
+  "current_state": "initialized",
+  "iteration": 0,
+  "created_at": "2026-04-09T15:32:35Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc",
+    "auto_approve": true,
+    "robustness": "standard",
+    "agent": ""
+  },
+  "sessions": {},
+  "plan_versions": [],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-04-09T15:32:35Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-09T15:33:10Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "plan_v1_raw.txt",
+      "message": "Codex API rejected request (HTTP 400). Try --agent claude to use a different backend."
+    }
+  ],
+  "meta": {
+    "significant_counts": [],
+    "weighted_scores": [],
+    "plan_deltas": [],
+    "recurring_critiques": [],
+    "total_cost_usd": 0.0,
+    "overrides": [],
+    "notes": []
+  },
+  "last_gate": {}
+}

@@ -1,0 +1,142 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-10T22:46:46Z",
+  "hash": "sha256:7eb0b695ccd050bb44f2561dcbbfe1978c68719fcb715783ddb3d52a8e97b2c6",
+  "changes_summary": "Addressed all three critique flags and both orchestrator concerns. FLAG-001: added two new DB primitives (force_reconcile_payment_to_confirmed / force_reconcile_payment_to_failed) with broader allowed_statuses, because mark_payment_confirmed/mark_payment_failed strict guards would make the reconcile no-op on failed/manual_hold rows. FLAG-002: threaded bot (and thus payment_service) through execute_retry_payment / execute_release_payment and the dispatcher at tools.py:3134. FLAG-003: retargeted D11 reproduction away from execute_initiate_payment's intent-dedupe layer and onto the downstream _start_admin_payment_flow / handle_payment_result call sites where producer_ref actually matters; test now patches time.time and uses distinct source_channel_ids to bypass the upstream dedupe. CONCERN A: dropped the execute_payment_resolve admin_chat LLM tool entirely; /payment-resolve is slash-command-only to preserve the hardening-pass prompt-injection closure. CONCERN B: rewrote Step 12's verdict to formally cite FOR UPDATE SKIP LOCKED + Postgres read-committed isolation as the proof, demoted the fake-DB test to 'logical-correctness sanity check', and forbade the 'proven safe by this test' phrasing. Also folded in the seven orchestrator decisions: C7/F16 target grants/solana_client.py, A3 lives in new src/common/redaction.py, admin_chat redaction helpers left alone, F15 ships no CI file and documents scheduler wire-up in the runbook as an operator decision, D10 fix uses 150s threshold if needed, D11 fix uses millisecond precision (UUID rejected), B4 uses 150s heuristic without getLatestBlockhash. Reordered execution so Phase B runs first (since its new DB primitives are prerequisites) and Phase A follows. Updated success criteria: removed the execute_payment_resolve LLM tool criterion, added criteria for the new force_reconcile primitives and the redaction module location, and added a criterion requiring the Step 12 verdict comment to cite Postgres semantics rather than the test.",
+  "flags_addressed": [
+    "FLAG-001",
+    "FLAG-002",
+    "FLAG-003"
+  ],
+  "questions": [],
+  "success_criteria": [
+    {
+      "criterion": "All 14 polish items from the idea are either implemented or explicitly deferred with a written justification in the plan artifact.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 1: force_reconcile_payment_to_confirmed and force_reconcile_payment_to_failed are added to db_handler with allowed_statuses=['submitted','processing','failed','manual_hold'] and always append to tx_signature_history; a unit test covers each allowed starting state and each rejected starting state (pending_confirmation, queued, cancelled).",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 2: PaymentService.reconcile_with_chain returns one of six decisions (reconciled_confirmed, reconciled_failed, allow_requeue, keep_in_hold, not_applicable, plus the rpc_unreachable path routing to keep_in_hold); every branch is covered by a unit test.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 3: execute_retry_payment and execute_release_payment accept bot, resolve payment_service from it, call reconcile_with_chain before any DB mutation, and fail closed when payment_service is missing; the dispatcher at tools.py:3134 passes bot for both; five decision branches are tested per tool.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 4: /payment-resolve slash command exists, is gated on ADMIN_USER_ID inside the callback, calls reconcile_with_chain, and is NOT exposed as an admin_chat LLM tool.",
+      "priority": "must"
+    },
+    {
+      "criterion": "No admin_chat LLM tool named execute_payment_resolve (or any equivalent) exists in src/features/admin_chat/tools.py.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 5: Worker startup migrates legacy provider='solana' rows to solana_grants or solana_payouts; unknown producers go to manual_hold; unit test covers all three branches.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 6: SolanaClient.send_sol uses a dynamic priority fee (75th percentile of recent fees) clamped to [floor, ceiling] with fallback-on-error; unit test covers percentile math, both clamps, and fallback.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 7: Admin DM failure falls back to ADMIN_FALLBACK_CHANNEL_ID; the both-failed path logs at ERROR level; unit test covers Forbidden and double-failure paths.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 8: A distinct 'rpc_unreachable' sentinel is emitted on connection-family exceptions and routed to a distinct manual_hold reason separate from 'timeout'; unit test covers the distinction in both _confirm_submitted_payment and recover_inflight.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 9: PaymentService.request_payment is decomposed into the 5 named helpers with public signature, return values, and log messages unchanged; existing tests pass without modification.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 10: PaymentService.__init__ raises ValueError when test_payment_amount is below 2_000_000 lamports; duplicate guard removed from main.py; new unit test covers this.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 11: redact_wallet is defined exactly once in src/common/redaction.py and imported by payment_service.py, payment_cog.py (or post-cleanup worker cog), and db_handler.py; admin_chat helpers are untouched.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 12: tests/test_payment_race.py exists and passes; the verdict comment cites FOR UPDATE SKIP LOCKED and Postgres read-committed isolation as the proof and explicitly labels the test as a 'logical-correctness sanity check, not a proof of DB-level concurrency safety'. If a gremlin is found, the 150s reclaim-eligibility window fix is committed and the verdict says 'gremlin found; fixed'.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 13: The D11 reproduction test uses distinct source_channel_ids (or bypasses intent dedupe) and exercises PaymentService.request_payment downstream at _start_admin_payment_flow / handle_payment_result, not execute_initiate_payment in isolation. If collision is confirmed, producer_ref uses int(time.time() * 1000) for millisecond precision. A UUID suffix fix is explicitly rejected.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 14: tests/test_payment_state_machine.py uses hypothesis RuleBasedStateMachine; hypothesis is added to requirements.txt; all five invariants are asserted; the reconcile_with_chain rule is included; test suite passes.",
+      "priority": "must"
+    },
+    {
+      "criterion": "docs/payments.md and docs/runbook-payments.md are committed; payments.md documents the reconciliation contract (why force_reconcile_* bypasses normal guards and why it is only reachable via /payment-resolve); runbook includes the scheduler-wire-up section flagged as operator decision.",
+      "priority": "must"
+    },
+    {
+      "criterion": "scripts/check_payment_invariants.py exists, implements all five checks (a\u2013e), exits nonzero on any violation, and has a fixture-based test for synthetic violations.",
+      "priority": "must"
+    },
+    {
+      "criterion": "No new CI workflow file and no new Railway config change is shipped in this pass.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Step 18: SolanaClient.confirm_tx emits a structured log with event='tx_confirm_decision' on all three decision branches (confirmed, not_found, errored).",
+      "priority": "must"
+    },
+    {
+      "criterion": "Full pytest suite passes after every phase lands.",
+      "priority": "must"
+    },
+    {
+      "criterion": "No regression in existing grants or admin_chat payment flows (verified via tests/test_admin_payments.py and tests/test_solana_client.py).",
+      "priority": "must"
+    },
+    {
+      "criterion": "Phase A refactor introduces no behavior change \u2014 same inputs produce same outputs and same log messages.",
+      "priority": "should"
+    },
+    {
+      "criterion": "docs/payments.md readable by a new engineer in under 15 minutes (target \u2264400 lines).",
+      "priority": "should"
+    },
+    {
+      "criterion": "docs/runbook-payments.md covers every non-happy-path scenario listed in the idea.",
+      "priority": "should"
+    },
+    {
+      "criterion": "scripts/check_payment_invariants.py runs successfully against a production-like snapshot with no false positives on a healthy dataset.",
+      "priority": "info"
+    },
+    {
+      "criterion": "After this pass, an operator can sleep at night with real money in the wallets \u2014 subjective, operator-reported confidence.",
+      "priority": "info"
+    },
+    {
+      "criterion": "Daily scheduler wire-up for check_payment_invariants.py is in place (deferred to operator as a follow-up per decision #4).",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "The cleanup megaplan (payment-subsystem-follow-up-20260410-2339) has landed before Phase A starts, producing PaymentWorkerCog + PaymentUICog and the PaymentActor-based confirm_payment signature. Phase B can start without it because B targets existing surfaces (payment_service.py, db_handler.py, admin_chat/tools.py).",
+    "The admin-DM approval megaplan has landed before Phase D (specifically Step 14) runs, so the hypothesis state machine sees the final set of PaymentActorKind values including ADMIN_DM.",
+    "force_reconcile_payment_to_confirmed / force_reconcile_payment_to_failed intentionally bypass the normal transition guards. The audit trail (tx_signature_history entries with reason='reconcile_confirmed'/'reconcile_failed' plus WARNING-level logs) is the accountability mechanism. These primitives are only reachable via PaymentService.reconcile_with_chain, which is only reachable via the /payment-resolve slash command, which gates on ADMIN_USER_ID.",
+    "The /payment-resolve slash command is the ONLY surface that reaches reconcile_with_chain. No admin_chat LLM tool exposes it. This is a deliberate security choice: the hardening pass closed prompt-injection against payment flows and reopening it via an execute_payment_resolve tool would regress that work.",
+    "FLAG-003 root cause: execute_initiate_payment dedupes per (guild_id, source_channel_id, recipient_user_id) at the admin_payment_intent table level, so the D11 reproduction MUST use distinct source_channel_ids (or bypass the intent layer entirely by calling _start_admin_payment_flow directly). The test in Step 13 uses distinct channels plus a patched time.time() to force identical producer_refs downstream.",
+    "Step 12's formal safety argument rests on Postgres read-committed isolation plus FOR UPDATE SKIP LOCKED. If a future schema change removes that locking discipline from claim_due_payment_requests, Step 12's verdict becomes stale and this investigation must be re-run.",
+    "The 150-second threshold in Step 2 (blockhash-expired heuristic) and Step 12 (recover_inflight reclaim-eligible window) are BOTH 150s by coincidence. They are independent thresholds with different rationales (Solana blockhash lifetime ~90s vs. 5x the 30s worker tick). Keeping them separate constants in code, not a single shared constant.",
+    "Step 11 consolidates _redact_wallet into src/common/redaction.py (new module). Import sites alias it back to _redact_wallet locally to minimize call-site churn; this aliasing is a stylistic choice, not a requirement.",
+    "Property-based tests in Step 14 use hypothesis's RuleBasedStateMachine against a fake in-memory DB. They do not exercise Postgres. Integration-level concurrency safety is argued via the Step 12 verdict, not by hypothesis.",
+    "admin_chat/tools.py's _redact_wallet_address / _redact_wallet_row / _redact_payment_row helpers are out of scope for A3 per orchestrator decision #3. A future follow-up can unify them if desired.",
+    "F15 ships only the script; scheduler wire-up (Railway cron, GitHub Actions, external scheduler) is deferred to the operator and documented in docs/runbook-payments.md. This plan does NOT add a workflow YAML or a Railway config file.",
+    "Plan stays at 'planned' after this revision. The user's note explicitly says 'do not auto-advance to critique or execute without an explicit user nudge.'"
+  ],
+  "delta_from_previous_percent": 69.76,
+  "structure_warnings": []
+}

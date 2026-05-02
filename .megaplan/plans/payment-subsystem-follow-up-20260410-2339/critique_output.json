@@ -1,0 +1,35 @@
+{
+  "checks": [],
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Payment authorization: `PRODUCER_FLOWS` as planned cannot represent the current `admin_chat` final-confirmation behavior, because the live flow accepts both the payment button and a free-text recipient reply for the same payment.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "In the repo, `admin_chat` confirms final payouts through both `_handle_confirmation_received()` (`src/features/admin_chat/admin_chat_cog.py:284-309`) and the shared button prompt created via `send_confirmation_request()` (`src/features/admin_chat/admin_chat_cog.py:389-402`). The plan's Step 4 models each branch with a single `real_confirmed_by` value, so making the registry authoritative would reject one of the two current paths; leaving recipient-message outside the registry would also miss the stated goal of centralizing who may confirm inside `PaymentService`."
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Payment startup wiring: the split plan deletes `PaymentCog` but does not update the existing cap-breach callback in `main.py`, so manual-hold/admin-review DMs would stop working after the split.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`_bind_cap_breach_dm()` currently resolves `bot.get_cog('PaymentCog')` and calls `_dm_admin_payment_failure` on it (`main.py:65-77`). The plan's Phase 3 deletes `payment_cog.py` and moves the DM helpers, but its Step 7 explicitly says the callback wiring is unaffected. In the current repo, that callback is hard-wired to the old cog name and must be retargeted."
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Payment confirmation UI: Step 3 changes the button failure message in a way that would misreport backend failures as authorization failures, which violates the no-user-visible-behavior-change constraint.",
+      "category": "correctness",
+      "severity_hint": "likely-minor",
+      "evidence": "Today `PaymentConfirmView` sends \"Only the intended recipient can confirm this payment.\" only for the explicit recipient mismatch check, and sends the generic \"I couldn't queue that payment.\" for other service failures (`src/features/payments/payment_cog.py:57-73`). The plan removes the pre-check and says to show the recipient-only message whenever `confirm_payment()` returns `None`, but `confirm_payment()` can also return `None` for non-auth reasons such as a failed DB update or an unknown producer."
+    },
+    {
+      "id": "FLAG-004",
+      "concern": "Payment cleanup path: the plan allows `safe_delete_messages` to land without any caller, but the current repo has no existing payment-result thread-cleanup path to automatically pick it up, so that would leave scope item (5) unimplemented.",
+      "category": "completeness",
+      "severity_hint": "uncertain",
+      "evidence": "The live payment result path only posts a notify message in `_notify_payment_result()` (`src/features/payments/payment_cog.py:408-420`), and the grants terminal handler only posts a final message then archives the thread (`src/features/grants/grants_cog.py:749-762`). Repo search shows no existing payment thread-message deletion helper or terminal cleanup hook. The plan's Step 10 explicitly says the helper may 'stand alone' if no caller is found, which would not satisfy the stated goal that the primitive be used by the thread-cleanup path."
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

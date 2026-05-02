@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/sharing/models.py
+# hypothesis_version: 6.151.11
+
+['admin_chat', 'post', 'reaction_auto', 'reaction_bridge', 'reply', 'retweet', 'summary']

@@ -1,0 +1,62 @@
+{
+  "output": "Batch 7 complete. Removed the dead admin-chat-only `_is_directed_at_bot`, `_can_user_message_bot`, `_message_access_cache`, and the staged-cleanup retention comment from `src/features/admin_chat/admin_chat_cog.py`. Cleared the corresponding stale test references in `tests/test_admin_payments.py` so the scoped grep target is fully clean. Verification passed for `tests/test_admin_payments.py`, the scoped grep, and the full repository suite.",
+  "files_changed": [
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/execution_batch_7.json"
+  ],
+  "commands_run": [
+    "rg -n \"_message_access_cache|_is_directed_at_bot|_can_user_message_bot|Identity-routing note\" src/features/admin_chat/admin_chat_cog.py tests/test_admin_payments.py",
+    "sed -n '50,70p' src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '920,995p' src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '978,1034p' src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '1128,1162p' src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '1158,1172p' src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '652,714p' tests/test_admin_payments.py",
+    "rg -n \"_can_user_message_bot|_is_directed_at_bot|_message_access_cache\" src/features/admin_chat tests",
+    "pytest tests/test_admin_payments.py --tb=no -q --no-header",
+    "pytest --tb=no -q --no-header",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '90,102p;972,1008p;1150,1164p'",
+    "nl -ba tests/test_admin_payments.py | sed -n '654,676p'"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/execution_batch_7.json",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment."
+  ],
+  "task_updates": [
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "Removed the `_message_access_cache` field init from `src/features/admin_chat/admin_chat_cog.py:93-99` while preserving `_guild_context_cache` and `_ACCESS_CACHE_TTL_SECONDS`. Deleted the dead `_is_directed_at_bot` and `_can_user_message_bot` methods from the same file, leaving `_is_admin` and `_resolve_context_guild_id` intact at `src/features/admin_chat/admin_chat_cog.py:977-1008`. Removed the staged-cleanup retention comment from `_handle_admin_message`. To satisfy the batch's scoped-grep requirement, also removed the stale `_can_user_message_bot` test references and the now-redundant `test_approved_member_no_longer_routed_to_agent` from `tests/test_admin_payments.py`. Verification: `rg -n \"_can_user_message_bot|_is_directed_at_bot|_message_access_cache\" src/features/admin_chat tests` returned zero hits; `pytest tests/test_admin_payments.py --tb=no -q --no-header` passed with `50 passed, 1 warning`; `pytest --tb=no -q --no-header` passed with `200 passed, 4 warnings`. `src/features/admin/admin_cog.py` was not modified.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py",
+        "tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "rg -n \"_message_access_cache|_is_directed_at_bot|_can_user_message_bot|Identity-routing note\" src/features/admin_chat/admin_chat_cog.py tests/test_admin_payments.py",
+        "sed -n '50,70p' src/features/admin_chat/admin_chat_cog.py",
+        "sed -n '920,995p' src/features/admin_chat/admin_chat_cog.py",
+        "sed -n '978,1034p' src/features/admin_chat/admin_chat_cog.py",
+        "sed -n '1128,1162p' src/features/admin_chat/admin_chat_cog.py",
+        "sed -n '1158,1172p' src/features/admin_chat/admin_chat_cog.py",
+        "sed -n '652,714p' tests/test_admin_payments.py",
+        "rg -n \"_can_user_message_bot|_is_directed_at_bot|_message_access_cache\" src/features/admin_chat tests",
+        "pytest tests/test_admin_payments.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header",
+        "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '90,102p;972,1008p;1150,1164p'",
+        "nl -ba tests/test_admin_payments.py | sed -n '654,676p'"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "Confirmed. `_is_directed_at_bot`, `_can_user_message_bot`, the `_message_access_cache` field init, and the staged-cleanup retention comment were removed from `src/features/admin_chat/admin_chat_cog.py`, while `_guild_context_cache`, `_ACCESS_CACHE_TTL_SECONDS`, and `src/features/admin/admin_cog.py` were left untouched. The scoped grep `rg -n \"_can_user_message_bot|_is_directed_at_bot|_message_access_cache\" src/features/admin_chat tests` returned zero hits."
+    }
+  ]
+}

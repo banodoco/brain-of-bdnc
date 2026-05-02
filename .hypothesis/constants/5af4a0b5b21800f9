@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/sharing/sharer.py
+# hypothesis_version: 6.151.11
+
+[0.7, 200, '-', '.', './temp_media_sharing', '?', 'Content-Type', 'DiscordBot', 'Failed to post tweet', '_', 'admin_chat', 'already_shared', 'author_display_name', 'channel_id', 'check_existing', 'claude', 'content', 'content_type', 'deleted_at', 'enabled', 'error', 'filename', 'guild_id', 'id', 'image', 'local_path', 'message_id', 'original_content', 'post', 'provider_ref', 'provider_url', 'publication_id', 'rate_limiter', 'reaction_auto', 'reaction_bridge', 'reply', 'role', 'server_config', 'size', 'source_kind', 'succeeded', 'success', 'summary', 'top-art-sharing', 'tweet_id', 'tweet_url', 'twitter', 'url', 'user', 'user_details', 'video', 'wb']

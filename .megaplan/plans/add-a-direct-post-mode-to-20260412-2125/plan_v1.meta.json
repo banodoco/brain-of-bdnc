@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-12T19:28:33Z",
+  "hash": "sha256:1391a8bae0a76cace59a5a8c5e3fdf1caf8de4b09f2d9b81fa58df78bd33b385",
+  "questions": [
+    "Should media_urls support a single URL string as well as a list, or strictly require an array?",
+    "For the publication record, is message_id=0 acceptable for the database schema (e.g. foreign key constraints, unique indexes on message_id+platform+action), or should we use a synthetic ID?",
+    "Should route_key be required in direct-post mode (since there's no channel to resolve a route from), or should we fall back to the guild's default route?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "share_to_social accepts media_urls + tweet_text and posts a tweet with the downloaded media without requiring a Discord message reference",
+      "priority": "must"
+    },
+    {
+      "criterion": "Existing message-based share_to_social flow is completely unchanged \u2014 all current parameters and behaviors work identically",
+      "priority": "must"
+    },
+    {
+      "criterion": "Direct-post mode supports scheduled_at, action (post/reply), target_post, and route_key parameters",
+      "priority": "must"
+    },
+    {
+      "criterion": "Direct-post mode returns error if tweet_text is missing",
+      "priority": "must"
+    },
+    {
+      "criterion": "Media files are cleaned up from temp directory after publish (both success and failure)",
+      "priority": "must"
+    },
+    {
+      "criterion": "All existing tests pass without modification",
+      "priority": "must"
+    },
+    {
+      "criterion": "New code path adds fewer than 80 lines to execute_share_to_social",
+      "priority": "should"
+    },
+    {
+      "criterion": "Tool schema description clearly documents when to use media_urls vs message_link/message_id",
+      "priority": "should"
+    },
+    {
+      "criterion": "Direct-post mode tested end-to-end with a real Supabase media URL posting to Twitter",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "media_urls will be a JSON array of URL strings; we will not accept a single string (the LLM can wrap it in an array)",
+    "route_key will be recommended but not strictly required in direct-post mode \u2014 if omitted, route resolution will use guild_id + channel_id=0 which should fall through to the guild's default route if one exists",
+    "message_id=0 and channel_id=0 are safe sentinel values for the publication record (no FK constraints in the social_publications table that would reject them)",
+    "user_id=0 is acceptable for direct posts since there is no Discord user associated with external media",
+    "The existing _download_media_from_url on sharer is reliable for Supabase URLs and does not need modification",
+    "Direct-post mode does not need duplicate detection since there is no stable message_id to deduplicate against"
+  ],
+  "structure_warnings": []
+}

@@ -1,0 +1,191 @@
+{
+  "skip": false,
+  "task_summary": "Design and implement a generalized payment ledger and payment service that decouples SOL payment logic from the grants feature into a reusable system. The current grants cog embeds payment state (sending/sent/confirmed) directly in grant_applications rows and uses a single hardcoded wallet. The new system needs: a standalone payment_ledger table with idempotency keys, a PaymentService with provider-based architecture (SOL first), multi-wallet support via stable wallet keys, optional test-payment-then-confirm flow with Discord-mediated recipient yes/no, and a safe state machine with crash recovery. The grants flow should become a \"producer\" that enqueues payment requests rather than sending SOL directly.",
+  "key_evidence": [
+    {
+      "point": "Payment state is currently embedded inline in grant_applications table (payment_status, tx_signature, sol_amount, sol_price_usd, wallet_address fields) \u2014 no separate ledger exists",
+      "source": "src/common/db_handler.py:1953-1979, grants_cog.py:726-750",
+      "relevance": "high"
+    },
+    {
+      "point": "SolanaClient is tightly coupled to grants \u2014 single private key from SOLANA_PRIVATE_KEY env var, no wallet selection mechanism",
+      "source": "src/features/grants/solana_client.py:39-46",
+      "relevance": "high"
+    },
+    {
+      "point": "The social_publications system provides a proven template: separate ledger table with UUID PKs, status state machine (queued\u2192processing\u2192succeeded/failed/cancelled), claim_due function with FOR UPDATE SKIP LOCKED, integrity signatures, attempt_count, retry_after, provider-based architecture",
+      "source": "sql/social_publications.sql, src/features/sharing/social_publish_service.py",
+      "relevance": "high"
+    },
+    {
+      "point": "Existing idempotency guard in grants: checks existing tx_signature before re-sending, refuses to re-send if status is 'not_found' (may still be propagating)",
+      "source": "src/features/grants/grants_cog.py:690-719",
+      "relevance": "high"
+    },
+    {
+      "point": "Recovery logic already exists on startup: _recover_inflight_payments() checks on-chain status and retries failed payments",
+      "source": "src/features/grants/grants_cog.py:87-193",
+      "relevance": "high"
+    },
+    {
+      "point": "No Discord confirmation flow exists for payments \u2014 wallet address is accepted directly without a yes/no confirmation step",
+      "source": "src/features/grants/grants_cog.py:367-403",
+      "relevance": "medium"
+    },
+    {
+      "point": "DB handler uses Supabase with _gate_check(guild_id) pattern, guild-scoped queries, and all tables have RLS enabled",
+      "source": "src/common/db_handler.py:1887, sql/social_publications.sql:72-77",
+      "relevance": "medium"
+    },
+    {
+      "point": "SocialPublishProvider ABC with publish/delete/normalize_target_ref is the existing provider interface pattern \u2014 payment providers should follow this structure",
+      "source": "src/features/sharing/providers/__init__.py",
+      "relevance": "medium"
+    },
+    {
+      "point": "Existing grant payment sub-states: none \u2192 sending \u2192 sent \u2192 confirmed, with retry for failures \u2014 this maps to the new ledger states",
+      "source": "src/features/grants/grants_cog.py:726-765",
+      "relevance": "medium"
+    },
+    {
+      "point": "No existing tests directory has payment-related tests \u2014 only social_publish_service tests exist as a reference for the testing pattern",
+      "source": "tests/",
+      "relevance": "low"
+    }
+  ],
+  "relevant_code": [
+    {
+      "file_path": "src/features/grants/grants_cog.py",
+      "why": "Primary consumer \u2014 _process_payment (678-779) must be refactored to enqueue via PaymentService instead of calling SolanaClient directly. _recover_inflight_payments (87-193) moves into PaymentService. on_message wallet handler (367-403) needs confirmation flow.",
+      "functions": [
+        "_process_payment",
+        "_recover_inflight_payments",
+        "on_message",
+        "_handle_assessment"
+      ]
+    },
+    {
+      "file_path": "src/features/grants/solana_client.py",
+      "why": "Becomes the SOL provider implementation. send_sol, confirm_tx, check_tx_status become methods on a SolPaymentProvider. Must support multiple keypairs selected by wallet_key.",
+      "functions": [
+        "SolanaClient.__init__",
+        "send_sol",
+        "confirm_tx",
+        "check_tx_status",
+        "is_valid_solana_address"
+      ]
+    },
+    {
+      "file_path": "src/common/db_handler.py",
+      "why": "New payment_ledger CRUD methods needed (create_payment, claim_pending_payments, update_payment_status, get_payment_by_idempotency_key). Existing grant payment methods (1883-1997) become thin wrappers or are retired.",
+      "functions": [
+        "create_grant_application",
+        "update_grant_status",
+        "record_grant_payment",
+        "get_inflight_payments"
+      ]
+    },
+    {
+      "file_path": "sql/social_publications.sql",
+      "why": "Template for the new payment_ledger.sql migration \u2014 same patterns: UUID PK, status CHECK constraint, claim function with FOR UPDATE SKIP LOCKED, RLS, triggers.",
+      "functions": [
+        "claim_due_social_publications"
+      ]
+    },
+    {
+      "file_path": "src/features/sharing/social_publish_service.py",
+      "why": "Architectural template \u2014 provider registry, enqueue/execute split, integrity signatures, DB persistence. PaymentService should mirror this structure.",
+      "functions": [
+        "SocialPublishService.__init__",
+        "publish_now",
+        "enqueue",
+        "execute_publication",
+        "_build_publication_record"
+      ]
+    },
+    {
+      "file_path": "src/features/sharing/providers/__init__.py",
+      "why": "ABC for SocialPublishProvider \u2014 PaymentProvider ABC should follow the same pattern.",
+      "functions": [
+        "SocialPublishProvider"
+      ]
+    },
+    {
+      "file_path": "src/features/sharing/models.py",
+      "why": "Dataclass pattern for SocialPublishRequest/Result \u2014 PaymentRequest/PaymentResult should use same pattern.",
+      "functions": [
+        "SocialPublishRequest",
+        "SocialPublishResult"
+      ]
+    },
+    {
+      "file_path": "main.py",
+      "why": "PaymentService must be initialized here and injected into GrantsCog (and future consumers). Recovery task launch moves from GrantsCog.on_ready to PaymentService startup.",
+      "functions": [
+        "main"
+      ]
+    },
+    {
+      "file_path": "src/features/grants/pricing.py",
+      "why": "USD-to-SOL conversion stays in grants but the computed SOL amount is passed to PaymentService as part of the payment request.",
+      "functions": [
+        "usd_to_sol",
+        "get_sol_price_usd"
+      ]
+    }
+  ],
+  "test_expectations": [
+    {
+      "test_id": "test_payment_idempotency",
+      "what_it_checks": "Duplicate payment requests with same idempotency_key return existing payment instead of creating a new one",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "test_payment_state_machine",
+      "what_it_checks": "Payment transitions follow valid paths (pending\u2192sending\u2192sent\u2192confirmed, pending\u2192sending\u2192failed\u2192retry\u2192sending)",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "test_crash_recovery",
+      "what_it_checks": "Payments stuck in sending/sent states are recovered by checking on-chain status on startup",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "test_no_double_send",
+      "what_it_checks": "If a payment has a tx_signature with unknown on-chain status, the system does NOT re-send (avoids double payment)",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "test_wallet_key_selection",
+      "what_it_checks": "PaymentService selects correct keypair based on wallet_key parameter (e.g. 'grants_main' vs 'bounties_main')",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "test_confirmation_flow",
+      "what_it_checks": "Payment with require_confirmation=True stays in awaiting_confirmation until Discord yes reply, then proceeds",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "test_social_publish_service",
+      "what_it_checks": "Existing social publish tests continue passing (no regression from shared patterns)",
+      "status": "pass_to_pass"
+    },
+    {
+      "test_id": "test_social_publications",
+      "what_it_checks": "Existing social publication DB tests continue passing",
+      "status": "pass_to_pass"
+    }
+  ],
+  "constraints": [
+    "No double payments: if a tx_signature exists with unknown on-chain status, refuse to re-send \u2014 require admin intervention instead",
+    "Existing grant_applications table and flow must continue working during migration \u2014 add payment_id FK, don't remove existing payment fields until cutover is verified",
+    "RLS must be enabled on payment_ledger; revoke all from anon/authenticated (service-key only access, matching social_publications pattern)",
+    "Private keys must not be stored in the database \u2014 wallet_key is a stable label mapped to env vars (e.g. SOLANA_WALLET_grants_main) at runtime",
+    "Idempotency key must be unique per payment_ledger row and checked before any new payment is created",
+    "State transitions must be atomic \u2014 use Supabase update with .eq on both primary key and expected current status to prevent race conditions",
+    "Recovery on startup must handle all edge states: sending with no tx, sent with tx but unconfirmed, failed needing retry",
+    "Guild-scoped queries must be maintained (guild_id parameter on all payment DB methods)",
+    "The test payment flow (small amount before full payout) must be optional and configurable per-producer"
+  ],
+  "suggested_approach": "Model the payment system after the proven social_publications architecture, which already solves queue management, state machines, provider abstraction, and integrity signing in this codebase.\n\n**New files:**\n1. `sql/payment_ledger.sql` \u2014 Table with: payment_id (UUID PK), idempotency_key (UNIQUE), producer_kind (e.g. 'grant', 'bounty'), producer_ref (e.g. thread_id), guild_id, recipient_address, amount, currency ('SOL'), wallet_key, status (pending\u2192awaiting_confirmation\u2192sending\u2192sent\u2192confirmed\u2192failed), tx_signature, attempt_count, require_confirmation, confirmed_by_user_id, discord_channel_id (for confirmation messages), created_at/updated_at. Include a `claim_pending_payments()` function mirroring `claim_due_social_publications()`.\n\n2. `src/features/payments/` \u2014 New feature directory:\n   - `models.py` \u2014 PaymentRequest and PaymentResult dataclasses\n   - `payment_service.py` \u2014 PaymentService class (mirrors SocialPublishService): enqueue(), execute_payment(), recover_inflight(), handle_confirmation(). Manages provider registry and wallet key\u2192keypair resolution.\n   - `providers/__init__.py` \u2014 PaymentProvider ABC with send(), confirm(), check_status()\n   - `providers/sol_provider.py` \u2014 Wraps existing SolanaClient logic, accepts keypair at construction or per-call via wallet_key lookup\n\n3. DB handler additions in `db_handler.py` \u2014 create_payment(), get_payment_by_idempotency_key(), update_payment_status() (with optimistic status check), claim_pending_payments(), get_inflight_payments_ledger()\n\n**Refactor grants_cog.py:**\n- `_process_payment()` becomes: compute SOL amount \u2192 call `payment_service.enqueue(PaymentRequest(idempotency_key=f\"grant-{thread_id}\", producer_kind='grant', ...))` \u2192 update grant status to 'payment_pending'\n- Remove `_recover_inflight_payments()` from GrantsCog \u2014 PaymentService handles recovery globally\n- Add confirmation handler: when user replies 'yes' in thread, call `payment_service.confirm_payment(payment_id)`\n\n**Confirmation flow:**\n- PaymentService posts a confirmation message to discord_channel_id with payment details\n- Payment stays in `awaiting_confirmation` until the recipient replies 'yes'\n- A new listener (on PaymentService cog or GrantsCog) watches for 'yes' replies and calls confirm_payment()\n- Timeout after configurable period \u2192 auto-cancel or escalate to admin\n\n**Wallet key resolution:**\n- Env vars: `SOLANA_WALLET_grants_main`, `SOLANA_WALLET_bounties_main`, etc.\n- PaymentService.__init__ loads all SOLANA_WALLET_* env vars into a dict[str, Keypair]\n- Fallback: `SOLANA_PRIVATE_KEY` as default wallet for backward compat\n\n**State machine safety:**\n- All status updates use `.eq('status', expected_current_status)` to prevent concurrent transitions\n- If update affects 0 rows, re-read and handle the actual state (may already be confirmed by recovery)\n- tx_signature is recorded immediately after send_sol returns, before confirmation wait"
+}

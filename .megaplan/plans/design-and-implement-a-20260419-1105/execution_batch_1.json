@@ -1,0 +1,46 @@
+{
+  "output": "Staged the `moderation_decisions` migration and updated the staging handoff README. Verified the new SQL file exists with the exact six-value classification CHECK constraint, all three required indexes, and the documented deploy destination. Wrote a batch checkpoint to `.megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_1.json`.",
+  "files_changed": [
+    ".migrations_staging/20260419110000_create_moderation_decisions.sql",
+    ".migrations_staging/README.md",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_1.json"
+  ],
+  "commands_run": [
+    "rg --files .migrations_staging",
+    "sed -n '1,220p' .migrations_staging/README.md",
+    "sed -n '1,240p' .migrations_staging/20260411220000_backfill_payments.sql",
+    "sed -n '1,260p' .migrations_staging/20260411220100_backfill_admin_payment_intents.sql",
+    "sed -n '1,220p' .migrations_staging/20260419110000_create_moderation_decisions.sql",
+    "rg -n \"bot_auto_restricted|bot_curator_reject|user_self_removal|moderator_cleared_all|moderator_cleared_emoji|message_deleted_cascade|idx_moderation_decisions_guild_removed_at|idx_moderation_decisions_message_id|idx_moderation_decisions_reactor_removed_at\" .migrations_staging/20260419110000_create_moderation_decisions.sql",
+    "test -w .megaplan/plans/design-and-implement-a-20260419-1105 && echo writable",
+    "sed -n '1,220p' .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_1.json"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_1.json, .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Executor claimed changed files not present in git status: .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis/, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/, .megaplan/plans/add-scheduled-twitter-x-20260409-1553/, .megaplan/plans/add-scheduled-twitter-x-20260409-1556/, .megaplan/plans/add-scheduled-twitter-x-20260409-1557/, .megaplan/plans/admin-triggered-payments-let-20260410-1448/, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/, .megaplan/plans/build-a-fail-closed-20260409-2327/, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/, .megaplan/plans/design-a-generalized-solana-20260409-2227/, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241/, .megaplan/plans/design-and-implement-a-20260419-1105/, .megaplan/plans/final-polish-and-gremlin-20260411-0020/, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/, .megaplan/plans/harden-the-solana-payment-20260410-2147/, .megaplan/plans/identity-based-routing-for-20260411-0256/, .megaplan/plans/implement-a-unified-social-20260409-1710/, .megaplan/plans/implement-a-unified-social-20260409-1732/, .megaplan/plans/implement-a-unified-social-20260409-1748/, .megaplan/plans/implement-a-unified-social-20260409-1856/, .megaplan/plans/payment-subsystem-follow-up-20260410-2339/, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/execution_doc.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/schemas/tiebreaker_challenger.json, .megaplan/schemas/tiebreaker_researcher.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/test_notification_delete.py, tests/test_social_publications.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "Created `.migrations_staging/20260419110000_create_moderation_decisions.sql` with the required `moderation_decisions` schema, exact six-value classification CHECK constraint, and the three requested indexes. Updated `.migrations_staging/README.md` to include the new staged migration and the manual handoff destination `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/`.",
+      "files_changed": [
+        ".migrations_staging/20260419110000_create_moderation_decisions.sql",
+        ".migrations_staging/README.md"
+      ],
+      "commands_run": [
+        "rg --files .migrations_staging",
+        "sed -n '1,220p' .migrations_staging/README.md",
+        "sed -n '1,220p' .migrations_staging/20260419110000_create_moderation_decisions.sql",
+        "rg -n \"bot_auto_restricted|bot_curator_reject|user_self_removal|moderator_cleared_all|moderator_cleared_emoji|message_deleted_cascade|idx_moderation_decisions_guild_removed_at|idx_moderation_decisions_message_id|idx_moderation_decisions_reactor_removed_at\" .migrations_staging/20260419110000_create_moderation_decisions.sql"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "Confirmed the staged SQL exists under `.migrations_staging/` with the `20260419110000_` prefix, the CHECK constraint enumerates exactly `bot_auto_restricted`, `bot_curator_reject`, `user_self_removal`, `moderator_cleared_all`, `moderator_cleared_emoji`, and `message_deleted_cascade`, all three indexes are present, and `.migrations_staging/README.md` was updated."
+    }
+  ]
+}

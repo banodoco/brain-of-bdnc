@@ -1,0 +1,118 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "findings": [
+        {
+          "detail": "Filled in the check in `.megaplan/plans/implement-a-unified-social-20260409-1710/critique_output.json`, including that the repo has no existing migrations directory so the plan's SQL-artifact approach matches current structure.",
+          "flagged": false
+        },
+        {
+          "detail": "Flagged that admin-chat still exposes only the old Twitter-only `share_to_social` contract and `shared_posts`, so scheduling/failure tracking are not yet accounted for in the operator surface.",
+          "flagged": true
+        },
+        {
+          "detail": "Flagged that the reaction consent bridge has moderation and DM side effects beyond publishing, and the plan does not explicitly preserve them when unifying onto the admin-chat-style request path.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "findings": [
+        {
+          "detail": "Flagged that blanket `shared_posts` compatibility is structurally incompatible with multiple `post|reply|retweet` outcomes for one Discord message because current duplicate/delete lookups assume one legacy row per message/platform.",
+          "flagged": true
+        },
+        {
+          "detail": "Flagged that `claim_due_social_publications` needs an explicit DB-atomic claim strategy; the current Supabase access pattern in `DatabaseHandler` does not provide one.",
+          "flagged": true
+        },
+        {
+          "detail": "Flagged that retweet deletion remains underspecified because the current delete path only calls the normal tweet-delete API.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "findings": [
+        {
+          "detail": "Flagged that summary-triggered sharing also calls `finalize_sharing()` and is not mentioned in the rewiring steps even though it shares the same side effects and should move with the unified service.",
+          "flagged": true
+        },
+        {
+          "detail": "Flagged that `notify_user.py` is part of the same subsystem because it still deletes via `social_poster.delete_tweet` and updates `shared_posts` directly.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "findings": [
+        {
+          "detail": "Flagged that a scheduler in `SharingCog` also needs startup/shutdown wiring; unlike other polling cogs, `SharingCog` currently has no loop lifecycle hooks.",
+          "flagged": true
+        },
+        {
+          "detail": "Flagged that admin observability/supporting infrastructure is missing because the built-in query surface and prompt still expose only `shared_posts` and the old tool arguments.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "findings": [
+        {
+          "detail": "Flagged that admin chat and the reaction bridge pass materially different publish inputs, so the normalized request must carry bridge-specific metadata instead of mirroring the admin path only.",
+          "flagged": true
+        },
+        {
+          "detail": "Flagged that admin replies currently default to `text_only=True` in `execute_share_to_social()`, and that caller-specific rule can regress if normalization moves without preserving it.",
+          "flagged": true
+        },
+        {
+          "detail": "Flagged that duplicate detection must stay action-aware because current callers suppress duplicates only for non-reply `finalize_sharing()` calls, while reaction `send_tweet()` does not suppress duplicates at all.",
+          "flagged": true
+        }
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Social publishing: Legacy `shared_posts` compatibility collides with multi-action post/reply/retweet publishing.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`record_shared_post()`/`get_shared_post()` in `src/common/db_handler.py` assume one legacy row per message/platform, while the plan introduces multiple durable action types for the same source message."
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Reaction bridge: Unified request shape is underspecified for consent, moderation, and reactor-facing side effects.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/reacting/subfeatures/tweet_sharer_bridge.py` performs moderation, consent persistence, DMs, and admin alerts around `send_tweet()`, but the plan only says to submit the same normalized request used by admin chat."
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Queue claiming: Atomic claim/update semantics are not accounted for in the current Supabase access pattern.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/common/db_handler.py` uses direct Supabase client reads and writes and does not expose an existing transactional claim helper or RPC path, yet the plan depends on `claim_due_social_publications` being atomic."
+    },
+    {
+      "id": "FLAG-004",
+      "concern": "Admin tooling: The plan omits the prompt and query-surface updates needed to inspect scheduled and failed publications.",
+      "category": "completeness",
+      "severity_hint": "likely-minor",
+      "evidence": "`QUERYABLE_TABLES` in `src/features/admin_chat/tools.py` only includes `shared_posts`, and `src/features/admin_chat/agent.py` still documents the old Twitter-only `share_to_social` arguments and table list."
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

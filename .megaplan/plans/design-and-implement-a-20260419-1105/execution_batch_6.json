@@ -1,0 +1,55 @@
+{
+  "output": "Created `tests/test_moderation_decisions.py` using `conftest.load_module_from_repo` to load both `reactor_cog.py` and `db_handler.py`, with a mocked Supabase-backed `DatabaseHandler` instance and monkeypatched `record_moderation_decision`, `get_active_reactors`, `get_message_snapshot`, and `bot.fetch_user` surfaces inside the test harness. The module covers the nine requested scenario groups: restricted flag/political/religious add path plus gateway no-op expectation, curator marker path, plain self-removal, suspicious self-removal admin DM, clear-all, clear-emoji filter, message-delete cascade, `_classify_restricted_emoji` branches, and TTL pruning via monkeypatched `time.monotonic`. I syntax-checked the file with `python -m py_compile tests/test_moderation_decisions.py`; the full module run is deferred to T8 per the plan.",
+  "files_changed": [
+    "tests/test_moderation_decisions.py",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_6.json"
+  ],
+  "commands_run": [
+    "rg -n \"load_module_from_repo|ReactorCog|on_raw_reaction_remove|on_raw_reaction_clear|curator_reject|register_bot_removal|_classify_restricted_emoji\" tests",
+    "sed -n '1,240p' tests/conftest.py",
+    "rg --files tests",
+    "rg -n \"pytest\\.mark\\.asyncio|async def test_|AsyncMock|SimpleNamespace|monkeypatch\" tests/test_*.py",
+    "sed -n '1,220p' tests/test_safe_delete_messages.py",
+    "sed -n '1,220p' tests/test_notification_delete.py",
+    "sed -n '232,340p' src/features/reacting/reactor_cog.py",
+    "python -m py_compile tests/test_moderation_decisions.py",
+    "sed -n '1,320p' tests/test_moderation_decisions.py",
+    "sed -n '320,420p' tests/test_moderation_decisions.py",
+    "git status --short -- tests/test_moderation_decisions.py .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_6.json"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_6.json",
+    "Advisory quality: tests/test_moderation_decisions.py grew by 380 lines (threshold 200).",
+    "Advisory quality: tests/test_moderation_decisions.py has similar functions check_reaction and check_message (100% similarity).",
+    "Advisory audit finding: Executor claimed changed files not present in git status: .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis/, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/, .megaplan/plans/add-scheduled-twitter-x-20260409-1553/, .megaplan/plans/add-scheduled-twitter-x-20260409-1556/, .megaplan/plans/add-scheduled-twitter-x-20260409-1557/, .megaplan/plans/admin-triggered-payments-let-20260410-1448/, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/, .megaplan/plans/build-a-fail-closed-20260409-2327/, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/, .megaplan/plans/design-a-generalized-solana-20260409-2227/, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241/, .megaplan/plans/design-and-implement-a-20260419-1105/, .megaplan/plans/final-polish-and-gremlin-20260411-0020/, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/, .megaplan/plans/harden-the-solana-payment-20260410-2147/, .megaplan/plans/identity-based-routing-for-20260411-0256/, .megaplan/plans/implement-a-unified-social-20260409-1710/, .megaplan/plans/implement-a-unified-social-20260409-1732/, .megaplan/plans/implement-a-unified-social-20260409-1748/, .megaplan/plans/implement-a-unified-social-20260409-1856/, .megaplan/plans/payment-subsystem-follow-up-20260410-2339/, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/execution_doc.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/schemas/tiebreaker_challenger.json, .megaplan/schemas/tiebreaker_researcher.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/test_notification_delete.py, tests/test_social_publications.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "Created `tests/test_moderation_decisions.py` using `conftest.load_module_from_repo` to load both `reactor_cog.py` and `db_handler.py`, with a mocked Supabase-backed `DatabaseHandler` instance and monkeypatched `record_moderation_decision`, `get_active_reactors`, `get_message_snapshot`, and `bot.fetch_user` surfaces inside the test harness. The module covers the nine requested scenario groups: restricted flag/political/religious add path plus gateway no-op expectation, curator marker path, plain self-removal, suspicious self-removal admin DM, clear-all, clear-emoji filter, message-delete cascade, `_classify_restricted_emoji` branches, and TTL pruning via monkeypatched `time.monotonic`; syntax-checked with `python -m py_compile tests/test_moderation_decisions.py`.",
+      "files_changed": [
+        "tests/test_moderation_decisions.py"
+      ],
+      "commands_run": [
+        "rg -n \"load_module_from_repo|ReactorCog|on_raw_reaction_remove|on_raw_reaction_clear|curator_reject|register_bot_removal|_classify_restricted_emoji\" tests",
+        "sed -n '1,240p' tests/conftest.py",
+        "rg --files tests",
+        "rg -n \"pytest\\.mark\\.asyncio|async def test_|AsyncMock|SimpleNamespace|monkeypatch\" tests/test_*.py",
+        "sed -n '1,220p' tests/test_safe_delete_messages.py",
+        "sed -n '1,220p' tests/test_notification_delete.py",
+        "sed -n '232,340p' src/features/reacting/reactor_cog.py",
+        "python -m py_compile tests/test_moderation_decisions.py",
+        "sed -n '1,320p' tests/test_moderation_decisions.py",
+        "sed -n '320,420p' tests/test_moderation_decisions.py"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "Confirmed `tests/test_moderation_decisions.py` covers the requested scenario set: restricted flag/political/religious add with correct reasons and gateway no-op expectation, curator marker consumption without duplicate `user_self_removal`, plain self-removal with no admin DM, suspicious self-removal for `\ud83e\udd2e`/`\ud83d\udc4e`/`\ud83d\ude2d` with admin DM payload assertions, clear-all enumeration, clear-emoji filtering, message-delete cascade snapshot population, `_classify_restricted_emoji` branch coverage, and TTL pruning via monkeypatched `time.monotonic`. The assertions check exact moderation-decision kwargs such as `classification`, `reason`, and `is_suspicious`, not only call counts."
+    }
+  ]
+}

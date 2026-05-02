@@ -1,0 +1,27 @@
+{
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Migration workflow: The plan treats `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` as if it were just another output under the bot repo, but that directory belongs to the workspace-root git repo and is outside the current writable sandbox. As written, Step 7.4 cannot confirm the migration files from `brain-of-bndc`, and an executor following this plan can land the deletions/docs in one repo without actually validating the new migrations in the other.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed FLAG-001 (cross-repo sandbox gap) by making the two-git-repo topology explicit throughout. Split Step 2 into two variants: Step 2 stages migration files inside `brain-of-bndc/.migrations_staging/` (gitignored, with a handoff README) when the sandbox is bot-repo-only; Step 2b writes directly to the sibling workspace `supabase/migrations/` when executor has expanded writable roots. Reorganized into three phases (Prepare, Bot-repo edits, Validation) and moved deletion (Step 4) to a post-workspace-commit precondition so the source of truth is never destroyed before the replacement is durable. Added Step 6 dedicated to workspace-repo validation with both variants. Updated README/structure.md/.cursorrules edit instructions to explicitly name the two-repo topology. Switched `docs/payments.md` anchor strategy from line numbers to section-name anchors for resilience. Added new success criteria for the staging/direct-write branching and the manual checkpoint.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Documentation paths: The plan only updates `README.md`, `structure.md`, `docs/payments.md`, and `.cursorrules`, but the repo still has a live operator doc that points at the retired bot-local path `brain-of-bndc/supabase/migrations/...`. If this change establishes the sibling workspace-level path as canonical, that doc will remain wrong after the backfill.",
+      "category": "completeness",
+      "severity_hint": "likely-minor",
+      "evidence": "`docs/arca-gidan-shared-supabase-cutover.md:15` says `Apply brain-of-bndc/supabase/migrations/20260322000000_merge_arca_gidan_into_shared_supabase.sql`, and `rg -n \"brain-of-bndc/supabase|supabase/migrations/\" . --glob '!.megaplan/**'` only finds that file plus the entries already called out in the plan.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "minor",
+      "verified": false
+    }
+  ]
+}

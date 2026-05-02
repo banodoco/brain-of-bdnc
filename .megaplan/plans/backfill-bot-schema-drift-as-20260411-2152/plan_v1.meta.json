@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-11T19:57:02Z",
+  "hash": "sha256:ee38fdd19bf5ec715dad218225b166c1f291696bbc619bf4975f78aba53603c4",
+  "questions": [
+    "The idea specifies `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` as the target, which is a **sibling** directory outside `brain-of-bndc/`. The current session sandbox only permits writes inside `brain-of-bndc/`. Should the executor step be granted access to the sibling path, or should the plan fall back to creating `brain-of-bndc/supabase/migrations/` (the structure.md says this exists but it currently does not)?",
+    "Should the workspace-level `supabase/migrations/` directory be audited first for pre-existing files that already cover any of these tables (e.g., a prior partial migration of `wallet_registry`)? If so, those pre-existing files may need to be reconciled before adding these backfill migrations to avoid timestamp-ordering conflicts.",
+    "The idea mentions `bot README/CLAUDE.md`, but there is no `CLAUDE.md` in `brain-of-bndc/` today (only a `.claude/` directory). Do you want a new root-level `CLAUDE.md` created, or is adding the migration workflow to `README.md` sufficient?",
+    "In `docs/payments.md`, ten references anchor by `sql/payments.sql:NNN` line numbers. Is it acceptable to degrade some of these to filename + section anchor (e.g., `... \u2014 uq_payment_requests_active_producer_ref`) when exact line numbers inside the new migration file cannot be recomputed cleanly?",
+    "In `sql/social_publications.sql:77`, `REVOKE EXECUTE on public.claim_due_social_publications(...)` appears before the `CREATE OR REPLACE FUNCTION` at line 93. This works on a DB where the function already exists (production) but breaks on a fresh `supabase db reset`. Is it acceptable to reorder the statements in the new migration (the only semantic change across all three files)?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "Three new migration files exist at `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` with timestamp prefixes `20260411220000_backfill_payments.sql`, `20260411220100_backfill_admin_payment_intents.sql`, `20260411220200_backfill_social_publications.sql`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Every SQL statement in each new migration is idempotent: every `CREATE TABLE` uses `IF NOT EXISTS`, every `CREATE INDEX` uses `IF NOT EXISTS`, every `ADD COLUMN` uses `IF NOT EXISTS`, every function uses `CREATE OR REPLACE`, every trigger is preceded by a matching `DROP TRIGGER IF EXISTS`, and every backfill `UPDATE` has a guard clause preventing double-application.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`brain-of-bndc/sql/payments.sql`, `brain-of-bndc/sql/admin_payment_intents.sql`, `brain-of-bndc/sql/social_publications.sql` are deleted from the repo (tracked deletion in `git status`), and the `sql/` directory is empty (or also removed).",
+      "priority": "must"
+    },
+    {
+      "criterion": "No file in `brain-of-bndc/` (excluding `.megaplan/`, `.venv/`, `__pycache__/`, `.pytest_cache/`) references `sql/payments.sql`, `sql/admin_payment_intents.sql`, or `sql/social_publications.sql` after the edits.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`brain-of-bndc/README.md` documents the migration workflow: canonical path, naming convention (`YYYYMMDDHHMMSS_`), idempotency requirement, and the apply command (`supabase db push` / `supabase db reset`).",
+      "priority": "must"
+    },
+    {
+      "criterion": "`brain-of-bndc/docs/payments.md` references to `sql/payments.sql:NNN` are rewritten to point at `supabase/migrations/20260411220000_backfill_payments.sql` (by line number where feasible, by section anchor where not).",
+      "priority": "must"
+    },
+    {
+      "criterion": "`brain-of-bndc/structure.md:98-103` no longer falsely claims a `brain-of-bndc/supabase/` subdirectory; the tree is corrected to reflect the workspace-level location.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The migration file ordering (by filename timestamp) places `payments` before `admin_payment_intents`, so that FKs from `admin_payment_intents.wallet_id` \u2192 `wallet_registry.wallet_id` and `admin_payment_intents.test_payment_id` \u2192 `payment_requests.payment_id` resolve cleanly on a fresh `supabase db reset`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The `REVOKE EXECUTE on claim_due_social_publications(...)` statement in the social_publications migration appears **after** the `CREATE OR REPLACE FUNCTION` that defines it (fixing the ordering bug in the current shadow file).",
+      "priority": "must"
+    },
+    {
+      "criterion": "The targeted pytest subset (`tests/test_social_publications.py`, `tests/test_caller_paths.py`, `tests/test_notification_delete.py`) still passes after the edits.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Each new migration file carries a short header comment stating: its purpose (backfill), its idempotency guarantee, and \u2014 for `admin_payment_intents` \u2014 its FK dependency on the earlier migration.",
+      "priority": "should"
+    },
+    {
+      "criterion": "The three new migration files remain under ~300 lines each and do not introduce any new schema beyond the exact contents of the three shadow files (plus the social_publications statement reorder).",
+      "priority": "should"
+    },
+    {
+      "criterion": "`.cursorrules:57` is updated to clarify that the `supabase/migrations/` path is workspace-level, not bot-local.",
+      "priority": "should"
+    },
+    {
+      "criterion": "An operator can run `supabase db reset` locally against the new migrations and arrive at a schema that matches production, with no errors from replay.",
+      "priority": "info"
+    },
+    {
+      "criterion": "After this change lands, future schema changes for the bot follow the migration path instead of being hand-applied and dropped into `sql/`.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "The target path is the **sibling** `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` (as stated in the idea), not a bot-local `brain-of-bndc/supabase/migrations/`. Confirmed by `test -d`: sibling exists, bot-local does not.",
+    "Production already has the exact schema described by the three `sql/*.sql` files, so the new migrations must be strict no-ops when replayed against production. Idempotency means guarded statements only, no data transformations beyond the already-guarded `tx_signature_history` backfill.",
+    "No existing migration in the sibling `supabase/migrations/` directory conflicts with these backfills. If one does, the executor will need to either reconcile or skip the conflicting table; flagged as a question.",
+    "Three separate migration files (one per subsystem) is cleaner than a single combined file, because each corresponds to one logical concern and maps 1:1 to a deleted shadow file.",
+    "Timestamp `20260411` (today's date) with three increasing 2-minute offsets is acceptable as the filename prefix. If there is a repo convention like `YYYYMMDDHHMMSS_` with 14 digits, that is followed.",
+    "Documentation updates target `README.md`, `structure.md`, `docs/payments.md`, and `.cursorrules`. No new `CLAUDE.md` is created unless the user confirms they want one.",
+    "The `REVOKE EXECUTE on claim_due_social_publications(...)` ordering bug in `sql/social_publications.sql:77` is in fact a bug (not intentional) and may be reordered when copied into the new migration. This is the only SQL-semantic change across all three files; flagged as a question.",
+    "No Python code loads from `sql/...` at runtime (confirmed via grep for `\"sql/` and `'sql/`), so deleting the shadow folder has zero runtime impact and only requires doc updates.",
+    "The executor step will have write access to the sibling `supabase/migrations/` path via elevated sandbox permissions, or will fall back to staging the files inside `brain-of-bndc/` and asking the user to move them. Flagged as a question."
+  ],
+  "structure_warnings": []
+}

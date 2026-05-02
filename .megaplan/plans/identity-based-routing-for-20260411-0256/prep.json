@@ -1,0 +1,427 @@
+{
+  "skip": false,
+  "task_summary": "Refactor admin_chat to route messages by author identity (admin\u2192agent, pending-recipient\u2192state machine, else\u2192passthrough), add a new `awaiting_test_receipt_confirmation` intent state with keyword-based confirm/negative/ambiguous parsing, add query_*/initiate_batch_payment/upsert_wallet_for_user agent tools, introduce an admin-DM-only AdminApprovalView approval gate for real admin_chat payments (replacing PaymentConfirmView for that producer only), auto-skip the test phase for verified wallets, and add a 24h timeout escalation. Grants flow and all hardening/cleanup/polish invariants stay intact.",
+  "key_evidence": [
+    {
+      "point": "Today admin_chat routing is content-based: on_message first calls _check_pending_payment_reply which intercepts any recipient reply in any channel for any active intent, then falls through to mention/DM detection and agent invocation. Identity routing replaces both branches with a single author-id switch.",
+      "source": "src/features/admin_chat/admin_chat_cog.py:790-835 (on_message), :563-640 (_check_pending_payment_reply)",
+      "relevance": "high"
+    },
+    {
+      "point": "Current intent status CHECK constraint is ('awaiting_wallet','awaiting_test','awaiting_confirmation','confirmed','completed','failed','cancelled'). No 'awaiting_test_receipt_confirmation' exists; a SQL migration must add it to the CHECK constraint.",
+      "source": "sql/admin_payment_intents.sql:28-37",
+      "relevance": "high"
+    },
+    {
+      "point": "Today's flow creates a real test payment and AUTO-confirms it via PaymentActorKind.AUTO in _start_admin_payment_flow, then on terminal test success creates the real payment and calls PaymentUICog.send_confirmation_request for recipient confirmation. The new flow must instead park the intent in awaiting_test_receipt_confirmation after the test confirms on-chain, then wait for the recipient's text ack before creating the real payment.",
+      "source": "src/features/admin_chat/admin_chat_cog.py:234-309 (_start_admin_payment_flow, _handle_confirmation_received) and :311-414 (handle_payment_result test branch)",
+      "relevance": "high"
+    },
+    {
+      "point": "PaymentConfirmView is used for BOTH grants and admin_chat real payments today \u2014 both grants_cog.py:719 and admin_chat_cog.py:393 call payment_ui_cog.send_confirmation_request. The refactor must NOT drop the grants call site, only the admin_chat call site.",
+      "source": "src/features/grants/grants_cog.py:719, src/features/admin_chat/admin_chat_cog.py:393",
+      "relevance": "high"
+    },
+    {
+      "point": "Reply classification today uses a Claude-based _classify_payment_reply call per message; the new pending-recipient state machine must be deterministic with zero LLM calls. The task mandates hardcoded regex/keyword matching for both wallet detection and confirmation keywords.",
+      "source": "src/features/admin_chat/admin_chat_cog.py:64 (_classify_payment_reply) and :585-636 branches",
+      "relevance": "high"
+    },
+    {
+      "point": "is_valid_solana_address already exists and does base58 decode + 32-byte length check \u2014 reuse it rather than re-implementing. It's imported in admin_chat_cog and used at :586,:592.",
+      "source": "src/features/grants/solana_client.py:31-39 (is_valid_solana_address)",
+      "relevance": "high"
+    },
+    {
+      "point": "execute_initiate_payment already has wallet-verification auto-skip logic: it filters wallet_record by verified_at and only calls _start_admin_payment_flow when a verified wallet is present. However, _start_admin_payment_flow currently issues the TEST payment unconditionally \u2014 it never 'goes straight to real'. The auto-skip must be implemented by branching at intent creation time, not inside _start_admin_payment_flow.",
+      "source": "src/features/admin_chat/tools.py:2543-2574, admin_chat_cog.py:234-284",
+      "relevance": "high"
+    },
+    {
+      "point": "DB layer is Supabase REST \u2014 there is no generic multi-row transaction helper on DatabaseHandler. create_admin_payment_intent inserts one row per call. Atomic batch creation (initiate_batch_payment) will require either (a) a new Postgres RPC function wrapping N inserts in a txn, or (b) a new db_handler.create_admin_payment_intents_batch method that uses a single Supabase insert([...]) call plus an explicit rollback path on partial failure. Supabase .insert([list]) is atomic per-request on PostgREST but only within one table \u2014 sufficient here since all rows are admin_payment_intents.",
+      "source": "src/common/db_handler.py:1805-1819 (create_admin_payment_intent)",
+      "relevance": "high"
+    },
+    {
+      "point": "PaymentUICog persistent-view registration pattern: cog_load \u2192 _register_pending_confirmation_views \u2192 bot.add_view(PaymentConfirmView(self, payment_id)) for every pending payment. The new AdminApprovalView must follow the same shape, keyed by payment_id (not intent_id) with custom_id='payment_admin_approve:{payment_id}' so restart recovery works.",
+      "source": "src/features/payments/payment_ui_cog.py:19-93, :110-130",
+      "relevance": "high"
+    },
+    {
+      "point": "ADMIN_USER_ID is an env var read in admin_chat_cog.py:50 (cached as self.admin_user_id) AND separately in payment_ui_cog.py:165. The AdminApprovalView button callback must independently re-check the interacting user matches ADMIN_USER_ID (defense-in-depth \u2014 custom_id can't be spoofed but discord.py permissions model is view-level).",
+      "source": "src/features/admin_chat/admin_chat_cog.py:50, src/features/payments/payment_ui_cog.py:165",
+      "relevance": "high"
+    },
+    {
+      "point": "safe_delete_messages lives in src/common/discord_utils.py:350-451 with signature (channel, message_ids, *, logger) returning DeleteCounts. Already used by payment_worker_cog.py:172. Reuse for 'delete stale flow messages in the thread' after approval.",
+      "source": "src/common/discord_utils.py:350-451",
+      "relevance": "medium"
+    },
+    {
+      "point": "Startup reconciliation loop in admin_chat_cog only walks {awaiting_wallet, awaiting_confirmation, awaiting_test, confirmed} branches. Must be extended to recognize 'awaiting_test_receipt_confirmation' and the new 'awaiting_admin_approval' state, and to fire the 24h timeout sweep.",
+      "source": "src/features/admin_chat/admin_chat_cog.py:546-561 (_reconcile_active_intents)",
+      "relevance": "high"
+    },
+    {
+      "point": "There is NO existing 24-hour timeout loop \u2014 only a 30s payment worker loop (payment_worker_cog.py:92) and startup reconciliation. A new background task (either in AdminChatCog or a dedicated IntentTimeoutCog) must be added to scan awaiting_test_receipt_confirmation rows older than 24h and escalate.",
+      "source": "src/features/payments/payment_worker_cog.py:92",
+      "relevance": "high"
+    },
+    {
+      "point": "Wallet upsert today goes through db_handler.upsert_wallet with a WalletUpdateBlockedError guard when an active payment intent exists for the user. The new upsert_wallet_for_user tool must respect this guard (the admin must see the error), and must NOT set verified_at \u2014 that only happens after a successful test round-trip via existing mark_wallet_verified at payment_service.py:910,967.",
+      "source": "src/features/admin_chat/admin_chat_cog.py:201-215, src/features/payments/payment_service.py:910,967, src/common/db_handler.py:1649 (mark_wallet_verified)",
+      "relevance": "high"
+    },
+    {
+      "point": "Current agent initiate_payment tool definition at tools.py:580-595 takes (recipient_user_id, amount_sol, reason?). The new initiate_batch_payment tool takes a payments[] array; per the task, batches MUST be implemented so that per-payment mechanics (auto-skip, test cycle, admin DM) fan out individually \u2014 a batch of 16 produces 16 DMs, not one. This implies batch is really 'create N intents atomically then let each flow through the existing per-intent pipeline'.",
+      "source": "src/features/admin_chat/tools.py:580-595 (tool schema), :2494-2595 (executor)",
+      "relevance": "high"
+    },
+    {
+      "point": "The agent has no read-only payment/wallet state tools today. It has list_payments/list_wallets/get_payment_status (write-admin tools under 'Doing things' in the system prompt) but these are generic ledger inspectors. The task asks for three NEW narrowly-scoped tools (query_payment_state, query_wallet_state, list_recent_payments) \u2014 these are net-new, not renames of existing tools. Keep existing list_payments/list_wallets/get_payment_status in place; add the new three alongside.",
+      "source": "src/features/admin_chat/agent.py:74-77 (list_wallets, list_payments, get_payment_status)",
+      "relevance": "medium"
+    },
+    {
+      "point": "Under identity-based routing, approved-member messages (the _can_user_message_bot path at admin_chat_cog.py:694-714) stop reaching the agent unless the author is ADMIN_USER_ID \u2014 an intentional scoping reduction. MEMBER_SYSTEM_PROMPT (agent.py:151) becomes effectively dead code; do not delete it, but note in the plan that the member branch is disabled at the cog level.",
+      "source": "src/features/admin_chat/admin_chat_cog.py:808-817, src/features/admin_chat/agent.py:151",
+      "relevance": "medium"
+    },
+    {
+      "point": "Reconciliation at startup walks discord_messages and re-invokes _check_pending_payment_reply per recipient message. After the refactor, _check_pending_payment_reply is replaced by the identity router's pending-recipient branch, but the startup reconciler must still be able to invoke it synthetically to catch up on missed messages during downtime.",
+      "source": "src/features/admin_chat/admin_chat_cog.py:498-544 (_reconcile_intent_history)",
+      "relevance": "medium"
+    },
+    {
+      "point": "handle_payment_result currently creates the final payment inline in the test-success branch. After the refactor, test-success no longer creates the final payment \u2014 it transitions the intent to awaiting_test_receipt_confirmation and waits for the recipient's text. The real payment is created only when the state machine processes a positive confirmation, and then transitions to awaiting_admin_approval (new state) which triggers the admin DM.",
+      "source": "src/features/admin_chat/admin_chat_cog.py:311-414 (handle_payment_result)",
+      "relevance": "high"
+    },
+    {
+      "point": "Existing test file test_admin_payments.py (1350 lines) has dense coverage of the current flow: wallet classification via Claude, WalletUpdateBlockedError, auto-confirm of test payments, final payment flow. Many tests will need updating because the state machine transitions and reply handling change fundamentally. Flag as 'expect broad test churn in test_admin_payments.py'.",
+      "source": "tests/test_admin_payments.py:1-1350 (full file)",
+      "relevance": "high"
+    },
+    {
+      "point": "Hardening invariants to preserve: per-user-per-day caps, canonical wallet swap defense, idempotency collision detection, WalletUpdateBlockedError, RLS, prompt-injection hardening (wallet lookups only from wallet_registry \u2014 NEVER from LLM-provided strings), null-recipient fail-closed. The new batch tool and upsert tool must also never accept an LLM-sourced wallet address without going through wallet_registry/upsert_wallet \u2014 the existing 'ignore injected wallet_address' pattern at tools.py:2501-2508 is the template.",
+      "source": "src/features/admin_chat/tools.py:2501-2508 (wallet injection guard pattern)",
+      "relevance": "high"
+    }
+  ],
+  "relevant_code": [
+    {
+      "file_path": "src/features/admin_chat/admin_chat_cog.py",
+      "why": "The cog housing on_message, the content-based interceptor that must become identity-based, the existing state handlers (_handle_wallet_received, _start_admin_payment_flow, _handle_confirmation_received, handle_payment_result), startup reconciliation, and admin_user_id config. This file is the epicenter of the refactor.",
+      "functions": [
+        "on_message",
+        "_check_pending_payment_reply",
+        "_handle_wallet_received",
+        "_start_admin_payment_flow",
+        "_handle_confirmation_received",
+        "handle_payment_result",
+        "_reconcile_active_intents",
+        "_reconcile_intent_history",
+        "_is_admin",
+        "_can_user_message_bot",
+        "_classify_payment_reply",
+        "_notify_admin_review",
+        "_ensure_startup_reconciled"
+      ]
+    },
+    {
+      "file_path": "src/features/admin_chat/tools.py",
+      "why": "Holds all Claude tool schemas and executors. New tools (query_payment_state, query_wallet_state, list_recent_payments, initiate_batch_payment, upsert_wallet_for_user) are declared here; execute_initiate_payment will need the auto-skip-for-verified-wallet branch, and the LLM-wallet-injection guard pattern is reused by new tools.",
+      "functions": [
+        "TOOLS list (tool schemas)",
+        "execute_initiate_payment",
+        "execute tool dispatch (dispatch_tool / execute_tool around line 3198)",
+        "_redact_wallet_address"
+      ]
+    },
+    {
+      "file_path": "src/features/admin_chat/agent.py",
+      "why": "SYSTEM_PROMPT must gain a new 'State questions \u2192 query_* first' section; tool list in prompt must list the new tools; MEMBER_SYSTEM_PROMPT becomes dead-branch under identity routing.",
+      "functions": [
+        "SYSTEM_PROMPT constant",
+        "MEMBER_SYSTEM_PROMPT constant",
+        "AdminChatAgent.chat"
+      ]
+    },
+    {
+      "file_path": "src/features/payments/payment_ui_cog.py",
+      "why": "PaymentConfirmView and the persistent-view registration pattern live here. The new AdminApprovalView can be added to this file (next to PaymentConfirmView) and re-registered on cog_load via a new _register_pending_admin_approval_views pass that queries admin_payment_intents with status=awaiting_admin_approval. send_confirmation_request must be gated so it is NOT called for producer='admin_chat' + is_test=False (either at the call site in admin_chat_cog.py or inside send_confirmation_request itself \u2014 prefer call site since grants keeps using it unchanged).",
+      "functions": [
+        "PaymentConfirmView",
+        "PaymentUICog.cog_load",
+        "_register_pending_confirmation_views",
+        "send_confirmation_request"
+      ]
+    },
+    {
+      "file_path": "src/features/payments/payment_service.py",
+      "why": "request_payment is invoked to create both test and real payment rows; mark_wallet_verified at :910,:967 is the ONLY place verified_at is set today \u2014 this must remain the single write path (the state machine triggers it by calling confirm_payment on the test row OR a new explicit db_handler.mark_wallet_verified call when the recipient text-acks).",
+      "functions": [
+        "request_payment",
+        "confirm_payment",
+        "execute_payment",
+        "_confirm_submitted_payment"
+      ]
+    },
+    {
+      "file_path": "src/features/payments/payment_worker_cog.py",
+      "why": "Background worker loop structure. Either (a) add the 24h intent-timeout sweep as a new task here, or (b) add it to AdminChatCog. Payment_worker_cog is the existing 'cron-ish' home and has recovery/reconciliation precedent.",
+      "functions": [
+        "PaymentWorkerCog task loop (@tasks.loop seconds=30)",
+        "_recover_inflight_payments",
+        "_handle_terminal_payment"
+      ]
+    },
+    {
+      "file_path": "src/common/db_handler.py",
+      "why": "All admin_payment_intent CRUD + wallet_registry CRUD. Must add: mark_wallet_verified explicit call (already exists at :1649 \u2014 verify the signature), a new create_admin_payment_intents_batch (Supabase insert([list])), and query helpers for the new agent tools. upsert_wallet is already WalletUpdateBlockedError-aware.",
+      "functions": [
+        "create_admin_payment_intent",
+        "get_admin_payment_intent",
+        "get_active_intent_for_recipient",
+        "list_active_intents",
+        "update_admin_payment_intent",
+        "upsert_wallet",
+        "mark_wallet_verified",
+        "get_wallet",
+        "list_wallets",
+        "get_payment_request"
+      ]
+    },
+    {
+      "file_path": "sql/admin_payment_intents.sql",
+      "why": "Status CHECK constraint must be extended to include 'awaiting_test_receipt_confirmation' and 'awaiting_admin_approval'. The unique index on (guild_id, channel_id, recipient_user_id) WHERE status NOT IN (completed, failed, cancelled) already excludes terminal states \u2014 new non-terminal states are automatically covered, but verify.",
+      "functions": [
+        "admin_payment_intents table definition",
+        "uq_admin_payment_intents_active_recipient_channel partial unique index"
+      ]
+    },
+    {
+      "file_path": "src/features/grants/solana_client.py",
+      "why": "is_valid_solana_address \u2014 reuse for the state machine's wallet regex parsing (do NOT re-implement). Already used at admin_chat_cog.py:586 and :592.",
+      "functions": [
+        "is_valid_solana_address"
+      ]
+    },
+    {
+      "file_path": "src/features/grants/grants_cog.py",
+      "why": "VERIFY grants does not regress. It uses payment_ui_cog.send_confirmation_request at :719 for its own producer='grants' flow \u2014 that call site must be preserved untouched.",
+      "functions": [
+        "grants on_message",
+        "_handle_test_payment_result"
+      ]
+    },
+    {
+      "file_path": "src/common/discord_utils.py",
+      "why": "safe_delete_messages primitive; reuse in AdminApprovalView click handler to delete stale flow messages in the thread.",
+      "functions": [
+        "safe_delete_messages"
+      ]
+    },
+    {
+      "file_path": "tests/test_admin_payments.py",
+      "why": "Primary existing test file (1350 lines). Expect substantial updates: every test that mocked _classify_payment_reply must be rewritten around the deterministic keyword parser; tests that assert the awaiting_confirmation state transition must switch to awaiting_test_receipt_confirmation; PaymentConfirmView expectations for admin_chat must move to AdminApprovalView.",
+      "functions": [
+        "existing tests for wallet classification, WalletUpdateBlockedError, test\u2192final payment transition, confirmation flow"
+      ]
+    },
+    {
+      "file_path": "tests/test_payment_state_machine.py",
+      "why": "Hypothesis-based payment_requests state machine tests. Must remain green \u2014 the refactor does not change payment_requests states, only the admin_payment_intents state machine and the UI layer.",
+      "functions": [
+        "PaymentStateMachine hypothesis test class"
+      ]
+    },
+    {
+      "file_path": "tests/test_payment_cog_split.py",
+      "why": "Tests the PaymentWorkerCog/PaymentUICog split. Must remain green; the new AdminApprovalView additions to PaymentUICog should not break its cog_load or view-registration tests.",
+      "functions": [
+        "PaymentUICog cog_load test",
+        "persistent view registration test"
+      ]
+    }
+  ],
+  "test_expectations": [
+    {
+      "test_id": "tests/test_admin_payments.py::test_identity_router_admin_to_agent",
+      "what_it_checks": "When author.id == ADMIN_USER_ID, on_message routes to AdminChatAgent.chat regardless of message content (including Solana-address-shaped text).",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_identity_router_pending_recipient_to_state_machine",
+      "what_it_checks": "When author has an active non-terminal admin_payment_intent, on_message runs the deterministic state machine with zero LLM calls (assert _classify_payment_reply / anthropic client is NOT invoked).",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_identity_router_fallthrough",
+      "what_it_checks": "When author is neither admin nor pending recipient, admin_chat cog does nothing and other cogs receive the message.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_state_machine_awaiting_wallet_valid_address",
+      "what_it_checks": "awaiting_wallet + valid base58 32-byte address \u2192 upsert wallet (verified_at=NULL), transition to awaiting_test, trigger test payment.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_state_machine_awaiting_wallet_ignores_non_address",
+      "what_it_checks": "awaiting_wallet + non-address text \u2192 no action, no reply, intent stays in awaiting_wallet (no spam).",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_state_machine_confirmation_positive_keywords",
+      "what_it_checks": "awaiting_test_receipt_confirmation + each of ['confirmed','received','got it','yes','yep','confirm','\ud83d\udc4d'] \u2192 mark wallet_registry.verified_at=now, transition to awaiting_admin_approval, create real payment, fire admin DM.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_state_machine_confirmation_negative_keywords",
+      "what_it_checks": "awaiting_test_receipt_confirmation + ['no','didnt','not received','missing','nothing'] \u2192 tag admin in thread with tx signature + recipient wallet + intent_id, intent transitions to manual_review.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_state_machine_confirmation_ambiguous_first_then_escalate",
+      "what_it_checks": "First ambiguous reply \u2192 silent ignore, state unchanged; second ambiguous reply \u2192 admin tag. Counter persisted on intent row.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_auto_skip_verified_wallet_creates_real_payment_directly",
+      "what_it_checks": "initiate_payment with recipient having wallet_registry.verified_at IS NOT NULL skips the test payment entirely \u2014 no is_test=True row is created, a real payment row goes to awaiting_admin_approval.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_initiate_batch_payment_atomic_all_or_none",
+      "what_it_checks": "initiate_batch_payment([p1,p2,p3]) with p2 invalid \u2192 zero intents persisted (rollback). Valid batch \u2192 all N intents created, exactly N admin DMs fire (one per payment, not per batch).",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_upsert_wallet_for_user_admin_only",
+      "what_it_checks": "upsert_wallet_for_user rejects non-admin callers; on success creates wallet_registry row with verified_at=NULL and DMs the admin a confirmation.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_upsert_wallet_for_user_respects_wallet_update_blocked",
+      "what_it_checks": "When an active intent exists for the user, upsert_wallet_for_user surfaces WalletUpdateBlockedError to the admin.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_admin_approval_view_only_admin_can_click",
+      "what_it_checks": "AdminApprovalView button rejects any non-ADMIN_USER_ID interaction with an ephemeral denial, does not advance payment.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_admin_approval_view_persists_across_restart",
+      "what_it_checks": "PaymentUICog.cog_load re-registers AdminApprovalView for every admin_payment_intent in awaiting_admin_approval (custom_id routing survives restart).",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_admin_approval_click_advances_payment",
+      "what_it_checks": "Admin click: edits DM to \u2705 approved, sends follow-up DM, posts thread reply, deletes stale flow messages via safe_delete_messages, calls payment_service.confirm_payment to queue the real payment.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_admin_dm_fail_closed_on_forbidden",
+      "what_it_checks": "discord.Forbidden on DM send \u2192 intent stays in awaiting_admin_approval, ERROR log emitted, no fallback to public channel.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_payment_confirm_view_not_sent_for_admin_chat_real_payments",
+      "what_it_checks": "PaymentUICog.send_confirmation_request is NOT called for producer='admin_chat' is_test=False payments (either gated or not-reached); still called for grants.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_24h_timeout_sweep_escalates_stuck_test_receipt",
+      "what_it_checks": "Background sweep finds admin_payment_intents with status=awaiting_test_receipt_confirmation + updated_at < now-24h \u2192 transitions to manual_review and DMs admin.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_query_payment_state_read_only",
+      "what_it_checks": "query_payment_state returns canonical DB state for a payment id; does not mutate.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_query_wallet_state_read_only",
+      "what_it_checks": "query_wallet_state returns wallet_registry rows for a user with verified_at/created_at; does not mutate.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_query_tools_reject_llm_injected_wallet",
+      "what_it_checks": "Query tools only source wallets from wallet_registry \u2014 never from LLM-provided strings (per existing hardening invariant).",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_approved_member_no_longer_routed_to_agent",
+      "what_it_checks": "Under identity routing, an approved (can_message_bot=true) non-admin member message does NOT invoke the agent. Intentional scoping reduction.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_payment_state_machine.py::PaymentStateMachine",
+      "what_it_checks": "Hypothesis-driven payment_requests state transitions \u2014 payment_requests states are unchanged by this refactor; must remain green.",
+      "status": "pass_to_pass"
+    },
+    {
+      "test_id": "tests/test_payment_cog_split.py",
+      "what_it_checks": "PaymentWorkerCog/PaymentUICog cog_load and persistent view re-registration \u2014 must remain green; AdminApprovalView additions should not break PaymentConfirmView re-registration.",
+      "status": "pass_to_pass"
+    },
+    {
+      "test_id": "tests/test_solana_client.py",
+      "what_it_checks": "Solana client + is_valid_solana_address \u2014 must remain green; state machine reuses is_valid_solana_address.",
+      "status": "pass_to_pass"
+    },
+    {
+      "test_id": "tests/test_payment_race.py",
+      "what_it_checks": "Idempotency collision detection \u2014 must remain green.",
+      "status": "pass_to_pass"
+    },
+    {
+      "test_id": "tests/test_payment_reconcile.py",
+      "what_it_checks": "Reconciliation with on-chain truth \u2014 must remain green.",
+      "status": "pass_to_pass"
+    },
+    {
+      "test_id": "tests/test_payment_authorization.py",
+      "what_it_checks": "Payment authorization/wallet swap defense \u2014 must remain green.",
+      "status": "pass_to_pass"
+    },
+    {
+      "test_id": "tests/test_safe_delete_messages.py",
+      "what_it_checks": "safe_delete_messages primitive \u2014 must remain green; AdminApprovalView reuses it.",
+      "status": "pass_to_pass"
+    },
+    {
+      "test_id": "tests/test_check_payment_invariants.py",
+      "what_it_checks": "Invariant checker script \u2014 must remain green; new states must not trip invariants.",
+      "status": "pass_to_pass"
+    },
+    {
+      "test_id": "tests/test_tx_signature_history.py",
+      "what_it_checks": "tx_signature_history column invariants \u2014 must remain green.",
+      "status": "pass_to_pass"
+    }
+  ],
+  "constraints": [
+    "MUST NOT touch solana_client.py / solana_provider.py \u2014 the rebroadcast loop, priority fees, status.err handling all stay.",
+    "MUST NOT touch grants_cog. Grants keeps its own flow (test auto-confirmed by bot, recipient clicks PaymentConfirmView button). grants_cog.py:719 call to send_confirmation_request MUST remain functional.",
+    "MUST preserve hardening invariants: per-user-per-day caps, canonical wallet swap defense, idempotency collision detection, WalletUpdateBlockedError, RLS comments, prompt-injection hardening (wallet lookups only from wallet_registry), null-recipient fail-closed in PaymentService.confirm_payment.",
+    "MUST preserve cleanup invariants: PaymentActor/PRODUCER_FLOWS registry, tx_signature_history column, PaymentWorkerCog/PaymentUICog split, safe_delete_messages primitive.",
+    "MUST preserve polish invariants: reconcile_with_chain, dynamic priority fees, /payment-resolve slash command, provider name migration, docs/payments.md, docs/runbook-payments.md, scripts/check_payment_invariants.py, structured tx_confirm_decision logging.",
+    "Agent MUST NEVER accept LLM-sourced wallet addresses. initiate_batch_payment and upsert_wallet_for_user must reuse the existing 'pop and warn' guard pattern from execute_initiate_payment at tools.py:2501-2508 (for the batch), and upsert_wallet_for_user must take the wallet_address explicitly from a validated admin parameter (not from unrelated LLM context).",
+    "verified_at MUST only be set after a real round-trip: on-chain test confirmation + recipient text acknowledgment. Neither alone is sufficient. upsert_wallet_for_user creates the row with verified_at=NULL.",
+    "Admin DM approval gate fires ONLY for real (is_test=False) payments under producer='admin_chat'. NEVER for is_test=True. NEVER for producer='grants'.",
+    "One admin DM per payment (not per batch). A batch of 16 \u2192 16 DMs. Each DM carries its own AdminApprovalView with a unique custom_id.",
+    "AdminApprovalView must be persistent (timeout=None) and re-registered on bot startup via cog_load for restart recovery. Pattern: match PaymentConfirmView registration in payment_ui_cog.py.",
+    "PaymentConfirmView must NO LONGER fire for producer='admin_chat' real payments. Grants keeps using it. The gating should be at the call site in admin_chat_cog.py (remove/replace the send_confirmation_request call) \u2014 do NOT add a producer check inside send_confirmation_request because that would couple PaymentUICog to producer semantics.",
+    "Existing admin_payment_intents schema: a SQL migration must add 'awaiting_test_receipt_confirmation' and 'awaiting_admin_approval' to the status CHECK constraint; migration must be idempotent (DROP CONSTRAINT IF EXISTS / ADD CONSTRAINT) and ship with the code change.",
+    "Identity router for approved-member messages: under the new routing, approved members' messages are no longer forwarded to the agent unless they are the admin. Document explicitly \u2014 this is an intentional scoping reduction per the task spec. MEMBER_SYSTEM_PROMPT is NOT deleted (dead code left in place).",
+    "Keyword lists for confirmation/negative/ambiguous MUST be hardcoded in code (no LLM call). Case-insensitive match, whole-word boundary preferred, include emoji variants ('\ud83d\udc4d'). Ambiguous = neither positive nor negative.",
+    "24h timeout: new background task (add to AdminChatCog or PaymentWorkerCog) that scans admin_payment_intents with status=awaiting_test_receipt_confirmation AND updated_at < now-24h, transitions to manual_review, and DMs admin. Interval \u2265 5 minutes to avoid DB hammering.",
+    "Batch tool atomicity: prefer Supabase .insert([list]) (PostgREST atomic per-request) for create_admin_payment_intents_batch. If any row fails validation BEFORE insert, reject the whole batch with zero DB writes. If the DB rejects the multi-row insert, the whole request fails atomically.",
+    "Test churn expected: test_admin_payments.py (1350 lines) will see broad rewrites. New tests MUST NOT mock _classify_payment_reply (it's no longer called from the state machine path). They SHOULD continue to assert WalletUpdateBlockedError paths.",
+    "DO NOT add a cog-layer rejection of agent replies that make state claims without query-tool calls. Per the task: system-prompt guidance only, no enforcement.",
+    "DO NOT start nested megaplan plans or invoke the megaplan CLI from within implementation \u2014 treat megaplan mentions as context only."
+  ],
+  "suggested_approach": "Land this in phased, reviewable chunks that keep tests green at every step.\n\nPHASE 1 \u2014 Schema + state enum (smallest diff, lowest risk):\n(a) SQL migration: extend admin_payment_intents status CHECK to add 'awaiting_test_receipt_confirmation' and 'awaiting_admin_approval'. Idempotent DROP/ADD CONSTRAINT pattern. Update sql/admin_payment_intents.sql + any migration runner.\n(b) db_handler helpers: add create_admin_payment_intents_batch (Supabase .insert([list])), a list_intents_by_status helper, a list_stale_test_receipt_intents(cutoff) for the 24h sweep, and an ambiguous-reply counter update path.\n\nPHASE 2 \u2014 Identity router (on_message rewrite):\nReplace the current on_message + _check_pending_payment_reply branching with a single switch:\n 1. If author.id == ADMIN_USER_ID \u2192 existing agent path (unchanged except new tools added in phase 4).\n 2. Else if db_handler.get_active_intent_for_recipient returns a row \u2192 dispatch to a new _handle_pending_recipient_message(intent, message) that routes by intent.status (awaiting_wallet, awaiting_test_receipt_confirmation). No LLM calls.\n 3. Else \u2192 return without handling (fallthrough).\nDelete the Claude-based _classify_payment_reply code path from the message-handler flow (keep the function around for the phase-2 diff small; delete in a later cleanup commit if truly unused).\nAdd deterministic helpers:\n - `_parse_wallet_from_text(content) -> str | None` reusing is_valid_solana_address.\n - `_classify_confirmation(content) -> Literal['positive','negative','ambiguous']` with hardcoded keyword lists from the task spec (whole-word, case-insensitive, emoji-aware).\n\nPHASE 3 \u2014 Flow rewiring (test-receipt + admin-DM gate):\n(a) Modify handle_payment_result's test-success branch: instead of creating the final payment inline, transition intent to awaiting_test_receipt_confirmation, post the 'please check your wallet and reply confirmed' prompt in the thread, store the prompt_message_id.\n(b) When _handle_pending_recipient_message gets a positive confirmation in awaiting_test_receipt_confirmation: call db_handler.mark_wallet_verified, create the real payment via payment_service.request_payment (is_test=False), transition intent to awaiting_admin_approval, and fire the admin DM.\n(c) Auto-skip path: in execute_initiate_payment (and execute_initiate_batch_payment), when a verified wallet exists, create the real payment directly and go straight to awaiting_admin_approval \u2014 skip _start_admin_payment_flow (which is test-only). This is a branch on wallet_record.verified_at at intent-creation time, not inside _start_admin_payment_flow.\n(d) Admin DM: new helper `_send_admin_approval_dm(payment)` in PaymentUICog that DMs ADMIN_USER_ID with amount/recipient/redacted-wallet/intent_id/jump-link and attaches a new AdminApprovalView keyed by payment_id. On discord.Forbidden \u2192 log ERROR, leave intent in awaiting_admin_approval (fail-closed, no public fallback).\n(e) New AdminApprovalView class in payment_ui_cog.py, pattern-copied from PaymentConfirmView. Button callback verifies interaction.user.id == ADMIN_USER_ID, calls payment_service.confirm_payment, edits the DM to \u2705, follows up with 'payment confirmed, sending', posts 'Payment sent to @user' in the intent's thread, and deletes stale flow messages via safe_delete_messages.\n(f) Persistence: PaymentUICog.cog_load gains a _register_pending_admin_approval_views pass that queries admin_payment_intents WHERE status='awaiting_admin_approval' and bot.add_view(AdminApprovalView(...)) for each.\n(g) Remove the admin_chat_cog.py:393 send_confirmation_request call. Grants' call at grants_cog.py:719 stays untouched.\n\nPHASE 4 \u2014 New agent tools:\n(a) Three read-only query tools (query_payment_state, query_wallet_state, list_recent_payments): thin wrappers over existing db_handler helpers with wallet redaction applied via the existing redact_wallet import. Add to TOOLS list in tools.py, dispatch in execute_tool, and list in SYSTEM_PROMPT.\n(b) initiate_batch_payment: takes payments=[{recipient_user_id, amount_sol, reason?}, ...]. Per-payment LLM-wallet-injection guard (pop wallet_address/recipient_wallet and warn, same as current execute_initiate_payment). Validate every element first (guild_id, channel_id, amount > 0, no active duplicate for recipient), build the payload list, call db_handler.create_admin_payment_intents_batch. On success, iterate the returned rows and fan out through the same per-payment mechanics as initiate_payment (auto-skip branch for verified wallets OR _start_admin_payment_flow for unverified). Each verified path fires its own admin DM \u2014 so a 16-payment batch produces 16 DMs.\n(c) upsert_wallet_for_user: takes (user_id, wallet_address, chain='solana', reason?). Admin-only check via a requester context flag. Validate wallet_address via is_valid_solana_address. Call db_handler.upsert_wallet (propagating WalletUpdateBlockedError to the admin reply). Never sets verified_at. On success, DM the admin: 'wallet for @user set to {redacted}, will be verified on next payment'.\n(d) SYSTEM_PROMPT addition: a new 'State questions \u2192 query first' section instructing the agent to call query_payment_state / query_wallet_state / list_recent_payments before claiming state. Soft guidance, not enforcement. Add the five new tool lines to the 'Doing things' section of the prompt (3 query + 1 batch + 1 upsert).\n\nPHASE 5 \u2014 24h timeout sweep:\nNew background task (recommend AdminChatCog, since it owns intent lifecycle). @tasks.loop(minutes=15) scans admin_payment_intents WHERE status='awaiting_test_receipt_confirmation' AND updated_at < now()-interval '24 hours', transitions each to manual_review, and DMs admin with full context (intent_id, recipient, tx_signature, wallet).\n\nPHASE 6 \u2014 Tests:\nRewrite test_admin_payments.py broadly: new router tests, state-machine tests, keyword parser tests (parametrized), batch atomicity test, upsert admin-check test, auto-skip test, AdminApprovalView persistence + click test, admin DM fail-closed test, gated PaymentConfirmView test, 24h timeout test. Keep pass_to_pass tests (payment state machine, race, reconcile, authorization, solana client, safe delete, invariants, tx signature history) untouched; verify they stay green.\n\nPHASE 7 \u2014 Docs:\nAppend to docs/payments.md and docs/runbook-payments.md: identity routing overview, new states, admin DM approval gate, auto-skip rule, batch tool semantics, upsert tool semantics, and the scoping-reduction note for approved members.\n\nFlagged risks / open questions the plan step should resolve:\n - Batch atomicity when Supabase multi-insert partially fails: confirm PostgREST behavior (should be atomic per-request). If not, fall back to per-row inserts inside a new SQL RPC function wrapped in a txn.\n - The prompt_message_id column already exists on admin_payment_intents but currently tracks only one prompt; the new flow posts TWO prompts (wallet request + 'please check and reply confirmed'). Consider adding a second column (e.g., receipt_prompt_message_id) or reusing prompt_message_id by overwriting \u2014 prefer reuse with a comment, since only the latest is needed for safe-delete.\n - The ambiguous-reply counter needs a new integer column (e.g., ambiguous_reply_count default 0) on admin_payment_intents, or store it in a JSONB metadata column if one exists. Verify whether metadata exists; if not, add the integer column in the same migration.\n - AdminApprovalView custom_id collision: use f'payment_admin_approve:{payment_id}' \u2014 must not collide with the existing f'payment_confirm:{payment_id}' (they don't, but grep to confirm)."
+}

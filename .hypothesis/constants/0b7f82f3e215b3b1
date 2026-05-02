@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/producer_flows.py
+# hypothesis_version: 6.151.11
+
+['PRODUCER_FLOWS', 'ProducerFlow', 'admin_chat', 'get_flow', 'grants']

@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/../src/features/payments/payment_worker_cog.py
+# hypothesis_version: 6.151.11
+
+[120, 429, 1900, ',', '...', '10', '100', '30', 'ADMIN_USER_ID', 'DiscordBot', 'PAYMENT_CLAIM_LIMIT', 'TOKEN', '_', 'admin_chat', 'amount_token', 'amount_usd', 'cancelled', 'chain', 'cleanup_message_ids', 'confirm_channel_id', 'confirm_thread_id', 'confirmed', 'db_handler', 'failed', 'guild_id', 'is_ready', 'is_test', 'last_error', 'manual_hold', 'message_preview', 'metadata', 'notify_channel_id', 'notify_thread_id', 'payment_id', 'payment_service', 'processing', 'producer', 'provider', 'providers', 'rate_limiter', 'server_config', 'solana_payouts', 'status', 'submitted', 'tx_signature', 'unknown']

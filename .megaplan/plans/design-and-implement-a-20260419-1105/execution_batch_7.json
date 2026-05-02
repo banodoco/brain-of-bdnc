@@ -1,0 +1,49 @@
+{
+  "output": "Validation completed. `pytest tests/test_moderation_decisions.py -q` initially exposed one real regression: `on_raw_reaction_remove` was writing a second `bot_auto_restricted` row after the restricted-emoji branch had already logged eagerly. I fixed that by making `bot_auto_restricted` markers suppression-only in the remove handler, then reran the targeted module to green (`20 passed`). After that, `pytest -q` passed cleanly (`241 passed, 3 warnings`). The throwaway `/tmp/smoke_moderation.py` script confirmed the suspicious `\ud83e\udd2e` self-retract path end-to-end (`smoke-ok`) and was deleted. I also updated `.megaplan/plans/design-and-implement-a-20260419-1105/final.md` so the PR-body draft explicitly says `.migrations_staging/20260419110000_create_moderation_decisions.sql` must be copied into `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` before deploy, and it now includes the remaining manual Discord smoke checklist.",
+  "files_changed": [
+    "src/features/reacting/reactor_cog.py",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/final.md",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_7.json"
+  ],
+  "commands_run": [
+    "pytest tests/test_moderation_decisions.py -q",
+    "python -m py_compile src/features/reacting/reactor_cog.py",
+    "pytest -q",
+    "python /tmp/smoke_moderation.py",
+    "test ! -e /tmp/smoke_moderation.py && echo deleted",
+    "sed -n '1,30p' .megaplan/plans/design-and-implement-a-20260419-1105/final.md",
+    "git status --short -- src/features/reacting/reactor_cog.py tests/test_moderation_decisions.py .megaplan/plans/design-and-implement-a-20260419-1105/final.md .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_7.json"
+  ],
+  "deviations": [
+    "Baseline `pytest -q --tb=no` could not be captured before edits because the implementation was already in progress when batch 7 began. Validation was therefore performed against the edited tree: targeted moderation tests first, then the full suite.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_7.json, .megaplan/plans/design-and-implement-a-20260419-1105/final.md",
+    "Advisory quality: code changes lacked test updates: src/features/reacting/reactor_cog.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis/, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/, .megaplan/plans/add-scheduled-twitter-x-20260409-1553/, .megaplan/plans/add-scheduled-twitter-x-20260409-1556/, .megaplan/plans/add-scheduled-twitter-x-20260409-1557/, .megaplan/plans/admin-triggered-payments-let-20260410-1448/, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/, .megaplan/plans/build-a-fail-closed-20260409-2327/, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/, .megaplan/plans/design-a-generalized-solana-20260409-2227/, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241/, .megaplan/plans/final-polish-and-gremlin-20260411-0020/, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/, .megaplan/plans/harden-the-solana-payment-20260410-2147/, .megaplan/plans/identity-based-routing-for-20260411-0256/, .megaplan/plans/implement-a-unified-social-20260409-1710/, .megaplan/plans/implement-a-unified-social-20260409-1732/, .megaplan/plans/implement-a-unified-social-20260409-1748/, .megaplan/plans/implement-a-unified-social-20260409-1856/, .megaplan/plans/payment-subsystem-follow-up-20260410-2339/, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/execution_doc.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/schemas/tiebreaker_challenger.json, .megaplan/schemas/tiebreaker_researcher.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/test_notification_delete.py, tests/test_social_publications.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T8",
+      "status": "done",
+      "executor_notes": "Ran `pytest tests/test_moderation_decisions.py -q` and fixed the one implementation regression it exposed: `on_raw_reaction_remove` was double-writing `bot_auto_restricted` after the restricted-emoji branch had already written eagerly, so marker consumption for `bot_auto_restricted` is now suppression-only. Re-ran the targeted module to green (`20 passed`), then ran the full suite to green (`241 passed`). Wrote and ran the throwaway `/tmp/smoke_moderation.py` script to confirm the suspicious `\ud83e\udd2e` self-retract path emits exactly one `user_self_removal` decision with `is_suspicious=True` and one admin DM send (`smoke-ok`), then deleted the script. Updated `.megaplan/plans/design-and-implement-a-20260419-1105/final.md` with the manual migration handoff note for `.migrations_staging/20260419110000_create_moderation_decisions.sql` and the required manual Discord smoke checklist. Baseline `pytest -q --tb=no` could not be captured before edits because the code changes were already in progress when T8 began.",
+      "files_changed": [
+        "src/features/reacting/reactor_cog.py",
+        ".megaplan/plans/design-and-implement-a-20260419-1105/final.md"
+      ],
+      "commands_run": [
+        "pytest tests/test_moderation_decisions.py -q",
+        "python -m py_compile src/features/reacting/reactor_cog.py",
+        "pytest -q",
+        "python /tmp/smoke_moderation.py",
+        "test ! -e /tmp/smoke_moderation.py && echo deleted",
+        "sed -n '1,30p' .megaplan/plans/design-and-implement-a-20260419-1105/final.md"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC8",
+      "executor_note": "Confirmed `pytest tests/test_moderation_decisions.py -q` passed after fixing the duplicate `bot_auto_restricted` write on gateway remove, and `pytest -q` passed with no regressions (`241 passed`). The throwaway `/tmp/smoke_moderation.py` script confirmed the `\ud83e\udd2e` self-retract admin-DM path (`smoke-ok`) and was then deleted. `.megaplan/plans/design-and-implement-a-20260419-1105/final.md` now explicitly notes that `.migrations_staging/20260419110000_create_moderation_decisions.sql` must be copied into `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` before deploy."
+    }
+  ]
+}

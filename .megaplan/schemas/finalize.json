@@ -23,7 +23,8 @@
             "enum": [
               "pending",
               "done",
-              "skipped"
+              "skipped",
+              "blocked"
             ]
           },
           "executor_notes": {
@@ -40,6 +41,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "auto_attributed_files": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "evidence_files": {
             "type": "array",
@@ -59,6 +66,7 @@
           "executor_notes",
           "files_changed",
           "commands_run",
+          "auto_attributed_files",
           "evidence_files",
           "reviewer_verdict"
         ],
@@ -150,6 +158,24 @@
         "coverage_complete"
       ],
       "additionalProperties": false
+    },
+    "baseline_test_failures": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "baseline_test_command": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "baseline_test_note": {
+      "type": "string"
     }
   },
   "required": [
@@ -157,7 +183,10 @@
     "watch_items",
     "sense_checks",
     "meta_commentary",
-    "validation"
+    "validation",
+    "baseline_test_failures",
+    "baseline_test_command",
+    "baseline_test_note"
   ],
   "additionalProperties": false
 }

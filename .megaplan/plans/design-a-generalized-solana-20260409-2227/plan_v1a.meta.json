@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-09T20:41:41Z",
+  "hash": "sha256:649e290e2012deea59b04ffb4806602f2e2219e05a4e3629144752865b27227c",
+  "questions": [
+    "Should the wallet registry live in the database (as proposed) or purely in environment variables / a config file? DB gives runtime flexibility (add wallets without redeploy) but adds a secret-adjacency concern since env var names are stored in DB. Alternative: a static dict in server_config keyed by wallet_key \u2192 env_var_name.",
+    "For the Discord 'yes' confirmation step: should this apply to ALL payment producers, or should it be opt-in per producer? Grants currently send immediately on wallet submission \u2014 adding a confirmation step changes UX. Should there be a grace period / timeout for confirmation (e.g., expires after 24h)?",
+    "For test payments: what amount constitutes a 'test'? A dust transaction (0.000001 SOL) to prove the address is valid and reachable? Or a small fixed amount (e.g., 0.01 SOL) that the recipient keeps? Does the test payment require its own 'yes' confirmation or should it auto-execute?",
+    "Should the payment ledger support multi-token payments (e.g., USDC on Solana) from the start, or is SOL-only sufficient for v1? This affects whether `amount_token` needs a `token_mint` column and whether the provider interface needs token-aware methods.",
+    "The existing grants table has payment fields inline (tx_signature, sol_amount, payment_status, etc.). Should these be migrated to the new ledger table, or kept as denormalized copies for backward compatibility? Migrating is cleaner but requires updating all grant queries; keeping both means dual-write.",
+    "Should the payment service own its own recovery loop (background task on startup) or should each producer (GrantsCog, future bounties cog) call `recover_inflight()` themselves? The social publish service doesn't have a built-in poller \u2014 the cog calls it."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "A PaymentService can accept a PaymentRequest from any producer, execute the payment through a provider, and record the full lifecycle in the payment_ledger table",
+      "priority": "must"
+    },
+    {
+      "criterion": "No double payments: duplicate request_payment calls with the same (producer, producer_ref) return the existing payment instead of creating a new one; re-sends check on-chain status before sending again",
+      "priority": "must"
+    },
+    {
+      "criterion": "Recovery on startup: payments stuck in 'sending' or 'sent' are resolved by checking on-chain status \u2014 confirmed payments are finalized, failed ones are marked for retry, unknown ones are left for next cycle",
+      "priority": "must"
+    },
+    {
+      "criterion": "Variable source wallets: wallet_key maps to a wallet registry entry that resolves to an env var at runtime; different producers can use different wallets",
+      "priority": "must"
+    },
+    {
+      "criterion": "GrantsCog uses PaymentService instead of calling SolanaClient directly \u2014 grant approval creates a PaymentRequest, wallet submission triggers request_payment, user 'yes' triggers confirm_payment",
+      "priority": "must"
+    },
+    {
+      "criterion": "Discord-mediated recipient confirmation: after wallet submission, bot asks user to reply 'yes' before executing payment",
+      "priority": "must"
+    },
+    {
+      "criterion": "Unit tests for PaymentService pass: request, confirm, execute, idempotency, failure, recovery, cancel, test-payment paths all covered",
+      "priority": "must"
+    },
+    {
+      "criterion": "SQL migration for payment_ledger and wallet_registry tables exists and is consistent with existing sql/ patterns",
+      "priority": "must"
+    },
+    {
+      "criterion": "Optional test payment flow: producers can request a dust-amount test payment to validate recipient address before the real payment",
+      "priority": "should"
+    },
+    {
+      "criterion": "PaymentProvider interface is abstract enough to support future providers (e.g., USDC, other chains) without changing the service layer",
+      "priority": "should"
+    },
+    {
+      "criterion": "Each file stays under ~300 lines; payment_service.py may be larger but should have clear method boundaries",
+      "priority": "should"
+    },
+    {
+      "criterion": "Existing grant flow UX (forum post \u2192 review \u2192 approval \u2192 wallet \u2192 payment) is preserved with the addition of the 'yes' confirmation step",
+      "priority": "should"
+    },
+    {
+      "criterion": "Integration smoke test simulates the full grants\u2192payment flow with FakeDB and FakeProvider",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual end-to-end test on devnet with a real Solana transaction confirms the full flow works",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "Wallet private keys stay in environment variables \u2014 the DB only stores the env var name (e.g., 'SOLANA_PRIVATE_KEY'), never the key material itself.",
+    "SOL-only for v1. The provider interface will be token-agnostic but the Solana provider implementation only handles native SOL transfers initially.",
+    "The existing grant_applications table and its payment fields will be kept as-is for now (no migration of historical data). The payment ledger is the source of truth for new payments; grants will store a payment_id foreign key reference.",
+    "The 'yes' confirmation is required for all non-test payments by default. Producers can opt out by setting requires_confirmation=False on the PaymentRequest.",
+    "Test payments send a dust amount (0.000001 SOL) and auto-execute without confirmation \u2014 they exist to validate the recipient address before the real payment.",
+    "Recovery runs in PaymentService.recover_inflight() but is triggered by the producer (GrantsCog.on_ready) \u2014 the service doesn't own a background loop.",
+    "The unique constraint (producer, producer_ref, is_test) prevents double-enqueue at the DB level, complementing the on-chain idempotency check before re-send.",
+    "The existing SolanaClient in src/features/grants/solana_client.py will be wrapped by SolanaProvider rather than duplicated \u2014 minimizing risk while decoupling the interface."
+  ],
+  "structure_warnings": []
+}

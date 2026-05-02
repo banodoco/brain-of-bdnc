@@ -1,0 +1,101 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "findings": [
+        {
+          "detail": "Verified that the plan now covers all three caller paths (admin chat, reaction bridge, summary-triggered) through the unified service, with explicit caller-specific policy fields like `text_only`, `duplicate_policy`, and `announce_policy` to prevent behavior collapse. The prior findings remain accurate.",
+          "flagged": false
+        },
+        {
+          "detail": "The plan's assumption that Supabase RPC is available is stated but the codebase has zero existing RPC usage. While the supabase>=1.0.0 client does support `.rpc()`, this is an untested integration pattern in this project and may require additional Supabase dashboard configuration (creating the SQL function). The plan does not call out this operational prerequisite explicitly.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "findings": [
+        {
+          "detail": "Verified FLAG correctness (prior finding about PostShareNotificationView needing publication_id): Step 6.2 now explicitly says 'Update send_post_share_notification() and PostShareNotificationView to accept and store the canonical publication_id; keep tweet_id and tweet_url only for display and operator context.' This directly resolves the gap.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked db_handler.py write patterns: the codebase uses both execute_query (raw SQL via supabase_query_handler) and direct Supabase client fluent calls (e.g., .table().upsert().execute()). The plan proposes RPC for atomic claiming but doesn't clarify whether normal CRUD on social_publications will use the fluent client pattern or raw SQL. Both work, but mixing three access patterns (fluent, raw SQL, RPC) in one subsystem increases maintenance surface.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "findings": [
+        {
+          "detail": "Checked all shared_posts references in src/: used in sharer.py (duplicate detection), db_handler.py (upsert, query, mark_deleted), admin_chat/agent.py (system prompt table list), and admin_chat/tools.py (query whitelist). The plan correctly identifies these as the compatibility surface to maintain while migrating canonical state to social_publications.",
+          "flagged": false
+        },
+        {
+          "detail": "The plan introduces a new social_channel_routes table for per-channel routing configuration, but does not specify how routes are initially populated or managed. There's no admin command or migration step described for creating route entries, which means the routing system will be inert until someone manually inserts rows. The plan should clarify whether guild-default routing is the only first-release path or whether route management tooling is in scope.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "findings": [
+        {
+          "detail": "Verified FLAG all_locations (prior finding about SharingCog lifecycle): Step 5.3 now says 'Implement the scheduled worker in SharingCog using discord.ext.tasks.loop, with readiness gating in before_loop and lifecycle management in cog_load and cog_unload.' Step 5.4 explicitly acknowledges that main.py instantiates SharingCog directly. This matches the pattern used by summariser_cog.py (which has cog_unload with .cancel()). The flag is resolved.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked that SharingCog currently has NO cog_load or cog_unload methods, so adding them is net-new work. The plan correctly identifies this. The existing pattern in summariser_cog.py provides a clear template. No issue here.",
+          "flagged": false
+        },
+        {
+          "detail": "The admin agent system prompt in agent.py line 38 lists queryable tables including shared_posts. The plan Step 6.5-6.6 covers updating tool descriptions and prompt text, but doesn't explicitly mention adding social_publications and social_channel_routes to the query_table whitelist in tools.py (line 70 and 1637). Missing these would make the new tables invisible to the admin agent.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "findings": [
+        {
+          "detail": "Prior findings about admin chat, reaction bridge, and summary callers remain accurate. Each caller has distinct parameter shapes and the plan's normalized request with per-caller policy fields accommodates all three without forcing them through a single parameter surface.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked that execute_share_to_social in tools.py currently returns a dict with 'tweet_url' and 'tweet_id' keys. Step 4.2 says admin tool should still return these for unscheduled X publishes, which is correct. For scheduled publishes, the plan doesn't explicitly state what the admin tool returns (presumably a publication_id and status), but this is executor-obvious from context.",
+          "flagged": false
+        }
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "id": "FLAG-006",
+      "concern": "DB access patterns: Plan introduces Supabase RPC as a third data access pattern (alongside fluent client and raw SQL) without precedent in the codebase. The RPC function must be created in the Supabase dashboard/migrations before the claim primitive works, and this operational step is not called out.",
+      "category": "completeness",
+      "severity_hint": "likely-minor",
+      "evidence": "Zero .rpc() calls exist in the codebase today (searched src/common/). The plan assumes RPC availability in Step 1.3 but the assumption list only says 'Supabase RPC is available' without noting that it requires server-side function deployment."
+    },
+    {
+      "id": "FLAG-007",
+      "concern": "Route management: social_channel_routes table is introduced in Step 1 but no admin command, migration, or seeding step is described for populating routes. The routing system will be inert until routes exist.",
+      "category": "completeness",
+      "severity_hint": "likely-minor",
+      "evidence": "Step 5.1 describes resolution logic (channel -> parent -> guild default) but no step covers creating or managing route entries. The admin tool extensions in Step 6 cover read/inspect but not route CRUD."
+    }
+  ],
+  "verified_flag_ids": [
+    "all_locations-1",
+    "FLAG-005",
+    "correctness",
+    "all_locations"
+  ],
+  "disputed_flag_ids": []
+}

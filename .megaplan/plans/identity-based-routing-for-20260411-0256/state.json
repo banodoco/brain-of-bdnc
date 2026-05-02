@@ -1,0 +1,740 @@
+{
+  "name": "identity-based-routing-for-20260411-0256",
+  "idea": "Identity-based routing for admin_chat with pending-recipient state machine, batch payment creation, admin DM approval gate, auto-skip test for verified wallets, and wallet upsert tooling.\n\nARCHITECTURAL CHANGE \u2014 identity-based router replaces content-based message classification. After this megaplan lands, admin_chat message handling routes entirely by WHO the author is, not by WHAT they said:\n\n1. If author is ADMIN_USER_ID \u2192 full agent path (Claude with all tools including new ones). The agent has access to query tools (new, read-only) and action tools (new initiate_payment batch variant, new upsert_wallet_for_user). System prompt softly guides the agent to use query tools for state questions (not strict enforcement \u2014 the admin can correct hallucinations; money cannot move without an explicit tool call so the safety is structural).\n\n2. If author has an active non-terminal row in admin_payment_intents (a pending payment recipient) \u2192 pure state machine. No LLM in the loop. The state machine reads the message text and routes based on the intent's current state. Two states matter:\n   - awaiting_wallet: parse message for a Solana-address-shaped string (base58, 32-44 chars, proper byte length). If found, register the wallet (verified_at=NULL), trigger test payment. If not found, ignore silently (no spamming).\n   - awaiting_test_receipt_confirmation (NEW STATE): parse message for confirmation keywords ('confirmed', 'received', 'got it', 'yes', 'yep', 'confirm', '\ud83d\udc4d'), negative keywords ('no', 'didnt', 'not received', 'missing', 'nothing'), or ambiguous. On confirmation \u2192 mark wallet_registry.verified_at=now, transition intent to queue the real payment. On negative \u2192 tag admin in thread with full context (tx signature, recipient wallet, intent id). On ambiguous \u2192 ignore the first ambiguous message; tag admin on the second.\n\n3. Otherwise \u2192 fall through (the admin_chat cog does nothing; other cogs like grants/gating/logging handle what they handle).\n\nRECIPIENT-FACING FLOW CHANGES:\n\n- First-ever payment to a new wallet: recipient posts wallet (1 text interaction) \u2192 bot sends 0.002 SOL test \u2192 bot posts 'Please check your wallet and reply confirmed when you see it' \u2192 recipient replies with confirmation text (1 text interaction) \u2192 state machine marks wallet verified \u2192 real payment auto-queues \u2192 admin DM approval gate fires \u2192 admin clicks \u2192 real payment sends. RECIPIENT TOTAL: 2 text interactions.\n- Subsequent payments to a now-verified wallet: skip test entirely. Bot creates real payment \u2192 admin DM approval \u2192 admin clicks \u2192 send. RECIPIENT TOTAL: 0 interactions.\n- Drop the existing PaymentConfirmView button for admin_chat real payments. The admin DM is now the sole real-payment gate. PaymentUICog.send_confirmation_request should no longer fire for producer='admin_chat' real payments. It still fires for grants (grants is unaffected by this megaplan; keeps its own flow).\n\nNEW TOOLS FOR THE ADMIN AGENT:\n\nA) query_payment_state(payment_id=None, user_id=None) \u2192 returns canonical DB state for a payment or all recent payments for a user. Read-only.\nB) query_wallet_state(user_id) \u2192 returns wallet_registry rows for a user (address, verified_at, created_at). Read-only.\nC) list_recent_payments(producer=None, user_id=None, limit=20) \u2192 returns recent payment_requests rows with redacted wallets. Read-only.\nD) initiate_batch_payment(payments=[{recipient_user_id, amount_sol, reason?}, ...]) \u2192 creates N admin_payment_intents atomically in a single DB transaction. Each flows through the normal per-payment mechanical pipeline: if wallet unverified, runs the test \u2192 receipt confirmation cycle; once verified, real payment auto-queues; admin DM approval gate fires individually PER payment (one DM per payment, not per batch). If any intent creation fails, roll back all.\nE) upsert_wallet_for_user(user_id, wallet_address, chain='solana', reason?) \u2192 admin-initiated wallet registration. Creates or updates wallet_registry with verified_at=NULL (verification still requires a test payment round-trip). On success, DMs the admin with a confirmation receipt ('wallet for @user set to 8ThP...xyz1, will be verified on next payment'). Does NOT mark verified_at.\n\nADMIN DM APPROVAL GATE:\n\n- Fires ONLY for real (is_test=False) payments under producer='admin_chat'. Grants is unaffected.\n- One DM per payment (even for batches \u2014 16 payments = 16 DMs). The admin clicks Confirm on each.\n- DM message format: clear amount, recipient, wallet (redacted), intent_id, jump link to original thread.\n- On admin click: edit original DM to '\u2705 approved', send follow-up DM 'payment confirmed, sending', post reply in the intent's thread 'Payment sent to @user', delete stale flow messages in the thread via the existing safe_delete_messages primitive.\n- New AdminApprovalView persistent view class, registered on bot startup for recovery across restarts.\n- If admin DM delivery fails (discord.Forbidden, rate limit) \u2192 fail-closed, payment stays in awaiting_admin_approval, log at ERROR level. Do not auto-fall-back to public channel (assumption: DM delivery is reliable in practice; failure is rare enough to be a manual-ops event).\n\nAUTO-SKIP TEST FOR VERIFIED WALLETS:\n\n- When the admin initiates a payment via initiate_payment or initiate_batch_payment, and the recipient has a wallet_registry row with verified_at IS NOT NULL, skip the test payment creation entirely.\n- Go straight to creating the real payment row, auto-queue, trigger admin DM approval.\n- First-time and verified paths share the admin DM approval gate.\n\nHALLUCINATION FIX (softer than originally proposed):\n\n- Add the three query tools (query_payment_state, query_wallet_state, list_recent_payments) to the agent's tool palette.\n- Update the admin agent's system prompt with a new section: 'For questions about the state of payments or wallets, call query_payment_state / query_wallet_state / list_recent_payments FIRST. Do not claim state from memory or channel context.'\n- This is guidance, not enforcement. The agent CAN still hallucinate, but the operator (the admin) is the only audience, can correct, and money cannot move without an explicit tool call (which is visible and auditable).\n- Do NOT add a cog-layer rejection of replies that make state claims without query tool calls \u2014 the user specifically said not to require tool calls.\n\nWHAT THIS MEGAPLAN IS NOT TOUCHING (preserve existing invariants):\n\n- solana_client.py / solana_provider.py \u2014 the rebroadcast loop, priority fees, status.err check, RPC unreachable handling all stay.\n- Hardening pass inventory: per-user-per-day caps, canonical wallet swap defense, idempotency collision detection, WalletUpdateBlockedError, RLS comment, prompt-injection hardening in admin_chat/tools.py (wallet lookups only from wallet_registry), null-recipient fail-closed in PaymentService.confirm_payment.\n- Cleanup inventory: PaymentActor/PRODUCER_FLOWS registry, tx_signature_history column, PaymentWorkerCog + PaymentUICog split, safe_delete_messages primitive.\n- Polish inventory: reconcile_with_chain, dynamic priority fees, /payment-resolve slash command, provider name migration, docs/payments.md, docs/runbook-payments.md, scripts/check_payment_invariants.py, structured tx_confirm_decision logging.\n- Grants cog \u2014 completely unaffected. Grants uses its own thread-scoped listener, has its own flow (test auto-confirmed by bot, recipient clicks button for real payment), and this megaplan does not touch it.\n- The 'approved members can chat with bot' feature \u2014 the _can_user_message_bot path in admin_chat_cog. Under identity-based routing, approved-member messages are no longer forwarded to the agent unless the member is ALSO the ADMIN_USER_ID. This is an intentional scoping decision \u2014 the admin is the sole human who can conversationally interact with the agent. Document this in the plan explicitly so no one is surprised.\n\nSUCCESS CRITERIA:\n\n- Identity router correctly classifies admin, pending recipient, and fallthrough based solely on author identity.\n- Pending recipient state machine handles awaiting_wallet and awaiting_test_receipt_confirmation deterministically with no LLM calls.\n- Test-receipt confirmation flow: recipient's text acknowledgment is the sole gate for marking wallet_registry.verified_at (not on-chain confirmation alone).\n- Negative / ambiguous recipient responses escalate to the admin via thread tag, not silent failure.\n- 24-hour timeout on awaiting_test_receipt_confirmation \u2192 escalate to manual_review + admin DM.\n- New tools (query_*, initiate_batch_payment, upsert_wallet_for_user) are admin-only and correctly scoped.\n- initiate_batch_payment creates all intents atomically or none (DB transaction).\n- Auto-skip test path correctly bypasses the test phase for already-verified wallets.\n- Admin DM approval gate fires exactly once per real admin_chat payment, never for tests, never for grants.\n- AdminApprovalView is persistent-safe across bot restarts.\n- PaymentConfirmView button no longer fires for admin_chat real payments (grants-only now).\n- No regression in existing hardening/cleanup/polish invariants \u2014 all existing tests pass.\n- New tests cover: identity router branches, state machine state transitions, wallet regex parsing, confirmation keyword matching, batch tool atomicity, upsert_wallet_for_user admin check, auto-skip verified path, admin DM approval view persistence and click handling.",
+  "current_state": "done",
+  "iteration": 5,
+  "created_at": "2026-04-11T00:56:41Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc",
+    "auto_approve": true,
+    "robustness": "standard",
+    "agent": ""
+  },
+  "sessions": {
+    "claude_prep": {
+      "id": "a07f06ac-efd3-440b-b3e3-dd5b2ca7171d",
+      "mode": "persistent",
+      "created_at": "2026-04-11T01:04:42Z",
+      "last_used_at": "2026-04-11T01:04:42Z",
+      "refreshed": false
+    },
+    "claude_planner": {
+      "id": "1ee59cf9-73ed-4a8d-82c2-cd769da51642",
+      "mode": "persistent",
+      "created_at": "2026-04-11T01:10:18Z",
+      "last_used_at": "2026-04-11T01:59:25Z",
+      "refreshed": false
+    },
+    "codex_critic": {
+      "id": "019d7a17-12a9-7c01-98f7-a2537ed51a69",
+      "mode": "persistent",
+      "created_at": "2026-04-11T01:16:15Z",
+      "last_used_at": "2026-04-11T02:01:59Z",
+      "refreshed": false
+    },
+    "claude_gatekeeper": {
+      "id": "892a76bb-5b10-4e91-a38d-a48d9c837db8",
+      "mode": "persistent",
+      "created_at": "2026-04-11T01:17:58Z",
+      "last_used_at": "2026-04-11T02:04:17Z",
+      "refreshed": false
+    },
+    "claude_finalizer": {
+      "id": "ea86920f-812d-4593-87f9-745161b5c181",
+      "mode": "persistent",
+      "created_at": "2026-04-11T02:13:43Z",
+      "last_used_at": "2026-04-11T02:13:43Z",
+      "refreshed": false
+    },
+    "codex_executor": {
+      "id": "019d7a51-2cc4-7b03-8e36-c27e59869a76",
+      "mode": "persistent",
+      "created_at": "2026-04-11T02:21:54Z",
+      "last_used_at": "2026-04-11T03:53:53Z",
+      "refreshed": true
+    },
+    "codex_reviewer": {
+      "id": "019d7a7f-c9c8-7683-9aaa-8f0605c5b89d",
+      "mode": "persistent",
+      "created_at": "2026-04-11T03:10:54Z",
+      "last_used_at": "2026-04-11T04:04:21Z",
+      "refreshed": true
+    }
+  },
+  "plan_versions": [
+    {
+      "version": 1,
+      "file": "plan_v1.md",
+      "hash": "sha256:8254df296a89599dbcd2cbd814ed60bcf76edb6b2f9e8cabeb22e211dcea54c2",
+      "timestamp": "2026-04-11T01:10:18Z"
+    },
+    {
+      "version": 2,
+      "file": "plan_v2.md",
+      "hash": "sha256:f6d0cfc39790a10b1fa8cac09be0fe73654f03638fd3c22b2d6e17e23e3c065e",
+      "timestamp": "2026-04-11T01:24:56Z"
+    },
+    {
+      "version": 3,
+      "file": "plan_v3.md",
+      "hash": "sha256:0981761fb685ce63b537744958920e97c1fd934b87a4d8f13658e59d7cd93ff1",
+      "timestamp": "2026-04-11T01:36:14Z"
+    },
+    {
+      "version": 4,
+      "file": "plan_v4.md",
+      "hash": "sha256:882aaa25f820c64d735592e06810c0b609ba631b9f3613feabdbbb8285db454d",
+      "timestamp": "2026-04-11T01:47:05Z"
+    },
+    {
+      "version": 5,
+      "file": "plan_v5.md",
+      "hash": "sha256:b88c620f5548ed9e09d3180f0769f5af96879d79d9ea347ad02dad8a86dd14cc",
+      "timestamp": "2026-04-11T01:59:25Z"
+    }
+  ],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-04-11T00:56:41Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "prep",
+      "timestamp": "2026-04-11T01:04:42Z",
+      "duration_ms": 431737,
+      "cost_usd": 1.7427922999999998,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "a07f06ac-efd3-440b-b3e3-dd5b2ca7171d",
+      "agent": "claude",
+      "output_file": "prep.json",
+      "artifact_hash": "sha256:f3fd267ae14401359a5924c79daad95b93c0111084fa10b78d256bea4aa4f7c5"
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-11T01:10:18Z",
+      "duration_ms": 328772,
+      "cost_usd": 1.5230952500000001,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "1ee59cf9-73ed-4a8d-82c2-cd769da51642",
+      "agent": "claude",
+      "output_file": "plan_v1.md",
+      "artifact_hash": "sha256:8254df296a89599dbcd2cbd814ed60bcf76edb6b2f9e8cabeb22e211dcea54c2"
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-11T01:16:15Z",
+      "duration_ms": 349796,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7a17-12a9-7c01-98f7-a2537ed51a69",
+      "agent": "codex",
+      "output_file": "critique_v1.json",
+      "artifact_hash": "sha256:e65d3180a3c11695bb15208ccafd066550fa439ae030f9f9f5354e30c04ddfa3",
+      "flags_count": 19
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-11T01:17:58Z",
+      "duration_ms": 97992,
+      "cost_usd": 0.55631675,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "892a76bb-5b10-4e91-a38d-a48d9c837db8",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:bcdacaf702563fe30253bd5bf162bcf1e01c44cf4c62030ba7c7b61e1d4574ef",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-11T01:24:56Z",
+      "duration_ms": 413919,
+      "cost_usd": 2.4895135,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "1ee59cf9-73ed-4a8d-82c2-cd769da51642",
+      "agent": "claude",
+      "output_file": "plan_v2.md",
+      "artifact_hash": "sha256:f6d0cfc39790a10b1fa8cac09be0fe73654f03638fd3c22b2d6e17e23e3c065e",
+      "flags_addressed": [
+        "FLAG-001",
+        "FLAG-002",
+        "FLAG-003",
+        "FLAG-004",
+        "FLAG-005",
+        "FLAG-006",
+        "issue_hints-1",
+        "issue_hints-2",
+        "issue_hints-3",
+        "correctness-1",
+        "correctness-2",
+        "correctness-3",
+        "scope-1",
+        "scope-2",
+        "all_locations-1",
+        "all_locations-2",
+        "callers-1",
+        "callers-2",
+        "callers-3"
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-11T01:28:00Z",
+      "duration_ms": 178441,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7a17-12a9-7c01-98f7-a2537ed51a69",
+      "agent": "codex",
+      "output_file": "critique_v2.json",
+      "artifact_hash": "sha256:8b65a7be84cfbba9b7c8b67527d2c112b71e811762ab198d6fc2286dbbe24055",
+      "flags_count": 16
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-11T01:29:30Z",
+      "duration_ms": 84368,
+      "cost_usd": 0.6491395,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "892a76bb-5b10-4e91-a38d-a48d9c837db8",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:f6e64adc32689291f812c0fb95ed229b78714b5cd7c3d76472a6019108b2c0b5",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-11T01:36:14Z",
+      "duration_ms": 399386,
+      "cost_usd": 1.494633,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "1ee59cf9-73ed-4a8d-82c2-cd769da51642",
+      "agent": "claude",
+      "output_file": "plan_v3.md",
+      "artifact_hash": "sha256:0981761fb685ce63b537744958920e97c1fd934b87a4d8f13658e59d7cd93ff1",
+      "flags_addressed": [
+        "FLAG-004",
+        "FLAG-007",
+        "FLAG-008",
+        "FLAG-009",
+        "FLAG-010",
+        "FLAG-011",
+        "issue_hints-1",
+        "issue_hints-2",
+        "correctness-1",
+        "correctness-2",
+        "scope-1",
+        "scope-2",
+        "all_locations-1",
+        "all_locations-2",
+        "callers-1",
+        "callers-2"
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-11T01:38:32Z",
+      "duration_ms": 133137,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7a17-12a9-7c01-98f7-a2537ed51a69",
+      "agent": "codex",
+      "output_file": "critique_v3.json",
+      "artifact_hash": "sha256:1965108eca512197810d46e1ba92b58014d1868378fe23addc691c7a1afbbe15",
+      "flags_count": 13
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-11T01:40:17Z",
+      "duration_ms": 99442,
+      "cost_usd": 0.8085355000000001,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "892a76bb-5b10-4e91-a38d-a48d9c837db8",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:e6c662b5cbfae51fdc63696cb193fc0e6d4146263b95cba60e2c74dd23177c46",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-11T01:47:05Z",
+      "duration_ms": 403052,
+      "cost_usd": 1.6956469999999997,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "1ee59cf9-73ed-4a8d-82c2-cd769da51642",
+      "agent": "claude",
+      "output_file": "plan_v4.md",
+      "artifact_hash": "sha256:882aaa25f820c64d735592e06810c0b609ba631b9f3613feabdbbb8285db454d",
+      "flags_addressed": [
+        "FLAG-012",
+        "FLAG-013",
+        "FLAG-014",
+        "issue_hints-1",
+        "issue_hints-2",
+        "correctness-1",
+        "correctness-2",
+        "scope-1",
+        "scope-2",
+        "all_locations-1",
+        "all_locations-2",
+        "callers-1",
+        "callers-2"
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-11T01:50:30Z",
+      "duration_ms": 200086,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7a17-12a9-7c01-98f7-a2537ed51a69",
+      "agent": "codex",
+      "output_file": "critique_v4.json",
+      "artifact_hash": "sha256:d9e095fad6b7e4cc22ce9053e40d07dd0160b8b5b3541ca467c16a13d6647717",
+      "flags_count": 7
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-11T01:52:47Z",
+      "duration_ms": 131466,
+      "cost_usd": 1.1089685,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "892a76bb-5b10-4e91-a38d-a48d9c837db8",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:96cf9fcae5de5e8eae30da5ab786466dfb1f7a5a5a21a97267a88e8ab4c7736a",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-11T01:59:25Z",
+      "duration_ms": 394012,
+      "cost_usd": 1.97128875,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "1ee59cf9-73ed-4a8d-82c2-cd769da51642",
+      "agent": "claude",
+      "output_file": "plan_v5.md",
+      "artifact_hash": "sha256:b88c620f5548ed9e09d3180f0769f5af96879d79d9ea347ad02dad8a86dd14cc",
+      "flags_addressed": [
+        "FLAG-015",
+        "FLAG-016",
+        "issue_hints",
+        "correctness",
+        "scope",
+        "all_locations",
+        "callers"
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-11T02:01:59Z",
+      "duration_ms": 148575,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7a17-12a9-7c01-98f7-a2537ed51a69",
+      "agent": "codex",
+      "output_file": "critique_v5.json",
+      "artifact_hash": "sha256:753ab9d720376906380dd886163c473d7a588b472e615689f399cee0be0e5f6c",
+      "flags_count": 6
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-11T02:04:17Z",
+      "duration_ms": 133263,
+      "cost_usd": 1.2259235,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "892a76bb-5b10-4e91-a38d-a48d9c837db8",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:dc07f364acfe3a44beb0a4c0cbe91e965aa5ff2ec7a3097b768f46871d4543c0",
+      "recommendation": "PROCEED"
+    },
+    {
+      "step": "finalize",
+      "timestamp": "2026-04-11T02:13:43Z",
+      "duration_ms": 555284,
+      "cost_usd": 2.1912,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "ea86920f-812d-4593-87f9-745161b5c181",
+      "agent": "claude",
+      "output_file": "finalize.json",
+      "artifact_hash": "sha256:d26dc20db98596e79581a6166d04a62ff0a6d4c74577b913012a1afb90c61aaa"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-11T03:04:03Z",
+      "duration_ms": 3010408,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7a51-2cc4-7b03-8e36-c27e59869a76",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:711cdbd2b867cb5d0f981d05348f1c13d1cbfcd17f193db0e7683ea0edc5b31a",
+      "finalize_hash": "sha256:89a26a2481c379c6d206bb8ac12be8eadae85832d23f8b79051df5d74eb7978a",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "review",
+      "timestamp": "2026-04-11T03:10:54Z",
+      "duration_ms": 365906,
+      "cost_usd": 0.0,
+      "result": "needs_rework",
+      "session_mode": "persistent",
+      "session_id": "019d7a7f-c9c8-7683-9aaa-8f0605c5b89d",
+      "agent": "codex",
+      "output_file": "review.json",
+      "artifact_hash": "sha256:62581b58b4db46f6d05c9d608417c0616a2e9e1ac39b2655ce33a0d1cba83241",
+      "finalize_hash": "sha256:4f65f5cee43d6c7e567466d10f2f52f24ef4568ba5c6cf3593fd6970c0f7f5ed"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-11T03:14:26Z",
+      "duration_ms": 206489,
+      "cost_usd": 0.0,
+      "result": "blocked",
+      "session_mode": "persistent",
+      "session_id": "019d7a51-2cc4-7b03-8e36-c27e59869a76",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:244d9a60fa411f417470582c4891f81cde221a1ee1a2850904b71c915add243d",
+      "finalize_hash": "sha256:f5f6f9cedea6355af5d0fb9922345ba568f566a23035668200160228785ebda7",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-11T03:18:15Z",
+      "duration_ms": 209867,
+      "cost_usd": 0.0,
+      "result": "blocked",
+      "session_mode": "persistent",
+      "session_id": "019d7a51-2cc4-7b03-8e36-c27e59869a76",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:8f0479ce05df647ca532806a41373b0868ccf1607241488f6bd6fe249f9a4de4",
+      "finalize_hash": "sha256:3a780146bed55cadebfcd9ad77cdbe9c68a3a8ae977e43d623d302baa8db3bd9",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-11T03:21:56Z",
+      "duration_ms": 192347,
+      "cost_usd": 0.0,
+      "result": "blocked",
+      "session_mode": "persistent",
+      "session_id": "019d7a51-2cc4-7b03-8e36-c27e59869a76",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:615dc15379cc0f5e05fd5618f15fc374e8450633fa52d1bacb616f54ab392f92",
+      "finalize_hash": "sha256:85dd15e2386edff233cb9c72be8c8c6cf060ea52184d4e045e4f46f78fa36e87",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-11T03:26:48Z",
+      "duration_ms": 81334,
+      "cost_usd": 0.0,
+      "result": "blocked",
+      "session_mode": "persistent",
+      "session_id": "019d7a51-2cc4-7b03-8e36-c27e59869a76",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:7e173657ca5175ad18fa11e9252723fe3fbb43509df069fd5ddb28168ddc7c32",
+      "finalize_hash": "sha256:4d3c63f86fed33a2d372cf728549018bce92d95ee899f8f4013f92e421b751f1",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-11T03:28:55Z",
+      "duration_ms": 103953,
+      "cost_usd": 0.0,
+      "result": "blocked",
+      "session_mode": "persistent",
+      "session_id": "019d7a51-2cc4-7b03-8e36-c27e59869a76",
+      "agent": "codex",
+      "output_file": "execution_batch_1.json",
+      "artifact_hash": "sha256:7aa0e4436f41ee6a893a86efefecaae1d509999636005120a0a15b07cb9d3e77",
+      "finalize_hash": "sha256:b09060fbdfe9faa198bf1fe150ada6c150545fbf1e3c37dc01776921f479fc29",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-11T03:31:22Z",
+      "duration_ms": 122924,
+      "cost_usd": 0.0,
+      "result": "blocked",
+      "session_mode": "persistent",
+      "session_id": "019d7a51-2cc4-7b03-8e36-c27e59869a76",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:30481b206fc9fbf0e696cc49313e26dc9e293fd78e65d6304f0a44f03c5db03c",
+      "finalize_hash": "sha256:7a74407b88843423d0e0601e5eeda2a9757be19614024b46d15d12b707a0ed4c",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-11T03:32:09Z",
+      "duration_ms": 21863,
+      "cost_usd": 0.0,
+      "result": "blocked",
+      "session_mode": "persistent",
+      "session_id": "019d7a51-2cc4-7b03-8e36-c27e59869a76",
+      "agent": "codex",
+      "output_file": "execution_batch_1.json",
+      "artifact_hash": "sha256:f191e7f175a95e50474633c6facc72200a8e70b2953b0becaa46ed58cbbe33f7",
+      "finalize_hash": "sha256:8d31ec73c186d8098b481e89fecf821688427e784676d213d8f35f9102e3e670",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-11T03:34:13Z",
+      "duration_ms": 86153,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7a51-2cc4-7b03-8e36-c27e59869a76",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:ab7c0d5e98fc9da621abc46a99adc8292aa0fcc30865e81acf27d1d99359c35a",
+      "finalize_hash": "sha256:ab89c8ef78f4656a3cb6db408fb5305986fd5f7624fe222c6998069396c9594a",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "review",
+      "timestamp": "2026-04-11T03:37:52Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "review_v5_raw.txt",
+      "message": "Output file tmpa4jkruvu was not valid JSON and no fallback found"
+    },
+    {
+      "step": "review",
+      "timestamp": "2026-04-11T03:45:18Z",
+      "duration_ms": 432669,
+      "cost_usd": 0.0,
+      "result": "needs_rework",
+      "session_mode": "persistent",
+      "session_id": "019d7a7f-c9c8-7683-9aaa-8f0605c5b89d",
+      "agent": "codex",
+      "output_file": "review.json",
+      "artifact_hash": "sha256:7e369782705cfcee589b7b0f5af60ebc044575cf506e66c10904be3b8ab96a68",
+      "finalize_hash": "sha256:6ec5381dda54a379dbd04d31243bf6417b023bdb4259a8fb71e1a3870f540e28"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-11T03:53:53Z",
+      "duration_ms": 509217,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7a51-2cc4-7b03-8e36-c27e59869a76",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:b3ce7856209f417617b1dde64e140dd662bf00d6c245890180b0584d34a9d66e",
+      "finalize_hash": "sha256:ea98034a53eeeacd65e2311fe4f646f1b43119f5a98eef22855acb798581c615",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "review",
+      "timestamp": "2026-04-11T03:56:56Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "review_v5_raw.txt",
+      "message": "Output file tmpfpwxpl9f was not valid JSON and no fallback found"
+    },
+    {
+      "step": "review",
+      "timestamp": "2026-04-11T04:04:21Z",
+      "duration_ms": 425380,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7a7f-c9c8-7683-9aaa-8f0605c5b89d",
+      "agent": "codex",
+      "output_file": "review.json",
+      "artifact_hash": "sha256:346a3592401e5a466595ec6625efb6038cccfcac008f6e5d1173681b7ffad9f0",
+      "finalize_hash": "sha256:30f0492c21cfd6d1dfdde8ee4276ca185f2b3b70c72bb63bcc05e46cdb108064"
+    }
+  ],
+  "meta": {
+    "significant_counts": [
+      19,
+      19,
+      16,
+      20,
+      19
+    ],
+    "weighted_scores": [
+      30.0,
+      32.0,
+      20.5,
+      26.0,
+      25.5
+    ],
+    "plan_deltas": [
+      90.35,
+      66.69,
+      74.0,
+      62.77
+    ],
+    "recurring_critiques": [
+      [],
+      [],
+      [],
+      [],
+      []
+    ],
+    "total_cost_usd": 17.457053,
+    "overrides": [
+      {
+        "action": "add-note",
+        "timestamp": "2026-04-11T03:32:32Z",
+        "note": "IMPORTANT FOR EXECUTOR: Tasks T1, T3, T12, T14, T18 are already complete from a previous execute pass \u2014 their code was landed earlier in the workflow. When processing a rework pass, DO NOT revert files_changed or commands_run for tasks that are not in rework_items. If a task is marked 'done' but you have no new work to do, you MUST preserve the existing files_changed and commands_run entries (or populate them with at least one verification command like 'pytest tests/test_admin_payments.py -x' since that validates the feature)."
+      }
+    ],
+    "notes": [
+      {
+        "timestamp": "2026-04-11T03:32:32Z",
+        "note": "IMPORTANT FOR EXECUTOR: Tasks T1, T3, T12, T14, T18 are already complete from a previous execute pass \u2014 their code was landed earlier in the workflow. When processing a rework pass, DO NOT revert files_changed or commands_run for tasks that are not in rework_items. If a task is marked 'done' but you have no new work to do, you MUST preserve the existing files_changed and commands_run entries (or populate them with at least one verification command like 'pytest tests/test_admin_payments.py -x' since that validates the feature)."
+      }
+    ]
+  },
+  "last_gate": {
+    "recommendation": "PROCEED",
+    "rationale": "Iteration 5 with score stable at 25.5 (basically unchanged from 26.0 in iter 4), 16 flags resolved cumulatively, plan delta narrowing (90%\u219267%\u219274%\u219263%), zero recurring critiques, and a \"high iteration count\" warning from the gate itself. Every single v1-v4 flag entry is marked `addressed`; the remaining open flags are all aliases of **one genuinely distinct concern**: the periodic scheduling of `_reconcile_admin_chat_orphans` during normal uptime. Seven flag entries (correctness, all_locations, scope, callers, issue_hints, FLAG-017, plus minor alias) all trace back to this single gap: the sweep only runs at `cog_load`, so a mid-fan-out batch crash leaves `awaiting_admin_init` entries stranded until restart. **The fix is trivial** (~10 lines): add `@tasks.loop(minutes=5) _orphan_sweep_loop` to `PaymentUICog` that calls the existing `_reconcile_admin_chat_orphans()`, start in `cog_load` after the initial invocation, stop in `cog_unload`. This is clearly an execution-time detail, not a design-level question \u2014 all the design decisions (dependency inversion, atomic batch insert, transient state, orphan sweep logic) are settled and correct. The issue_hints (v5) \"divergence\" flag is also disputable: the brief explicitly says `initiate_batch_payment` \"creates N admin_payment_intents atomically... each flows through the normal per-payment mechanical pipeline\", which matches the Rev-5 design (atomic insert, then per-entry pipeline). `awaiting_admin_init` is a transient internal state that exists only during the pipeline phase; from the outside observer the intent lands in `awaiting_admin_approval` as required. Further iteration at this point risks introducing new concerns (as iter 2 and iter 4 both demonstrated) without meaningfully improving the outcome. Ship with an explicit execution-time directive to add the periodic loop.",
+    "signals_assessment": "Iteration 5, weighted score trajectory 30.0\u219232.0\u219220.5\u219226.0\u219225.5 (stable). Plan delta 62.77% (down from 74%, 90%), continuing to narrow. 16 flags resolved cumulatively across 5 rounds, zero recurring critiques \u2014 the loop is converging. Preflight clean. Gate's own \"high iteration count\" warning indicates the harness is signaling that further rounds may be counterproductive. Remaining 7 open flags all alias a single concrete gap (periodic scheduling of the orphan sweep) with a trivial ~10-line execution-time fix. No debt subsystem overlaps. The plan is ready to execute with explicit directives carried in warnings and settled decisions.",
+    "warnings": [
+      "Iteration 5: high iteration count.",
+      "**EXECUTION-TIME REQUIRED ADDITION (addresses FLAG-017 / correctness / all_locations / callers / scope):** Add `@tasks.loop(minutes=5) _orphan_sweep_loop` to `PaymentUICog`. The loop body calls the already-defined `_reconcile_admin_chat_orphans()`. Start in `cog_load` after the initial one-shot call at line immediately following the existing sweep invocation; stop in `cog_unload`. Wrap the loop body in try/except so a transient DB error doesn't kill the task. This ensures stranded `awaiting_admin_init` entries are cleaned up within 5 minutes during normal uptime, not just on restart. Add `test_orphan_sweep_loop_cancels_stale_awaiting_admin_init_during_uptime` to validate.",
+      "Document the 5-minute staleness cutoff and the uptime sweep loop in the `/docs/runbook-payments.md` if that file is in scope of the polish inventory (it is \u2014 Rev-5 assumption list confirms it's preserved).",
+      "If implementation reveals that 5 minutes is too aggressive during transient slow startups, bump the cutoff to 10 minutes (still short enough to resolve batch crashes within a single admin session).",
+      "The `awaiting_admin_init` state is a transient internal status that exists only during the atomic batch insert \u2192 per-entry fan-out window. A recipient observing their intent in this state is expected to be rare (requires the bot to be mid-fan-out at the moment of the query). The uptime sweep loop bounds this to <5 minutes.",
+      "Carry forward all 17 settled decisions from iterations 1-5 into execution \u2014 they encode the complete design rationale and prevent re-litigation during review."
+    ],
+    "settled_decisions": [
+      {
+        "id": "SD-001",
+        "decision": "Admin DM gate uses existing PaymentActorKind.ADMIN_DM; no new enum value.",
+        "rationale": "Carried. Verified at payment_service.py:30 with authorization at :539-546."
+      },
+      {
+        "id": "SD-002",
+        "decision": "Identity routing by author.id only; no _is_directed_at_bot gate for ADMIN_USER_ID.",
+        "rationale": "Rev-2 fix for FLAG-003. Admin plain-channel messages reach the agent."
+      },
+      {
+        "id": "SD-003",
+        "decision": "Grants flow is strictly out of scope; grants_cog.py, grants PaymentConfirmView flow, main.py, tests/test_payment_cog_split.py harness, tests/test_scheduler.py harness all untouched.",
+        "rationale": "Brief invariant; preserved across all revisions."
+      },
+      {
+        "id": "SD-004",
+        "decision": "Batch tool upper bound: 1..20 entries per call.",
+        "rationale": "Matches brief's 16-payment example with headroom."
+      },
+      {
+        "id": "SD-005",
+        "decision": "24h timeout sweep lives in AdminChatCog at 15-minute intervals.",
+        "rationale": "AdminChatCog owns intent lifecycle; above the \u22655-min constraint."
+      },
+      {
+        "id": "SD-006",
+        "decision": "AdminApprovalView click handler posts 'queued for sending' (NOT 'Payment sent'); existing handle_payment_result is the sole source of the 'Payment sent.' post.",
+        "rationale": "Rev-2 fix for FLAG-005 / correctness-1. confirm_payment only transitions pending_confirmation\u2192queued."
+      },
+      {
+        "id": "SD-007",
+        "decision": "receipt_prompt_message_id is a separate new column; safe_delete_messages clears both prompt ids.",
+        "rationale": "Rev-2 fix for correctness-3."
+      },
+      {
+        "id": "SD-008",
+        "decision": "Wallet parser uses tolerant delimiter regex with is_valid_solana_address validation.",
+        "rationale": "Rev-2 fix for issue_hints-2."
+      },
+      {
+        "id": "SD-009",
+        "decision": "ADMIN_ONLY_TOOLS, _ADMIN_IDENTITY_INJECTED_TOOLS, and all six new-tool schemas land in the same commit to prevent module-level assert failures.",
+        "rationale": "Rev-2/Rev-3 infrastructure pattern."
+      },
+      {
+        "id": "SD-010",
+        "decision": "manual_review remains a BLOCKING state across get_active_intent_for_recipient, list_active_intents, has_active_payment_or_intent, and the unique partial index. Admin clears via resolve_admin_intent.",
+        "rationale": "Rev-3 revert of Rev-2 over-correction. Preserves fail-closed semantics."
+      },
+      {
+        "id": "SD-011",
+        "decision": "resolve_admin_intent: cancel-only (no resolution parameter), admin-only via both sets, explicit admin DM, cascade-cancels linked test_payment_id and final_payment_id via existing cancel_payment, refuses non-cancellable linked payments (directs operator to /payment-resolve).",
+        "rationale": "Rev-4 fix for FLAG-011, FLAG-014, correctness-2."
+      },
+      {
+        "id": "SD-012",
+        "decision": "Single initiate_payment verified path uses _gate_fresh_intent_atomic: payment-first ordering with atomic intent create (status='awaiting_admin_approval' AND final_payment_id set in ONE insert, client-side uuid4 for intent_id). No placeholder state.",
+        "rationale": "Rev-4 fix for FLAG-013."
+      },
+      {
+        "id": "SD-013",
+        "decision": "PaymentConfirmView is NEVER the crash-recovery fallback for new-flow admin_chat real payments. Crash recovery is handled by the orphan sweep which runs BEFORE _register_pending_confirmation_views.",
+        "rationale": "Rev-4 fix for FLAG-012."
+      },
+      {
+        "id": "SD-014",
+        "decision": "Orphan-payment reconciliation sweep lives in PaymentUICog._reconcile_admin_chat_orphans \u2014 NOT in AdminChatCog. Uses only self.db_handler, self.payment_service, self.bot, self._send_admin_approval_dm. No cross-cog dependency. main.py, tests/test_payment_cog_split.py, and tests/test_scheduler.py are NOT modified. A regression test `test_payment_ui_cog_loads_without_admin_chat_cog` validates this.",
+        "rationale": "Rev-5 fix for FLAG-015. Dependency inversion eliminates bootstrap-order problem."
+      },
+      {
+        "id": "SD-015",
+        "decision": "initiate_batch_payment uses unified atomic insert for all entries (verified + unverified) via a single create_admin_payment_intents_batch call. Verified entries start in awaiting_admin_init (transient new state); unverified in awaiting_wallet. After the atomic insert, verified entries iterate through _gate_existing_intent (shared with test-receipt-positive) to transition to awaiting_admin_approval with final_payment_id set and fire admin DMs. This satisfies the brief's test_initiate_batch_payment_atomic_all_or_none.",
+        "rationale": "Rev-5 fix for FLAG-016."
+      },
+      {
+        "id": "SD-016",
+        "decision": "awaiting_admin_init is a new transient non-routable state. Added to the CHECK constraint and silently ignored by the state-machine dispatch (same as awaiting_test, awaiting_admin_approval). A dedicated unit test asserts that posting a Solana address while in awaiting_admin_init never reopens the test-payment path.",
+        "rationale": "Prevents any routing bug analogous to Rev-3's awaiting_wallet placeholder issue."
+      },
+      {
+        "id": "SD-017",
+        "decision": "has_active_payment_or_intent at db_handler.py:1575-1601 is NOT modified. Consistent with SD-010.",
+        "rationale": "No cross-helper drift."
+      },
+      {
+        "id": "SD-018",
+        "decision": "PaymentUICog must have a @tasks.loop(minutes=5) _orphan_sweep_loop that periodically calls _reconcile_admin_chat_orphans during normal uptime, not just at cog_load. Start the loop in cog_load after the initial one-shot sweep; stop in cog_unload. Wrap the loop body in try/except.",
+        "rationale": "Execution-time requirement to address iter 5 FLAG-017 / correctness / all_locations / scope / callers. Bounds stranded awaiting_admin_init cleanup to <5 minutes during uptime."
+      }
+    ],
+    "passed": true,
+    "preflight_results": {
+      "project_dir_exists": true,
+      "project_dir_writable": true,
+      "success_criteria_present": true,
+      "claude_available": true,
+      "codex_available": true
+    },
+    "orchestrator_guidance": "Plan passed gate and preflight. Proceed to finalize. Verify unresolved flags against the plan and project code before accepting."
+  }
+}

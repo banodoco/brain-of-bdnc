@@ -1,0 +1,222 @@
+{
+  "skip": false,
+  "task_summary": "Harden the Solana payment subsystem against the adversarial review: P0 (secret audit of git history, prompt-injection hardening in admin_chat initiate_payment, null recipient_discord_id confirmation bypass), P1 (wallet swap window between test and final, idempotency slot reuse after forced failure, per-payment + rolling daily USD caps on admin-triggered payouts, admin success-DM over threshold), P2 (log audit, RLS posture doc). End-to-end hardening with no half-fixes on the subtle wallet-swap and idempotency paths.",
+  "key_evidence": [
+    {
+      "point": "The `initiate_payment` LLM tool schema in admin_chat already does NOT accept a wallet_address parameter \u2014 it takes only recipient_user_id, amount_sol, reason. The wallet is looked up via db_handler.get_wallet(guild_id, recipient_user_id, 'solana') at tools.py:2474. The task's P0 premise ('remove LLM-sourced wallet addresses') is largely already satisfied \u2014 the plan should (a) grep siblings for any other tool that accepts a wallet_address, (b) add an assertion/docstring in execute_initiate_payment that wallets MUST come from wallet_registry, (c) add a regression test that a wallet_address key in params is ignored. This is verification + defensive assertion, NOT a rewrite.",
+      "source": "src/features/admin_chat/tools.py:580-599, 2438-2505",
+      "relevance": "high"
+    },
+    {
+      "point": "execute_payment ALREADY uses the stored recipient_wallet string from the payment row (payment_service.py:244), not a re-read from wallet_registry. The final payment in admin_chat is created with recipient_wallet=payment['recipient_wallet'] copied from the test payment row (admin_chat_cog.py:356). So execute_payment is safe. The actual wallet-swap risk lives in request_payment's pre-insert check at payment_service.py:84-90, which rejects a new intent whose wallet_id\u2192wallet_registry.wallet_address mismatches the string \u2014 causing the entire final-payout to silently drop if the user upserts a new wallet. Fix: block upsert_wallet while an active intent exists (in db_handler.upsert_wallet), don't rely on post-hoc rejection.",
+      "source": "src/features/payments/payment_service.py:68-90, 244; src/features/admin_chat/admin_chat_cog.py:236, 356",
+      "relevance": "high"
+    },
+    {
+      "point": "Null recipient_discord_id confirmation bypass is real: payment_service.confirm_payment at lines 193-202 only checks recipient match `if not privileged_override and expected_user_id is not None`. A payment with recipient_discord_id=NULL can be confirmed by any user. Fail-closed fix: require expected_user_id AND confirmed_by_user_id to be non-null and match, unless privileged_override=True. sql/payments.sql:77 allows NULL \u2014 consider adding a partial CHECK for provider='solana_payouts'.",
+      "source": "src/features/payments/payment_service.py:193-202; sql/payments.sql:77",
+      "relevance": "high"
+    },
+    {
+      "point": "Idempotency slot reuse after forced failure: the unique index `uq_payment_requests_active_producer_ref` at payments.sql:126-128 is partial `WHERE status NOT IN ('failed','cancelled')`. Once a row is marked failed, a new row with the same (producer, producer_ref, is_test) can be freely inserted. request_payment (payment_service.py:54-61) early-returns on existing rows but likely only sees non-terminal ones. Since admin_chat uses ONE producer_ref across test AND final payments (admin_chat_cog.py:234, 354), and test failures free the slot, an attacker who forces a test failure can retrigger with a different wallet. Fix: query ALL prior rows for (producer, producer_ref, is_test) including terminal; if any prior row has a different recipient_wallet, log WARN, DM admin, and create the new row as manual_hold.",
+      "source": "sql/payments.sql:126-128; src/features/payments/payment_service.py:54-61,167-174; src/features/admin_chat/tools.py:2473; src/features/admin_chat/admin_chat_cog.py:234,354",
+      "relevance": "high"
+    },
+    {
+      "point": "No USD cap enforcement exists. request_payment accepts arbitrary amount_usd/amount_token with only a > 0 check (payment_service.py:102, 112). manual_hold is already a terminal status in the enum (payments.sql:100) and db_handler.mark_payment_manual_hold is wired. Caps should go in PaymentService.request_payment, provider-scoped to {'solana_payouts'}. Over-cap should create a manual_hold row + admin DM (NOT silent reject), preserving the audit trail.",
+      "source": "src/features/payments/payment_service.py:32-174; sql/payments.sql:92-102",
+      "relevance": "high"
+    },
+    {
+      "point": "Admin DM path today fires only on failed/manual_hold via payment_cog._dm_admin_payment_failure (payment_cog.py:267-333). No success DM exists. Add a sibling `_dm_admin_payment_success` called from `_handle_terminal_payment` when status=='confirmed', not is_test, provider in {'solana_payouts'}, and amount_usd >= ADMIN_SUCCESS_DM_THRESHOLD_USD (default 100). Must be visually differentiated from failure DM (distinct prefix/emoji).",
+      "source": "src/features/payments/payment_cog.py:267-333",
+      "relevance": "high"
+    },
+    {
+      "point": "Two Solana providers are already split and wired in main.py:157-161 ('solana_grants', 'solana_payouts'). grants_cog uses 'solana_grants' exclusively (grants_cog.py:574,686); admin_chat uses 'solana_payouts' (admin_chat_cog.py:238, 358). Cap enforcement must be scoped to 'solana_payouts' so grants are unaffected. Rolling daily window aggregates on (guild_id, provider='solana_payouts', status IN pending_confirmation/queued/processing/submitted/confirmed) within 24h.",
+      "source": "main.py:157-161; src/features/admin_chat/admin_chat_cog.py:238,358; src/features/grants/grants_cog.py:574,686",
+      "relevance": "medium"
+    },
+    {
+      "point": "upsert_wallet in db_handler.py:1417-1465 has no inflight-intent check. It updates wallet_address in place and clears verified_at on change (line 1442). Fix: before UPDATE, call a new helper `has_active_payment_or_intent(guild_id, discord_user_id)` that queries non-terminal payment_requests rows AND awaiting_* admin_payment_intents rows; abort with a structured error if any exist. Caller (_handle_wallet_received at admin_chat_cog.py:193-218) surfaces the error to the admin review channel.",
+      "source": "src/common/db_handler.py:1417-1465; src/features/admin_chat/admin_chat_cog.py:193-218",
+      "relevance": "high"
+    },
+    {
+      "point": "Existing tests: tests/test_admin_payments.py instantiates a real PaymentService at line 687 with provider dict {'solana': provider} (note: NOT 'solana_payouts'). tests/test_social_publish_service.py:474-685 also uses real PaymentService. Cap config must be injectable via constructor kwargs with sensible defaults (or a capped_providers set) so these tests keep passing without rewrites. conftest.py supplies shared fixtures. Existing tests cover happy paths but NOT the adversarial cases we're adding.",
+      "source": "tests/test_admin_payments.py:497-729; tests/test_social_publish_service.py:474-685; tests/conftest.py",
+      "relevance": "medium"
+    },
+    {
+      "point": "sql/payments.sql currently has no header comment and no documented RLS posture. Given Supabase/Postgres with service-role access from the bot, posture is 'RLS NOT enabled; all access mediated via service-role handlers in db_handler.py; no direct browser/Discord client access; writes parameterized'. Comment-only \u2014 do NOT ALTER TABLE ENABLE RLS (requires rewriting policies across the bot).",
+      "source": "sql/payments.sql:1-12",
+      "relevance": "medium"
+    },
+    {
+      "point": "Logging audit targets: src/common/log_handler.py (central logger). Payment logs already redact wallets via _redact_wallet/_redact_wallet_address (payment_cog.py; admin_chat/tools.py:1072-1124). SolanaClient logs recipient+signature only. Grep for SOLANA_PRIVATE_KEY, HELIUS_API_KEY, Keypair.from_bytes tracebacks, os.environ dumps. Document findings; add scrubbing only if a real leak is found.",
+      "source": "src/common/log_handler.py; src/features/payments/payment_cog.py; src/features/admin_chat/tools.py:1072-1124",
+      "relevance": "medium"
+    }
+  ],
+  "relevant_code": [
+    {
+      "file_path": "src/features/payments/payment_service.py",
+      "functions": [
+        "PaymentService.request_payment",
+        "PaymentService.confirm_payment",
+        "PaymentService.execute_payment"
+      ],
+      "why": "Core target. Confirm-payment fail-closed fix (lines 193-202). Cap enforcement injection point (after amount_token derivation at lines 90-119, before create_payment_request at 163). Idempotency collision detection before early return at lines 54-61 and in fallback at 167-174. execute_payment at 244 already uses stored wallet \u2014 add regression test, no code change."
+    },
+    {
+      "file_path": "src/features/payments/payment_cog.py",
+      "functions": [
+        "PaymentCog._handle_terminal_payment",
+        "PaymentCog._dm_admin_payment_failure"
+      ],
+      "why": "Add sibling `_dm_admin_payment_success` called from `_handle_terminal_payment` (lines 267-272) when status=='confirmed', not is_test, provider in admin-payout set, amount_usd>=threshold. Reuse ADMIN_USER_ID env plumbing. Differentiated prefix/emoji from failure DM."
+    },
+    {
+      "file_path": "src/features/admin_chat/admin_chat_cog.py",
+      "functions": [
+        "AdminChatCog._handle_wallet_received",
+        "AdminChatCog._start_admin_payment_flow",
+        "AdminChatCog.handle_payment_result"
+      ],
+      "why": "_handle_wallet_received (193-218) calls upsert_wallet with no inflight guard \u2014 surface new structured error to admin review channel. _start_admin_payment_flow (220-271) and handle_payment_result (299-402) handoff reads recipient_wallet from test row (already safe, pin with test). Ensure recipient_discord_id always passed non-null."
+    },
+    {
+      "file_path": "src/features/admin_chat/tools.py",
+      "functions": [
+        "execute_initiate_payment",
+        "initiate_payment tool schema"
+      ],
+      "why": "Tool schema at 580-599 already excludes wallet_address. Grep ALL admin_chat tools for any wallet_address-accepting sibling. Add docstring + defensive pop-and-warn in execute_initiate_payment (2438-2526) asserting wallets must come from wallet_registry. Add test that wallet_address in params is ignored."
+    },
+    {
+      "file_path": "src/common/db_handler.py",
+      "functions": [
+        "upsert_wallet",
+        "get_wallet",
+        "get_wallet_by_id",
+        "get_payment_requests_by_producer",
+        "create_payment_request",
+        "mark_payment_manual_hold"
+      ],
+      "why": "upsert_wallet (1417-1465) needs inflight guard via new helper has_active_payment_or_intent(guild_id, discord_user_id). Add new helper get_payment_requests_for_ref_all (no terminal-status filter) for slot-reuse detection. Add new helper get_rolling_24h_payout_usd(guild_id, provider) for daily cap aggregation."
+    },
+    {
+      "file_path": "sql/payments.sql",
+      "functions": [
+        "wallet_registry schema",
+        "payment_requests schema",
+        "uq_payment_requests_active_producer_ref"
+      ],
+      "why": "Add top-of-file comment block documenting RLS posture. Do NOT change the partial-index predicate (legitimate retries need it). Collision detection stays in app code. Consider adding a CHECK that recipient_discord_id is non-null when provider='solana_payouts' (defense-in-depth)."
+    },
+    {
+      "file_path": "src/common/log_handler.py",
+      "functions": [],
+      "why": "Log audit target. Grep for env-var logging, unsanitized tracebacks, os.environ dumps. Add scrubbing filter for SOLANA_PRIVATE_KEY/HELIUS_*/ANTHROPIC_* only if a real leak path exists. Document findings either way."
+    },
+    {
+      "file_path": "main.py",
+      "functions": [
+        "PaymentService construction"
+      ],
+      "why": "Lines 157-161 construct PaymentService with providers and test_payment_amount. Pass new kwargs (per_payment_usd_cap, daily_usd_cap, capped_providers, admin_success_dm_threshold_usd) sourced from env with safe defaults ($500/$2000/{'solana_payouts'}/$100)."
+    },
+    {
+      "file_path": "tests/test_admin_payments.py",
+      "functions": [
+        "PaymentService integration tests"
+      ],
+      "why": "Extend PaymentService tests at 687+ with adversarial cases: null-recipient reject, cap manual_hold, rolling daily cap, slot-reuse collision, upsert_wallet block, admin success DM, wallet_address tool arg ignored, execute_payment stored-wallet regression pin. Preserve FakeAdminPaymentService happy-path tests."
+    },
+    {
+      "file_path": "tests/test_scheduler.py",
+      "functions": [],
+      "why": "Scheduler wrappers (lines 390-584) must still work \u2014 caps run only in request_payment, NOT execute_payment, so scheduled queue path is unaffected. Verify."
+    },
+    {
+      "file_path": "tests/test_social_publish_service.py",
+      "functions": [],
+      "why": "Existing PaymentService construction (474-685) uses provider dict {'solana': provider}. New caps must be provider-scoped to 'solana_payouts' so these tests remain green with defaults."
+    }
+  ],
+  "test_expectations": [
+    {
+      "test_id": "tests/test_admin_payments.py::test_confirm_rejects_null_recipient_discord_id",
+      "what_it_checks": "NEW: confirm_payment returns None and logs WARN when recipient_discord_id is NULL and privileged_override is False, regardless of confirmed_by_user_id. privileged_override=True still works for test-payment auto-advance.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_request_payment_per_payment_cap_manual_holds",
+      "what_it_checks": "NEW: request_payment with provider='solana_payouts' and amount_usd > per-payment cap creates the row with status='manual_hold', logs WARN, and triggers admin DM. grants provider is unaffected.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_request_payment_rolling_daily_cap_manual_holds",
+      "what_it_checks": "NEW: once rolling 24h sum of solana_payouts amount_usd crosses daily cap, next new intent is manual_hold'd even if per-payment amount is under per-payment cap. Grants are unaffected.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_slot_reuse_collision_detected",
+      "what_it_checks": "NEW: prior failed row with same (producer, producer_ref, is_test) and DIFFERENT recipient_wallet causes request_payment to log WARN, DM admin, and create the new row as manual_hold (NOT silent replacement).",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_upsert_wallet_blocked_during_active_intent",
+      "what_it_checks": "NEW: db_handler.upsert_wallet refuses to update wallet_address while a non-terminal payment_requests row OR awaiting_* admin_payment_intents row exists for (guild_id, discord_user_id), and _handle_wallet_received surfaces the error to the admin review channel.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_admin_success_dm_over_threshold",
+      "what_it_checks": "NEW: on confirmed non-test solana_payouts payment with amount_usd >= $100, admin is DM'd with success-differentiated message. Under-threshold does NOT DM. Failure DM path is unchanged.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_execute_payment_uses_stored_wallet",
+      "what_it_checks": "NEW regression pin: execute_payment passes payment['recipient_wallet'] (frozen stored string) to provider.send, NOT a re-read from wallet_registry. Prevents future regression.",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py::test_initiate_payment_tool_rejects_wallet_address_arg",
+      "what_it_checks": "NEW: passing a wallet_address key through execute_initiate_payment params is ignored (not persisted, not used for lookup); wallet is exclusively resolved via db_handler.get_wallet(guild_id, recipient_user_id, 'solana').",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "tests/test_admin_payments.py (existing happy-path)",
+      "what_it_checks": "Existing happy path (wallet capture \u2192 test \u2192 confirm \u2192 final \u2192 notify) still passes with new caps/collision logic (test uses high cap).",
+      "status": "pass_to_pass"
+    },
+    {
+      "test_id": "tests/test_scheduler.py (existing)",
+      "what_it_checks": "Scheduler queue path still advances queued payments; caps run only in request_payment, not execute_payment.",
+      "status": "pass_to_pass"
+    },
+    {
+      "test_id": "tests/test_social_publish_service.py (existing PaymentService tests)",
+      "what_it_checks": "Social publish service's PaymentService usage keeps working \u2014 new caps are scoped to 'solana_payouts', these tests use different provider names.",
+      "status": "pass_to_pass"
+    }
+  ],
+  "constraints": [
+    "Fail-closed: on ANY validation ambiguity (cap, collision, null recipient, inflight wallet change), the payment must NOT execute. Prefer manual_hold + admin DM over silent rejection so the trail is preserved.",
+    "Do NOT change the partial-index predicate on uq_payment_requests_active_producer_ref \u2014 legitimate retries after a failed payment rely on the failed/cancelled exclusion. Collision detection must live in app code.",
+    "Do NOT break grants. Cap enforcement and admin success DM must be scoped to provider='solana_payouts' (or an explicit capped_providers set), not global. grants_cog uses 'solana_grants' with its own semantics.",
+    "Do NOT re-read recipient_wallet from wallet_registry in execute_payment. Keep the frozen-string behavior at payment_service.py:244. Add a regression test pinning this.",
+    "Do NOT add LLM-sourced wallet parameters anywhere. If a sibling admin_chat tool is found that accepts wallet_address text, remove or harden it in the same plan.",
+    "Do NOT widen upsert_wallet's blocking window beyond necessary. Block ONLY while a non-terminal payment_requests row OR an awaiting_* admin_payment_intents row exists for (guild_id, discord_user_id). Completed/failed/cancelled intents must NOT block.",
+    "Do NOT log secrets. Any new logging in cap/collision/success-DM paths must redact wallets via existing _redact_wallet helpers and must not log env-var values or key material.",
+    "Cap config must be injectable via PaymentService constructor kwargs (not env-only) so existing tests can pass high/infinite caps without env pollution.",
+    "Helius RPC and SolanaClient primitives are out of scope per task. Fix only application-layer vectors.",
+    "sql/payments.sql RLS documentation is COMMENT-ONLY. Do NOT ALTER TABLE ENABLE RLS \u2014 that would require rewriting policies across the bot's service-role access.",
+    "Admin success DM must be visually differentiated from failure DM (distinct prefix, emoji, status word). Do NOT overload _dm_admin_payment_failure \u2014 add a sibling method.",
+    "Default thresholds (env-overridable): per-payment cap $500, daily cap $2000/guild, admin success DM threshold $100. Bake defaults into main.py's PaymentService constructor call.",
+    "Null-recipient_discord_id fix must preserve privileged_override=True escape hatch for admin auto-advance of test payments (admin_chat_cog.py:258-262). Verify test payments still carry recipient_discord_id and don't hit the null path.",
+    "Rolling 24h cap must include in-flight statuses (pending_confirmation/queued/processing/submitted/confirmed) so burst concurrent tool calls cannot all slip under the cap simultaneously. If a serializable transaction is impractical, document the residual burst window in a comment.",
+    "P0 prompt-injection task premise is already mostly fixed \u2014 the plan must explicitly say 'verification + defensive assertion + test' is the work, not a rewrite, so the review agent does not mark prep as incomplete."
+  ],
+  "suggested_approach": "Implement in this order so each layer builds on verified foundations. DO NOT delegate understanding of the subtle wallet-swap and idempotency paths.\n\n1. **Groundwork (P2, low-risk)**: add RLS-posture comment block at the top of sql/payments.sql. Extend tests/conftest.py with an in-memory wallet_registry + payment_requests store if one doesn't already exist, so adversarial tests can operate against real PaymentService logic.\n\n2. **P0: Null recipient_discord_id fail-closed** (payment_service.py:193-202). Change to `if not privileged_override: if expected_user_id is None or confirmed_by_user_id is None or int(expected_user_id) != int(confirmed_by_user_id): log WARN; return None`. Ship with the new test. Audit every confirm_payment call site (payment_cog.py + admin_chat_cog.py:258-262) to ensure no flow relies on NULL recipient.\n\n3. **P0: admin_chat prompt-injection verification**. Grep ALL admin_chat tools for 'wallet_address' / 'address' fields in input_schema. If any sibling tool accepts a raw wallet, remove or harden. Add a docstring + defensive `params.pop('wallet_address', None)` with WARN log at the top of execute_initiate_payment. Add the tool-arg-ignored test. Explicitly record in the plan that the task's P0 premise was already substantially implemented.\n\n4. **P1: upsert_wallet inflight block** (db_handler.py:1417-1465). Add helper has_active_payment_or_intent(guild_id, discord_user_id) querying non-terminal payment_requests + awaiting_* admin_payment_intents. Verify exact admin_payment_intents status enum values before coding the 'active' predicate. Return structured error from upsert_wallet on conflict. Update _handle_wallet_received (admin_chat_cog.py:193-218) to surface to admin review channel.\n\n5. **P1: Idempotency slot-reuse collision detection** (payment_service.py:54-61, 167-174). Add db_handler helper get_payment_requests_for_ref_all(producer, producer_ref, is_test) that does NOT filter terminal. Before the idempotent early-return, query this helper: if any prior row has a different recipient_wallet than the incoming request, log WARN, DM admin, create the new row as manual_hold (do NOT return the old non-terminal row as if nothing happened). Be careful the early-return at lines 54-61 does not short-circuit BEFORE collision detection.\n\n6. **P1: Per-payment + rolling daily USD caps** in PaymentService. Add constructor kwargs per_payment_usd_cap, daily_usd_cap, capped_providers=frozenset({'solana_payouts'}), default to None (disabled) for backward-compat with existing tests. In request_payment, after amount_token derivation, if provider in capped_providers and not is_test: if amount_usd > per_payment_cap OR get_rolling_24h_payout_usd(guild_id, provider) + amount_usd > daily_cap \u2192 create the row with status='manual_hold' + last_error='cap exceeded' + admin DM. Add db_handler helper get_rolling_24h_payout_usd that sums amount_usd across pending_confirmation/queued/processing/submitted/confirmed within 24h. If serializable transaction is impractical, document residual burst window.\n\n7. **P1: Admin success DM** (payment_cog.py:267-333). Add _dm_admin_payment_success sibling with distinct prefix ('\u2705 **Payment Completed**'), called from _handle_terminal_payment when status=='confirmed' AND not is_test AND provider in admin-payout set AND amount_usd >= ADMIN_SUCCESS_DM_THRESHOLD_USD env (default 100). Reuse ADMIN_USER_ID plumbing. Do NOT touch _dm_admin_payment_failure.\n\n8. **P2: Log audit**. Grep src/ for os.environ/os.getenv sites near key access, exc_info=True near SolanaClient.from_bytes. Document findings in plan memo. Add a scrubbing filter in log_handler.py ONLY if a real leak path is found.\n\n9. **P2: Git history secret audit**. Run `git log -p -S 'PRIVATE_KEY' -- .`, `git log -p -- '**/*.env*'`, gitleaks if installed. Record findings in plan output. Audit task, not a code fix (unless a leaked secret requires rotation \u2014 flag to user separately).\n\n10. **Regression tests**. Add all tests from test_expectations. Run pytest tests/ and verify test_admin_payments, test_scheduler, test_social_publish_service remain green. Defaults for new constructor kwargs must keep existing test construction sites passing unchanged.\n\n11. **Main wiring** (main.py:157-161). Pass the new kwargs from env vars with documented defaults.\n\nSubtle pitfalls:\n- In step 5, the idempotent early return at payment_service.py:54-61 must be reordered to run AFTER collision detection, OR collision detection must happen inside that branch too.\n- In step 6, rolling window MUST include in-flight statuses, not just confirmed, to prevent concurrent burst slip-through.\n- In step 4, read admin_payment_intents table schema + db_handler.create_admin_payment_intent to enumerate exact status values before hardcoding the 'active' set.\n- The initial P0 premise about LLM-sourced wallet addresses appears already fixed by a prior change \u2014 state this explicitly in the plan so review doesn't reject prep as incomplete; the work is verification + defensive assertion + test.\n- Do NOT double-check caps in execute_payment. Caps run only in request_payment. Scheduler path (claim_due_payment_requests \u2192 execute_payment) must not hit cap logic.\n- privileged_override=True must remain usable for test-payment auto-advance (admin_chat_cog.py:258-262). Verify the test payment row carries recipient_discord_id (it does via line 244) so it doesn't hit the new null-reject branch anyway."
+}

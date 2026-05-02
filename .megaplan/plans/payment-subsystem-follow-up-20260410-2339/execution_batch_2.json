@@ -1,0 +1,70 @@
+{
+  "output": "Completed batch 2 tasks T2 and T5. `PaymentService.confirm_payment` now authorizes through a single actor-based entrypoint, and `db_handler` now appends tx-signature audit history on submit, confirm, and requeue. Checkpoint written to `.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_2.json`. Verification: targeted actor-authorization and tx-history smoke checks passed; full `pytest --tb=no -q --no-header` is not green yet (`74 passed, 5 failed`), and all 5 failures are the expected legacy `confirm_payment(..., confirmed_by=..., confirmed_by_user_id=...)` call sites still present in `tests/test_social_publish_service.py`, which are scheduled for later migration batches.",
+  "files_changed": [
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_2.json"
+  ],
+  "commands_run": [
+    "python -m py_compile src/features/payments/payment_service.py src/common/db_handler.py",
+    "python - <<'PY'  # PaymentService actor authorization smoke checks",
+    "python - <<'PY'  # DatabaseHandler tx_signature_history smoke checks",
+    "pytest --tb=no -q --no-header",
+    "python -m pytest tests/test_social_publish_service.py -x"
+  ],
+  "deviations": [
+    "`DatabaseHandler._append_tx_signature_history` uses a fetch-append-update write through the existing Supabase REST client instead of a raw SQL `tx_signature_history = tx_signature_history || ...` expression because the repository's `execute_raw_sql` path explicitly rejects `UPDATE` statements. The helper still preserves the required entry shape and keeps audit persistence behaviorally non-blocking.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/payment-subsystem-follow-up-20260410-2339/execution_batch_2.json",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: .megaplan/plans/final-polish-and-gremlin-20260411-0020",
+    "Advisory quality: src/features/payments/payment_service.py adds unused imports: DatabaseHandler.",
+    "Advisory quality: code changes lacked test updates: src/common/db_handler.py, src/features/payments/payment_service.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/discord_utils.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/producer_flows.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql/payments.sql, src/common/db_handler.py, src/common/discord_utils.py, src/features/payments/payment_service.py, src/features/payments/producer_flows.py, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment."
+  ],
+  "task_updates": [
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Rewrote `PaymentService.confirm_payment` to `confirm_payment(payment_id, *, actor, guild_id=None)` and added `_authorize_actor` to enforce producer-flow membership, recipient null-fail-closed checks, admin-DM `ADMIN_USER_ID` equality, and unknown-producer fail-closed warnings. Verified with a direct runtime smoke check covering recipient mismatch, recipient success, auto confirmation for a test payment, admin-DM identity gating via a temporary in-process flow, null-recipient rejection, and unknown-producer warning logging. Full-suite verification is red only on legacy tests that still call the removed kwargs in `tests/test_social_publish_service.py`.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/payments/payment_service.py src/common/db_handler.py",
+        "python - <<'PY'  # PaymentService actor authorization smoke checks",
+        "pytest --tb=no -q --no-header",
+        "python -m pytest tests/test_social_publish_service.py -x"
+      ]
+    },
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Added `_append_tx_signature_history` and wired `mark_payment_submitted`, `mark_payment_confirmed`, and `requeue_payment` to append consistent `{signature, status, timestamp, reason, send_phase}` entries while preserving the original transition result if audit persistence fails. Verified with a direct `DatabaseHandler` smoke check using a minimal fake Supabase table: submit appends `reason='submit'`, confirm appends `reason='confirm'`, and requeue appends the prior signature with `reason='requeue'` before `tx_signature` is cleared.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/payments/payment_service.py src/common/db_handler.py",
+        "python - <<'PY'  # DatabaseHandler tx_signature_history smoke checks",
+        "pytest --tb=no -q --no-header"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "Confirmed `_authorize_actor` preserves null-fail-closed behavior for recipient actors, requires `ADMIN_USER_ID` equality for `ADMIN_DM`, warns and fails closed on unknown producers, and leaves the `request_payment` cap/collision logic untouched."
+    },
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Confirmed submit, confirm, and requeue append consistent history-entry shapes; requeue captures the prior signature with `reason='requeue'` before the `tx_signature` pointer is blanked."
+    }
+  ]
+}

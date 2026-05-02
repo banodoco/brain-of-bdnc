@@ -1,0 +1,40 @@
+{
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Sharing pipeline: direct mode's scheduled media path is not viable if it only downloads external URLs to temp files and enqueues the existing request payload.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed three significant flags: (1) FLAG-001 \u2014 clarified that scheduled direct posts match existing message-based behavior (temp files left for executor, not cleaned up), and that media_hints preserves original URLs for future re-download support; (2) FLAG-002 \u2014 added `user_details: {'direct_post': True}` to source_context metadata to satisfy XProvider's guard, since _build_tweet_caption uses provided tweet_text as-is when base_description is set; (3) FLAG-003 \u2014 changed direct mode entry condition from \"has media_urls\" to \"no message_link and no message_id\", which naturally supports text-only posts, direct retweets (action=retweet + target_post only), and media posts alike.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Social publishing metadata: the proposed direct request shape drops `user_details`, but the X provider currently refuses to publish without it.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed three significant flags: (1) FLAG-001 \u2014 clarified that scheduled direct posts match existing message-based behavior (temp files left for executor, not cleaned up), and that media_hints preserves original URLs for future re-download support; (2) FLAG-002 \u2014 added `user_details: {'direct_post': True}` to source_context metadata to satisfy XProvider's guard, since _build_tweet_caption uses provided tweet_text as-is when base_description is set; (3) FLAG-003 \u2014 changed direct mode entry condition from \"has media_urls\" to \"no message_link and no message_id\", which naturally supports text-only posts, direct retweets (action=retweet + target_post only), and media posts alike.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Admin chat social sharing: the plan narrows direct mode to `media_urls`-driven posts/replies and explicitly errors on retweets, which does not match the requested no-Discord direct mode support for `action` including `retweet`.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed three significant flags: (1) FLAG-001 \u2014 clarified that scheduled direct posts match existing message-based behavior (temp files left for executor, not cleaned up), and that media_hints preserves original URLs for future re-download support; (2) FLAG-002 \u2014 added `user_details: {'direct_post': True}` to source_context metadata to satisfy XProvider's guard, since _build_tweet_caption uses provided tweet_text as-is when base_description is set; (3) FLAG-003 \u2014 changed direct mode entry condition from \"has media_urls\" to \"no message_link and no message_id\", which naturally supports text-only posts, direct retweets (action=retweet + target_post only), and media posts alike.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    }
+  ]
+}

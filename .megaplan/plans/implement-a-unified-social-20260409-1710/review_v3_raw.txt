@@ -1,0 +1,1375 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/peteromalley/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019d73bf-5d6f-7021-90f3-021d70f3c8bc
+--------
+user
+You are already running inside the megaplan harness for this step. Do the requested planning/review/execution work directly. Do NOT invoke the `megaplan` CLI, do NOT read or activate the `megaplan` skill, do NOT start nested megaplan plans, and do NOT recurse into another planning harness. Treat mentions of megaplan in the repository or environment as implementation context only.
+
+Review the implementation against the success criteria.
+
+        Project directory:
+        /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+
+        Idea:
+Implement a unified social publishing system that preserves current immediate Twitter/X posting, adds scheduled queueing for tweets/replies/retweets, tracks success and failure, and is extensible to multiple outbound channels/platforms with per-channel routing and configuration.
+
+        Approved plan:
+        # Implementation Plan: Unified Social Publishing Queue
+
+## Overview
+The open flags do not indicate that the plan is aimed at the wrong subsystem or the wrong root cause. The repository evidence still points to the sharing stack as the correct integration point: outbound publishing is split across admin chat, summary and reaction flows, deletion still assumes legacy `shared_posts`, and `main.py` loads `SharingCog` through direct instantiation rather than the module-level `setup()` helper. The remaining gaps are narrower and concrete: the queue worker must be wired to the runtime `SharingCog` lifecycle that actually runs in `main.py`, and first-share notification and delete flows must carry a canonical `social_publications` identifier so one Discord message can safely map to multiple `post|reply|retweet` records.
+
+This revision keeps the original goal intact: preserve immediate X posting, add scheduled queueing for `post|reply|retweet`, track durable success and failure, and keep the integration provider-based for future multi-platform work. Scope stays narrow to what the feature requires now: one live provider, canonical publication records, route resolution, scheduler wiring on the real load path, and a delete flow that targets a single publication record instead of guessing from legacy tweet identity.
+
+## Phase 1: Foundation — Canonical Records, Claiming, and Request Shapes
+
+### Step 1: Add canonical publication storage and atomic claim SQL (`sql/social_publications.sql`, `src/common/db_handler.py`)
+**Scope:** Large
+1. Check in a SQL artifact that creates `social_publications` as the canonical outbound table and `social_channel_routes` as the route table, instead of extending `shared_posts` for queue state.
+2. Store enough canonical state in `social_publications` to cover current and planned behavior: publication id, guild/channel/message/user context, source kind, platform, action, route key, request payload, target post ref, scheduled time, status, attempt count, retry metadata, last error, published provider ref and url, delete support, and lifecycle timestamps.
+3. Define a DB-atomic claim function in the same SQL artifact and call it via Supabase RPC from `DatabaseHandler`; implement claim semantics in SQL with row locking so due jobs cannot be double-claimed by overlapping workers or after restarts.
+4. Extend `DatabaseHandler` with queue-facing helpers such as `create_social_publication`, `claim_due_social_publications`, `mark_social_publication_processing`, `mark_social_publication_succeeded`, `mark_social_publication_failed`, `mark_social_publication_cancelled`, `get_social_publication_by_id`, `get_social_publications_for_message`, and `list_social_publications`.
+5. Narrow `shared_posts` compatibility explicitly: do not treat it as canonical and do not write one legacy row for every `post|reply|retweet` outcome. Keep it only for legacy consumers that still need a single tweet-like record, and drive duplicate and delete decisions from `social_publications` instead.
+
+### Step 2: Define a source-aware normalized publish and delete contract (`src/features/sharing/`)
+**Scope:** Medium
+1. Introduce typed request and result objects such as `SocialPublishRequest`, `SocialPublishResult`, `PublicationSourceContext`, and a small delete-target shape under `src/features/sharing/`.
+2. Make the normalized publish request carry both execution data and caller metadata: message, channel, guild, user, platform, action, scheduled time, target post id or url, route override, text and media hints, and `source_kind` such as `admin_chat`, `reaction_bridge`, `summary`, or `reaction_auto`.
+3. Add explicit per-request policy fields so caller-specific behavior survives the rewrite without leaking into provider code: `duplicate_policy`, `text_only`, `announce_policy`, `first_share_notification_policy`, `legacy_shared_post_policy`, and optional moderation or consent metadata.
+4. Make the publish result return the canonical `publication_id` alongside provider-facing values such as `tweet_id` and `tweet_url`, so downstream notification and deletion flows can target one publication record even when one Discord message has multiple publications.
+5. Document first-release scope in the contract: X is the only live provider in this change, but the service boundary, DB shape, and delete identity remain platform-neutral.
+
+## Phase 2: Core Integration — Unified Service and X Provider
+
+### Step 3: Introduce `SocialPublishService` and make X the first provider (`src/features/sharing/social_publish_service.py`, `src/features/sharing/subfeatures/social_poster.py`, `src/features/sharing/sharer.py`)
+**Scope:** Large
+1. Add a `SocialPublishService` with two explicit entrypoints: `publish_now(request)` for immediate execution and `enqueue(request)` for scheduled work.
+2. Wrap the existing X implementation behind a provider interface with operations like `publish(request)`, `delete(publication)`, and `normalize_target_ref(...)`, instead of letting callers invoke `post_tweet()` or `delete_tweet()` directly.
+3. Expand the X provider to support `post`, `reply`, and `retweet` publication actions. Keep delete support for authored `post` and `reply` publications, and explicitly mark `retweet` publications as not delete-supported so the system does not send them through the standard tweet-delete path by mistake.
+4. Move duplicate detection out of `Sharer._successfully_shared` and into canonical DB lookups that are both action-aware and caller-aware. Preserve current intent: primary non-reply posts can dedupe where existing callers rely on it, replies do not, and the consent bridge does not inherit admin duplicate suppression accidentally.
+5. Route completion through one service-level success path that persists canonical status, performs any narrow `shared_posts` compatibility write, and emits a result payload that includes `publication_id`, provider refs, delete support, and the data needed for announcements or first-share DMs.
+6. Keep media download, title extraction, and caption generation in `Sharer`, but refactor `Sharer` into request-building and orchestration code that hands a normalized request to the service instead of calling provider code directly.
+
+### Step 4: Rewire current callers without collapsing their distinct behavior (`src/features/admin_chat/tools.py`, `src/features/reacting/subfeatures/tweet_sharer_bridge.py`, `src/features/sharing/sharer.py`)
+**Scope:** Large
+1. Refactor `execute_share_to_social()` in `src/features/admin_chat/tools.py` to build a `SocialPublishRequest` and call the service. Preserve the current reply behavior by keeping `text_only=True` as the default when `reply_to_tweet` is supplied unless the caller explicitly overrides it.
+2. Expand the admin tool contract from immediate Twitter-only posting to the minimal operator surface this feature needs: `schedule_for`, `action`, `target_post`, and optional route or platform override, while still returning concrete `tweet_url` and `tweet_id` for unscheduled X publishes.
+3. Keep `tweet_sharer_bridge.py` responsible for moderation, consent persistence, reactor DMs, and admin alerts. Replace only the final publish call with `publish_now()` using `source_kind='reaction_bridge'` and bridge-specific policy fields so those side effects remain intact.
+4. Rewire summary-triggered sharing and any other `finalize_sharing()` callers onto the same service path. Do not force summary or reaction flows through the admin-chat parameter surface; each caller should build the same normalized execution object from its own context.
+5. Move first-share notification triggering onto the unified completion path and pass the canonical `publication_id` into that notification call, rather than reconstructing delete identity later from only `discord_message_id` and `tweet_id`.
+
+## Phase 3: Scheduling, Deletion, and Operator Visibility
+
+### Step 5: Add routing resolution and scheduled worker lifecycle on the real load path (`src/common/server_config.py`, `src/features/sharing/sharing_cog.py`, `main.py`)
+**Scope:** Medium
+1. Add a route resolution helper that layers on top of `ServerConfig.is_feature_enabled()`: require `sharing_enabled`, then resolve exact channel route, parent channel route, then guild default route.
+2. Allow explicit route or platform override only where the admin tool provides one; ordinary reaction and summary flows should use resolved routing automatically.
+3. Implement the scheduled worker in `SharingCog` using `discord.ext.tasks.loop`, with readiness gating in `before_loop` and lifecycle management in `cog_load` and `cog_unload`.
+4. Make the plan explicit about the active runtime path: because `main.py` instantiates `SharingCog(bot, bot.db_handler)` directly and then calls `await bot.add_cog(...)`, worker startup must hang off `SharingCog` lifecycle hooks or equivalent constructor-owned state that runs on that path. Do not rely only on the module-level `setup()` helper for startup behavior.
+5. Keep the module-level `setup()` helper behavior aligned with the direct-instantiation path only as compatibility, so extension loading and direct `main.py` loading do not diverge.
+6. Make the worker claim due jobs via the new RPC-backed atomic helper, execute them through `SocialPublishService`, apply bounded retries for transient provider failures, and persist durable terminal states with publication id, platform, action, and provider error in logs.
+7. Normalize scheduled times to UTC before persistence and keep natural-language time parsing out of scope unless the repo already has a parser worth reusing.
+
+### Step 6: Unify deletion, notification identity, and admin observability (`src/features/sharing/subfeatures/notify_user.py`, `src/features/admin_chat/tools.py`, `src/features/admin_chat/agent.py`)
+**Scope:** Medium
+1. Replace direct `social_poster.delete_tweet()` usage in `notify_user.py` with service or provider deletion that starts from the canonical `social_publications` record loaded by `publication_id`.
+2. Update `send_post_share_notification()` and `PostShareNotificationView` to accept and store the canonical `publication_id`; keep `tweet_id` and `tweet_url` only for display and operator context.
+3. Make the delete button resolve one canonical publication record, validate that it belongs to the expected Discord user and is still within the delete window, then branch on delete support. If the publication is a `retweet` or another unsupported action, return a clear unsupported result instead of calling the normal tweet-delete API blindly.
+4. After successful deletion, update canonical publication state first and only then apply any narrow `shared_posts` compatibility update needed by remaining legacy consumers.
+5. Extend the admin and operator read surface so staff can inspect queued, processing, failed, cancelled, and succeeded publication records and route configuration without relying on `shared_posts` alone.
+6. Update tool descriptions and prompt text that still describe a Twitter-only immediate path so operators can both schedule work and inspect failure state.
+
+## Phase 4: Verification
+
+### Step 7: Add focused tests and smoke checks (`tests/`)
+**Scope:** Medium
+1. Add DB and helper tests for canonical publication creation, action-aware duplicate lookup, narrowed `shared_posts` compatibility, route fallback, atomic claim behavior, and `publication_id` lookup for delete flows.
+2. Add service tests for `publish_now()`, `enqueue()`, success and failure transitions, retry classification, and delete support branching between authored tweets and retweets.
+3. Add caller-path tests proving admin chat, summary-triggered sharing, and reaction-consent publishing all reach the same service entrypoint while preserving their existing caller-specific defaults and side effects. Include an explicit test for admin replies defaulting to `text_only=True`.
+4. Add lifecycle coverage for the actual scheduler startup path: verify that the `SharingCog` worker starts and stops through `cog_load` and `cog_unload` when the cog is added the same way `main.py` adds it, rather than only through the extension `setup()` helper.
+5. Add notification and delete-flow tests proving the DM view carries `publication_id`, deletes the intended canonical publication, rejects unsupported `retweet` deletion, and does not confuse multiple publications for the same Discord message.
+6. Finish with manual X smoke tests for immediate post, scheduled post, scheduled reply, scheduled retweet, failed publish visibility, and the current first-share delete path on a delete-supported primary X publication.
+
+## Execution Order
+1. Land the SQL artifact and `DatabaseHandler` helpers first, including the RPC claim primitive and the narrowed `shared_posts` compatibility rules.
+2. Add the normalized request and result types next so `publication_id` exists before service and notification rewiring begins.
+3. Introduce `SocialPublishService` and the X provider boundary before rewiring callers.
+4. Rewire admin chat, summary-triggered sharing, reaction-consent publishing, and first-share notification payloads onto the unified service path.
+5. Add route resolution and the scheduled worker on `SharingCog` lifecycle hooks used by the direct `main.py` load path.
+6. Finish by moving delete and admin observability code onto canonical publication records, then run targeted tests and smoke checks.
+
+## Validation Order
+1. Start with unit tests for request normalization, duplicate policy, route fallback, narrowed compatibility writes, atomic claim semantics, and `publication_id`-based delete lookup.
+2. Test the immediate admin-chat path with the X provider mocked, including reply `text_only` defaults and concrete `tweet_url` and `tweet_id` responses.
+3. Test summary-triggered and reaction-consent flows to confirm they preserve moderation, consent, DM, and announcement behavior while using the unified service.
+4. Test scheduler execution, retries, terminal failure recording, and worker startup and shutdown through the real `SharingCog` add-cog lifecycle used in `main.py`.
+5. End with manual X smoke tests for immediate post, scheduled post, scheduled reply, scheduled retweet, failed publish visibility, and delete compatibility for a delete-supported X post.
+
+
+        Execution tracking state (`finalize.json`):
+        {
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Create SQL artifact and DatabaseHandler helpers for canonical publication storage.\n\n**Files to create/modify:**\n- Create `sql/social_publications.sql` \u2014 DDL for `social_publications` table (publication_id UUID PK, guild_id, channel_id, message_id, user_id, source_kind, platform, action [post|reply|retweet], route_key, request_payload JSONB, target_post_ref, scheduled_at timestamptz, status [queued|processing|succeeded|failed|cancelled], attempt_count, retry_after timestamptz, last_error text, provider_ref, provider_url, delete_supported bool, created_at, updated_at, completed_at, deleted_at) and `social_channel_routes` table (id, guild_id, channel_id, platform, route_config JSONB, enabled bool, timestamps). Include the `claim_due_social_publications` Postgres function that atomically selects and updates due rows (status='queued', scheduled_at <= now()) to status='processing' using `FOR UPDATE SKIP LOCKED`, returning claimed rows.\n- Modify `src/common/db_handler.py` \u2014 Add methods using **fluent Supabase client** (NOT raw SQL) for all CRUD: `create_social_publication()`, `get_social_publication_by_id()`, `get_social_publications_for_message()`, `list_social_publications()`, `mark_social_publication_processing()`, `mark_social_publication_succeeded()`, `mark_social_publication_failed()`, `mark_social_publication_cancelled()`. Add one RPC-only method: `claim_due_social_publications()` using `self.supabase.rpc('claim_due_social_publications', {...}).execute()`. Do NOT use raw SQL via execute_query for this subsystem.\n\n**Settled decisions:**\n- Fluent client for CRUD, RPC only for atomic claim (settled decision `db-access-pattern`)\n- `shared_posts` stays for legacy consumers; do not write one legacy row per post|reply|retweet outcome \u2014 only write a legacy row for primary non-reply posts where existing callers depend on it\n- The SQL file is a checked-in artifact; deploying it to Supabase is an ops step (see watch items)\n\n**DB method signatures should mirror existing patterns** \u2014 see `record_shared_post()` at db_handler.py:883 for style reference (guild_id gating via `_gate_check`, try/except with logging, return bool or Optional[Dict]).",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Created `sql/social_publications.sql` with `social_publications`, `social_channel_routes`, updated-at triggers, and `claim_due_social_publications()` using `FOR UPDATE SKIP LOCKED`. Added `DatabaseHandler` fluent Supabase helpers for create/get/list/status transitions plus a single RPC-backed `claim_due_social_publications()` helper; verified Python syntax with `python -m py_compile src/common/db_handler.py` and checked the new subsystem paths do not use raw SQL CRUD.",
+      "files_changed": [
+        "sql/social_publications.sql",
+        "src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/common/db_handler.py",
+        "rg -n \"social_publications|claim_due_social_publications|FOR UPDATE SKIP LOCKED|for update skip locked|execute_query\\(\" sql/social_publications.sql src/common/db_handler.py",
+        "git diff -- sql/social_publications.sql src/common/db_handler.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T2",
+      "description": "Define typed request/result contracts and source context under `src/features/sharing/`.\n\n**Files to create:**\n- Create `src/features/sharing/models.py` \u2014 Define dataclasses or typed dicts for:\n  - `SocialPublishRequest`: message_id, channel_id, guild_id, user_id, platform, action (post|reply|retweet), scheduled_at, target_post_ref, route_override, text, media_hints, source_kind (admin_chat|reaction_bridge|summary|reaction_auto), duplicate_policy, text_only, announce_policy, first_share_notification_policy, legacy_shared_post_policy, and optional moderation/consent metadata\n  - `SocialPublishResult`: publication_id, success, tweet_id, tweet_url, provider_ref, provider_url, delete_supported, already_shared, error\n  - `PublicationSourceContext`: source_kind, caller-specific metadata\n\n**Design notes:**\n- The result MUST return `publication_id` alongside `tweet_id`/`tweet_url` so downstream notification and delete flows can target one record\n- Per-request policy fields let caller-specific behavior survive without leaking into provider code\n- Use Python dataclasses with sensible defaults; keep it simple\n- X is the only live provider but contracts must be platform-neutral",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "done",
+      "executor_notes": "Created `src/features/sharing/models.py` with dataclass contracts for `PublicationSourceContext`, `SocialPublishRequest`, and `SocialPublishResult`. Verified the module with `python -m py_compile src/features/sharing/models.py` and a full import/instantiation check confirming `publication_id` and the required request policy fields are available on the runtime in this repository.",
+      "files_changed": [
+        "src/features/sharing/models.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/models.py",
+        "python - <<'PY'\nfrom src.features.sharing.models import SocialPublishRequest, SocialPublishResult\n\nrequest = SocialPublishRequest(\n    message_id=1,\n    channel_id=2,\n    guild_id=3,\n    user_id=4,\n    platform='x',\n    source_kind='summary',\n)\nresult = SocialPublishResult(publication_id='pub-1', success=True)\nassert request.source_context is not None\nassert request.source_context.source_kind == 'summary'\nassert hasattr(result, 'publication_id')\nassert hasattr(request, 'duplicate_policy')\nassert hasattr(request, 'text_only')\nassert hasattr(request, 'announce_policy')\nassert hasattr(request, 'first_share_notification_policy')\nassert hasattr(request, 'legacy_shared_post_policy')\nprint('ok')\nPY",
+        "git status --short -- src/features/sharing/models.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T3",
+      "description": "Introduce SocialPublishService with publish_now/enqueue entrypoints and wrap X behind a provider interface.\n\n**Files to create/modify:**\n- Create `src/features/sharing/social_publish_service.py` \u2014 Central service with:\n  - `publish_now(request: SocialPublishRequest) -> SocialPublishResult`: Immediate execution path. Creates canonical publication record (status='processing'), delegates to provider, updates to succeeded/failed, performs legacy shared_posts compatibility write for primary non-reply posts, returns result with publication_id.\n  - `enqueue(request: SocialPublishRequest) -> SocialPublishResult`: Creates canonical record with status='queued' and scheduled_at, returns result with publication_id (no provider call yet).\n  - `execute_publication(publication_id)`: Internal method used by scheduler to execute a claimed publication.\n  - `delete_publication(publication_id)`: Loads canonical record, validates delete_supported, delegates to provider.\n  - Success path: persist canonical status \u2192 optional legacy shared_posts write \u2192 return result with publication_id + provider refs + delete_supported + announcement data.\n\n- Create `src/features/sharing/providers/__init__.py` and `src/features/sharing/providers/x_provider.py` \u2014 Provider interface and X implementation:\n  - Interface: `publish(request)`, `delete(publication)`, `normalize_target_ref(...)`\n  - X provider wraps existing `social_poster.post_tweet()` and `social_poster.delete_tweet()` \n  - Supports actions: post, reply, retweet. Delete supported for post and reply only; retweet explicitly marked delete_supported=False.\n\n- Modify `src/features/sharing/sharer.py` \u2014 Refactor `Sharer` to be request-building and orchestration code:\n  - Keep media download, title extraction, caption generation in Sharer\n  - `finalize_sharing()` builds a `SocialPublishRequest` and hands it to `SocialPublishService.publish_now()` instead of calling `post_tweet()` directly\n  - Move duplicate detection from in-memory `_successfully_shared` set to canonical DB lookups that are action-aware and caller-aware (primary non-reply posts dedupe, replies don't, reaction bridge doesn't inherit admin duplicate suppression)\n  - `send_tweet()` similarly routes through the service\n\n**Critical behavioral preservation:**\n- Admin replies default to text_only=True (callers-2 flag)\n- Reaction bridge does NOT inherit duplicate suppression (callers-3 flag)\n- First-share notification now receives publication_id from result",
+      "depends_on": [
+        "T2"
+      ],
+      "status": "done",
+      "executor_notes": "Added `SocialPublishService`, `SocialPublishProvider`, and `XProvider`, then refactored `Sharer.send_tweet()` and `Sharer.finalize_sharing()` to publish through the new service without changing existing caller return contracts. Verified syntax with `python -m py_compile`, verified service behavior with a full inline fake-provider/fake-db run of `SocialPublishService.publish_now()`, and confirmed canonical DB-backed duplicate lookup plus retweet delete-guarding through targeted source checks.",
+      "files_changed": [
+        "src/features/sharing/social_publish_service.py",
+        "src/features/sharing/providers/__init__.py",
+        "src/features/sharing/providers/x_provider.py",
+        "src/features/sharing/sharer.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/social_publish_service.py src/features/sharing/providers/__init__.py src/features/sharing/providers/x_provider.py src/features/sharing/sharer.py",
+        "python - <<'PY'\nimport asyncio\nfrom src.features.sharing.models import PublicationSourceContext, SocialPublishRequest\nfrom src.features.sharing.social_publish_service import SocialPublishService\n\nclass FakeProvider:\n    async def publish(self, request):\n        if request.action == 'retweet':\n            return {\n                'provider_ref': request.target_post_ref,\n                'provider_url': 'https://twitter.com/example/status/' + str(request.target_post_ref),\n                'tweet_id': request.target_post_ref,\n                'tweet_url': 'https://twitter.com/example/status/' + str(request.target_post_ref),\n                'delete_supported': False,\n            }\n        return {\n            'provider_ref': 'tweet-123',\n            'provider_url': 'https://twitter.com/example/status/tweet-123',\n            'tweet_id': 'tweet-123',\n            'tweet_url': 'https://twitter.com/example/status/tweet-123',\n            'delete_supported': True,\n        }\n    async def delete(self, publication):\n        return True\n    def normalize_target_ref(self, target_ref):\n        return target_ref\n\nclass FakeDB:\n    def __init__(self):\n        self.rows = {}\n        self.shared_posts = []\n        self.supabase = None\n    def create_social_publication(self, data, guild_id=None):\n        publication_id = f\"pub-{len(self.rows) + 1}\"\n        row = dict(data)\n        row['publication_id'] = publication_id\n        self.rows[publication_id] = row\n        return row\n    def mark_social_publication_succeeded(self, publication_id, guild_id=None, provider_ref=None, provider_url=None, delete_supported=None):\n        self.rows[publication_id].update({'status': 'succeeded', 'provider_ref': provider_ref, 'provider_url': provider_url, 'delete_supported': delete_supported})\n        return True\n    def mark_social_publication_failed(self, publication_id, last_error, guild_id=None, retry_after=None):\n        self.rows[publication_id].update({'status': 'failed', 'last_error': last_error})\n        return True\n    def mark_social_publication_processing(self, publication_id, guild_id=None, attempt_count=None, retry_after=None):\n        self.rows[publication_id].update({'status': 'processing'})\n        return True\n    def mark_social_publication_cancelled(self, publication_id, guild_id=None, last_error=None):\n        self.rows[publication_id].update({'status': 'cancelled'})\n        return True\n    def get_social_publication_by_id(self, publication_id, guild_id=None):\n        return self.rows.get(publication_id)\n    def record_shared_post(self, **kwargs):\n        self.shared_posts.append(kwargs)\n        return True\n    def mark_shared_post_deleted(self, *args, **kwargs):\n        return True\n\nasync def main():\n    db = FakeDB()\n    service = SocialPublishService(db, providers={'twitter': FakeProvider()}, logger_instance=None)\n    request = SocialPublishRequest(\n        message_id=1,\n        channel_id=2,\n        guild_id=3,\n        user_id=4,\n        platform='twitter',\n        text='hello',\n        source_kind='admin_chat',\n        source_context=PublicationSourceContext(source_kind='admin_chat', metadata={'user_details': {'username': 'u'}}),\n    )\n    result = await service.publish_now(request)\n    assert result.success and result.publication_id and result.delete_supported is True\n    assert len(db.shared_posts) == 1\n    retweet = SocialPublishRequest(\n        message_id=5,\n        channel_id=6,\n        guild_id=3,\n        user_id=4,\n        platform='twitter',\n        action='retweet',\n        target_post_ref='999',\n        source_kind='admin_chat',\n        source_context=PublicationSourceContext(source_kind='admin_chat', metadata={'user_details': {'username': 'u'}}),\n    )\n    retweet_result = await service.publish_now(retweet)\n    assert retweet_result.success and retweet_result.delete_supported is False\n    assert len(db.shared_posts) == 1\n    print('ok')\n\nasyncio.run(main())\nPY",
+        "rg -n \"delete_supported': False|delete_supported\\\": False|_find_existing_publication|get_social_publications_for_message|_successfully_shared|source_kind == 'reaction_bridge'|source_kind != 'reaction_bridge'\" src/features/sharing/providers/x_provider.py src/features/sharing/sharer.py",
+        "git status --short -- src/features/sharing/social_publish_service.py src/features/sharing/providers/__init__.py src/features/sharing/providers/x_provider.py src/features/sharing/sharer.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T4",
+      "description": "Rewire all callers to use the unified service while preserving their distinct behavior.\n\n**Files to modify:**\n\n1. `src/features/admin_chat/tools.py` (execute_share_to_social around line 1027):\n   - Build a SocialPublishRequest with source_kind='admin_chat'\n   - Add new parameters: schedule_for (ISO-8601 UTC), action (post|reply|retweet), target_post (tweet ID or URL), platform override\n   - For immediate publishes (no schedule_for): call service.publish_now(), return tweet_url/tweet_id as before\n   - For scheduled publishes: call service.enqueue(), return publication_id and scheduled status\n   - Preserve: text_only=True default when reply_to_tweet is supplied\n   - Update tool schema/description to reflect new parameters\n\n2. `src/features/reacting/subfeatures/tweet_sharer_bridge.py` (around line 97):\n   - Replace final publish call with service.publish_now() using source_kind='reaction_bridge'\n   - Keep ALL moderation, consent persistence, reactor DMs, and admin alerts in the bridge\n   - Only replace the actual tweet posting call, not the surrounding moderation/notification logic\n   - Set bridge-specific policy fields (no duplicate suppression, etc.)\n\n3. `src/features/sharing/sharer.py`:\n   - Summary-triggered sharing (initiate_sharing_process_from_summary around line 236) routes through same service path\n   - finalize_sharing() already rewired in T3, but verify all callers pass correct source_kind\n\n4. `src/features/sharing/subfeatures/notify_user.py` (send_post_share_notification around line 168):\n   - Update to accept and pass publication_id alongside tweet_id/tweet_url\n   - PostShareNotificationView constructor (line 24) accepts publication_id\n   - First-share notification triggered on unified completion path with publication_id\n\n**Do NOT force all callers through the admin-chat parameter surface** \u2014 each caller builds its own SocialPublishRequest from its own context.",
+      "depends_on": [
+        "T3"
+      ],
+      "status": "done",
+      "executor_notes": "Rewired the admin chat tool, reaction bridge, Sharer summary/reaction entrypoints, and first-share notification flow onto the unified social publish service while preserving caller-specific behavior. Verified with `python -m py_compile` on all modified modules and an end-to-end inline caller-path check covering admin reply default `text_only=True`, scheduled enqueue behavior, and `publication_id` propagation into notification interfaces.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py",
+        "src/features/reacting/subfeatures/tweet_sharer_bridge.py",
+        "src/features/sharing/sharer.py",
+        "src/features/sharing/subfeatures/notify_user.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py src/features/reacting/subfeatures/tweet_sharer_bridge.py src/features/sharing/sharer.py src/features/sharing/subfeatures/notify_user.py",
+        "python - <<'PY'\nimport asyncio\nimport inspect\nfrom types import SimpleNamespace\n\nfrom src.features.admin_chat.tools import execute_share_to_social\nfrom src.features.sharing.subfeatures.notify_user import PostShareNotificationView, send_post_share_notification\n\nclass FakeService:\n    def __init__(self):\n        self.last_mode = None\n        self.last_request = None\n    async def publish_now(self, request):\n        self.last_mode = 'publish_now'\n        self.last_request = request\n        return SimpleNamespace(success=True, tweet_url='https://x.com/test/status/1', tweet_id='1', publication_id='pub-1', error=None)\n    async def enqueue(self, request):\n        self.last_mode = 'enqueue'\n        self.last_request = request\n        return SimpleNamespace(success=True, publication_id='pub-queued', error=None)\n\nclass FakeDB:\n    def get_member(self, member_id):\n        return {'id': member_id, 'twitter_url': None}\n    def mark_member_first_shared(self, member_id, guild_id=None):\n        return False\n\nclass FakeSharer:\n    def __init__(self):\n        self.social_publish_service = FakeService()\n        self.db_handler = FakeDB()\n        self.cleaned = []\n        self.announced = []\n    def _find_existing_publication(self, **kwargs):\n        return None\n    async def _download_attachment(self, attachment):\n        return {'local_path': '/tmp/fake.png', 'media_type': 'image'}\n    def _cleanup_files(self, files):\n        self.cleaned.extend(files)\n    async def _announce_tweet_url(self, *args, **kwargs):\n        self.announced.append((args, kwargs))\n\nclass FakeAuthor:\n    def __init__(self):\n        self.id = 123\n        self.display_name = 'Poster'\n        self.name = 'Poster'\n\nclass FakeGuild:\n    def __init__(self):\n        self.id = 456\n    def get_thread(self, _):\n        return None\n\nclass FakeMessage:\n    def __init__(self):\n        self.id = 789\n        self.author = FakeAuthor()\n        self.guild = FakeGuild()\n        self.content = 'hello from discord'\n        self.jump_url = 'https://discord.com/channels/456/222/789'\n        self.attachments = [object()]\n        self.channel = SimpleNamespace(id=222)\n\nclass FakeChannel:\n    def __init__(self, message):\n        self.id = 222\n        self.guild = message.guild\n        self._message = message\n    async def fetch_message(self, message_id):\n        return self._message\n\nclass FakeBot:\n    def __init__(self, channel):\n        self._channel = channel\n    def get_channel(self, channel_id):\n        return self._channel\n    async def fetch_channel(self, channel_id):\n        return self._channel\n\nasync def main():\n    sharer = FakeSharer()\n    message = FakeMessage()\n    bot = FakeBot(FakeChannel(message))\n\n    reply_result = await execute_share_to_social(bot, sharer, {\n        'message_link': message.jump_url,\n        'action': 'reply',\n        'target_post': '123456',\n    })\n    assert reply_result['success'] is True\n    assert sharer.social_publish_service.last_mode == 'publish_now'\n    assert sharer.social_publish_service.last_request.action == 'reply'\n    assert sharer.social_publish_service.last_request.text_only is True\n    assert sharer.cleaned == []\n\n    scheduled_result = await execute_share_to_social(bot, sharer, {\n        'message_link': message.jump_url,\n        'action': 'post',\n        'schedule_for': '2026-04-10T12:00:00Z',\n    })\n    assert scheduled_result['success'] is True\n    assert scheduled_result['status'] == 'queued'\n    assert scheduled_result['publication_id'] == 'pub-queued'\n    assert sharer.social_publish_service.last_mode == 'enqueue'\n    assert sharer.social_publish_service.last_request.action == 'post'\n\n    view_sig = inspect.signature(PostShareNotificationView.__init__)\n    send_sig = inspect.signature(send_post_share_notification)\n    assert 'publication_id' in view_sig.parameters\n    assert 'publication_id' in send_sig.parameters\n    print('ok')\n\nasyncio.run(main())\nPY",
+        "git diff -- src/features/admin_chat/tools.py src/features/reacting/subfeatures/tweet_sharer_bridge.py src/features/sharing/sharer.py src/features/sharing/subfeatures/notify_user.py",
+        "git status --short -- src/features/admin_chat/tools.py src/features/reacting/subfeatures/tweet_sharer_bridge.py src/features/sharing/sharer.py src/features/sharing/subfeatures/notify_user.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T5",
+      "description": "Add route resolution and scheduled worker lifecycle on the real load path.\n\n**Files to create/modify:**\n\n1. `src/common/server_config.py` \u2014 Add route resolution helper:\n   - `resolve_social_route(guild_id, channel_id, platform)`: Requires sharing_enabled via is_feature_enabled(), then resolves: exact channel route \u2192 parent channel route \u2192 guild default route\n   - For v1, guild-default routing is the only active path (settled decision `v1-routing-scope`); channel-specific routes can be seeded via direct DB inserts\n   - Explicit route/platform override only where admin tool provides one\n\n2. `src/features/sharing/sharing_cog.py` \u2014 Add scheduled worker:\n   - Use `discord.ext.tasks.loop` pattern (consistent with repo conventions)\n   - Worker runs on interval (e.g., 30s), calls db_handler.claim_due_social_publications(), executes each through SocialPublishService.execute_publication()\n   - **Critical: main.py instantiates SharingCog directly** (`SharingCog(bot, bot.db_handler)` then `await bot.add_cog(...)`) \u2014 worker startup MUST use cog_load/cog_unload lifecycle hooks, NOT rely on module-level setup() alone\n   - before_loop: wait_until_ready() gating\n   - cog_load: start the loop\n   - cog_unload: cancel/stop the loop\n   - Keep setup() aligned with direct-instantiation path for compatibility\n   - Bounded retries for transient provider failures; persist terminal states with publication_id, platform, action, and provider error in logs\n   - Normalize scheduled times to UTC before persistence; no natural-language time parsing\n\n3. `main.py` \u2014 Wire SocialPublishService into SharingCog:\n   - SharingCog needs access to SocialPublishService (constructed with db_handler and X provider)\n   - Ensure the service instance is accessible to admin tools and sharer via bot or cog reference",
+      "depends_on": [
+        "T4"
+      ],
+      "status": "done",
+      "executor_notes": "Added `ServerConfig.resolve_social_route()` with exact-channel, parent-channel, and guild-default fallback behind the existing sharing feature gate. Added a scheduled publication worker to `SharingCog` using `discord.ext.tasks.loop` plus `cog_load`/`cog_unload` lifecycle hooks and wired a shared `SocialPublishService` into `main.py` so the cog worker and caller paths use the same service instance. Verified with `python -m py_compile` and a focused inline script that exercised route resolution behavior directly and checked the worker lifecycle/main wiring from source.",
+      "files_changed": [
+        "src/common/server_config.py",
+        "src/features/sharing/sharing_cog.py",
+        "main.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/common/server_config.py src/features/sharing/sharing_cog.py main.py",
+        "python - <<'PY'\nfrom pathlib import Path\n\nfrom src.common.server_config import ServerConfig\n\nclass FakeResult:\n    def __init__(self, data):\n        self.data = data\n\nclass FakeQuery:\n    def __init__(self, rows):\n        self.rows = list(rows)\n        self.filters = []\n        self.limit_value = None\n    def select(self, *_args, **_kwargs):\n        return self\n    def eq(self, key, value):\n        self.filters.append(lambda row, k=key, v=value: row.get(k) == v)\n        return self\n    def is_(self, key, value):\n        if value == 'null':\n            self.filters.append(lambda row, k=key: row.get(k) is None)\n        return self\n    def limit(self, value):\n        self.limit_value = value\n        return self\n    def execute(self):\n        data = self.rows\n        for fn in self.filters:\n            data = [row for row in data if fn(row)]\n        if self.limit_value is not None:\n            data = data[:self.limit_value]\n        return FakeResult(data)\n\nclass FakeSupabase:\n    def __init__(self):\n        self.tables = {\n            'server_config': [\n                {'guild_id': 1, 'enabled': True, 'write_enabled': True, 'default_sharing': True},\n            ],\n            'channel_effective_config': [\n                {'channel_id': 10, 'parent_id': None, 'sharing_enabled': True},\n                {'channel_id': 100, 'parent_id': 10, 'sharing_enabled': True},\n            ],\n            'discord_channels': [\n                {'channel_id': 101, 'parent_id': 10},\n            ],\n            'social_channel_routes': [\n                {'id': 'route-channel', 'guild_id': 1, 'channel_id': 100, 'platform': 'twitter', 'enabled': True, 'route_config': {'name': 'exact'}},\n                {'id': 'route-parent', 'guild_id': 1, 'channel_id': 10, 'platform': 'twitter', 'enabled': True, 'route_config': {'name': 'parent'}},\n                {'id': 'route-default', 'guild_id': 1, 'channel_id': None, 'platform': 'twitter', 'enabled': True, 'route_config': {'name': 'default'}},\n            ],\n        }\n    def table(self, name):\n        return FakeQuery(self.tables.get(name, []))\n\nserver_config = ServerConfig(FakeSupabase())\nassert server_config.resolve_social_route(1, 100, 'twitter')['id'] == 'route-channel'\nassert server_config.resolve_social_route(1, 101, 'x')['id'] == 'route-parent'\nassert server_config.resolve_social_route(1, 999, 'twitter')['id'] == 'route-default'\n\nsharing_cog_source = Path('src/features/sharing/sharing_cog.py').read_text()\nassert 'async def cog_load' in sharing_cog_source\nassert 'self.scheduled_publication_worker.start()' in sharing_cog_source\nassert 'def cog_unload' in sharing_cog_source\nassert 'self.scheduled_publication_worker.cancel()' in sharing_cog_source\nassert '@tasks.loop(seconds=30)' in sharing_cog_source\nassert '@scheduled_publication_worker.before_loop' in sharing_cog_source\nassert 'await self.bot.wait_until_ready()' in sharing_cog_source\nassert 'claim_due_social_publications' in sharing_cog_source\nassert 'execute_publication' in sharing_cog_source\n\nmain_source = Path('main.py').read_text()\nassert 'bot.social_publish_service = SocialPublishService(' in main_source\nassert 'social_publish_service=bot.social_publish_service' in main_source\nassert 'sharer_instance = sharing_cog_instance.sharer_instance' in main_source\nprint('ok')\nPY",
+        "git diff -- src/common/server_config.py src/features/sharing/sharing_cog.py main.py",
+        "rg -n \"resolve_social_route|social_channel_routes|scheduled_publication_worker|cog_load|cog_unload|claim_due_social_publications|execute_publication|bot\\.social_publish_service|SocialPublishService\\(\" src/common/server_config.py src/features/sharing/sharing_cog.py main.py",
+        "git status --short -- src/common/server_config.py src/features/sharing/sharing_cog.py main.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T6",
+      "description": "Unify deletion, notification identity, and admin observability.\n\n**Files to modify:**\n\n1. `src/features/sharing/subfeatures/notify_user.py`:\n   - Replace direct `social_poster.delete_tweet()` usage with service/provider deletion starting from canonical social_publications record loaded by publication_id\n   - PostShareNotificationView stores publication_id; keeps tweet_id/tweet_url for display only\n   - Delete button: load canonical record by publication_id \u2192 validate user ownership and delete window \u2192 check delete_supported \u2192 if retweet or unsupported action, return clear error message \u2192 else delete via provider \u2192 update canonical state first \u2192 then optional legacy shared_posts update\n   - On timeout (6 hours): disable button as before\n\n2. `src/features/admin_chat/tools.py`:\n   - **Add `social_publications` and `social_channel_routes` to QUERYABLE_TABLES** (around line 66 and line 1637) \u2014 settled decision `admin-query-whitelist`\n   - Add admin tools or expand existing tool to inspect publication records: queued, processing, failed, cancelled, succeeded states\n   - Update share_to_social tool description to reflect scheduling capability\n\n3. `src/features/admin_chat/agent.py`:\n   - **Update system prompt table list** (around line 38) to include social_publications and social_channel_routes\n   - Update tool descriptions that still describe Twitter-only immediate path\n   - Document that operators can schedule work and inspect failure state\n\n**This task addresses settled decisions:**\n- `admin-query-whitelist`: explicit file paths and line numbers for QUERYABLE_TABLES updates\n- Ensures admin agent can query new tables",
+      "depends_on": [
+        "T5"
+      ],
+      "status": "done",
+      "executor_notes": "Updated the first-share delete flow to resolve and delete canonical `social_publications` rows by `publication_id`, with explicit ownership checks, delete-window enforcement, and clear retweet/unsupported-action rejection. Added `social_publications` and `social_channel_routes` to the admin query whitelist/scope in `tools.py` and updated the admin agent system prompt/tool guidance so operators can inspect scheduled, failed, and completed social publication records. Verified with `python -m py_compile` and an inline check covering publication_id-based delete behavior plus admin whitelist/prompt visibility.",
+      "files_changed": [
+        "src/features/sharing/subfeatures/notify_user.py",
+        "src/features/admin_chat/tools.py",
+        "src/features/admin_chat/agent.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/subfeatures/notify_user.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py",
+        "python - <<'PY'\nimport asyncio\nfrom datetime import datetime, timezone\nfrom pathlib import Path\nfrom types import SimpleNamespace\n\nfrom src.features.sharing.subfeatures.notify_user import PostShareNotificationView\n\nclass FakeDB:\n    def __init__(self, publication):\n        self.publication = publication\n    def get_social_publication_by_id(self, publication_id, guild_id=None):\n        if publication_id == self.publication.get('publication_id'):\n            return dict(self.publication)\n        return None\n    def update_member_sharing_permission(self, *_args, **_kwargs):\n        return True\n\nclass FakeService:\n    def __init__(self, success=True):\n        self.success = success\n        self.calls = []\n    async def delete_publication(self, publication_id):\n        self.calls.append(publication_id)\n        return self.success\n\nclass FakeMessage:\n    def __init__(self):\n        self.edits = []\n        self.content = 'shared'\n    async def edit(self, **kwargs):\n        self.edits.append(kwargs)\n\nclass FakeResponse:\n    def __init__(self):\n        self.deferred = False\n        self.messages = []\n    async def defer(self, ephemeral=False):\n        self.deferred = ephemeral\n    async def send_message(self, content, ephemeral=False):\n        self.messages.append((content, ephemeral))\n\nclass FakeFollowup:\n    def __init__(self):\n        self.messages = []\n    async def send(self, content, ephemeral=False):\n        self.messages.append((content, ephemeral))\n\nclass FakeInteraction:\n    def __init__(self, user_id):\n        self.user = SimpleNamespace(id=user_id)\n        self.response = FakeResponse()\n        self.followup = FakeFollowup()\n        self.guild_id = 456\n\nasync def run_checks():\n    now = datetime.now(timezone.utc).isoformat()\n\n    retweet_view = PostShareNotificationView(\n        db_handler=FakeDB({\n            'publication_id': 'pub-retweet',\n            'user_id': 123,\n            'action': 'retweet',\n            'delete_supported': False,\n            'status': 'succeeded',\n            'completed_at': now,\n        }),\n        discord_message_id=1,\n        discord_user_id=123,\n        publication_id='pub-retweet',\n        tweet_id='tweet-retweet',\n        tweet_url='https://x.com/example/status/retweet',\n        bot=SimpleNamespace(social_publish_service=FakeService()),\n        guild_id=456,\n    )\n    retweet_button = next(item for item in retweet_view.children if getattr(item, 'custom_id', None) == 'delete_post')\n    retweet_interaction = FakeInteraction(123)\n    await retweet_button.callback(retweet_interaction)\n    assert retweet_interaction.followup.messages[-1][0] == \"Retweets can't be deleted through this button.\"\n    assert retweet_view.bot.social_publish_service.calls == []\n\n    delete_service = FakeService(success=True)\n    success_view = PostShareNotificationView(\n        db_handler=FakeDB({\n            'publication_id': 'pub-post',\n            'user_id': 123,\n            'action': 'post',\n            'delete_supported': True,\n            'status': 'succeeded',\n            'completed_at': now,\n        }),\n        discord_message_id=2,\n        discord_user_id=123,\n        publication_id='pub-post',\n        tweet_id='tweet-post',\n        tweet_url='https://x.com/example/status/post',\n        bot=SimpleNamespace(social_publish_service=delete_service),\n        guild_id=456,\n    )\n    success_view.message = FakeMessage()\n    success_button = next(item for item in success_view.children if getattr(item, 'custom_id', None) == 'delete_post')\n    success_interaction = FakeInteraction(123)\n    await success_button.callback(success_interaction)\n    assert delete_service.calls == ['pub-post']\n    assert success_interaction.followup.messages[-1][0] == 'Your post has been deleted from X.'\n    assert success_button.disabled is True\n    assert success_button.label == 'Post Deleted'\n\n    tools_source = Path('src/features/admin_chat/tools.py').read_text()\n    assert \"'social_publications'\" in tools_source\n    assert \"'social_channel_routes'\" in tools_source\n    assert 'QUERYABLE_TABLES' in tools_source\n    assert 'GUILD_SCOPED_TABLES' in tools_source\n\n    agent_source = Path('src/features/admin_chat/agent.py').read_text()\n    assert 'social_publications' in agent_source\n    assert 'social_channel_routes' in agent_source\n    assert 'scheduled posts/replies/retweets' in agent_source\n    print('ok')\n\nasyncio.run(run_checks())\nPY",
+        "git diff -- src/features/sharing/subfeatures/notify_user.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py",
+        "rg -n \"publication_id|delete_supported|Retweets can't be deleted|social_publications|social_channel_routes|scheduled posts/replies/retweets|GUILD_SCOPED_TABLES\" src/features/sharing/subfeatures/notify_user.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py",
+        "git status --short -- src/features/sharing/subfeatures/notify_user.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T7",
+      "description": "Add focused tests and run verification.\n\n**Test location:** Create `tests/` directory and test files. This repo has no existing test infrastructure (no pytest.ini, no tests/ dir except one script at scripts/test_social_picks.py), so:\n\n1. Create `tests/test_social_publications.py`:\n   - DB helper tests: canonical publication creation, action-aware duplicate lookup, narrowed shared_posts compatibility, route fallback, publication_id lookup for delete flows\n   - Mock Supabase client for unit tests\n\n2. Create `tests/test_social_publish_service.py`:\n   - Service tests: publish_now(), enqueue(), success/failure transitions, retry classification, delete support branching (post/reply deletable, retweet not)\n   - Mock X provider\n\n3. Create `tests/test_caller_paths.py`:\n   - Caller-path tests: admin chat, summary-triggered, reaction-consent all reach same service entrypoint\n   - Admin replies default text_only=True\n   - Reaction bridge preserves moderation/consent side effects\n\n4. Create `tests/test_scheduler.py`:\n   - Lifecycle: SharingCog worker starts/stops through cog_load/cog_unload\n   - Claim \u2192 execute \u2192 terminal state flow\n\n5. Create `tests/test_notification_delete.py`:\n   - DM view carries publication_id\n   - Deletes intended canonical publication\n   - Rejects unsupported retweet deletion\n   - Handles multiple publications for same Discord message\n\n6. Write and run a throwaway smoke-check script that verifies:\n   - SocialPublishRequest can be constructed with all required fields\n   - SocialPublishService.publish_now() and .enqueue() paths work with mocked provider\n   - Delete flow correctly branches on delete_supported\n   Then delete the script.\n\n7. Run all tests: `python -m pytest tests/ -v`\n\n**Manual smoke tests** (documented for operator, not automated):\n- Immediate post, scheduled post, scheduled reply, scheduled retweet\n- Failed publish visibility in admin query\n- First-share delete path on delete-supported primary X publication",
+      "depends_on": [
+        "T6"
+      ],
+      "status": "done",
+      "executor_notes": "Added focused tests covering canonical social publication CRUD and atomic-claim RPC flow, route fallback, service publish/enqueue/delete behavior, caller-specific defaults (`text_only` for admin replies and no dedupe for reaction bridge), scheduler lifecycle through `cog_load` plus claim/execute/retry flow, and publication_id-based delete with explicit retweet rejection and multiple-publication disambiguation. Verified with the required throwaway smoke script (created, ran successfully, then deleted) and a final full `python -m pytest tests/ -v` rerun passing 15/15 tests.",
+      "files_changed": [
+        "src/common/db_handler.py",
+        "tests/conftest.py",
+        "tests/test_social_publications.py",
+        "tests/test_social_publish_service.py",
+        "tests/test_caller_paths.py",
+        "tests/test_scheduler.py",
+        "tests/test_notification_delete.py"
+      ],
+      "commands_run": [
+        "python -m pytest tests/ -v",
+        "python -m py_compile src/common/db_handler.py",
+        "python -m pytest tests/ -v",
+        "python tests/_social_publish_smoke.py",
+        "python -m pytest tests/ -v"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    }
+  ],
+  "watch_items": [
+    "[DEBT] db-access-pattern: Use fluent Supabase client for all CRUD on social_publications. RPC ONLY for claim_due_social_publications. Do NOT introduce raw SQL via execute_query. Settled decision.",
+    "[DEBT] supabase-rpc-prerequisite: The claim_due_social_publications SQL function must be deployed to Supabase dashboard BEFORE the scheduler can run. This is a first-time RPC usage in the codebase. Check sql/social_publications.sql for the function definition and deploy it manually.",
+    "[DEBT] route-management: social_channel_routes table ships empty. V1 uses guild-default routing only. Channel-specific routes require manual DB inserts. No admin CRUD commands for routes in this release.",
+    "[BEHAVIORAL] admin-reply-text-only: execute_share_to_social must preserve text_only=True default when reply_to_tweet is supplied. Regression here means replies reattach parent media.",
+    "[BEHAVIORAL] reaction-bridge-no-duplicate-suppression: The reaction_bridge source_kind must NOT inherit admin-chat duplicate suppression. Duplicate policy must be caller-aware.",
+    "[BEHAVIORAL] first-share-notification: send_post_share_notification must receive publication_id from the service result. Delete button resolves one canonical record, not inferred from discord_message_id + tweet_id.",
+    "[BEHAVIORAL] retweet-delete-guard: Retweet publications must be marked delete_supported=False. Delete flow must return clear unsupported message instead of calling tweet-delete API.",
+    "[INTEGRATION] main.py-load-path: SharingCog is loaded via direct instantiation in main.py (SharingCog(bot, bot.db_handler) + add_cog), NOT via extension setup(). Worker lifecycle must use cog_load/cog_unload hooks that fire on this path.",
+    "[INTEGRATION] admin-query-whitelist: Add social_publications and social_channel_routes to QUERYABLE_TABLES in tools.py (~line 66, ~line 1637) and update agent.py system prompt table list (~line 38). Missing this makes new tables invisible to admin agent.",
+    "[SCOPE] shared_posts-compatibility: Do NOT write one legacy shared_posts row per post|reply|retweet outcome. Only write legacy row for primary non-reply posts where existing callers depend on it. Drive duplicate/delete decisions from social_publications.",
+    "[SCOPE] no-natural-language-time-parsing: Scheduled times are ISO-8601/UTC only. No natural-language parsing unless the repo already has a parser."
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Does the SQL artifact include both the social_publications table DDL and the claim_due_social_publications Postgres function with FOR UPDATE SKIP LOCKED? Are all DatabaseHandler methods using fluent client (not raw SQL) except the single RPC claim method?",
+      "executor_note": "Confirmed the SQL artifact includes both table DDLs and `claim_due_social_publications()` with `FOR UPDATE SKIP LOCKED`. Confirmed all new `DatabaseHandler` social publication CRUD/status helpers use fluent Supabase table operations, with RPC used only for `claim_due_social_publications()`.",
+      "verdict": ""
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Does SocialPublishResult include publication_id as a first-class field? Do the per-request policy fields (duplicate_policy, text_only, announce_policy, first_share_notification_policy, legacy_shared_post_policy) exist so caller-specific behavior doesn't leak into provider code?",
+      "executor_note": "Confirmed `SocialPublishResult` includes `publication_id` as a first-class field. Confirmed `SocialPublishRequest` includes `duplicate_policy`, `text_only`, `announce_policy`, `first_share_notification_policy`, and `legacy_shared_post_policy`, while `PublicationSourceContext` carries caller-specific source metadata.",
+      "verdict": ""
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Does the X provider explicitly set delete_supported=False for retweet actions? Does duplicate detection use canonical DB lookups (not in-memory _successfully_shared set) and is it both action-aware and caller-aware?",
+      "executor_note": "Confirmed `XProvider` explicitly returns `delete_supported=False` for retweet actions and rejects delete requests for retweet publications. Confirmed `Sharer` no longer uses the in-memory `_successfully_shared` set; duplicate suppression now goes through canonical `social_publications` lookups via `get_social_publications_for_message()`, and that suppression only applies to primary non-reply posts while explicitly excluding `reaction_bridge` publications.",
+      "verdict": ""
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Does the admin tool still default text_only=True for replies? Does the reaction bridge only replace the publish call while keeping ALL moderation, consent, DM, and admin alert logic intact? Does notify_user now accept and store publication_id?",
+      "executor_note": "Confirmed the admin tool still defaults `text_only=True` for replies unless explicitly overridden, the reaction bridge only swaps the final publish step while keeping moderation/consent/reactor-DM/admin-alert behavior in place, and `notify_user` now accepts and stores `publication_id` through the DM view and notification entrypoint.",
+      "verdict": ""
+    },
+    {
+      "id": "SC5",
+      "task_id": "T5",
+      "question": "Does the scheduled worker start/stop from cog_load/cog_unload (not just setup())? Does it use discord.ext.tasks.loop with wait_until_ready gating? Does main.py wire the SocialPublishService instance so it's accessible to both the cog worker and admin tools?",
+      "executor_note": "Confirmed the scheduled worker starts in `cog_load` and stops in `cog_unload`, uses `discord.ext.tasks.loop` with `wait_until_ready()` gating in `before_loop`, and `main.py` now constructs and attaches one shared `SocialPublishService` instance that is passed into `SharingCog` and exposed on `bot` for sharer/admin call paths.",
+      "verdict": ""
+    },
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "question": "Are social_publications and social_channel_routes added to QUERYABLE_TABLES at both locations in tools.py AND to the agent.py system prompt? Does the delete button load by publication_id and correctly reject retweet deletion with a clear message?",
+      "executor_note": "Confirmed `social_publications` and `social_channel_routes` are added to the admin query surfaces in `tools.py` and documented in the admin agent system prompt. Confirmed the delete button now loads by `publication_id`, routes deletion through the canonical service/provider path, and returns a clear unsupported message for retweet publications.",
+      "verdict": ""
+    },
+    {
+      "id": "SC7",
+      "task_id": "T7",
+      "question": "Do tests cover: (1) atomic claim semantics, (2) caller-specific defaults (admin text_only, reaction no-dedupe), (3) scheduler lifecycle via cog_load path, (4) publication_id-based delete with retweet rejection, (5) multiple publications per Discord message? Do all tests pass?",
+      "executor_note": "Confirmed the new tests cover (1) atomic claim semantics via the DB helper RPC path, (2) caller-specific defaults including admin reply `text_only=True` and reaction bridge no-dedupe behavior, (3) scheduler lifecycle through `cog_load` plus claim/execute/retry flow, (4) publication_id-based delete with clear retweet rejection, and (5) multiple publications for the same Discord message. Final full-suite verification passed with `python -m pytest tests/ -v` showing 15/15 passing.",
+      "verdict": ""
+    }
+  ],
+  "meta_commentary": "**Execution guidance:**\n\nThis is a large, multi-phase feature. The dependency chain is strictly linear (T1\u2192T2\u2192T3\u2192T4\u2192T5\u2192T6\u2192T7) because each layer builds on the previous. Do not skip ahead.\n\n**Key gotchas:**\n\n1. **RPC is new to this codebase.** The `claim_due_social_publications` Postgres function must be deployed to Supabase before the scheduler works. The SQL file is a checked-in artifact but deploying it is manual. Flag this to the operator after T1.\n\n2. **main.py loads SharingCog directly** \u2014 not via `bot.load_extension()`. This means `setup()` is NOT the active path. The worker loop MUST attach to `cog_load`/`cog_unload` lifecycle hooks. Verify by reading main.py lines ~137-143.\n\n3. **Three distinct caller paths must be preserved:** admin chat (text_only=True for replies, duplicate suppression), reaction bridge (moderation + consent + DMs, NO duplicate suppression), and summary-triggered (opt-out check). Each builds its own SocialPublishRequest \u2014 do NOT force them through a single parameter surface.\n\n4. **shared_posts compatibility is narrow:** Only write a legacy row for primary non-reply posts. Do NOT write one row per post|reply|retweet. The canonical source of truth is social_publications.\n\n5. **The admin query whitelist has TWO locations** in tools.py (~line 66 definition, ~line 1637 usage) plus the agent.py system prompt (~line 38). Missing any one makes the new tables invisible.\n\n6. **No existing test infrastructure.** You'll need to create the tests/ directory and likely add pytest to requirements. Keep tests focused \u2014 mock Supabase and Discord, test the service logic and caller wiring.\n\n7. **Route management is out of scope for v1.** Create the social_channel_routes table but don't build admin CRUD. Guild-default routing only.",
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Step 1: Add canonical publication storage and atomic claim SQL",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 2: Define source-aware normalized publish and delete contract",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 3: Introduce SocialPublishService and make X the first provider",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 4: Rewire current callers without collapsing their distinct behavior",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 5: Add routing resolution and scheduled worker lifecycle on the real load path",
+        "finalize_task_ids": [
+          "T5"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 6: Unify deletion, notification identity, and admin observability",
+        "finalize_task_ids": [
+          "T6"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 7: Add focused tests and smoke checks",
+        "finalize_task_ids": [
+          "T7"
+        ]
+      }
+    ],
+    "orphan_tasks": [],
+    "completeness_notes": "All 7 plan steps map 1:1 to tasks T1-T7. The linear dependency chain matches the plan's explicit execution order. Settled decisions (db-access-pattern, admin-query-whitelist, v1-routing-scope) are embedded in task descriptions and watch items. Gate warnings about RPC prerequisites and route management scope are captured in watch items. All 4 unresolved flags (correctness, all_locations, issue_hints, scope) are addressed via settled decisions embedded in task instructions.",
+    "coverage_complete": true
+  }
+}
+
+        Plan metadata:
+        {
+  "version": 3,
+  "timestamp": "2026-04-09T17:45:10Z",
+  "hash": "sha256:e1b71f5b167354791ef58436bf1760fdef00ab35e6b7f7a066dff9862719bc13",
+  "changes_summary": "No open flag points to the wrong subsystem or a wrong root-cause diagnosis. The plan still belongs in the sharing stack, but it now closes the two remaining design holes explicitly: the scheduler is tied to the active `SharingCog` lifecycle used by `main.py` instead of the dead-end `setup()` path, and first-share notification and delete flows now carry a canonical `publication_id` so deletion targets one `social_publications` record even when a Discord message has multiple publications.",
+  "flags_addressed": [
+    "all_locations-1",
+    "FLAG-005",
+    "correctness",
+    "all_locations"
+  ],
+  "questions": [
+    "For the first admin-facing scheduling release, is UTC or ISO-8601 input sufficient, or is there a hard requirement for natural-language time parsing in chat?",
+    "Should X `retweet` jobs be allowed to target any arbitrary status ID, or only IDs supplied by trusted operators or previously published records?",
+    "After retries are exhausted, should failed scheduled publications remain in a manual-retry state only, or should the worker apply any additional backoff policy automatically?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "An immediate `share_to_social` request without `schedule_for` still publishes to X and returns a concrete success payload with `tweet_url` and `tweet_id`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "A scheduled publication can be created for `post`, `reply`, and `retweet`, and each job ends in a durable terminal state such as `succeeded` or `failed` with timestamps, attempt counts, and error details.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Admin-triggered sharing, summary-triggered sharing, and reaction-consent publishing all execute through the same unified publish service while preserving their existing caller-specific moderation, consent, DM, and announcement behavior.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Per-channel routing resolves in the order channel override, parent channel, guild default, and only runs when the existing `sharing_enabled` gate allows it.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Canonical publication records, not `shared_posts`, drive duplicate and delete decisions so multi-action `post|reply|retweet` publishing for one Discord message does not corrupt state.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Due-job claiming is implemented as a DB-atomic primitive in the checked-in SQL artifact and prevents double execution across restarts or overlapping workers.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The scheduler reuses the repo's `discord.ext.tasks.loop` pattern and starts and stops from the active `SharingCog` lifecycle used by `main.py`, not only from the module `setup()` helper.",
+      "priority": "must"
+    },
+    {
+      "criterion": "First-share notification and delete flows carry a canonical `publication_id`, and delete actions resolve that specific publication record instead of inferring identity only from `discord_message_id` and `tweet_id`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The admin and operator surface can both create scheduled publications and inspect queued, processing, failed, cancelled, and succeeded publication records without relying only on `shared_posts`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Caller-specific defaults remain intact, including admin replies defaulting to `text_only=True` unless explicitly overridden and reaction-consent publishes not inheriting unintended duplicate suppression.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The scheduler logs publication id, platform, action, and final provider error for recovery and manual replay.",
+      "priority": "should"
+    },
+    {
+      "criterion": "The platform integration boundary is provider-based so adding a second outbound platform does not require rewriting admin, summary, or reaction caller code.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke tests on a real X account pass for immediate post, scheduled post, scheduled reply, scheduled retweet, failed publish visibility, and delete compatibility for a delete-supported X post.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "The first release still ships only one live outbound provider, X/Twitter, but the service boundary and DB shape must stay provider-neutral.",
+    "`social_publications` is the canonical source of truth for publish state, retries, duplicate checks, and deletion support; `shared_posts` remains only for legacy consumers that cannot be migrated in the same change.",
+    "Supabase RPC is available for a small, checked-in Postgres claim function even though the repo does not currently use RPC elsewhere.",
+    "Scheduled timestamps will be normalized to UTC before persistence, and the initial admin-facing input can stay ISO-8601-like rather than adding natural-language parsing.",
+    "`main.py` remains the active startup path for sharing, so worker lifecycle wiring should be implemented on `SharingCog` lifecycle hooks rather than relying on the module-level `setup()` helper alone.",
+    "The first-share DM and delete UX can change its internal payload shape to carry `publication_id` as long as the visible user flow remains the same except for clearer unsupported-delete handling."
+  ],
+  "delta_from_previous_percent": 32.29,
+  "structure_warnings": []
+}
+
+        Gate summary:
+        {
+  "passed": true,
+  "criteria_check": {
+    "count": 13,
+    "items": [
+      {
+        "criterion": "An immediate `share_to_social` request without `schedule_for` still publishes to X and returns a concrete success payload with `tweet_url` and `tweet_id`.",
+        "priority": "must"
+      },
+      {
+        "criterion": "A scheduled publication can be created for `post`, `reply`, and `retweet`, and each job ends in a durable terminal state such as `succeeded` or `failed` with timestamps, attempt counts, and error details.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Admin-triggered sharing, summary-triggered sharing, and reaction-consent publishing all execute through the same unified publish service while preserving their existing caller-specific moderation, consent, DM, and announcement behavior.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Per-channel routing resolves in the order channel override, parent channel, guild default, and only runs when the existing `sharing_enabled` gate allows it.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Canonical publication records, not `shared_posts`, drive duplicate and delete decisions so multi-action `post|reply|retweet` publishing for one Discord message does not corrupt state.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Due-job claiming is implemented as a DB-atomic primitive in the checked-in SQL artifact and prevents double execution across restarts or overlapping workers.",
+        "priority": "must"
+      },
+      {
+        "criterion": "The scheduler reuses the repo's `discord.ext.tasks.loop` pattern and starts and stops from the active `SharingCog` lifecycle used by `main.py`, not only from the module `setup()` helper.",
+        "priority": "must"
+      },
+      {
+        "criterion": "First-share notification and delete flows carry a canonical `publication_id`, and delete actions resolve that specific publication record instead of inferring identity only from `discord_message_id` and `tweet_id`.",
+        "priority": "must"
+      },
+      {
+        "criterion": "The admin and operator surface can both create scheduled publications and inspect queued, processing, failed, cancelled, and succeeded publication records without relying only on `shared_posts`.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Caller-specific defaults remain intact, including admin replies defaulting to `text_only=True` unless explicitly overridden and reaction-consent publishes not inheriting unintended duplicate suppression.",
+        "priority": "must"
+      },
+      {
+        "criterion": "The scheduler logs publication id, platform, action, and final provider error for recovery and manual replay.",
+        "priority": "should"
+      },
+      {
+        "criterion": "The platform integration boundary is provider-based so adding a second outbound platform does not require rewriting admin, summary, or reaction caller code.",
+        "priority": "should"
+      },
+      {
+        "criterion": "Manual smoke tests on a real X account pass for immediate post, scheduled post, scheduled reply, scheduled retweet, failed publish visibility, and delete compatibility for a delete-supported X post.",
+        "priority": "info"
+      }
+    ]
+  },
+  "preflight_results": {
+    "project_dir_exists": true,
+    "project_dir_writable": true,
+    "success_criteria_present": true,
+    "claude_available": true,
+    "codex_available": true
+  },
+  "unresolved_flags": [
+    {
+      "id": "correctness",
+      "concern": "Are the proposed changes technically correct?: Checked db_handler.py write patterns: the codebase uses both execute_query (raw SQL via supabase_query_handler) and direct Supabase client fluent calls (e.g., .table().upsert().execute()). The plan proposes RPC for atomic claiming but doesn't clarify whether normal CRUD on social_publications will use the fluent client pattern or raw SQL. Both work, but mixing three access patterns (fluent, raw SQL, RPC) in one subsystem increases maintenance surface.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Checked db_handler.py write patterns: the codebase uses both execute_query (raw SQL via supabase_query_handler) and direct Supabase client fluent calls (e.g., .table().upsert().execute()). The plan proposes RPC for atomic claiming but doesn't clarify whether normal CRUD on social_publications will use the fluent client pattern or raw SQL. Both work, but mixing three access patterns (fluent, raw SQL, RPC) in one subsystem increases maintenance surface.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": true,
+      "addressed_in": "plan_v3.md",
+      "verified_in": "critique_v3.json"
+    },
+    {
+      "id": "all_locations",
+      "concern": "Does the change touch all locations AND supporting infrastructure?: The admin agent system prompt in agent.py line 38 lists queryable tables including shared_posts. The plan Step 6.5-6.6 covers updating tool descriptions and prompt text, but doesn't explicitly mention adding social_publications and social_channel_routes to the query_table whitelist in tools.py (line 70 and 1637). Missing these would make the new tables invisible to the admin agent.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The admin agent system prompt in agent.py line 38 lists queryable tables including shared_posts. The plan Step 6.5-6.6 covers updating tool descriptions and prompt text, but doesn't explicitly mention adding social_publications and social_channel_routes to the query_table whitelist in tools.py (line 70 and 1637). Missing these would make the new tables invisible to the admin agent.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": true,
+      "addressed_in": "plan_v3.md",
+      "verified_in": "critique_v3.json"
+    },
+    {
+      "id": "issue_hints",
+      "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: The plan's assumption that Supabase RPC is available is stated but the codebase has zero existing RPC usage. While the supabase>=1.0.0 client does support `.rpc()`, this is an untested integration pattern in this project and may require additional Supabase dashboard configuration (creating the SQL function). The plan does not call out this operational prerequisite explicitly.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan's assumption that Supabase RPC is available is stated but the codebase has zero existing RPC usage. While the supabase>=1.0.0 client does support `.rpc()`, this is an untested integration pattern in this project and may require additional Supabase dashboard configuration (creating the SQL function). The plan does not call out this operational prerequisite explicitly.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "scope",
+      "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The plan introduces a new social_channel_routes table for per-channel routing configuration, but does not specify how routes are initially populated or managed. There's no admin command or migration step described for creating route entries, which means the routing system will be inert until someone manually inserts rows. The plan should clarify whether guild-default routing is the only first-release path or whether route management tooling is in scope.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan introduces a new social_channel_routes table for per-channel routing configuration, but does not specify how routes are initially populated or managed. There's no admin command or migration step described for creating route entries, which means the routing system will be inert until someone manually inserts rows. The plan should clarify whether guild-default routing is the only first-release path or whether route management tooling is in scope.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    }
+  ],
+  "recommendation": "PROCEED",
+  "rationale": "Score trajectory shows strong convergence (26.5 \u2192 7.0 \u2192 6.5) with 17 flags resolved and zero recurring critiques. The four remaining open flags are execution-level details and operational prerequisites, not design-direction problems. None indicate the wrong subsystem, wrong root cause, or architectural misfit. Further iteration would produce diminishing returns \u2014 these concerns are best addressed as implementation constraints during execution rather than through another plan revision cycle.",
+  "signals_assessment": "Weighted score stabilized at 6.5 from 7.0, with plan delta dropping to 32% \u2014 the plan is converging. All 17 previously raised flags were resolved across three iterations, and no critiques recurred. The four remaining flags are: a style concern about mixing three DB access patterns in one subsystem, a missing explicit mention of adding new tables to the admin agent query whitelist, an operational prerequisite about Supabase RPC dashboard setup, and a scoping question about whether route management tooling ships in v1. Preflight checks all pass. No debt overlaps or escalated subsystems apply.",
+  "warnings": [
+    "During execution, explicitly add `social_publications` and `social_channel_routes` to the QUERYABLE_TABLES whitelist in tools.py and update the agent.py system prompt table list \u2014 the plan covers this implicitly in Step 6.5-6.6 but does not name the exact locations.",
+    "Before implementing the RPC claim function, verify that the Supabase project dashboard allows creating SQL functions via migration or the SQL editor \u2014 this is a first-time integration pattern for this codebase.",
+    "For the first release, route resolution should fall back to guild-default when no channel-specific route exists; route management admin commands are out of scope unless the implementer adds them."
+  ],
+  "settled_decisions": [
+    {
+      "id": "db-access-pattern",
+      "decision": "Use the Supabase fluent client (.table().insert/update/select().execute()) for all normal CRUD on social_publications. Reserve RPC exclusively for the atomic claim_due_social_publications function. Do not introduce raw SQL via execute_query for this subsystem.",
+      "rationale": "Resolves the correctness flag about mixed access patterns by constraining to two patterns (fluent + RPC) instead of three, matching the dominant codebase style for CRUD while using RPC only where atomicity requires it."
+    },
+    {
+      "id": "admin-query-whitelist",
+      "decision": "Add social_publications and social_channel_routes to QUERYABLE_TABLES in tools.py (around line 70 and line 1637) and update the table list in the agent.py system prompt (around line 38).",
+      "rationale": "Ensures the admin agent can query the new tables. Explicitly called out here so the implementer does not miss it during Step 6."
+    },
+    {
+      "id": "v1-routing-scope",
+      "decision": "First release ships guild-default routing only. The social_channel_routes table is created but route management admin commands are out of scope. Channel-specific routes can be seeded via direct DB operations.",
+      "rationale": "Keeps scope bounded while leaving the table structure ready for future per-channel routing admin tooling."
+    }
+  ],
+  "override_forced": false,
+  "orchestrator_guidance": "Plan passed gate and preflight. Proceed to finalize. Verify unresolved flags against the plan and project code before accepting.",
+  "robustness": "standard",
+  "signals": {
+    "iteration": 3,
+    "idea": "Implement a unified social publishing system that preserves current immediate Twitter/X posting, adds scheduled queueing for tweets/replies/retweets, tracks success and failure, and is extensible to multiple outbound channels/platforms with per-channel routing and configuration.",
+    "significant_flags": 4,
+    "unresolved_flags": [
+      {
+        "id": "correctness",
+        "concern": "Are the proposed changes technically correct?: Checked db_handler.py write patterns: the codebase uses both execute_query (raw SQL via supabase_query_handler) and direct Supabase client fluent calls (e.g., .table().upsert().execute()). The plan proposes RPC for atomic claiming but doesn't clarify whether normal CRUD on social_publications will use the fluent client pattern or raw SQL. Both work, but mixing three access patterns (fluent, raw SQL, RPC) in one subsystem increases maintenance surface.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "all_locations",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The admin agent system prompt in agent.py line 38 lists queryable tables including shared_posts. The plan Step 6.5-6.6 covers updating tool descriptions and prompt text, but doesn't explicitly mention adding social_publications and social_channel_routes to the query_table whitelist in tools.py (line 70 and 1637). Missing these would make the new tables invisible to the admin agent.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "issue_hints",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: The plan's assumption that Supabase RPC is available is stated but the codebase has zero existing RPC usage. While the supabase>=1.0.0 client does support `.rpc()`, this is an untested integration pattern in this project and may require additional Supabase dashboard configuration (creating the SQL function). The plan does not call out this operational prerequisite explicitly.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "scope",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The plan introduces a new social_channel_routes table for per-channel routing configuration, but does not specify how routes are initially populated or managed. There's no admin command or migration step described for creating route entries, which means the routing system will be inert until someone manually inserts rows. The plan should clarify whether guild-default routing is the only first-release path or whether route management tooling is in scope.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      }
+    ],
+    "resolved_flags": [
+      {
+        "id": "FLAG-001",
+        "concern": "Social publishing: Legacy `shared_posts` compatibility collides with multi-action post/reply/retweet publishing.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "FLAG-002",
+        "concern": "Reaction bridge: Unified request shape is underspecified for consent, moderation, and reactor-facing side effects.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "FLAG-003",
+        "concern": "Queue claiming: Atomic claim/update semantics are not accounted for in the current Supabase access pattern.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "FLAG-004",
+        "concern": "Admin tooling: The plan omits the prompt and query-surface updates needed to inspect scheduled and failed publications.",
+        "resolution": "`QUERYABLE_TABLES` in `src/features/admin_chat/tools.py` only includes `shared_posts`, and `src/features/admin_chat/agent.py` still documents the old Twitter-only `share_to_social` arguments and table list."
+      },
+      {
+        "id": "issue_hints-1",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Flagged that admin-chat still exposes only the old Twitter-only `share_to_social` contract and `shared_posts`, so scheduling/failure tracking are not yet accounted for in the operator surface.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "issue_hints-2",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Flagged that the reaction consent bridge has moderation and DM side effects beyond publishing, and the plan does not explicitly preserve them when unifying onto the admin-chat-style request path.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "correctness-1",
+        "concern": "Are the proposed changes technically correct?: Flagged that blanket `shared_posts` compatibility is structurally incompatible with multiple `post|reply|retweet` outcomes for one Discord message because current duplicate/delete lookups assume one legacy row per message/platform.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "correctness-2",
+        "concern": "Are the proposed changes technically correct?: Flagged that `claim_due_social_publications` needs an explicit DB-atomic claim strategy; the current Supabase access pattern in `DatabaseHandler` does not provide one.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "correctness-3",
+        "concern": "Are the proposed changes technically correct?: Flagged that retweet deletion remains underspecified because the current delete path only calls the normal tweet-delete API.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "scope-1",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: Flagged that summary-triggered sharing also calls `finalize_sharing()` and is not mentioned in the rewiring steps even though it shares the same side effects and should move with the unified service.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "scope-2",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: Flagged that `notify_user.py` is part of the same subsystem because it still deletes via `social_poster.delete_tweet` and updates `shared_posts` directly.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "all_locations-1",
+        "concern": "Worker lifecycle: Recurring debt: scheduled worker startup is still ambiguous against the repository's real `SharingCog` load path.",
+        "resolution": "No open flag points to the wrong subsystem or a wrong root-cause diagnosis. The plan still belongs in the sharing stack, but it now closes the two remaining design holes explicitly: the scheduler is tied to the active `SharingCog` lifecycle used by `main.py` instead of the dead-end `setup()` path, and first-share notification and delete flows now carry a canonical `publication_id` so deletion targets one `social_publications` record even when a Discord message has multiple publications."
+      },
+      {
+        "id": "all_locations-2",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: Flagged that admin observability/supporting infrastructure is missing because the built-in query surface and prompt still expose only `shared_posts` and the old tool arguments.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "callers-1",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Flagged that admin chat and the reaction bridge pass materially different publish inputs, so the normalized request must carry bridge-specific metadata instead of mirroring the admin path only.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "callers-2",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Flagged that admin replies currently default to `text_only=True` in `execute_share_to_social()`, and that caller-specific rule can regress if normalization moves without preserving it.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "callers-3",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Flagged that duplicate detection must stay action-aware because current callers suppress duplicates only for non-reply `finalize_sharing()` calls, while reaction `send_tweet()` does not suppress duplicates at all.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "FLAG-005",
+        "concern": "Sharing deletion identity: Post-share delete flows need a canonical publication identifier once one Discord message can map to multiple `post|reply|retweet` records.",
+        "resolution": "No open flag points to the wrong subsystem or a wrong root-cause diagnosis. The plan still belongs in the sharing stack, but it now closes the two remaining design holes explicitly: the scheduler is tied to the active `SharingCog` lifecycle used by `main.py` instead of the dead-end `setup()` path, and first-share notification and delete flows now carry a canonical `publication_id` so deletion targets one `social_publications` record even when a Discord message has multiple publications."
+      }
+    ],
+    "weighted_score": 6.5,
+    "weighted_history": [
+      26.5,
+      7.0
+    ],
+    "plan_delta_from_previous": 32.29,
+    "recurring_critiques": [],
+    "scope_creep_flags": [],
+    "loop_summary": "Iteration 3. Weighted score trajectory: 26.5 -> 7.0 -> 6.5. Plan deltas: 90.0%, 32.3%. Recurring critiques: 0. Resolved flags: 17. Open significant flags: 4.",
+    "debt_overlaps": [],
+    "escalated_debt_subsystems": []
+  },
+  "flag_resolutions": [
+    {
+      "flag_id": "all_locations",
+      "action": "accept_tradeoff",
+      "evidence": "Plan Step 6.5 says 'Extend the admin and operator read surface so staff can inspect queued, processing, failed, cancelled, and succeeded publication records and route configuration without relying on shared_posts alone' and Step 6.6 says 'Update tool descriptions and prompt text.' The specific QUERYABLE_TABLES locations (tools.py:70, tools.py:1637) and agent.py:38 prompt are implicit in that scope.",
+      "rationale": "The intent is clearly covered; the missing detail is which exact lines to edit. Promoted to a settled decision with explicit file paths so the implementer cannot miss it."
+    },
+    {
+      "flag_id": "issue_hints",
+      "action": "accept_tradeoff",
+      "evidence": "The Supabase Python client (supabase>=1.0.0) supports .rpc() natively. The operational step of creating the SQL function in the Supabase dashboard is outside the scope of the code plan \u2014 it is an infrastructure prerequisite like creating a new table.",
+      "rationale": "This is structurally unresolvable through further plan iteration. The SQL artifact will be checked into the repo; deploying it to Supabase is an ops step documented in the warnings."
+    },
+    {
+      "flag_id": "scope",
+      "action": "accept_tradeoff",
+      "evidence": "The plan's route resolution helper (Step 5.1) specifies the fallback order: exact channel route \u2192 parent channel \u2192 guild default. For v1, guild-default routing via existing server_config is sufficient without admin route-management commands.",
+      "rationale": "Route management tooling is explicitly deferred. Guild-default routing is the only first-release path. Routes can be seeded via direct DB insert or a future admin command."
+    }
+  ],
+  "resolved_flag_ids": [],
+  "resolution_summary": ""
+}
+
+        Settled decisions (verify the executor implemented these correctly):
+- db-access-pattern: Use the Supabase fluent client (.table().insert/update/select().execute()) for all normal CRUD on social_publications. Reserve RPC exclusively for the atomic claim_due_social_publications function. Do not introduce raw SQL via execute_query for this subsystem. (Resolves the correctness flag about mixed access patterns by constraining to two patterns (fluent + RPC) instead of three, matching the dominant codebase style for CRUD while using RPC only where atomicity requires it.)
+- admin-query-whitelist: Add social_publications and social_channel_routes to QUERYABLE_TABLES in tools.py (around line 70 and line 1637) and update the table list in the agent.py system prompt (around line 38). (Ensures the admin agent can query the new tables. Explicitly called out here so the implementer does not miss it during Step 6.)
+- v1-routing-scope: First release ships guild-default routing only. The social_channel_routes table is created but route management admin commands are out of scope. Channel-specific routes can be seeded via direct DB operations. (Keeps scope bounded while leaving the table structure ready for future per-channel routing admin tooling.)
+
+
+Critique flags to re-verify against the final diff:
+            [
+  {
+    "id": "FLAG-001",
+    "concern": "Social publishing: Legacy `shared_posts` compatibility collides with multi-action post/reply/retweet publishing.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "FLAG-002",
+    "concern": "Reaction bridge: Unified request shape is underspecified for consent, moderation, and reactor-facing side effects.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "FLAG-003",
+    "concern": "Queue claiming: Atomic claim/update semantics are not accounted for in the current Supabase access pattern.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "FLAG-004",
+    "concern": "Admin tooling: The plan omits the prompt and query-surface updates needed to inspect scheduled and failed publications.",
+    "severity": "minor",
+    "status": "verified"
+  },
+  {
+    "id": "issue_hints-1",
+    "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Flagged that admin-chat still exposes only the old Twitter-only `share_to_social` contract and `shared_posts`, so scheduling/failure tracking are not yet accounted for in the operator surface.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "issue_hints-2",
+    "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Flagged that the reaction consent bridge has moderation and DM side effects beyond publishing, and the plan does not explicitly preserve them when unifying onto the admin-chat-style request path.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "correctness-1",
+    "concern": "Are the proposed changes technically correct?: Flagged that blanket `shared_posts` compatibility is structurally incompatible with multiple `post|reply|retweet` outcomes for one Discord message because current duplicate/delete lookups assume one legacy row per message/platform.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "correctness-2",
+    "concern": "Are the proposed changes technically correct?: Flagged that `claim_due_social_publications` needs an explicit DB-atomic claim strategy; the current Supabase access pattern in `DatabaseHandler` does not provide one.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "correctness-3",
+    "concern": "Are the proposed changes technically correct?: Flagged that retweet deletion remains underspecified because the current delete path only calls the normal tweet-delete API.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "scope-1",
+    "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: Flagged that summary-triggered sharing also calls `finalize_sharing()` and is not mentioned in the rewiring steps even though it shares the same side effects and should move with the unified service.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "scope-2",
+    "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: Flagged that `notify_user.py` is part of the same subsystem because it still deletes via `social_poster.delete_tweet` and updates `shared_posts` directly.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "all_locations-1",
+    "concern": "Worker lifecycle: Recurring debt: scheduled worker startup is still ambiguous against the repository's real `SharingCog` load path.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "all_locations-2",
+    "concern": "Does the change touch all locations AND supporting infrastructure?: Flagged that admin observability/supporting infrastructure is missing because the built-in query surface and prompt still expose only `shared_posts` and the old tool arguments.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "callers-1",
+    "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Flagged that admin chat and the reaction bridge pass materially different publish inputs, so the normalized request must carry bridge-specific metadata instead of mirroring the admin path only.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "callers-2",
+    "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Flagged that admin replies currently default to `text_only=True` in `execute_share_to_social()`, and that caller-specific rule can regress if normalization moves without preserving it.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "callers-3",
+    "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Flagged that duplicate detection must stay action-aware because current callers suppress duplicates only for non-reply `finalize_sharing()` calls, while reaction `send_tweet()` does not suppress duplicates at all.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "FLAG-005",
+    "concern": "Sharing deletion identity: Post-share delete flows need a canonical publication identifier once one Discord message can map to multiple `post|reply|retweet` records.",
+    "severity": "significant",
+    "status": "verified"
+  },
+  {
+    "id": "FLAG-006",
+    "concern": "DB access patterns: Plan introduces Supabase RPC as a third data access pattern (alongside fluent client and raw SQL) without precedent in the codebase. The RPC function must be created in the Supabase dashboard/migrations before the claim primitive works, and this operational step is not called out.",
+    "severity": "minor",
+    "status": "open"
+  },
+  {
+    "id": "FLAG-007",
+    "concern": "Route management: social_channel_routes table is introduced in Step 1 but no admin command, migration, or seeding step is described for populating routes. The routing system will be inert until routes exist.",
+    "severity": "minor",
+    "status": "open"
+  }
+]
+
+            For each flag above that was raised during critique, verify whether the final diff actually addresses the concern.
+            A flag is resolved only if the final diff contains code that directly addresses the concern.
+            Do not trust pre-execute promises or plan claims; check the diff itself.
+            Add resolved flag IDs to `verified_flag_ids`.
+            For any unresolved flag, add a `rework_items` entry with `task_id: "REVIEW"`, `issue`, `expected`, `actual`, `evidence_file`, `flag_id`, and `source: "review_flag_reverify"`.
+
+Advisory mechanical pre-check flags:
+            [
+  {
+    "id": "PRECHECK-DIFF_SIZE_SANITY",
+    "check": "diff_size_sanity",
+    "detail": "Diff size looks larger than expected: changed_lines=3314, expected\u224810, ratio=331.40, files=21, hunks=60.",
+    "severity": "significant",
+    "evidence_file": "main.py"
+  }
+]
+
+            Copy this list verbatim into the output `pre_check_flags` field.
+
+        Execution summary:
+        {
+  "output": "Aggregated execute batches: completed 7/7.\nBatch 1: Implemented batch 1 / T1. Added canonical social publication SQL artifacts and DatabaseHandler fluent-client helpers, with `claim_due_social_publications` as the only RPC path. Verification completed with `python -m py_compile src/common/db_handler.py` and targeted checks confirming `FOR UPDATE SKIP LOCKED` in the SQL artifact and no raw-SQL CRUD path for this subsystem. Ops note: `sql/social_publications.sql` still needs to be deployed in Supabase before any scheduler/RPC consumer can run.\nBatch 2: Implemented batch 2 / T2 by adding `src/features/sharing/models.py` with dataclass contracts for `PublicationSourceContext`, `SocialPublishRequest`, and `SocialPublishResult`. Verification passed after adjusting for the repository\u2019s Python runtime compatibility: the module compiles, imports cleanly, and the required `publication_id` plus caller-policy fields are present.\nBatch 3: Implemented batch 3 / T3 by adding a unified `SocialPublishService`, a provider interface plus `XProvider`, and rewiring `Sharer` to build `SocialPublishRequest` objects and publish through the service while keeping current caller-facing return shapes intact. Verification passed with module syntax checks and an inline fake-provider/fake-db exercise of `SocialPublishService.publish_now()`, confirming retweets come back with `delete_supported=false`, primary posts still create a single legacy `shared_posts` row, and `Sharer` now dedupes through canonical `social_publications` lookups instead of the removed in-memory `_successfully_shared` set.\nBatch 4: Implemented batch 4 / T4 by rewiring the admin chat share tool, reaction bridge publish path, Sharer summary/reaction entrypoints, and first-share notification flow onto the unified social publish service while preserving caller-specific behavior. Verification passed with module compilation plus an inline caller-path exercise confirming admin replies still default to `text_only=True`, scheduled admin publishes go through `enqueue()`, and `publication_id` is now carried into notification interfaces.\nBatch 5: Implemented batch 5 / T5 by adding `ServerConfig.resolve_social_route()` with exact-channel, parent-channel, and guild-default fallback, introducing a scheduled publication worker on `SharingCog` that starts/stops via `cog_load`/`cog_unload`, and wiring a shared `SocialPublishService` into `main.py` so both the worker and existing caller paths use the same service instance. Verification passed with module compilation and a focused inline check that exercised route resolution directly and confirmed the worker lifecycle/main wiring from source.\nBatch 6: Implemented batch 6 / T6 by making the first-share delete flow resolve canonical `social_publications` records by `publication_id`, route deletion through the shared social publishing service, and reject retweet/unsupported deletes with a clear user-facing message. I also exposed `social_publications` and `social_channel_routes` to the admin query surfaces in `tools.py` and updated the admin agent prompt/tool guidance so operators can inspect queued, failed, cancelled, and succeeded publication records.\nBatch 7: Implemented batch 7 / T7 by adding the requested focused test coverage for canonical social publication storage, publish service behavior, caller-path routing, scheduler lifecycle, and publication_id-based delete handling. I also added a small `tests/conftest.py` harness to stub missing local integrations (`tweepy`, LLM package surface) and constrain async tests to the installed asyncio backend, plus a minimal Python 3.8 typing compatibility fix in `src/common/db_handler.py` so the real import path could load under the local runtime. Verification passed with the required throwaway smoke script run-and-delete flow and a final full `python -m pytest tests/ -v` run showing 15/15 passing.",
+  "files_changed": [
+    "sql/social_publications.sql",
+    "src/common/db_handler.py",
+    ".megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_1.json",
+    "src/features/sharing/models.py",
+    ".megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_2.json",
+    "src/features/sharing/social_publish_service.py",
+    "src/features/sharing/providers/__init__.py",
+    "src/features/sharing/providers/x_provider.py",
+    "src/features/sharing/sharer.py",
+    ".megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_3.json",
+    "src/features/admin_chat/tools.py",
+    "src/features/reacting/subfeatures/tweet_sharer_bridge.py",
+    "src/features/sharing/subfeatures/notify_user.py",
+    ".megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_4.json",
+    "src/common/server_config.py",
+    "src/features/sharing/sharing_cog.py",
+    "main.py",
+    ".megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_5.json",
+    "src/features/admin_chat/agent.py",
+    ".megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_6.json",
+    "tests/conftest.py",
+    "tests/test_social_publications.py",
+    "tests/test_social_publish_service.py",
+    "tests/test_caller_paths.py",
+    "tests/test_scheduler.py",
+    "tests/test_notification_delete.py",
+    ".megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_7.json"
+  ],
+  "commands_run": [
+    "mkdir -p sql",
+    "python -m py_compile src/common/db_handler.py",
+    "rg -n \"social_publications|claim_due_social_publications|FOR UPDATE SKIP LOCKED|for update skip locked|execute_query\\(\" sql/social_publications.sql src/common/db_handler.py",
+    "git diff -- sql/social_publications.sql src/common/db_handler.py",
+    "git status --short -- sql/social_publications.sql src/common/db_handler.py",
+    "python -m py_compile src/features/sharing/models.py",
+    "python - <<'PY'\nfrom src.features.sharing.models import SocialPublishRequest, SocialPublishResult\n\nrequest = SocialPublishRequest(\n    message_id=1,\n    channel_id=2,\n    guild_id=3,\n    user_id=4,\n    platform='x',\n    source_kind='summary',\n)\nresult = SocialPublishResult(publication_id='pub-1', success=True)\nassert request.source_context is not None\nassert request.source_context.source_kind == 'summary'\nassert hasattr(result, 'publication_id')\nassert hasattr(request, 'duplicate_policy')\nassert hasattr(request, 'text_only')\nassert hasattr(request, 'announce_policy')\nassert hasattr(request, 'first_share_notification_policy')\nassert hasattr(request, 'legacy_shared_post_policy')\nprint('ok')\nPY",
+    "git status --short -- src/features/sharing/models.py",
+    "mkdir -p src/features/sharing/providers",
+    "python -m py_compile src/features/sharing/social_publish_service.py src/features/sharing/providers/__init__.py src/features/sharing/providers/x_provider.py src/features/sharing/sharer.py",
+    "python - <<'PY'\nimport asyncio\nfrom src.features.sharing.models import PublicationSourceContext, SocialPublishRequest\nfrom src.features.sharing.social_publish_service import SocialPublishService\n\nclass FakeProvider:\n    async def publish(self, request):\n        if request.action == 'retweet':\n            return {\n                'provider_ref': request.target_post_ref,\n                'provider_url': 'https://twitter.com/example/status/' + str(request.target_post_ref),\n                'tweet_id': request.target_post_ref,\n                'tweet_url': 'https://twitter.com/example/status/' + str(request.target_post_ref),\n                'delete_supported': False,\n            }\n        return {\n            'provider_ref': 'tweet-123',\n            'provider_url': 'https://twitter.com/example/status/tweet-123',\n            'tweet_id': 'tweet-123',\n            'tweet_url': 'https://twitter.com/example/status/tweet-123',\n            'delete_supported': True,\n        }\n    async def delete(self, publication):\n        return True\n    def normalize_target_ref(self, target_ref):\n        return target_ref\n\nclass FakeDB:\n    def __init__(self):\n        self.rows = {}\n        self.shared_posts = []\n        self.supabase = None\n    def create_social_publication(self, data, guild_id=None):\n        publication_id = f\"pub-{len(self.rows) + 1}\"\n        row = dict(data)\n        row['publication_id'] = publication_id\n        self.rows[publication_id] = row\n        return row\n    def mark_social_publication_succeeded(self, publication_id, guild_id=None, provider_ref=None, provider_url=None, delete_supported=None):\n        self.rows[publication_id].update({'status': 'succeeded', 'provider_ref': provider_ref, 'provider_url': provider_url, 'delete_supported': delete_supported})\n        return True\n    def mark_social_publication_failed(self, publication_id, last_error, guild_id=None, retry_after=None):\n        self.rows[publication_id].update({'status': 'failed', 'last_error': last_error})\n        return True\n    def mark_social_publication_processing(self, publication_id, guild_id=None, attempt_count=None, retry_after=None):\n        self.rows[publication_id].update({'status': 'processing'})\n        return True\n    def mark_social_publication_cancelled(self, publication_id, guild_id=None, last_error=None):\n        self.rows[publication_id].update({'status': 'cancelled'})\n        return True\n    def get_social_publication_by_id(self, publication_id, guild_id=None):\n        return self.rows.get(publication_id)\n    def record_shared_post(self, **kwargs):\n        self.shared_posts.append(kwargs)\n        return True\n    def mark_shared_post_deleted(self, *args, **kwargs):\n        return True\n\nasync def main():\n    db = FakeDB()\n    service = SocialPublishService(db, providers={'twitter': FakeProvider()}, logger_instance=None)\n    request = SocialPublishRequest(\n        message_id=1,\n        channel_id=2,\n        guild_id=3,\n        user_id=4,\n        platform='twitter',\n        text='hello',\n        source_kind='admin_chat',\n        source_context=PublicationSourceContext(source_kind='admin_chat', metadata={'user_details': {'username': 'u'}}),\n    )\n    result = await service.publish_now(request)\n    assert result.success and result.publication_id and result.delete_supported is True\n    assert len(db.shared_posts) == 1\n    retweet = SocialPublishRequest(\n        message_id=5,\n        channel_id=6,\n        guild_id=3,\n        user_id=4,\n        platform='twitter',\n        action='retweet',\n        target_post_ref='999',\n        source_kind='admin_chat',\n        source_context=PublicationSourceContext(source_kind='admin_chat', metadata={'user_details': {'username': 'u'}}),\n    )\n    retweet_result = await service.publish_now(retweet)\n    assert retweet_result.success and retweet_result.delete_supported is False\n    assert len(db.shared_posts) == 1\n    print('ok')\n\nasyncio.run(main())\nPY",
+    "rg -n \"delete_supported': False|delete_supported\\\": False|_find_existing_publication|get_social_publications_for_message|_successfully_shared|source_kind == 'reaction_bridge'|source_kind != 'reaction_bridge'\" src/features/sharing/providers/x_provider.py src/features/sharing/sharer.py",
+    "git status --short -- src/features/sharing/social_publish_service.py src/features/sharing/providers/__init__.py src/features/sharing/providers/x_provider.py src/features/sharing/sharer.py",
+    "python -m py_compile src/features/admin_chat/tools.py src/features/reacting/subfeatures/tweet_sharer_bridge.py src/features/sharing/sharer.py src/features/sharing/subfeatures/notify_user.py",
+    "python - <<'PY'\nimport asyncio\nimport inspect\nfrom types import SimpleNamespace\n\nfrom src.features.admin_chat.tools import execute_share_to_social\nfrom src.features.sharing.subfeatures.notify_user import PostShareNotificationView, send_post_share_notification\n\nclass FakeService:\n    def __init__(self):\n        self.last_mode = None\n        self.last_request = None\n    async def publish_now(self, request):\n        self.last_mode = 'publish_now'\n        self.last_request = request\n        return SimpleNamespace(success=True, tweet_url='https://x.com/test/status/1', tweet_id='1', publication_id='pub-1', error=None)\n    async def enqueue(self, request):\n        self.last_mode = 'enqueue'\n        self.last_request = request\n        return SimpleNamespace(success=True, publication_id='pub-queued', error=None)\n\nclass FakeDB:\n    def get_member(self, member_id):\n        return {'id': member_id, 'twitter_url': None}\n    def mark_member_first_shared(self, member_id, guild_id=None):\n        return False\n\nclass FakeSharer:\n    def __init__(self):\n        self.social_publish_service = FakeService()\n        self.db_handler = FakeDB()\n        self.cleaned = []\n        self.announced = []\n    def _find_existing_publication(self, **kwargs):\n        return None\n    async def _download_attachment(self, attachment):\n        return {'local_path': '/tmp/fake.png', 'media_type': 'image'}\n    def _cleanup_files(self, files):\n        self.cleaned.extend(files)\n    async def _announce_tweet_url(self, *args, **kwargs):\n        self.announced.append((args, kwargs))\n\nclass FakeAuthor:\n    def __init__(self):\n        self.id = 123\n        self.display_name = 'Poster'\n        self.name = 'Poster'\n\nclass FakeGuild:\n    def __init__(self):\n        self.id = 456\n    def get_thread(self, _):\n        return None\n\nclass FakeMessage:\n    def __init__(self):\n        self.id = 789\n        self.author = FakeAuthor()\n        self.guild = FakeGuild()\n        self.content = 'hello from discord'\n        self.jump_url = 'https://discord.com/channels/456/222/789'\n        self.attachments = [object()]\n        self.channel = SimpleNamespace(id=222)\n\nclass FakeChannel:\n    def __init__(self, message):\n        self.id = 222\n        self.guild = message.guild\n        self._message = message\n    async def fetch_message(self, message_id):\n        return self._message\n\nclass FakeBot:\n    def __init__(self, channel):\n        self._channel = channel\n    def get_channel(self, channel_id):\n        return self._channel\n    async def fetch_channel(self, channel_id):\n        return self._channel\n\nasync def main():\n    sharer = FakeSharer()\n    message = FakeMessage()\n    bot = FakeBot(FakeChannel(message))\n\n    reply_result = await execute_share_to_social(bot, sharer, {\n        'message_link': message.jump_url,\n        'action': 'reply',\n        'target_post': '123456',\n    })\n    assert reply_result['success'] is True\n    assert sharer.social_publish_service.last_mode == 'publish_now'\n    assert sharer.social_publish_service.last_request.action == 'reply'\n    assert sharer.social_publish_service.last_request.text_only is True\n    assert sharer.cleaned == []\n\n    scheduled_result = await execute_share_to_social(bot, sharer, {\n        'message_link': message.jump_url,\n        'action': 'post',\n        'schedule_for': '2026-04-10T12:00:00Z',\n    })\n    assert scheduled_result['success'] is True\n    assert scheduled_result['status'] == 'queued'\n    assert scheduled_result['publication_id'] == 'pub-queued'\n    assert sharer.social_publish_service.last_mode == 'enqueue'\n    assert sharer.social_publish_service.last_request.action == 'post'\n\n    view_sig = inspect.signature(PostShareNotificationView.__init__)\n    send_sig = inspect.signature(send_post_share_notification)\n    assert 'publication_id' in view_sig.parameters\n    assert 'publication_id' in send_sig.parameters\n    print('ok')\n\nasyncio.run(main())\nPY",
+    "git diff -- src/features/admin_chat/tools.py src/features/reacting/subfeatures/tweet_sharer_bridge.py src/features/sharing/sharer.py src/features/sharing/subfeatures/notify_user.py",
+    "git status --short -- src/features/admin_chat/tools.py src/features/reacting/subfeatures/tweet_sharer_bridge.py src/features/sharing/sharer.py src/features/sharing/subfeatures/notify_user.py",
+    "python -m py_compile src/common/server_config.py src/features/sharing/sharing_cog.py main.py",
+    "python - <<'PY'\nfrom pathlib import Path\n\nfrom src.common.server_config import ServerConfig\n\nclass FakeResult:\n    def __init__(self, data):\n        self.data = data\n\nclass FakeQuery:\n    def __init__(self, rows):\n        self.rows = list(rows)\n        self.filters = []\n        self.limit_value = None\n    def select(self, *_args, **_kwargs):\n        return self\n    def eq(self, key, value):\n        self.filters.append(lambda row, k=key, v=value: row.get(k) == v)\n        return self\n    def is_(self, key, value):\n        if value == 'null':\n            self.filters.append(lambda row, k=key: row.get(k) is None)\n        return self\n    def limit(self, value):\n        self.limit_value = value\n        return self\n    def execute(self):\n        data = self.rows\n        for fn in self.filters:\n            data = [row for row in data if fn(row)]\n        if self.limit_value is not None:\n            data = data[:self.limit_value]\n        return FakeResult(data)\n\nclass FakeSupabase:\n    def __init__(self):\n        self.tables = {\n            'server_config': [\n                {'guild_id': 1, 'enabled': True, 'write_enabled': True, 'default_sharing': True},\n            ],\n            'channel_effective_config': [\n                {'channel_id': 10, 'parent_id': None, 'sharing_enabled': True},\n                {'channel_id': 100, 'parent_id': 10, 'sharing_enabled': True},\n            ],\n            'discord_channels': [\n                {'channel_id': 101, 'parent_id': 10},\n            ],\n            'social_channel_routes': [\n                {'id': 'route-channel', 'guild_id': 1, 'channel_id': 100, 'platform': 'twitter', 'enabled': True, 'route_config': {'name': 'exact'}},\n                {'id': 'route-parent', 'guild_id': 1, 'channel_id': 10, 'platform': 'twitter', 'enabled': True, 'route_config': {'name': 'parent'}},\n                {'id': 'route-default', 'guild_id': 1, 'channel_id': None, 'platform': 'twitter', 'enabled': True, 'route_config': {'name': 'default'}},\n            ],\n        }\n    def table(self, name):\n        return FakeQuery(self.tables.get(name, []))\n\nserver_config = ServerConfig(FakeSupabase())\nassert server_config.resolve_social_route(1, 100, 'twitter')['id'] == 'route-channel'\nassert server_config.resolve_social_route(1, 101, 'x')['id'] == 'route-parent'\nassert server_config.resolve_social_route(1, 999, 'twitter')['id'] == 'route-default'\n\nsharing_cog_source = Path('src/features/sharing/sharing_cog.py').read_text()\nassert 'async def cog_load' in sharing_cog_source\nassert 'self.scheduled_publication_worker.start()' in sharing_cog_source\nassert 'def cog_unload' in sharing_cog_source\nassert 'self.scheduled_publication_worker.cancel()' in sharing_cog_source\nassert '@tasks.loop(seconds=30)' in sharing_cog_source\nassert '@scheduled_publication_worker.before_loop' in sharing_cog_source\nassert 'await self.bot.wait_until_ready()' in sharing_cog_source\nassert 'claim_due_social_publications' in sharing_cog_source\nassert 'execute_publication' in sharing_cog_source\n\nmain_source = Path('main.py').read_text()\nassert 'bot.social_publish_service = SocialPublishService(' in main_source\nassert 'social_publish_service=bot.social_publish_service' in main_source\nassert 'sharer_instance = sharing_cog_instance.sharer_instance' in main_source\nprint('ok')\nPY",
+    "git diff -- src/common/server_config.py src/features/sharing/sharing_cog.py main.py",
+    "rg -n \"resolve_social_route|social_channel_routes|scheduled_publication_worker|cog_load|cog_unload|claim_due_social_publications|execute_publication|bot\\.social_publish_service|SocialPublishService\\(\" src/common/server_config.py src/features/sharing/sharing_cog.py main.py",
+    "git status --short -- src/common/server_config.py src/features/sharing/sharing_cog.py main.py",
+    "python -m py_compile src/features/sharing/subfeatures/notify_user.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py",
+    "python - <<'PY'\nimport asyncio\nfrom datetime import datetime, timezone\nfrom pathlib import Path\nfrom types import SimpleNamespace\n\nfrom src.features.sharing.subfeatures.notify_user import PostShareNotificationView\n\nclass FakeDB:\n    def __init__(self, publication):\n        self.publication = publication\n    def get_social_publication_by_id(self, publication_id, guild_id=None):\n        if publication_id == self.publication.get('publication_id'):\n            return dict(self.publication)\n        return None\n    def update_member_sharing_permission(self, *_args, **_kwargs):\n        return True\n\nclass FakeService:\n    def __init__(self, success=True):\n        self.success = success\n        self.calls = []\n    async def delete_publication(self, publication_id):\n        self.calls.append(publication_id)\n        return self.success\n\nclass FakeMessage:\n    def __init__(self):\n        self.edits = []\n        self.content = 'shared'\n    async def edit(self, **kwargs):\n        self.edits.append(kwargs)\n\nclass FakeResponse:\n    def __init__(self):\n        self.deferred = False\n        self.messages = []\n    async def defer(self, ephemeral=False):\n        self.deferred = ephemeral\n    async def send_message(self, content, ephemeral=False):\n        self.messages.append((content, ephemeral))\n\nclass FakeFollowup:\n    def __init__(self):\n        self.messages = []\n    async def send(self, content, ephemeral=False):\n        self.messages.append((content, ephemeral))\n\nclass FakeInteraction:\n    def __init__(self, user_id):\n        self.user = SimpleNamespace(id=user_id)\n        self.response = FakeResponse()\n        self.followup = FakeFollowup()\n        self.guild_id = 456\n\nasync def run_checks():\n    now = datetime.now(timezone.utc).isoformat()\n\n    retweet_view = PostShareNotificationView(\n        db_handler=FakeDB({\n            'publication_id': 'pub-retweet',\n            'user_id': 123,\n            'action': 'retweet',\n            'delete_supported': False,\n            'status': 'succeeded',\n            'completed_at': now,\n        }),\n        discord_message_id=1,\n        discord_user_id=123,\n        publication_id='pub-retweet',\n        tweet_id='tweet-retweet',\n        tweet_url='https://x.com/example/status/retweet',\n        bot=SimpleNamespace(social_publish_service=FakeService()),\n        guild_id=456,\n    )\n    retweet_button = next(item for item in retweet_view.children if getattr(item, 'custom_id', None) == 'delete_post')\n    retweet_interaction = FakeInteraction(123)\n    await retweet_button.callback(retweet_interaction)\n    assert retweet_interaction.followup.messages[-1][0] == \"Retweets can't be deleted through this button.\"\n    assert retweet_view.bot.social_publish_service.calls == []\n\n    delete_service = FakeService(success=True)\n    success_view = PostShareNotificationView(\n        db_handler=FakeDB({\n            'publication_id': 'pub-post',\n            'user_id': 123,\n            'action': 'post',\n            'delete_supported': True,\n            'status': 'succeeded',\n            'completed_at': now,\n        }),\n        discord_message_id=2,\n        discord_user_id=123,\n        publication_id='pub-post',\n        tweet_id='tweet-post',\n        tweet_url='https://x.com/example/status/post',\n        bot=SimpleNamespace(social_publish_service=delete_service),\n        guild_id=456,\n    )\n    success_view.message = FakeMessage()\n    success_button = next(item for item in success_view.children if getattr(item, 'custom_id', None) == 'delete_post')\n    success_interaction = FakeInteraction(123)\n    await success_button.callback(success_interaction)\n    assert delete_service.calls == ['pub-post']\n    assert success_interaction.followup.messages[-1][0] == 'Your post has been deleted from X.'\n    assert success_button.disabled is True\n    assert success_button.label == 'Post Deleted'\n\n    tools_source = Path('src/features/admin_chat/tools.py').read_text()\n    assert \"'social_publications'\" in tools_source\n    assert \"'social_channel_routes'\" in tools_source\n    assert 'QUERYABLE_TABLES' in tools_source\n    assert 'GUILD_SCOPED_TABLES' in tools_source\n\n    agent_source = Path('src/features/admin_chat/agent.py').read_text()\n    assert 'social_publications' in agent_source\n    assert 'social_channel_routes' in agent_source\n    assert 'scheduled posts/replies/retweets' in agent_source\n    print('ok')\n\nasyncio.run(run_checks())\nPY",
+    "git diff -- src/features/sharing/subfeatures/notify_user.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py",
+    "rg -n \"publication_id|delete_supported|Retweets can't be deleted|social_publications|social_channel_routes|scheduled posts/replies/retweets|GUILD_SCOPED_TABLES\" src/features/sharing/subfeatures/notify_user.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py",
+    "git status --short -- src/features/sharing/subfeatures/notify_user.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py",
+    "python -m pytest tests/ -v",
+    "ls -la tests",
+    "rg -n \"list\\[[^]]+\\]\" src/common/db_handler.py src/features/sharing src/features/admin_chat src/features/reacting main.py tests scripts | head -n 100",
+    "python --version",
+    "python tests/_social_publish_smoke.py",
+    "git status --short -- src/common/db_handler.py tests .megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_7.json"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_1.json, sql/social_publications.sql",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: sql",
+    "Advisory quality: src/common/db_handler.py grew by 327 lines (threshold 200).",
+    "Advisory quality: code changes lacked test updates: src/common/db_handler.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: main.py, sql/social_publications.sql, src/common/server_config.py, src/features/admin_chat/agent.py, src/features/admin_chat/tools.py, src/features/reacting/subfeatures/tweet_sharer_bridge.py, src/features/sharing/models.py, src/features/sharing/providers/__init__.py, src/features/sharing/providers/x_provider.py, src/features/sharing/sharer.py, src/features/sharing/sharing_cog.py, src/features/sharing/social_publish_service.py, src/features/sharing/subfeatures/notify_user.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC2 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_2.json",
+    "Advisory quality: code changes lacked test updates: src/features/sharing/models.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: main.py, sql/social_publications.sql, src/common/server_config.py, src/features/admin_chat/agent.py, src/features/admin_chat/tools.py, src/features/reacting/subfeatures/tweet_sharer_bridge.py, src/features/sharing/providers/__init__.py, src/features/sharing/providers/x_provider.py, src/features/sharing/sharer.py, src/features/sharing/sharing_cog.py, src/features/sharing/social_publish_service.py, src/features/sharing/subfeatures/notify_user.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_3.json, src/features/sharing/providers/__init__.py, src/features/sharing/providers/x_provider.py",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: src/features/sharing/providers",
+    "Advisory quality: src/features/sharing/social_publish_service.py grew by 338 lines (threshold 200).",
+    "Advisory quality: src/features/sharing/social_publish_service.py adds unused imports: DatabaseHandler.",
+    "Advisory quality: code changes lacked test updates: src/features/sharing/sharer.py, src/features/sharing/social_publish_service.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: main.py, sql/social_publications.sql, src/common/server_config.py, src/features/admin_chat/agent.py, src/features/admin_chat/tools.py, src/features/reacting/subfeatures/tweet_sharer_bridge.py, src/features/sharing/providers/__init__.py, src/features/sharing/providers/x_provider.py, src/features/sharing/sharing_cog.py, src/features/sharing/subfeatures/notify_user.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql, src/features/sharing/providers, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Inline verification through the admin tool's `message_id` path was blocked by a pre-existing local dependency issue (`scripts.discord_tools` imports `supabase`, which is not installed in this environment), so behavior verification used the `message_link` path instead.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_4.json",
+    "Advisory quality: src/features/sharing/subfeatures/notify_user.py adds unused imports: DatabaseHandler.",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/tools.py, src/features/reacting/subfeatures/tweet_sharer_bridge.py, src/features/sharing/sharer.py, src/features/sharing/subfeatures/notify_user.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: main.py, sql/social_publications.sql, src/common/server_config.py, src/features/admin_chat/agent.py, src/features/sharing/providers/__init__.py, src/features/sharing/providers/x_provider.py, src/features/sharing/sharing_cog.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql, src/features/sharing/providers, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Importing `SharingCog` directly under the local Python 3.8 runtime hit a pre-existing `src/common/db_handler.py` typing incompatibility (`list[int]` usage), so the worker lifecycle verification for this batch used source-level assertions after `py_compile` instead of importing the cog module in-process.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_5.json",
+    "Advisory quality: code changes lacked test updates: main.py, src/common/server_config.py, src/features/sharing/sharing_cog.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: sql/social_publications.sql, src/features/admin_chat/agent.py, src/features/sharing/providers/__init__.py, src/features/sharing/providers/x_provider.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql, src/features/sharing/providers, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_6.json",
+    "Advisory quality: src/features/sharing/subfeatures/notify_user.py adds unused imports: DatabaseHandler.",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/agent.py, src/features/admin_chat/tools.py, src/features/sharing/subfeatures/notify_user.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: sql/social_publications.sql, src/features/sharing/providers/__init__.py, src/features/sharing/providers/x_provider.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql, src/features/sharing/providers, src/features/summarising/summariser.py",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Added `tests/conftest.py` beyond the five requested test modules so the suite could run against the real code path in this local environment without installing missing optional dependencies or Trio.",
+    "Made a small incidental fix in `src/common/db_handler.py` to replace Python 3.9+/3.10-only typing syntax with Python 3.8-compatible annotations; without that change the new tests could not import the production modules under the local runtime.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/implement-a-unified-social-20260409-1710/execution_batch_7.json, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: tests",
+    "Advisory quality: code changes lacked test updates: src/common/db_handler.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: sql/social_publications.sql, src/features/sharing/providers/__init__.py, src/features/sharing/providers/x_provider.py, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql, src/features/sharing/providers, src/features/summarising/summariser.py, tests",
+    "Advisory audit finding: Executor claimed changed files not present in git status: sql/social_publications.sql, src/features/sharing/providers/__init__.py, src/features/sharing/providers/x_provider.py, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql, src/features/sharing/providers, src/features/summarising/summariser.py, tests"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "Created `sql/social_publications.sql` with `social_publications`, `social_channel_routes`, updated-at triggers, and `claim_due_social_publications()` using `FOR UPDATE SKIP LOCKED`. Added `DatabaseHandler` fluent Supabase helpers for create/get/list/status transitions plus a single RPC-backed `claim_due_social_publications()` helper; verified Python syntax with `python -m py_compile src/common/db_handler.py` and checked the new subsystem paths do not use raw SQL CRUD.",
+      "files_changed": [
+        "sql/social_publications.sql",
+        "src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/common/db_handler.py",
+        "rg -n \"social_publications|claim_due_social_publications|FOR UPDATE SKIP LOCKED|for update skip locked|execute_query\\(\" sql/social_publications.sql src/common/db_handler.py",
+        "git diff -- sql/social_publications.sql src/common/db_handler.py"
+      ]
+    },
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Created `src/features/sharing/models.py` with dataclass contracts for `PublicationSourceContext`, `SocialPublishRequest`, and `SocialPublishResult`. Verified the module with `python -m py_compile src/features/sharing/models.py` and a full import/instantiation check confirming `publication_id` and the required request policy fields are available on the runtime in this repository.",
+      "files_changed": [
+        "src/features/sharing/models.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/models.py",
+        "python - <<'PY'\nfrom src.features.sharing.models import SocialPublishRequest, SocialPublishResult\n\nrequest = SocialPublishRequest(\n    message_id=1,\n    channel_id=2,\n    guild_id=3,\n    user_id=4,\n    platform='x',\n    source_kind='summary',\n)\nresult = SocialPublishResult(publication_id='pub-1', success=True)\nassert request.source_context is not None\nassert request.source_context.source_kind == 'summary'\nassert hasattr(result, 'publication_id')\nassert hasattr(request, 'duplicate_policy')\nassert hasattr(request, 'text_only')\nassert hasattr(request, 'announce_policy')\nassert hasattr(request, 'first_share_notification_policy')\nassert hasattr(request, 'legacy_shared_post_policy')\nprint('ok')\nPY",
+        "git status --short -- src/features/sharing/models.py"
+      ]
+    },
+    {
+      "task_id": "T3",
+      "status": "done",
+      "executor_notes": "Added `SocialPublishService`, `SocialPublishProvider`, and `XProvider`, then refactored `Sharer.send_tweet()` and `Sharer.finalize_sharing()` to publish through the new service without changing existing caller return contracts. Verified syntax with `python -m py_compile`, verified service behavior with a full inline fake-provider/fake-db run of `SocialPublishService.publish_now()`, and confirmed canonical DB-backed duplicate lookup plus retweet delete-guarding through targeted source checks.",
+      "files_changed": [
+        "src/features/sharing/social_publish_service.py",
+        "src/features/sharing/providers/__init__.py",
+        "src/features/sharing/providers/x_provider.py",
+        "src/features/sharing/sharer.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/social_publish_service.py src/features/sharing/providers/__init__.py src/features/sharing/providers/x_provider.py src/features/sharing/sharer.py",
+        "python - <<'PY'\nimport asyncio\nfrom src.features.sharing.models import PublicationSourceContext, SocialPublishRequest\nfrom src.features.sharing.social_publish_service import SocialPublishService\n\nclass FakeProvider:\n    async def publish(self, request):\n        if request.action == 'retweet':\n            return {\n                'provider_ref': request.target_post_ref,\n                'provider_url': 'https://twitter.com/example/status/' + str(request.target_post_ref),\n                'tweet_id': request.target_post_ref,\n                'tweet_url': 'https://twitter.com/example/status/' + str(request.target_post_ref),\n                'delete_supported': False,\n            }\n        return {\n            'provider_ref': 'tweet-123',\n            'provider_url': 'https://twitter.com/example/status/tweet-123',\n            'tweet_id': 'tweet-123',\n            'tweet_url': 'https://twitter.com/example/status/tweet-123',\n            'delete_supported': True,\n        }\n    async def delete(self, publication):\n        return True\n    def normalize_target_ref(self, target_ref):\n        return target_ref\n\nclass FakeDB:\n    def __init__(self):\n        self.rows = {}\n        self.shared_posts = []\n        self.supabase = None\n    def create_social_publication(self, data, guild_id=None):\n        publication_id = f\"pub-{len(self.rows) + 1}\"\n        row = dict(data)\n        row['publication_id'] = publication_id\n        self.rows[publication_id] = row\n        return row\n    def mark_social_publication_succeeded(self, publication_id, guild_id=None, provider_ref=None, provider_url=None, delete_supported=None):\n        self.rows[publication_id].update({'status': 'succeeded', 'provider_ref': provider_ref, 'provider_url': provider_url, 'delete_supported': delete_supported})\n        return True\n    def mark_social_publication_failed(self, publication_id, last_error, guild_id=None, retry_after=None):\n        self.rows[publication_id].update({'status': 'failed', 'last_error': last_error})\n        return True\n    def mark_social_publication_processing(self, publication_id, guild_id=None, attempt_count=None, retry_after=None):\n        self.rows[publication_id].update({'status': 'processing'})\n        return True\n    def mark_social_publication_cancelled(self, publication_id, guild_id=None, last_error=None):\n        self.rows[publication_id].update({'status': 'cancelled'})\n        return True\n    def get_social_publication_by_id(self, publication_id, guild_id=None):\n        return self.rows.get(publication_id)\n    def record_shared_post(self, **kwargs):\n        self.shared_posts.append(kwargs)\n        return True\n    def mark_shared_post_deleted(self, *args, **kwargs):\n        return True\n\nasync def main():\n    db = FakeDB()\n    service = SocialPublishService(db, providers={'twitter': FakeProvider()}, logger_instance=None)\n    request = SocialPublishRequest(\n        message_id=1,\n        channel_id=2,\n        guild_id=3,\n        user_id=4,\n        platform='twitter',\n        text='hello',\n        source_kind='admin_chat',\n        source_context=PublicationSourceContext(source_kind='admin_chat', metadata={'user_details': {'username': 'u'}}),\n    )\n    result = await service.publish_now(request)\n    assert result.success and result.publication_id and result.delete_supported is True\n    assert len(db.shared_posts) == 1\n    retweet = SocialPublishRequest(\n        message_id=5,\n        channel_id=6,\n        guild_id=3,\n        user_id=4,\n        platform='twitter',\n        action='retweet',\n        target_post_ref='999',\n        source_kind='admin_chat',\n        source_context=PublicationSourceContext(source_kind='admin_chat', metadata={'user_details': {'username': 'u'}}),\n    )\n    retweet_result = await service.publish_now(retweet)\n    assert retweet_result.success and retweet_result.delete_supported is False\n    assert len(db.shared_posts) == 1\n    print('ok')\n\nasyncio.run(main())\nPY",
+        "rg -n \"delete_supported': False|delete_supported\\\": False|_find_existing_publication|get_social_publications_for_message|_successfully_shared|source_kind == 'reaction_bridge'|source_kind != 'reaction_bridge'\" src/features/sharing/providers/x_provider.py src/features/sharing/sharer.py",
+        "git status --short -- src/features/sharing/social_publish_service.py src/features/sharing/providers/__init__.py src/features/sharing/providers/x_provider.py src/features/sharing/sharer.py"
+      ]
+    },
+    {
+      "task_id": "T4",
+      "status": "done",
+      "executor_notes": "Rewired the admin chat tool, reaction bridge, Sharer summary/reaction entrypoints, and first-share notification flow onto the unified social publish service while preserving caller-specific behavior. Verified with `python -m py_compile` on all modified modules and an end-to-end inline caller-path check covering admin reply default `text_only=True`, scheduled enqueue behavior, and `publication_id` propagation into notification interfaces.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py",
+        "src/features/reacting/subfeatures/tweet_sharer_bridge.py",
+        "src/features/sharing/sharer.py",
+        "src/features/sharing/subfeatures/notify_user.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py src/features/reacting/subfeatures/tweet_sharer_bridge.py src/features/sharing/sharer.py src/features/sharing/subfeatures/notify_user.py",
+        "python - <<'PY'\nimport asyncio\nimport inspect\nfrom types import SimpleNamespace\n\nfrom src.features.admin_chat.tools import execute_share_to_social\nfrom src.features.sharing.subfeatures.notify_user import PostShareNotificationView, send_post_share_notification\n\nclass FakeService:\n    def __init__(self):\n        self.last_mode = None\n        self.last_request = None\n    async def publish_now(self, request):\n        self.last_mode = 'publish_now'\n        self.last_request = request\n        return SimpleNamespace(success=True, tweet_url='https://x.com/test/status/1', tweet_id='1', publication_id='pub-1', error=None)\n    async def enqueue(self, request):\n        self.last_mode = 'enqueue'\n        self.last_request = request\n        return SimpleNamespace(success=True, publication_id='pub-queued', error=None)\n\nclass FakeDB:\n    def get_member(self, member_id):\n        return {'id': member_id, 'twitter_url': None}\n    def mark_member_first_shared(self, member_id, guild_id=None):\n        return False\n\nclass FakeSharer:\n    def __init__(self):\n        self.social_publish_service = FakeService()\n        self.db_handler = FakeDB()\n        self.cleaned = []\n        self.announced = []\n    def _find_existing_publication(self, **kwargs):\n        return None\n    async def _download_attachment(self, attachment):\n        return {'local_path': '/tmp/fake.png', 'media_type': 'image'}\n    def _cleanup_files(self, files):\n        self.cleaned.extend(files)\n    async def _announce_tweet_url(self, *args, **kwargs):\n        self.announced.append((args, kwargs))\n\nclass FakeAuthor:\n    def __init__(self):\n        self.id = 123\n        self.display_name = 'Poster'\n        self.name = 'Poster'\n\nclass FakeGuild:\n    def __init__(self):\n        self.id = 456\n    def get_thread(self, _):\n        return None\n\nclass FakeMessage:\n    def __init__(self):\n        self.id = 789\n        self.author = FakeAuthor()\n        self.guild = FakeGuild()\n        self.content = 'hello from discord'\n        self.jump_url = 'https://discord.com/channels/456/222/789'\n        self.attachments = [object()]\n        self.channel = SimpleNamespace(id=222)\n\nclass FakeChannel:\n    def __init__(self, message):\n        self.id = 222\n        self.guild = message.guild\n        self._message = message\n    async def fetch_message(self, message_id):\n        return self._message\n\nclass FakeBot:\n    def __init__(self, channel):\n        self._channel = channel\n    def get_channel(self, channel_id):\n        return self._channel\n    async def fetch_channel(self, channel_id):\n        return self._channel\n\nasync def main():\n    sharer = FakeSharer()\n    message = FakeMessage()\n    bot = FakeBot(FakeChannel(message))\n\n    reply_result = await execute_share_to_social(bot, sharer, {\n        'message_link': message.jump_url,\n        'action': 'reply',\n        'target_post': '123456',\n    })\n    assert reply_result['success'] is True\n    assert sharer.social_publish_service.last_mode == 'publish_now'\n    assert sharer.social_publish_service.last_request.action == 'reply'\n    assert sharer.social_publish_service.last_request.text_only is True\n    assert sharer.cleaned == []\n\n    scheduled_result = await execute_share_to_social(bot, sharer, {\n        'message_link': message.jump_url,\n        'action': 'post',\n        'schedule_for': '2026-04-10T12:00:00Z',\n    })\n    assert scheduled_result['success'] is True\n    assert scheduled_result['status'] == 'queued'\n    assert scheduled_result['publication_id'] == 'pub-queued'\n    assert sharer.social_publish_service.last_mode == 'enqueue'\n    assert sharer.social_publish_service.last_request.action == 'post'\n\n    view_sig = inspect.signature(PostShareNotificationView.__init__)\n    send_sig = inspect.signature(send_post_share_notification)\n    assert 'publication_id' in view_sig.parameters\n    assert 'publication_id' in send_sig.parameters\n    print('ok')\n\nasyncio.run(main())\nPY",
+        "git diff -- src/features/admin_chat/tools.py src/features/reacting/subfeatures/tweet_sharer_bridge.py src/features/sharing/sharer.py src/features/sharing/subfeatures/notify_user.py",
+        "git status --short -- src/features/admin_chat/tools.py src/features/reacting/subfeatures/tweet_sharer_bridge.py src/features/sharing/sharer.py src/features/sharing/subfeatures/notify_user.py"
+      ]
+    },
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Added `ServerConfig.resolve_social_route()` with exact-channel, parent-channel, and guild-default fallback behind the existing sharing feature gate. Added a scheduled publication worker to `SharingCog` using `discord.ext.tasks.loop` plus `cog_load`/`cog_unload` lifecycle hooks and wired a shared `SocialPublishService` into `main.py` so the cog worker and caller paths use the same service instance. Verified with `python -m py_compile` and a focused inline script that exercised route resolution behavior directly and checked the worker lifecycle/main wiring from source.",
+      "files_changed": [
+        "src/common/server_config.py",
+        "src/features/sharing/sharing_cog.py",
+        "main.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/common/server_config.py src/features/sharing/sharing_cog.py main.py",
+        "python - <<'PY'\nfrom pathlib import Path\n\nfrom src.common.server_config import ServerConfig\n\nclass FakeResult:\n    def __init__(self, data):\n        self.data = data\n\nclass FakeQuery:\n    def __init__(self, rows):\n        self.rows = list(rows)\n        self.filters = []\n        self.limit_value = None\n    def select(self, *_args, **_kwargs):\n        return self\n    def eq(self, key, value):\n        self.filters.append(lambda row, k=key, v=value: row.get(k) == v)\n        return self\n    def is_(self, key, value):\n        if value == 'null':\n            self.filters.append(lambda row, k=key: row.get(k) is None)\n        return self\n    def limit(self, value):\n        self.limit_value = value\n        return self\n    def execute(self):\n        data = self.rows\n        for fn in self.filters:\n            data = [row for row in data if fn(row)]\n        if self.limit_value is not None:\n            data = data[:self.limit_value]\n        return FakeResult(data)\n\nclass FakeSupabase:\n    def __init__(self):\n        self.tables = {\n            'server_config': [\n                {'guild_id': 1, 'enabled': True, 'write_enabled': True, 'default_sharing': True},\n            ],\n            'channel_effective_config': [\n                {'channel_id': 10, 'parent_id': None, 'sharing_enabled': True},\n                {'channel_id': 100, 'parent_id': 10, 'sharing_enabled': True},\n            ],\n            'discord_channels': [\n                {'channel_id': 101, 'parent_id': 10},\n            ],\n            'social_channel_routes': [\n                {'id': 'route-channel', 'guild_id': 1, 'channel_id': 100, 'platform': 'twitter', 'enabled': True, 'route_config': {'name': 'exact'}},\n                {'id': 'route-parent', 'guild_id': 1, 'channel_id': 10, 'platform': 'twitter', 'enabled': True, 'route_config': {'name': 'parent'}},\n                {'id': 'route-default', 'guild_id': 1, 'channel_id': None, 'platform': 'twitter', 'enabled': True, 'route_config': {'name': 'default'}},\n            ],\n        }\n    def table(self, name):\n        return FakeQuery(self.tables.get(name, []))\n\nserver_config = ServerConfig(FakeSupabase())\nassert server_config.resolve_social_route(1, 100, 'twitter')['id'] == 'route-channel'\nassert server_config.resolve_social_route(1, 101, 'x')['id'] == 'route-parent'\nassert server_config.resolve_social_route(1, 999, 'twitter')['id'] == 'route-default'\n\nsharing_cog_source = Path('src/features/sharing/sharing_cog.py').read_text()\nassert 'async def cog_load' in sharing_cog_source\nassert 'self.scheduled_publication_worker.start()' in sharing_cog_source\nassert 'def cog_unload' in sharing_cog_source\nassert 'self.scheduled_publication_worker.cancel()' in sharing_cog_source\nassert '@tasks.loop(seconds=30)' in sharing_cog_source\nassert '@scheduled_publication_worker.before_loop' in sharing_cog_source\nassert 'await self.bot.wait_until_ready()' in sharing_cog_source\nassert 'claim_due_social_publications' in sharing_cog_source\nassert 'execute_publication' in sharing_cog_source\n\nmain_source = Path('main.py').read_text()\nassert 'bot.social_publish_service = SocialPublishService(' in main_source\nassert 'social_publish_service=bot.social_publish_service' in main_source\nassert 'sharer_instance = sharing_cog_instance.sharer_instance' in main_source\nprint('ok')\nPY",
+        "git diff -- src/common/server_config.py src/features/sharing/sharing_cog.py main.py",
+        "rg -n \"resolve_social_route|social_channel_routes|scheduled_publication_worker|cog_load|cog_unload|claim_due_social_publications|execute_publication|bot\\.social_publish_service|SocialPublishService\\(\" src/common/server_config.py src/features/sharing/sharing_cog.py main.py",
+        "git status --short -- src/common/server_config.py src/features/sharing/sharing_cog.py main.py"
+      ]
+    },
+    {
+      "task_id": "T6",
+      "status": "done",
+      "executor_notes": "Updated the first-share delete flow to resolve and delete canonical `social_publications` rows by `publication_id`, with explicit ownership checks, delete-window enforcement, and clear retweet/unsupported-action rejection. Added `social_publications` and `social_channel_routes` to the admin query whitelist/scope in `tools.py` and updated the admin agent system prompt/tool guidance so operators can inspect scheduled, failed, and completed social publication records. Verified with `python -m py_compile` and an inline check covering publication_id-based delete behavior plus admin whitelist/prompt visibility.",
+      "files_changed": [
+        "src/features/sharing/subfeatures/notify_user.py",
+        "src/features/admin_chat/tools.py",
+        "src/features/admin_chat/agent.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/subfeatures/notify_user.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py",
+        "python - <<'PY'\nimport asyncio\nfrom datetime import datetime, timezone\nfrom pathlib import Path\nfrom types import SimpleNamespace\n\nfrom src.features.sharing.subfeatures.notify_user import PostShareNotificationView\n\nclass FakeDB:\n    def __init__(self, publication):\n        self.publication = publication\n    def get_social_publication_by_id(self, publication_id, guild_id=None):\n        if publication_id == self.publication.get('publication_id'):\n            return dict(self.publication)\n        return None\n    def update_member_sharing_permission(self, *_args, **_kwargs):\n        return True\n\nclass FakeService:\n    def __init__(self, success=True):\n        self.success = success\n        self.calls = []\n    async def delete_publication(self, publication_id):\n        self.calls.append(publication_id)\n        return self.success\n\nclass FakeMessage:\n    def __init__(self):\n        self.edits = []\n        self.content = 'shared'\n    async def edit(self, **kwargs):\n        self.edits.append(kwargs)\n\nclass FakeResponse:\n    def __init__(self):\n        self.deferred = False\n        self.messages = []\n    async def defer(self, ephemeral=False):\n        self.deferred = ephemeral\n    async def send_message(self, content, ephemeral=False):\n        self.messages.append((content, ephemeral))\n\nclass FakeFollowup:\n    def __init__(self):\n        self.messages = []\n    async def send(self, content, ephemeral=False):\n        self.messages.append((content, ephemeral))\n\nclass FakeInteraction:\n    def __init__(self, user_id):\n        self.user = SimpleNamespace(id=user_id)\n        self.response = FakeResponse()\n        self.followup = FakeFollowup()\n        self.guild_id = 456\n\nasync def run_checks():\n    now = datetime.now(timezone.utc).isoformat()\n\n    retweet_view = PostShareNotificationView(\n        db_handler=FakeDB({\n            'publication_id': 'pub-retweet',\n            'user_id': 123,\n            'action': 'retweet',\n            'delete_supported': False,\n            'status': 'succeeded',\n            'completed_at': now,\n        }),\n        discord_message_id=1,\n        discord_user_id=123,\n        publication_id='pub-retweet',\n        tweet_id='tweet-retweet',\n        tweet_url='https://x.com/example/status/retweet',\n        bot=SimpleNamespace(social_publish_service=FakeService()),\n        guild_id=456,\n    )\n    retweet_button = next(item for item in retweet_view.children if getattr(item, 'custom_id', None) == 'delete_post')\n    retweet_interaction = FakeInteraction(123)\n    await retweet_button.callback(retweet_interaction)\n    assert retweet_interaction.followup.messages[-1][0] == \"Retweets can't be deleted through this button.\"\n    assert retweet_view.bot.social_publish_service.calls == []\n\n    delete_service = FakeService(success=True)\n    success_view = PostShareNotificationView(\n        db_handler=FakeDB({\n            'publication_id': 'pub-post',\n            'user_id': 123,\n            'action': 'post',\n            'delete_supported': True,\n            'status': 'succeeded',\n            'completed_at': now,\n        }),\n        discord_message_id=2,\n        discord_user_id=123,\n        publication_id='pub-post',\n        tweet_id='tweet-post',\n        tweet_url='https://x.com/example/status/post',\n        bot=SimpleNamespace(social_publish_service=delete_service),\n        guild_id=456,\n    )\n    success_view.message = FakeMessage()\n    success_button = next(item for item in success_view.children if getattr(item, 'custom_id', None) == 'delete_post')\n    success_interaction = FakeInteraction(123)\n    await success_button.callback(success_interaction)\n    assert delete_service.calls == ['pub-post']\n    assert success_interaction.followup.messages[-1][0] == 'Your post has been deleted from X.'\n    assert success_button.disabled is True\n    assert success_button.label == 'Post Deleted'\n\n    tools_source = Path('src/features/admin_chat/tools.py').read_text()\n    assert \"'social_publications'\" in tools_source\n    assert \"'social_channel_routes'\" in tools_source\n    assert 'QUERYABLE_TABLES' in tools_source\n    assert 'GUILD_SCOPED_TABLES' in tools_source\n\n    agent_source = Path('src/features/admin_chat/agent.py').read_text()\n    assert 'social_publications' in agent_source\n    assert 'social_channel_routes' in agent_source\n    assert 'scheduled posts/replies/retweets' in agent_source\n    print('ok')\n\nasyncio.run(run_checks())\nPY",
+        "git diff -- src/features/sharing/subfeatures/notify_user.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py",
+        "rg -n \"publication_id|delete_supported|Retweets can't be deleted|social_publications|social_channel_routes|scheduled posts/replies/retweets|GUILD_SCOPED_TABLES\" src/features/sharing/subfeatures/notify_user.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py",
+        "git status --short -- src/features/sharing/subfeatures/notify_user.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py"
+      ]
+    },
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "Added focused tests covering canonical social publication CRUD and atomic-claim RPC flow, route fallback, service publish/enqueue/delete behavior, caller-specific defaults (`text_only` for admin replies and no dedupe for reaction bridge), scheduler lifecycle through `cog_load` plus claim/execute/retry flow, and publication_id-based delete with explicit retweet rejection and multiple-publication disambiguation. Verified with the required throwaway smoke script (created, ran successfully, then deleted) and a final full `python -m pytest tests/ -v` rerun passing 15/15 tests.",
+      "files_changed": [
+        "src/common/db_handler.py",
+        "tests/conftest.py",
+        "tests/test_social_publications.py",
+        "tests/test_social_publish_service.py",
+        "tests/test_caller_paths.py",
+        "tests/test_scheduler.py",
+        "tests/test_notification_delete.py"
+      ],
+      "commands_run": [
+        "python -m pytest tests/ -v",
+        "python -m py_compile src/common/db_handler.py",
+        "python -m pytest tests/ -v",
+        "python tests/_social_publish_smoke.py",
+        "python -m pytest tests/ -v"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "Confirmed the SQL artifact includes both table DDLs and `claim_due_social_publications()` with `FOR UPDATE SKIP LOCKED`. Confirmed all new `DatabaseHandler` social publication CRUD/status helpers use fluent Supabase table operations, with RPC used only for `claim_due_social_publications()`."
+    },
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "Confirmed `SocialPublishResult` includes `publication_id` as a first-class field. Confirmed `SocialPublishRequest` includes `duplicate_policy`, `text_only`, `announce_policy`, `first_share_notification_policy`, and `legacy_shared_post_policy`, while `PublicationSourceContext` carries caller-specific source metadata."
+    },
+    {
+      "sense_check_id": "SC3",
+      "executor_note": "Confirmed `XProvider` explicitly returns `delete_supported=False` for retweet actions and rejects delete requests for retweet publications. Confirmed `Sharer` no longer uses the in-memory `_successfully_shared` set; duplicate suppression now goes through canonical `social_publications` lookups via `get_social_publications_for_message()`, and that suppression only applies to primary non-reply posts while explicitly excluding `reaction_bridge` publications."
+    },
+    {
+      "sense_check_id": "SC4",
+      "executor_note": "Confirmed the admin tool still defaults `text_only=True` for replies unless explicitly overridden, the reaction bridge only swaps the final publish step while keeping moderation/consent/reactor-DM/admin-alert behavior in place, and `notify_user` now accepts and stores `publication_id` through the DM view and notification entrypoint."
+    },
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Confirmed the scheduled worker starts in `cog_load` and stops in `cog_unload`, uses `discord.ext.tasks.loop` with `wait_until_ready()` gating in `before_loop`, and `main.py` now constructs and attaches one shared `SocialPublishService` instance that is passed into `SharingCog` and exposed on `bot` for sharer/admin call paths."
+    },
+    {
+      "sense_check_id": "SC6",
+      "executor_note": "Confirmed `social_publications` and `social_channel_routes` are added to the admin query surfaces in `tools.py` and documented in the admin agent system prompt. Confirmed the delete button now loads by `publication_id`, routes deletion through the canonical service/provider path, and returns a clear unsupported message for retweet publications."
+    },
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "Confirmed the new tests cover (1) atomic claim semantics via the DB helper RPC path, (2) caller-specific defaults including admin reply `text_only=True` and reaction bridge no-dedupe behavior, (3) scheduler lifecycle through `cog_load` plus claim/execute/retry flow, (4) publication_id-based delete with clear retweet rejection, and (5) multiple publications for the same Discord message. Final full-suite verification passed with `python -m pytest tests/ -v` showing 15/15 passing."
+    }
+  ]
+}
+
+        Execution audit (`execution_audit.json`):
+            {
+  "findings": [
+    "Executor claimed changed files not present in git status: sql/social_publications.sql, src/features/sharing/providers/__init__.py, src/features/sharing/providers/x_provider.py, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py",
+    "Git status shows changed files not claimed by any task: .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql, src/features/sharing/providers, src/features/summarising/summariser.py, tests"
+  ],
+  "files_in_diff": [
+    ".megaplan/debt.json",
+    ".megaplan/plans/add-scheduled-twitter-x-20260409-1553",
+    ".megaplan/plans/add-scheduled-twitter-x-20260409-1556",
+    ".megaplan/plans/add-scheduled-twitter-x-20260409-1557",
+    ".megaplan/plans/implement-a-unified-social-20260409-1710",
+    ".megaplan/plans/implement-a-unified-social-20260409-1732",
+    ".megaplan/plans/implement-a-unified-social-20260409-1748",
+    ".megaplan/plans/implement-a-unified-social-20260409-1856",
+    ".megaplan/schemas/gate.json",
+    ".megaplan/schemas/prep.json",
+    ".megaplan/schemas/review.json",
+    ".megaplan/schemas/revise.json",
+    ".megaplan/tmp_plan_prompt.txt",
+    "main.py",
+    "sql",
+    "src/common/db_handler.py",
+    "src/common/server_config.py",
+    "src/features/admin_chat/agent.py",
+    "src/features/admin_chat/tools.py",
+    "src/features/reacting/subfeatures/tweet_sharer_bridge.py",
+    "src/features/sharing/models.py",
+    "src/features/sharing/providers",
+    "src/features/sharing/sharer.py",
+    "src/features/sharing/sharing_cog.py",
+    "src/features/sharing/social_publish_service.py",
+    "src/features/sharing/subfeatures/notify_user.py",
+    "src/features/summarising/summariser.py",
+    "tests"
+  ],
+  "files_claimed": [
+    "main.py",
+    "sql/social_publications.sql",
+    "src/common/db_handler.py",
+    "src/common/server_config.py",
+    "src/features/admin_chat/agent.py",
+    "src/features/admin_chat/tools.py",
+    "src/features/reacting/subfeatures/tweet_sharer_bridge.py",
+    "src/features/sharing/models.py",
+    "src/features/sharing/providers/__init__.py",
+    "src/features/sharing/providers/x_provider.py",
+    "src/features/sharing/sharer.py",
+    "src/features/sharing/sharing_cog.py",
+    "src/features/sharing/social_publish_service.py",
+    "src/features/sharing/subfeatures/notify_user.py",
+    "tests/conftest.py",
+    "tests/test_caller_paths.py",
+    "tests/test_notification_delete.py",
+    "tests/test_scheduler.py",
+    "tests/test_social_publications.py",
+    "tests/test_social_publish_service.py"
+  ],
+  "skipped": false,
+  "reason": ""
+}
+
+        Git diff summary:
+        M .megaplan/schemas/gate.json
+ M .megaplan/schemas/prep.json
+ M .megaplan/schemas/review.json
+ M .megaplan/schemas/revise.json
+ M main.py
+ M src/common/db_handler.py
+ M src/common/server_config.py
+ M src/features/admin_chat/agent.py
+ M src/features/admin_chat/tools.py
+ M src/features/reacting/subfeatures/tweet_sharer_bridge.py
+ M src/features/sharing/sharer.py
+ M src/features/sharing/sharing_cog.py
+ M src/features/sharing/subfeatures/notify_user.py
+ M src/features/summarising/summariser.py
+?? .megaplan/debt.json
+?? .megaplan/plans/add-scheduled-twitter-x-20260409-1553/
+?? .megaplan/plans/add-scheduled-twitter-x-20260409-1556/
+?? .megaplan/plans/add-scheduled-twitter-x-20260409-1557/
+?? .megaplan/plans/implement-a-unified-social-20260409-1710/
+?? .megaplan/plans/implement-a-unified-social-20260409-1732/
+?? .megaplan/plans/implement-a-unified-social-20260409-1748/
+?? .megaplan/plans/implement-a-unified-social-20260409-1856/
+?? .megaplan/tmp_plan_prompt.txt
+?? sql/
+?? src/features/sharing/models.py
+?? src/features/sharing/providers/
+?? src/features/sharing/social_publish_service.py
+?? tests/
+
+        Requirements:
+        - Verify each success criterion explicitly.
+        - Trust executor evidence by default. Dig deeper only where the git diff, `execution_audit.json`, or vague notes make the claim ambiguous.
+        - Each criterion has a `priority` (`must`, `should`, or `info`). Apply these rules:
+          - `must` criteria are hard gates. A `must` criterion that fails means `needs_rework`.
+          - `should` criteria are quality targets. If the spirit is met but the letter is not, mark `pass` with evidence explaining the gap. Only mark `fail` if the intent was clearly missed. A `should` failure alone does NOT require `needs_rework`.
+          - `info` criteria are for human reference. Mark them `waived` with a note — do not evaluate them.
+          - If a criterion (any priority) cannot be verified in this context (e.g., requires manual testing or runtime observation), mark it `waived` with an explanation.
+        - Set `review_verdict` to `needs_rework` only when at least one `must` criterion fails or actual implementation work is incomplete. Use `approved` when all `must` criteria pass, even if some `should` criteria are flagged.
+        - The decisions listed above were settled at the gate stage. Verify that the executor implemented each settled decision correctly. Flag deviations from these decisions, but do not question the decisions themselves.
+        - Cross-reference each task's `files_changed` and `commands_run` against the git diff and any audit findings.
+        - Review every `sense_check` explicitly and treat perfunctory acknowledgments as a reason to dig deeper.
+        - Follow this JSON shape exactly:
+        ```json
+        {
+          "review_verdict": "approved",
+          "criteria": [
+            {
+              "name": "All existing tests pass",
+              "priority": "must",
+              "pass": "pass",
+              "evidence": "Test suite ran green — 42 passed, 0 failed."
+            },
+            {
+              "name": "File under ~300 lines",
+              "priority": "should",
+              "pass": "pass",
+              "evidence": "File is 375 lines — above the target but reasonable given the component's responsibilities. Spirit met."
+            },
+            {
+              "name": "Manual smoke tests pass",
+              "priority": "info",
+              "pass": "waived",
+              "evidence": "Cannot be verified in automated review. Noted for manual QA."
+            }
+          ],
+          "issues": [],
+          "rework_items": [],
+          "summary": "Approved. All must criteria pass. The should criterion on line count is close enough given the component scope.",
+          "task_verdicts": [
+            {
+              "task_id": "T6",
+              "reviewer_verdict": "Pass. Claimed handler changes and command evidence match the repo state.",
+              "evidence_files": ["megaplan/handlers.py", "megaplan/evaluation.py"]
+            }
+          ],
+          "sense_check_verdicts": [
+            {
+              "sense_check_id": "SC6",
+              "verdict": "Confirmed. The execute blocker only fires when both evidence arrays are empty."
+            }
+          ]
+        }
+        ```
+        - `rework_items` must be an array of structured rework directives. When `review_verdict` is `needs_rework`, populate one entry per issue with:
+          - `task_id`: which finalize task this issue relates to
+          - `issue`: what is wrong
+          - `expected`: what correct behavior looks like
+          - `actual`: what was observed
+          - `evidence_file` (optional): file path supporting the finding
+        - `issues` must still be populated as a flat one-line-per-item summary derived from `rework_items` (for backward compatibility). When approved, both `issues` and `rework_items` should be empty arrays.
+        - When the work needs another execute pass, keep the same shape and change only `review_verdict` to `needs_rework`; make `issues`, `rework_items`, `summary`, and task verdicts specific enough for the executor to act on directly.
+ERROR: {
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "code": "invalid_json_schema",
+    "message": "Invalid schema for response_format 'codex_output_schema': In context=('properties', 'rework_items', 'items'), 'required' is required to be supplied and to be an array including every key in properties. Missing 'flag_id'.",
+    "param": "text.format.schema"
+  },
+  "status": 400
+}
+ERROR: {
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "code": "invalid_json_schema",
+    "message": "Invalid schema for response_format 'codex_output_schema': In context=('properties', 'rework_items', 'items'), 'required' is required to be supplied and to be an array including every key in properties. Missing 'flag_id'.",
+    "param": "text.format.schema"
+  },
+  "status": 400
+}

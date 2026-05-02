@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-09T17:25:23Z",
+  "hash": "sha256:720e0dc274451e3476d58d55b97ac5cae3d0bf7ecd24d0d79b98fcab9ab5e182",
+  "questions": [
+    "Does \u201cretweet\u201d mean reposting any arbitrary X status ID, or only reposting posts previously created by this bot/publication system?",
+    "What is the required scheduling input and timezone behavior for users: UTC ISO-8601 only, Discord timestamps, or natural-language times from admin chat?",
+    "Is the first release expected to ship only X/Twitter with an extensible architecture, or must at least one additional outbound platform be operational in this change?",
+    "Should per-channel routing be purely automatic from channel config, or can callers override the resolved route/platform set explicitly on a per-request basis?",
+    "What retry policy is desired for scheduled failures: no retry, fixed retry count, or backoff with manual intervention after exhaustion?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "An immediate `share_to_social` request without `schedule_for` still publishes to X and returns a concrete success payload with `tweet_url` and `tweet_id`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "A scheduled publication can be created for `post`, `reply`, and `retweet`, and each job ends in a durable terminal state (`succeeded` or `failed`) with timestamps and error details.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Both admin-triggered and reaction-triggered publishing flow through the same unified execution service instead of separate direct-to-Twitter code paths.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Per-channel routing resolves using channel override, then parent channel, then guild default, while still honoring the existing `sharing_enabled` gate.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Successful X publishes still support the current delete/duplicate behavior through `shared_posts` compatibility or an equivalent migrated path.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Focused automated tests cover request normalization, routing resolution, queue claiming, and success/failure transitions, and those tests pass locally.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The platform integration boundary is provider-based so adding a second outbound platform does not require rewriting caller code.",
+      "priority": "should"
+    },
+    {
+      "criterion": "The scheduler reuses the repo\u2019s existing `discord.ext.tasks.loop` polling style instead of introducing APScheduler unless a concrete gap appears.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Worker logs include publication id, platform, action, and final provider error to make manual recovery straightforward.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke tests on a real X account pass for immediate post, scheduled post, scheduled reply, and scheduled retweet.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "The first implementation only needs one live provider, X/Twitter, but the internal service and DB model should be platform-neutral.",
+    "A new canonical queue table is acceptable, and `shared_posts` can remain as a compatibility write-through during migration.",
+    "Scheduled publications will be stored and evaluated in UTC, with any user-facing timezone parsing normalized before persistence.",
+    "The bot runs as a single logical worker process most of the time, so DB-based claim/update semantics are sufficient to avoid duplicate execution.",
+    "Reaction-based sharing should continue to respect existing consent and moderation behavior; this project changes the execution backend, not the approval policy."
+  ],
+  "structure_warnings": []
+}

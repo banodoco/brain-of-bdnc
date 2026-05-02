@@ -1,0 +1,466 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Create `sql/admin_payment_intents.sql` \u2014 the persisted intent table with status state machine (`awaiting_wallet \u2192 awaiting_test \u2192 awaiting_confirmation \u2192 confirmed \u2192 completed | failed | cancelled`), message cursor fields (`prompt_message_id`, `last_scanned_message_id`, `resolved_by_message_id`), wallet/payment FK columns, `requested_amount_sol numeric(38,18) NOT NULL CHECK > 0`, `producer_ref`, `reason`, timestamps, updated_at trigger, RLS, and indexes: unique on `(guild_id, channel_id, recipient_user_id) WHERE status NOT IN terminal states`, index on `(guild_id, status)`, index on `(guild_id, channel_id, status)`. Follow the idempotent pattern from `sql/payments.sql`.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Created an idempotent `admin_payment_intents` SQL file with the requested state machine, message cursor fields, wallet/payment foreign keys, updated_at trigger reuse, RLS, revoke, and all three required indexes.",
+      "files_changed": [
+        "sql/admin_payment_intents.sql"
+      ],
+      "commands_run": [],
+      "evidence_files": [
+        "sql/admin_payment_intents.sql"
+      ],
+      "reviewer_verdict": "Pass. The SQL file exists and contains the required state machine, cursor fields, RLS, revoke, and indexes."
+    },
+    {
+      "id": "T2",
+      "description": "Add intent CRUD methods to `src/common/db_handler.py` following the existing payment CRUD pattern (~line 1703+): `create_admin_payment_intent(record, guild_id)`, `get_admin_payment_intent(intent_id, guild_id)`, `get_active_intent_for_recipient(guild_id, channel_id, recipient_user_id)` (single active intent lookup for interceptor \u2014 WHERE status NOT IN terminal), `list_active_intents(guild_id)` (for startup recovery), `update_admin_payment_intent(intent_id, payload, guild_id)`. All use `_gate_check(guild_id)`, check `self.supabase`, return None/empty on failure.",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "done",
+      "executor_notes": "Added the five admin-payment-intent CRUD methods to `DatabaseHandler` using the existing Supabase CRUD style. Verified each method checks `_gate_check(guild_id)`, guards on `self.supabase`, and that the active-intent lookup/list methods filter out terminal statuses.",
+      "files_changed": [
+        "src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/common/db_handler.py tests/test_social_route_tools.py"
+      ],
+      "evidence_files": [
+        "src/common/db_handler.py"
+      ],
+      "reviewer_verdict": "Pass. The five CRUD helpers are present in `DatabaseHandler` with guild gating and safe empty returns."
+    },
+    {
+      "id": "T3",
+      "description": "Extend `PaymentService.request_payment` (src/features/payments/payment_service.py:32-51) to accept optional `amount_token: Optional[float] = None`. When `amount_token` is provided for non-test payments: validate > 0, set `normalized_amount_usd = None` and `token_price_usd = None`, bypassing USD conversion. The existing `amount_usd` path and test-payment path remain unchanged. The DB schema already supports nullable `amount_usd`/`token_price_usd`. Read the amount resolution block (lines 91-110) carefully and add the new branch between the `is_test` and `amount_usd` branches.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Extended `PaymentService.request_payment` with an `amount_token` branch between the existing test and USD paths. The new branch validates `> 0`, sets `amount_usd` and `token_price_usd` to null, and leaves the existing test/USD behavior intact.",
+      "files_changed": [
+        "src/features/payments/payment_service.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/payments/payment_service.py"
+      ],
+      "evidence_files": [
+        "src/features/payments/payment_service.py",
+        "tests/test_admin_payments.py"
+      ],
+      "reviewer_verdict": "Pass. `PaymentService.request_payment()` now supports direct token amounts without USD conversion."
+    },
+    {
+      "id": "T4",
+      "description": "Add `initiate_payment` tool definition to `TOOLS` list in `src/features/admin_chat/tools.py` (~line 577, after `cancel_payment`). Schema: `recipient_user_id` (string, required), `amount_sol` (number, required), `reason` (string, optional). No `wallet_address` param. Add `\"initiate_payment\"` to `ADMIN_ONLY_TOOLS` set (~line 886). Verify the assertion at ~line 916 (`ADMIN_ONLY_TOOLS | MEMBER_TOOLS == ALL_TOOL_NAMES`) still passes by running `python -c \"from src.features.admin_chat import tools\"`.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Added the `initiate_payment` admin tool schema with exactly `recipient_user_id`, `amount_sol`, and optional `reason`, and classified it as admin-only. Verified the tool registry import/assertion succeeds.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py"
+      ],
+      "commands_run": [
+        "python -c \"from src.features.admin_chat import tools\"",
+        "python -m py_compile src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/payments/payment_service.py"
+      ],
+      "evidence_files": [
+        "src/features/admin_chat/tools.py"
+      ],
+      "reviewer_verdict": "Pass. `initiate_payment` is in the tool registry and classified as admin-only."
+    },
+    {
+      "id": "T5",
+      "description": "Inject `source_channel_id` into tool_input in `src/features/admin_chat/agent.py` (~line 409), alongside the existing `guild_id` injection. Read the existing guild_id injection pattern first and replicate it for `channel_context.get('channel_id')` \u2192 `tool_input['source_channel_id']` (int). Guard with `if 'source_channel_id' not in tool_input` to avoid overwriting.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Injected `source_channel_id` from `channel_context['channel_id']` using the same guarded pattern as `guild_id`, without overwriting caller-supplied input.",
+      "files_changed": [
+        "src/features/admin_chat/agent.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/payments/payment_service.py"
+      ],
+      "evidence_files": [
+        "src/features/admin_chat/agent.py"
+      ],
+      "reviewer_verdict": "Pass. `source_channel_id` injection is implemented next to the existing guild-context injection."
+    },
+    {
+      "id": "T6",
+      "description": "Implement `execute_initiate_payment(bot, db_handler, tool_input)` in `src/features/admin_chat/tools.py` and wire the dispatcher case in `execute_tool` (~line 2986). The function must: (1) validate recipient_user_id (int), amount_sol (> 0), guild_id, source_channel_id \u2014 fail closed on any missing/invalid; (2) check `get_active_intent_for_recipient` \u2014 return existing intent info if duplicate; (3) generate `producer_ref = f\"{guild_id}_{recipient_user_id}_{int(time.time())}\"`. Path A (wallet on file via `get_wallet`): create intent with `status='awaiting_test'`, call `cog._start_admin_payment_flow(channel, intent)`. Path B (no wallet): create intent with `status='awaiting_wallet'`, send channel ping `\"<@{recipient_user_id}> \u2014 a payment of {amount_sol} SOL has been initiated for you. Please reply with your Solana wallet address.\"`, store `prompt_message_id`. Keep under ~80 lines.",
+      "depends_on": [
+        "T2",
+        "T3",
+        "T4",
+        "T5"
+      ],
+      "status": "done",
+      "executor_notes": "Implemented `execute_initiate_payment` and wired it into the admin-chat dispatcher. Verified fail-closed validation for missing/invalid guild/channel/user/amount and missing payment service, duplicate intent short-circuiting, verified-wallet handoff, and the no-wallet prompt path with `prompt_message_id` persistence.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py"
+      ],
+      "commands_run": [
+        "python -c \"from src.features.admin_chat import tools\"",
+        "python -m py_compile src/features/admin_chat/tools.py",
+        "python -m pytest tests/test_social_route_tools.py -x",
+        "python - <<'PY' ... no-wallet / duplicate / missing-service harness ... PY",
+        "python - <<'PY' ... verified-wallet handoff harness ... PY"
+      ],
+      "evidence_files": [
+        "src/features/admin_chat/tools.py"
+      ],
+      "reviewer_verdict": "Pass. The executor validates inputs, dedupes active intents, persists no-wallet prompts, and hands off wallet-on-file flows."
+    },
+    {
+      "id": "T7",
+      "description": "Add the reply interceptor and payment flow helpers to `src/features/admin_chat/admin_chat_cog.py`. This is the core of the feature. Read the file first to understand the `on_message` structure, then:\n\n(A) Add `self._processing_intents: set = set()` and a standalone `self._classifier_client = AsyncAnthropic(api_key=...)` in `__init__` (solves FLAG-ADMIN-PAY-005 \u2014 do NOT depend on `_ensure_agent()`).\n\n(B) Add `_check_pending_payment_reply(self, message)` called at the VERY TOP of `on_message`, before `_is_directed_at_bot()`. Fast exit if `message.author.bot` or `message.guild is None`. Deterministic identity gate: `get_active_intent_for_recipient(guild_id, channel_id, author_id)`. Race guard via `_processing_intents` set. Branch on status:\n- `awaiting_wallet`: try `is_valid_solana_address(message.content.strip())` first (deterministic). If invalid, run lightweight LLM classification with `_classifier_client` (categories: wallet_provided, declined, ambiguous, suspicious). On valid wallet \u2192 `_handle_wallet_received`. On declined \u2192 cancel intent. On ambiguous/suspicious \u2192 fail closed, tag admin.\n- `awaiting_confirmation`: LLM classification (positive_confirmation, declined, ambiguous, suspicious). On positive \u2192 `_handle_confirmation_received`. On declined \u2192 cancel. On ambiguous/suspicious \u2192 fail closed, tag admin.\n\n(C) Add `_handle_wallet_received(self, message, intent, wallet_address)`: upsert_wallet \u2192 update intent to `awaiting_test` with `resolved_by_message_id` \u2192 call `_start_admin_payment_flow`.\n\n(D) Add `_start_admin_payment_flow(self, channel, intent)`: resolve destinations via `server_config.resolve_payment_destinations(guild_id, channel.id, 'admin_chat')`. Call `payment_service.request_payment(producer='admin_chat', producer_ref=..., is_test=True, metadata={'intent_id': ...})`. Auto-confirm test: `confirm_payment(test_id, confirmed_by='auto', ...)`. Update intent `test_payment_id`. On failure: intent \u2192 failed, tag admin.\n\n(E) Add `_handle_confirmation_received(self, message, intent)`: call `confirm_payment(final_payment_id, confirmed_by='free_text', confirmed_by_user_id=message.author.id)`. Update intent \u2192 confirmed, set resolved_by_message_id. On failure: tag admin.\n\nReference `src/features/grants/grants_cog.py:550-710` for the exact pattern.",
+      "depends_on": [
+        "T6"
+      ],
+      "status": "done",
+      "executor_notes": "Added the admin-payment reply interceptor at the top of `on_message`, plus the standalone classifier client, wallet/confirmation handlers, and test-payment starter flow. Verified the module compiles/imports, existing scheduler/admin-chat tests still pass, and a focused runtime harness confirmed interception order, classifier independence from `self.agent`, fail-closed ambiguous handling, admin tagging, and `_processing_intents` cleanup.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py",
+        "python -c \"from src.features.admin_chat.admin_chat_cog import AdminChatCog\"",
+        "python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x",
+        "python - <<'PY' ... AdminChatCog interception-order / ambiguous-reply harness ... PY"
+      ],
+      "evidence_files": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "reviewer_verdict": "Pass. The interceptor, standalone classifier bootstrap, wallet handling, and test-payment starter helpers are implemented in `AdminChatCog`."
+    },
+    {
+      "id": "T8",
+      "description": "Add `handle_payment_result(self, payment)` to `AdminChatCog` in `admin_chat_cog.py`, mirroring `GrantsCog` structure (grants_cog.py:640-714). Guard: producer must be 'admin_chat'. Extract `intent_id` from `payment.metadata`. Fetch intent.\n\nTest confirmed: create final payment via `request_payment(is_test=False, amount_token=requested_amount_sol)`. On success \u2192 update intent to `awaiting_confirmation`, set `final_payment_id`. Post PaymentConfirmView button via `PaymentCog.send_confirmation_request`. Post channel message prompting recipient for free-text confirmation. Update `prompt_message_id`, reset `last_scanned_message_id`.\n\nTest failed: intent \u2192 failed, tag admin, do NOT create final payment.\n\nFinal confirmed: intent \u2192 completed. Post success message with amount and explorer link.\n\nFinal failed: intent \u2192 failed, tag admin.\n\nIMPORTANT (FLAG-ADMIN-PAY-004 resolution): Both button and free-text paths converge here because `_handoff_terminal_result` fires for ALL terminal states. When the button confirms the payment, PaymentCog processes it to terminal, then `_handoff_terminal_result` calls this `handle_payment_result` which updates the intent row. No PaymentConfirmView changes needed.",
+      "depends_on": [
+        "T7"
+      ],
+      "status": "done",
+      "executor_notes": "Added `handle_payment_result` to `AdminChatCog` for admin-chat producer handoff. Verified test-payment failure aborts without creating a final payment, test-payment confirmation creates the final payment with `amount_token`, sends the shared confirmation prompt plus the in-channel free-text prompt, and final confirmed terminal results mark the intent completed and send a success message.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py",
+        "python -c \"from src.features.admin_chat.admin_chat_cog import AdminChatCog\"",
+        "python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x",
+        "python - <<'PY' ... handle_payment_result test-confirmed / test-failed / final-confirmed harness ... PY"
+      ],
+      "evidence_files": [
+        "src/features/admin_chat/admin_chat_cog.py",
+        "src/features/payments/payment_cog.py"
+      ],
+      "reviewer_verdict": "Pass. `handle_payment_result()` converges test/final outcomes and updates the intent state machine correctly."
+    },
+    {
+      "id": "T9",
+      "description": "Add startup reconciliation to `AdminChatCog` in `admin_chat_cog.py`. Add `cog_load(self)` that calls `bot.wait_until_ready()` then `_reconcile_active_intents()`. The reconciler: queries `list_active_intents(guild_id)` for each enabled guild, then for each intent:\n- `awaiting_wallet` / `awaiting_confirmation`: scan channel history from `last_scanned_message_id` (or `prompt_message_id`) forward, up to 200 messages. For each message from recipient, run through the same classification logic as the live interceptor. Update `last_scanned_message_id` cursor.\n- `awaiting_test`: check test payment status via DB. If terminal and unhandled \u2192 call `handle_payment_result` manually.\n- `confirmed`: check final payment status. If terminal \u2192 advance intent.\nRate-limit: max 200 messages per intent per pass. Log and skip if too large.",
+      "depends_on": [
+        "T8"
+      ],
+      "status": "done",
+      "executor_notes": "Added startup reconciliation to `AdminChatCog` via `cog_load()` and a one-pass active-intent reconciler. Verified `wait_until_ready()` runs before reconciliation, history replay is capped at 200 messages with `last_scanned_message_id` updates, missing channels are skipped without crashing, and terminal test/final payments are handed back through `handle_payment_result()` on startup.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py",
+        "python -c \"from src.features.admin_chat.admin_chat_cog import AdminChatCog\"",
+        "python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x",
+        "python - <<'PY' ... cog_load / reconciliation restart harness ... PY"
+      ],
+      "evidence_files": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "reviewer_verdict": "Pass. Startup reconciliation scans active intents, replays missed replies, and re-hands off terminal payments."
+    },
+    {
+      "id": "T10",
+      "description": "Update system prompt in `src/features/admin_chat/agent.py` (~line 61, 'Doing things' section) to document `initiate_payment(recipient_user_id, amount_sol, reason?)` \u2014 amount is in SOL, pings user for wallet if not on file, must be called from guild channel.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Updated the admin system prompt to document `initiate_payment(recipient_user_id, amount_sol, reason?)`, that the amount is in SOL, that missing wallets are requested in-channel, and that the tool must be used from a guild channel.",
+      "files_changed": [
+        "src/features/admin_chat/agent.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/payments/payment_service.py"
+      ],
+      "evidence_files": [
+        "src/features/admin_chat/agent.py"
+      ],
+      "reviewer_verdict": "Pass. The admin system prompt documents the new payment initiation tool and guild-channel requirement."
+    },
+    {
+      "id": "T11",
+      "description": "Update existing test `tests/test_social_route_tools.py`: add `\"initiate_payment\"` to expected admin-only tools subset in `test_route_tools_are_admin_only` (~line 264). Add assertion `assert \"initiate_payment\" in admin_agent.SYSTEM_PROMPT` in `test_agent_prompt_mentions_payment_tools` (~line 413). Read the test file first to find exact locations.",
+      "depends_on": [
+        "T4",
+        "T10"
+      ],
+      "status": "done",
+      "executor_notes": "Updated the existing admin-chat tool test to expect `initiate_payment` in the admin-only tool set and to assert it is documented in the admin system prompt. Verified the full `tests/test_social_route_tools.py` module passes.",
+      "files_changed": [
+        "tests/test_social_route_tools.py"
+      ],
+      "commands_run": [
+        "python -m pytest tests/test_social_route_tools.py -x",
+        "python -m py_compile src/common/db_handler.py tests/test_social_route_tools.py"
+      ],
+      "evidence_files": [
+        "tests/test_social_route_tools.py"
+      ],
+      "reviewer_verdict": "Pass. Existing admin-chat tool tests were updated to include `initiate_payment` and its prompt documentation."
+    },
+    {
+      "id": "T12",
+      "description": "Create `tests/test_admin_payments.py` with comprehensive tests. Must cover all 13 test cases from Step 13:\n1. `test_initiate_payment_wallet_on_file` \u2014 wallet exists \u2192 intent created awaiting_test, test payment created with producer='admin_chat'\n2. `test_initiate_payment_no_wallet` \u2014 no wallet \u2192 intent awaiting_wallet, channel ping sent\n3. `test_initiate_payment_validation` \u2014 bad user ID, amount <= 0, missing guild/channel each return success=False\n4. `test_initiate_payment_duplicate_intent` \u2014 existing active intent \u2192 no duplicate created\n5. `test_wallet_reply_valid` \u2014 valid Solana address reply \u2192 upsert_wallet called, intent \u2192 awaiting_test\n6. `test_wallet_reply_invalid_then_classified` \u2014 invalid address, agent says ambiguous \u2192 admin tagged\n7. `test_wallet_reply_no_intent` \u2014 no active intent \u2192 returns False\n8. `test_handle_payment_result_test_confirmed` \u2014 test confirmed \u2192 final payment created with amount_token, send_confirmation_request called\n9. `test_handle_payment_result_test_failed` \u2014 test failed \u2192 no final payment, intent \u2192 failed\n10. `test_confirmation_reply` \u2014 positive confirmation \u2192 confirm_payment called on final payment\n11. `test_concurrent_intents_same_channel` \u2014 two recipients, correct intent matched\n12. `test_request_payment_amount_token` \u2014 PaymentService amount_token parameter works\n13. `test_startup_reconciliation` \u2014 active intent + channel history \u2192 intent advanced\n\nMock PaymentService, db_handler, bot, Discord channel/message objects. Use the existing test patterns from tests/test_scheduler.py and tests/test_social_route_tools.py.",
+      "depends_on": [
+        "T6",
+        "T7",
+        "T8",
+        "T9"
+      ],
+      "status": "done",
+      "executor_notes": "Created `tests/test_admin_payments.py` with all 13 requested cases covering tool initiation, wallet collection, free-text confirmation, terminal payment handoff, concurrent recipient gating, `amount_token`, and startup reconciliation. Verified the full new module passes and that the existing related test modules still pass unchanged.",
+      "files_changed": [
+        "tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "python -m py_compile tests/test_admin_payments.py",
+        "python -m pytest tests/test_admin_payments.py -x",
+        "python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x"
+      ],
+      "evidence_files": [
+        "tests/test_admin_payments.py"
+      ],
+      "reviewer_verdict": "Pass. The new admin payment test module contains the requested 13 cases and passes in review."
+    },
+    {
+      "id": "T13",
+      "description": "Run the full test suite and fix any failures. Execute in order: (1) `python -c \"from src.features.admin_chat import tools\"` \u2014 tool classification assertion. (2) `python -m pytest tests/test_admin_payments.py -x` \u2014 new tests. (3) `python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x` \u2014 existing tests. (4) `python -m pytest tests/ -x` \u2014 full suite. If any test fails, read the error, fix the code, and re-run until all pass.",
+      "depends_on": [
+        "T11",
+        "T12"
+      ],
+      "status": "done",
+      "executor_notes": "Ran the required validation commands in order: tool import, new admin-payment tests, existing related modules, and the full `tests/` suite. All passed. Also ran a throwaway repro script for restart-safe free-text confirmation recovery and deleted it after confirming the fixed behavior.",
+      "files_changed": [],
+      "commands_run": [
+        "python -c \"from src.features.admin_chat import tools\"",
+        "python -m pytest tests/test_admin_payments.py -x",
+        "python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x",
+        "python -m pytest tests/ -x",
+        "PYTHONPATH=/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc python /tmp/admin_payment_repro.py",
+        "rm /tmp/admin_payment_repro.py"
+      ],
+      "evidence_files": [
+        "tests/test_admin_payments.py",
+        "tests/test_social_route_tools.py",
+        "tests/test_scheduler.py"
+      ],
+      "reviewer_verdict": "Pass. The required validation commands were rerun successfully during review, including the full `tests` suite."
+    }
+  ],
+  "watch_items": [
+    "FLAG-ADMIN-PAY-004: Button-intent sync \u2014 handle_payment_result MUST update intent to confirmed/completed on final-payment terminal states. This is what closes the gap: _handoff_terminal_result fires for ALL terminal states regardless of whether button or free-text was used. Verify this works by checking payment_cog.py:251-299.",
+    "FLAG-ADMIN-PAY-005: Anthropic client bootstrap \u2014 the interceptor (_check_pending_payment_reply) fires BEFORE _ensure_agent(). Create a standalone AsyncAnthropic client in AdminChatCog.__init__ for classification, independent of AdminChatAgent. Do NOT call _ensure_agent() from the interceptor.",
+    "DEBT admin-payments-intent-state: The button path does not directly update admin_payment_intents \u2014 it goes PaymentConfirmView \u2192 confirm_payment \u2192 PaymentCog processes to terminal \u2192 _handoff_terminal_result \u2192 handle_payment_result \u2192 updates intent. This indirect path is correct but must be verified end-to-end.",
+    "Duplicate terminal messages: PaymentCog._handle_terminal_payment() posts a generic notify message BEFORE calling _handoff_terminal_result. AdminChatCog.handle_payment_result may post its own message. Ensure these go to different channels/threads or that the producer-specific message adds value beyond the generic one.",
+    "The unique index on payment_requests (producer, producer_ref, is_test) WHERE status NOT IN ('failed','cancelled') means producer_ref must be unique per active payment. The timestamp-based ref strategy must not collide if the admin initiates two payments within the same second \u2014 consider using a UUID suffix if needed.",
+    "Race condition: _processing_intents set prevents double-processing of the same intent reply. Ensure it's used with try/finally to always clean up.",
+    "Startup recovery must be rate-limited: max 200 messages per intent per reconciliation pass. Don't scan channels with very old unresolved intents indefinitely.",
+    "The classifier prompt must be concise and return structured output (JSON with category field). Use the same model as admin chat but with a very short system prompt focused only on classification."
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Does the SQL file follow the idempotent pattern from payments.sql (CREATE TABLE IF NOT EXISTS, trigger function, RLS, revoke from anon/authenticated)? Are all three indexes present: unique active-intent per (guild, channel, recipient), status lookup, and interceptor lookup?",
+      "executor_note": "Confirmed the new SQL uses `create table if not exists`, reuses the shared updated_at trigger function, enables RLS, revokes anon/authenticated access, and includes the active-intent unique index plus the two guild/channel status lookup indexes.",
+      "verdict": "Confirmed via direct SQL inspection."
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Do all five CRUD methods use _gate_check(guild_id) and check self.supabase? Does get_active_intent_for_recipient filter by status NOT IN ('completed', 'failed', 'cancelled') and LIMIT 1?",
+      "executor_note": "Confirmed all five new intent methods gate on `_gate_check(guild_id)` and return `None` or `[]` if `self.supabase` is unavailable. `get_active_intent_for_recipient` applies `NOT IN ('completed', 'failed', 'cancelled')` and `.limit(1)`.",
+      "verdict": "Confirmed via direct `db_handler.py` inspection."
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Does the amount_token branch set normalized_amount_usd=None and token_price_usd=None? Is the existing is_test branch and amount_usd branch completely unchanged? Does the CHECK constraint on payment_requests allow null amount_usd for non-test payments?",
+      "executor_note": "Confirmed the new non-test `amount_token` branch sets `normalized_amount_usd=None` and `token_price_usd=None`, sits between the unchanged `is_test` and `amount_usd` branches, and the existing `payment_requests` check constraint already permits null `amount_usd` for non-test rows.",
+      "verdict": "Confirmed via direct `payment_service.py` inspection and test rerun."
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Does `python -c 'from src.features.admin_chat import tools'` succeed without assertion errors? Is initiate_payment in ADMIN_ONLY_TOOLS but NOT in MEMBER_TOOLS? Does the tool schema have exactly recipient_user_id, amount_sol, reason (no wallet_address)?",
+      "executor_note": "Verified `python -c \"from src.features.admin_chat import tools\"` exits cleanly, `initiate_payment` is only in `ADMIN_ONLY_TOOLS`, and the schema exposes only `recipient_user_id`, `amount_sol`, and optional `reason`.",
+      "verdict": "Confirmed via tool import rerun and tool registry inspection."
+    },
+    {
+      "id": "SC5",
+      "task_id": "T5",
+      "question": "Is source_channel_id injected as int from channel_context['channel_id']? Does the guard prevent overwriting if source_channel_id is already in tool_input? Does it match the existing guild_id injection pattern?",
+      "executor_note": "Confirmed `source_channel_id` is injected as `int(channel_context['channel_id'])`, uses an existence guard to avoid overwriting, and mirrors the adjacent `guild_id` injection pattern.",
+      "verdict": "Confirmed via `agent.py` inspection."
+    },
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "question": "Does the executor fail closed on: missing guild_id, missing source_channel_id, invalid recipient_user_id, amount_sol <= 0, missing payment_service? Does it return existing intent info on duplicate? Is the channel ping sent for no-wallet path with prompt_message_id stored?",
+      "executor_note": "Confirmed the executor fails closed for missing or invalid `guild_id`, `source_channel_id`, `recipient_user_id`, non-positive `amount_sol`, and missing `payment_service`; returns existing intent info on duplicate; and in the no-wallet path sends the channel prompt and persists `prompt_message_id`.",
+      "verdict": "Confirmed via `execute_initiate_payment()` inspection and passing validation tests."
+    },
+    {
+      "id": "SC7",
+      "task_id": "T7",
+      "question": "Does _check_pending_payment_reply fire BEFORE _is_directed_at_bot in on_message? Does the classifier use its own Anthropic client (not self.agent)? Does every non-positive classification path (ambiguous, suspicious) fail closed and tag admin? Is the _processing_intents guard used with try/finally?",
+      "executor_note": "Confirmed `_check_pending_payment_reply` now runs before `_is_directed_at_bot`, the classifier uses its own `AsyncAnthropic` client stored on `self._classifier_client`, ambiguous or suspicious replies fail closed with an admin tag, and `_processing_intents` is managed with `try/finally` so it always clears.",
+      "verdict": "Confirmed via `AdminChatCog` inspection."
+    },
+    {
+      "id": "SC8",
+      "task_id": "T8",
+      "question": "Does handle_payment_result update the intent row to 'confirmed' on final-confirmed and 'completed' after final payment succeeds? Does test-failed abort without creating final payment? Does test-confirmed create the final payment with amount_token (not amount_usd)?",
+      "executor_note": "Confirmed the test-payment terminal handler creates the final payment with `amount_token=float(intent['requested_amount_sol'])`, leaves `amount_usd` unused, updates the intent to `awaiting_confirmation` with `final_payment_id`, and test-payment failures stop the flow without creating a final payment. Confirmed final-payment terminal success updates the intent to `completed`; the earlier free-text confirmation path still sets `status='confirmed'` before terminal settlement.",
+      "verdict": "Confirmed via `handle_payment_result()` inspection and passing tests."
+    },
+    {
+      "id": "SC9",
+      "task_id": "T9",
+      "question": "Does cog_load call wait_until_ready() before reconciliation? Is channel history scanning limited to 200 messages? Are last_scanned_message_id cursors updated after scanning? Does it handle missing channels gracefully?",
+      "executor_note": "Confirmed `cog_load()` calls `wait_until_ready()` before `_reconcile_active_intents()`, history scans use a hard `limit=200`, `last_scanned_message_id` is persisted after replay, and missing channels are logged and skipped without crashing reconciliation.",
+      "verdict": "Confirmed via reconciliation code inspection and passing reconciliation test."
+    },
+    {
+      "id": "SC10",
+      "task_id": "T10",
+      "question": "Does the system prompt mention amount_sol (not amount_usd), that the tool pings users for wallet if not on file, and that it must be called from a guild channel?",
+      "executor_note": "Confirmed the system prompt now names `amount_sol`, says the tool pings the user for a wallet when none is on file, and says the action starts from a guild channel.",
+      "verdict": "Confirmed via `SYSTEM_PROMPT` inspection."
+    },
+    {
+      "id": "SC11",
+      "task_id": "T11",
+      "question": "Is 'initiate_payment' added to the expected admin-only tools subset? Is there an assertion that 'initiate_payment' appears in the system prompt?",
+      "executor_note": "Confirmed `initiate_payment` is in the expected admin-only subset and the existing prompt test now asserts that `initiate_payment` appears in `admin_agent.SYSTEM_PROMPT`.",
+      "verdict": "Confirmed via `test_social_route_tools.py` inspection."
+    },
+    {
+      "id": "SC12",
+      "task_id": "T12",
+      "question": "Are all 13 test cases present and do they test the correct assertions? Do mocks properly isolate DB, PaymentService, and Discord API? Do concurrent intent tests verify correct identity-gated matching?",
+      "executor_note": "Confirmed the new module contains all 13 requested test cases, uses isolated fake DB/payment/Discord/classifier objects, and includes a same-channel multi-recipient test that verifies identity-gated intent matching by recipient user ID before any semantic handling.",
+      "verdict": "Confirmed via `tests/test_admin_payments.py` inspection and rerun."
+    },
+    {
+      "id": "SC13",
+      "task_id": "T13",
+      "question": "Do all four validation commands pass: tool import, new tests, existing tests, full suite? Are there zero test failures?",
+      "executor_note": "Confirmed all four validation commands passed: tool import, new tests, existing related tests, and the full `tests/` suite. The additional restart-recovery repro script also passed, and there were zero test failures.",
+      "verdict": "Confirmed via rerunning the import check, targeted tests, and full test suite."
+    }
+  ],
+  "meta_commentary": "This is a large feature spanning 7+ files with a persisted state machine, async reply interception, LLM classification, and startup recovery. Key execution guidance:\n\n**Biggest risk: the Anthropic client bootstrap.** The interceptor fires before _ensure_agent(), so self.agent may be None. The executor MUST create a standalone AsyncAnthropic client in AdminChatCog.__init__ for classification. Do NOT use self.agent.client or call _ensure_agent() from the interceptor \u2014 that would trigger full agent initialization on every non-bot message in a channel with an active intent.\n\n**Button-intent sync is already solved by the existing architecture.** The gate disputed FLAG-ADMIN-PAY-004 but the resolution is correct: _handoff_terminal_result (payment_cog.py:269-299) fires for ALL terminal states, regardless of whether the button or free-text confirmed the payment. handle_payment_result will be called either way and can update the intent row. No PaymentConfirmView changes needed.\n\n**Producer name 'admin_chat' auto-discovers AdminChatCog.** Verified: _candidate_producer_cog_names('admin_chat') generates ['AdminChatCog', ...]. Zero changes to PaymentCog needed for producer routing.\n\n**Duplicate terminal messages concern.** PaymentCog posts a generic notify before _handoff_terminal_result. The producer-specific message from handle_payment_result should go to the same channel but add admin-payment-specific context (intent status, recipient ping). This is the same pattern GrantsCog uses \u2014 the grant-specific message goes to the grant thread while PaymentCog's generic goes to the notify channel. If resolve_payment_destinations returns the same channel for both, the executor should ensure the producer-specific message adds enough value to justify the duplication, or skip it when destinations overlap.\n\n**T4-T5-T10 can run in parallel** with T1-T2-T3 since they touch different files. The executor should do Phase 1 (T1-T3) and the independent tool/prompt work (T4-T5-T10) concurrently, then T6 after both complete.\n\n**Classification prompt design.** Keep it very short: system prompt defining the 5 categories with one-line descriptions, user message is the raw reply text plus brief context (what we asked for). Return JSON `{\"category\": \"...\", \"extracted_address\": \"...\"}`. Use the same model as admin chat. The classification is a single API call, not a chat turn.",
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Step 1: Create admin_payment_intents SQL table with state machine, cursors, indexes",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 2: Add intent CRUD methods to db_handler.py",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 3: Extend PaymentService.request_payment with amount_token parameter",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 4: Add initiate_payment tool schema to TOOLS list and ADMIN_ONLY_TOOLS",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 5: Inject source_channel_id into tool_input in agent.py",
+        "finalize_task_ids": [
+          "T5"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 6: Implement execute_initiate_payment and wire dispatcher",
+        "finalize_task_ids": [
+          "T6"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 7: Add reply interceptor to AdminChatCog.on_message with deterministic identity gating and agent classification",
+        "finalize_task_ids": [
+          "T7"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 8: Implement shared payment flow helpers (_handle_wallet_received, _start_admin_payment_flow, _handle_confirmation_received)",
+        "finalize_task_ids": [
+          "T7"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 9: Add handle_payment_result to AdminChatCog for test\u2192final escalation and terminal callbacks",
+        "finalize_task_ids": [
+          "T8"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 10: Add startup reconciliation via cog_load and _reconcile_active_intents",
+        "finalize_task_ids": [
+          "T9"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 11: Update system prompt to document initiate_payment",
+        "finalize_task_ids": [
+          "T10"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 12: Update existing tests (test_social_route_tools.py)",
+        "finalize_task_ids": [
+          "T11"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 13: Add new test file tests/test_admin_payments.py with 13 test cases",
+        "finalize_task_ids": [
+          "T12"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 14: Run full test suite and validate",
+        "finalize_task_ids": [
+          "T13"
+        ]
+      }
+    ],
+    "orphan_tasks": [],
+    "completeness_notes": "Steps 7 and 8 from the plan are merged into task T7 because they both modify the same file (admin_chat_cog.py) and the helpers are tightly coupled to the interceptor. All 14 plan steps are covered. The plan's execution order (foundation \u2192 tool \u2192 interceptor \u2192 recovery \u2192 tests) is preserved in task dependencies.",
+    "coverage_complete": true
+  }
+}

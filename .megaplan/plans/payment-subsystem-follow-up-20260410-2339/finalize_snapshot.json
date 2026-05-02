@@ -1,0 +1,350 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Create PaymentActor vocabulary and PRODUCER_FLOWS registry. In src/features/payments/payment_service.py add PaymentActorKind(str, Enum) with RECIPIENT_CLICK/RECIPIENT_MESSAGE/AUTO/ADMIN_DM and a PaymentActor dataclass(kind, actor_id: Optional[int]). Export both. Create new file src/features/payments/producer_flows.py with frozen ProducerFlow dataclass (test_confirmed_by: frozenset[PaymentActorKind], real_confirmed_by: frozenset[PaymentActorKind], thread_cleanup: bool=False, notify_admin_dm_on_approval: bool=False) and PRODUCER_FLOWS dict with grants=({AUTO},{RECIPIENT_CLICK}) and admin_chat=({AUTO},{RECIPIENT_CLICK,RECIPIENT_MESSAGE}). get_flow(producer) raises KeyError on unknown. thread_cleanup/notify_admin_dm_on_approval fields are declarative-only \u2014 NOT read in this plan.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T2",
+      "description": "Rewrite PaymentService.confirm_payment (src/features/payments/payment_service.py:302) to signature (payment_id, *, actor: PaymentActor, guild_id=None). Drop confirmed_by/confirmed_by_user_id/privileged_override params and delete the privileged_override branch entirely. Add private _authorize_actor(payment, actor)->bool that: (a) resolves flow via get_flow \u2014 unknown producer returns False + WARNING, (b) picks test vs real set from is_test, (c) checks actor.kind in allowed, (d) for RECIPIENT_CLICK/RECIPIENT_MESSAGE preserves hardening null-fail-closed (recipient_discord_id not None AND actor_id not None AND int equality), (e) for ADMIN_DM checks actor.actor_id == int(os.getenv('ADMIN_USER_ID')) with null-fail-closed on both sides, (f) for AUTO no identity check beyond set membership. Persist confirmed_by=actor.kind.value, confirmed_by_user_id=actor.actor_id via existing mark_payment_confirmed_by_user. Log rejects at WARNING in same shape as existing line 322 log. DO NOT touch request_payment cap enforcement or canonical_row collision defense.",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T3",
+      "description": "Update four confirm_payment call sites to pass PaymentActor. (1) src/features/payments/payment_cog.py:43-71 PaymentConfirmView._confirm_button_pressed \u2014 remove manual recipient check at lines 57-63, call confirm_payment(actor=PaymentActor(RECIPIENT_CLICK, interaction.user.id)). IMPORTANT FLAG-003: confirm_payment can return None for BOTH auth failure AND backend failures (DB update, unknown producer). To preserve current user-visible wording, keep a cheap pre-check: if interaction.user.id != payment['recipient_discord_id'] send 'Only the intended recipient can confirm this payment.' ephemerally WITHOUT calling the service; only call the service when the ids match, and on None from the service send the existing generic 'I couldn't queue that payment.' message. This preserves the current two-message distinction. (2) src/features/admin_chat/admin_chat_cog.py:284-309 _handle_confirmation_received \u2014 pass PaymentActor(RECIPIENT_MESSAGE, message.author.id). (3) src/features/grants/grants_cog.py:605-610 \u2014 pass PaymentActor(AUTO, grant['applicant_id']). (4) src/features/admin_chat/admin_chat_cog.py:269-274 auto-confirm \u2014 pass PaymentActor(AUTO, intent['recipient_user_id']). After edits, grep 'privileged_override' under src/ and tests/ \u2014 must return empty.",
+      "depends_on": [
+        "T2"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T4",
+      "description": "Add tx_signature_history column in sql/payments.sql. After line 112 inside the payment_requests CREATE TABLE body (well below the RLS preamble lines 1-7, which MUST stay untouched) add: tx_signature_history jsonb not null default '[]'::jsonb,. Append idempotent migration: alter table public.payment_requests add column if not exists tx_signature_history jsonb not null default '[]'::jsonb; plus backfill update ... set tx_signature_history = jsonb_build_array(jsonb_build_object('signature', tx_signature, 'status', status, 'timestamp', coalesce(completed_at, submitted_at, updated_at), 'reason', 'backfill', 'send_phase', send_phase)) where tx_signature is not null and jsonb_array_length(tx_signature_history) = 0;. Leave uq_payment_requests_tx_signature index at line 137 untouched.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T5",
+      "description": "Append tx_signature_history on every attempt in src/common/db_handler.py. Add standalone private method _append_tx_signature_history(payment_id, entry, *, guild_id=None) using SQL tx_signature_history = tx_signature_history || $entry::jsonb (called after primary update \u2014 simpler than merging into _update_payment_request_record). In requeue_payment at db_handler.py:2142-2162, BEFORE the update that sets tx_signature=None, read current row and append {signature, status:'failed', timestamp:now, reason:'requeue', send_phase}. Keep the 'tx_signature': None line as-is. Grep tx_signature assignments in db_handler.py and append history at each concrete write: mark_payment_submitted \u2192 {reason:'submit'}; mark_payment_confirmed (or equivalents) \u2192 {reason:'confirm'}. Consistent entry shape {signature,status,timestamp,reason,send_phase} across all writes. Audit-only, no code reads it back.",
+      "depends_on": [
+        "T4"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T6",
+      "description": "Add safe_delete_messages primitive in src/common/discord_utils.py. Append a DeleteCounts dataclass(deleted:int, skipped:int, errored:int) and async def safe_delete_messages(channel, message_ids: Iterable[int], *, logger: logging.Logger) -> DeleteCounts. Per id: channel.fetch_message(id) then .delete(). Handle: discord.NotFound \u2192 skipped+=1; discord.Forbidden \u2192 errored+=1 and log once per call at WARNING; discord.HTTPException with status 429 \u2192 await asyncio.sleep(getattr(exc,'retry_after',1.0)) then retry once and count final outcome; other discord.HTTPException or AttributeError \u2192 errored+=1 and log. Never raise out of the helper. Pre-check: channel is None \u2192 return DeleteCounts(0, len(list(message_ids)), 0). MUST land before T7 because PaymentWorkerCog imports it.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T7",
+      "description": "Extract PaymentWorkerCog into new file src/features/payments/payment_worker_cog.py. Move from payment_cog.py: payment_worker loop, _before_payment_worker, _ensure_startup_sync, _bot_is_ready, _recover_inflight_payments, _process_claimed_payment, _handle_terminal_payment, _handoff_terminal_result, _flush_pending_terminal_handoffs, _dm_admin_payment_success, _dm_admin_payment_failure, _notify_payment_result, _candidate_producer_cog_names, _resolve_destination, _send_message, _build_result_message, _token_label, _get_writable_guild_ids, _is_terminal, and the _pending_terminal_handoffs/_replayed_pending_handoffs state. Move admin success-DM instance state: self._admin_success_dm_threshold_usd and self._admin_success_dm_providers (env reads in __init__). PRESERVE the conditional branch in _handle_terminal_payment that calls _dm_admin_payment_success when status='confirmed' and not is_test and provider in providers set and amount_usd >= threshold \u2014 hardening behavior, do not simplify. Copy (do NOT consolidate) the _redact_wallet helper into the new file. Wire safe_delete_messages: at end of _handle_terminal_payment after _notify_payment_result completes, resolve the terminal payment's channel via _resolve_destination and call await safe_delete_messages(channel, payment.get('metadata', {}).get('cleanup_message_ids') or [], logger=logger). Empty list today = verified no-op, admin-DM feature will populate later.",
+      "depends_on": [
+        "T3",
+        "T6"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T8",
+      "description": "Extract PaymentUICog into new file src/features/payments/payment_ui_cog.py. Move PaymentConfirmView (payment_cog.py:27-103), send_confirmation_request (payment_cog.py:219), _register_pending_confirmation_views (payment_cog.py:189-206), _build_confirmation_message. Register persistent views in PaymentUICog.cog_load which calls _register_pending_confirmation_views \u2014 runs before on_ready so restart safety is preserved. Grep ALL call sites of bot.get_cog('PaymentCog').send_confirmation_request and send_confirmation_request \u2014 update each to bot.get_cog('PaymentUICog').send_confirmation_request (e.g., admin_chat_cog.py:390-393). Expose bot.payment_ui_cog attribute for ergonomics mirroring bot.payment_service.",
+      "depends_on": [
+        "T3"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T9",
+      "description": "Retarget startup wiring and delete payment_cog.py. CRITICAL: update main.py:65-77 _bind_cap_breach_dm \u2014 replace bot.get_cog('PaymentCog') with bot.get_cog('PaymentWorkerCog'), update hasattr check to hasattr(payment_worker_cog, '_dm_admin_payment_failure'), update warning log string from 'PaymentCog' to 'PaymentWorkerCog'. Callback must fire _dm_admin_payment_failure on the worker cog. Without this, hardening cap-breach DM stops working. Register BOTH PaymentWorkerCog and PaymentUICog in main.py where PaymentCog was registered. Grep main.py, src/, tests/ for any other get_cog('PaymentCog') / bot.payment_cog references and retarget each to worker vs UI based on the method being called. Grep for 'from src.features.payments.payment_cog' and fix each import. Delete src/features/payments/payment_cog.py \u2014 no compat shim.",
+      "depends_on": [
+        "T7",
+        "T8"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T10",
+      "description": "Migrate existing tests to new PaymentActor API and new cog names. Grep tests/ for confirm_payment and privileged_override \u2014 migrate each call to actor=PaymentActor(...). Delete local permission checks inside fakes (FakeAdminPaymentCog, FakeFlowCog) \u2014 authorization now lives in real PaymentService. Fakes that patched bot.get_cog('PaymentCog') must stub PaymentWorkerCog and/or PaymentUICog as appropriate per test. Keep all user-visible assertions unchanged. Touches tests/test_admin_payments.py, tests/conftest.py, tests/test_caller_paths.py at minimum.",
+      "depends_on": [
+        "T9"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T11",
+      "description": "Add targeted new test files. (1) tests/test_payment_authorization.py \u2014 unit suite over PaymentService.confirm_payment covering: recipient_click wrong id \u2192 None; recipient_click right id \u2192 confirms; recipient_message against grants (not in set) \u2192 None; recipient_message against admin_chat \u2192 confirms; recipient_click against admin_chat \u2192 confirms (both branches of the set honored); null recipient_discord_id with recipient-kind actor \u2192 None (hardening null-fail-closed); auto on non-test payment \u2192 None; auto on test payment for grants \u2192 confirms; admin_dm wrong id \u2192 None; admin_dm right id against permitting flow \u2192 confirms; unknown producer \u2192 None + WARNING log. (2) tests/test_tx_signature_history.py \u2014 verifies requeue_payment appends entry with prior signature and reason='requeue', blanks the pointer; two submit\u2192requeue cycles produce two history entries; uses in-memory fake db_handler. (3) tests/test_safe_delete_messages.py \u2014 FakeChannel raising NotFound/Forbidden/HTTPException(429)/generic HTTPException; assert counts and no exception escapes; include channel=None case. (4) tests/test_payment_cog_split.py \u2014 minimal bot harness registering both cogs with seeded pending_confirmation payment; asserts bot.add_view was called (restart safety); also asserts _bind_cap_breach_dm wiring resolves PaymentWorkerCog and routes a fake cap-breach event to _dm_admin_payment_failure. (5) tests/test_terminal_cleanup_wiring.py \u2014 boots PaymentWorkerCog with stub safe_delete_messages and stub _notify_payment_result; feeds terminal payment with metadata.cleanup_message_ids=[101,102] and asserts safe_delete_messages called with those ids; also asserts empty/missing list \u2192 no-op call (proves no-behavior-change claim).",
+      "depends_on": [
+        "T10"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T12",
+      "description": "Run full validation suite in ordered slices and fix until green. (1) pytest tests/test_payment_authorization.py tests/test_tx_signature_history.py tests/test_safe_delete_messages.py tests/test_payment_cog_split.py tests/test_terminal_cleanup_wiring.py -x. (2) pytest tests/test_admin_payments.py tests/test_caller_paths.py -x. (3) Full pytest run \u2014 must be green. Final greps (must return empty): grep -r 'privileged_override' src/ tests/; grep -r \"get_cog('PaymentCog')\" src/ tests/ main.py; grep -r 'from src.features.payments.payment_cog' src/ tests/ main.py. Write a throwaway script that (a) instantiates PaymentService with fake db, (b) calls confirm_payment with PaymentActor(RECIPIENT_CLICK) wrong-id on a grants payment and asserts None, (c) calls again with right id and asserts confirms, to manually prove the FLAG-003 and authorization consolidation \u2014 then delete the script. If any test fails, read the error, fix the code, re-run; do NOT create new test files beyond those in T11.",
+      "depends_on": [
+        "T11"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    }
+  ],
+  "watch_items": [
+    "FLAG-003 still OPEN: confirm_payment returns None for both auth-fail and backend-fail. T3 MUST keep the explicit recipient-id pre-check in PaymentConfirmView so the 'Only the intended recipient can confirm this payment.' message is only shown on auth mismatch, and the generic 'I couldn't queue that payment.' message is still shown on other None returns. Do not remove the pre-check naively as the plan text suggests.",
+    "Hardening invariant: PaymentService.request_payment cap enforcement (per_payment_usd_cap, daily_usd_cap, capped_providers, on_cap_breach, _emit_cap_breach at ~lines 38-51, 117, 173-273, 545-546) is OUT OF SCOPE. Do not touch. Cleanup only rewrites confirm_payment.",
+    "Hardening invariant: idempotency collision / canonical_row / canonical_wallet-swap defense in request_payment (~lines 283-300) must remain untouched.",
+    "Hardening invariant: null-recipient fail-closed in confirm_payment (current line 321) must be preserved by _authorize_actor for all recipient-kind actors. Null recipient_discord_id OR null actor_id \u2192 reject.",
+    "Hardening invariant: admin success-DM threshold behavior in _handle_terminal_payment (env vars ADMIN_PAYMENT_SUCCESS_DM_THRESHOLD_USD and ADMIN_PAYMENT_SUCCESS_DM_PROVIDERS, instance attributes _admin_success_dm_threshold_usd and _admin_success_dm_providers, _dm_admin_payment_success helper) must move to PaymentWorkerCog exactly as-is.",
+    "Hardening invariant: _bind_cap_breach_dm in main.py:65-77 is THE cap-breach callback resolver. If not retargeted to PaymentWorkerCog in T9, cap-breach admin DMs silently stop working. T11's test_payment_cog_split.py must assert this routing.",
+    "Hardening invariant: RLS documentation preamble at sql/payments.sql:1-7 stays untouched. tx_signature_history column goes INSIDE the table body after line 112.",
+    "Hardening invariant: _redact_wallet helper is duplicated in payment_service.py:17, payment_cog.py:18, db_handler.py:13 \u2014 consolidation is OUT OF SCOPE. T7 must COPY it into payment_worker_cog.py, not DRY it.",
+    "Hardening invariant: admin_chat's dual confirmation paths (button at admin_chat_cog.py:389-402 AND free-text at admin_chat_cog.py:284-309) must BOTH continue to work \u2014 this is why real_confirmed_by is a frozenset, not a single value.",
+    "prompt-injection hardening in admin_chat/tools.py (wallet_registry lookup only) is out of scope \u2014 do not touch.",
+    "solana_client.py and solana_provider.py are explicitly out of scope (separate P0 hotfix batch).",
+    "PaymentActorKind(str, Enum) means confirmed_by column values become recipient_click/recipient_message/auto/admin_dm. Historical rows keep old values (discord/auto/free_text/user) \u2014 this is a log/DB-string rename only, nothing reads these values externally; if that assumption turns out to be wrong, dual-read in _authorize_actor would be the fix.",
+    "PRODUCER_FLOWS thread_cleanup and notify_admin_dm_on_approval fields are declarative-only in this plan \u2014 NOT read by any code. Do not wire them.",
+    "Persistent view restart safety: PaymentUICog.cog_load must call _register_pending_confirmation_views before on_ready. Test in test_payment_cog_split.py asserts bot.add_view was called.",
+    "Debt watch (do not make worse): admin-payments-intent-state \u2014 no direct bridge from PaymentConfirmView to admin_payment_intents; terminal sync goes via handle_payment_result. Splitting the cog must preserve this indirect flow.",
+    "Debt watch (do not make worse): payment-service-confirmation \u2014 null-recipient dm wiring was bundled into previous hardening work. T2's _authorize_actor must preserve null-recipient rejection without breaking any DM side-effects in confirm_payment.",
+    "Metadata key for message-cleanup list defaults to 'cleanup_message_ids'. Will be populated by the future admin-DM feature; today empty for all producers = verified no-op."
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Do PaymentActorKind values serialize to the exact strings 'recipient_click','recipient_message','auto','admin_dm' (so DB writes to confirmed_by work), and is PRODUCER_FLOWS admin_chat.real_confirmed_by a frozenset containing BOTH RECIPIENT_CLICK and RECIPIENT_MESSAGE?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Does _authorize_actor preserve the null-fail-closed for recipient-kind actors (null recipient_discord_id OR null actor_id both reject), require admin_dm actor_id == ADMIN_USER_ID, and fail closed with a WARNING on unknown producer \u2014 while leaving request_payment cap/collision logic completely untouched?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Does PaymentConfirmView still show 'Only the intended recipient can confirm this payment.' ONLY on recipient-id mismatch (via a pre-check) and the generic 'I couldn't queue that payment.' on other None returns, addressing FLAG-003? Does grep 'privileged_override' src/ tests/ return empty?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Is the new tx_signature_history column inside the payment_requests CREATE TABLE body after line 112, is the RLS preamble at lines 1-7 untouched, and is the backfill idempotent (only rewrites where jsonb_array_length=0)?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC5",
+      "task_id": "T5",
+      "question": "Does requeue_payment append a history entry with the prior signature BEFORE blanking tx_signature, and do mark_payment_submitted and mark_payment_confirmed also append entries with consistent shape {signature,status,timestamp,reason,send_phase}?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "question": "Does safe_delete_messages handle NotFound/Forbidden/HTTPException(429 with sleep+retry once)/generic HTTPException/AttributeError/None-channel without ever raising, and does it return accurate DeleteCounts for each case?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC7",
+      "task_id": "T7",
+      "question": "Did ALL listed worker-side methods plus the _admin_success_dm_* state and conditional branch move to PaymentWorkerCog preserving hardening behavior, is _redact_wallet COPIED (not DRYed), and is safe_delete_messages invoked at the end of _handle_terminal_payment against payment.metadata.cleanup_message_ids with the current empty-list no-op semantic intact?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC8",
+      "task_id": "T8",
+      "question": "Does PaymentUICog.cog_load re-register persistent confirmation views before on_ready, and have all external callers of send_confirmation_request been retargeted from PaymentCog to PaymentUICog?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC9",
+      "task_id": "T9",
+      "question": "Is main.py:65-77 _bind_cap_breach_dm retargeted to PaymentWorkerCog (including the warning log string), are both new cogs registered, is payment_cog.py deleted with no compat shim, and do the three final greps (privileged_override, get_cog('PaymentCog'), from src.features.payments.payment_cog) return empty?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC10",
+      "task_id": "T10",
+      "question": "Have all test fakes been updated away from PaymentCog lookups and the old confirm_payment kwargs, with user-visible assertions kept unchanged?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC11",
+      "task_id": "T11",
+      "question": "Do the five new test files together cover: authorization set-membership for both grants and admin_chat branches, null-recipient rejection, unknown-producer rejection, history append across two requeue cycles, all safe_delete_messages error modes, persistent view re-registration on restart, cap-breach routing to PaymentWorkerCog, and the terminal-cleanup empty-list no-op?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC12",
+      "task_id": "T12",
+      "question": "Did the ordered pytest slices and full pytest run all pass, did the three final greps return empty, and did the throwaway script reproducing the auth-mismatch \u2192 None / auth-match \u2192 confirm behavior succeed and get deleted?",
+      "executor_note": "",
+      "verdict": ""
+    }
+  ],
+  "meta_commentary": "Behavior-preserving refactor. Any user-visible change is scope creep \u2014 call it out in the PR rather than landing it silently. Two judgment calls the plan text glosses over that you must get right: (1) FLAG-003 is still OPEN \u2014 the plan's instruction to send the recipient-only message whenever confirm_payment returns None is WRONG because None can also mean backend failure. Keep the explicit pre-check in PaymentConfirmView so the two existing user-visible messages stay distinguishable. (2) _redact_wallet is duplicated in three files and the plan explicitly tells you to copy it into the worker cog rather than consolidate \u2014 do NOT DRY it, that's a different refactor. Execution ordering matters: T6 (safe_delete_messages) MUST land before T7 (PaymentWorkerCog imports it). T3 (retargeting call sites) must land before T7/T8 so the new cogs are built against the new API. T9 deletes payment_cog.py and rewires main.py \u2014 this is the highest-risk moment because main.py:65-77 _bind_cap_breach_dm silently breaks cap-breach admin DMs if you forget to retarget it. The test at T11.4 exists specifically to catch that regression. When writing test_payment_authorization.py, make the fakes operate directly against the real PaymentService \u2014 the whole point of the refactor is that authorization lives there now, so fakes should NOT re-implement auth checks. For tx_signature_history (T5), the in-memory fake db_handler is authoritative for tests \u2014 Supabase is not spun up in the test suite. The schema change at T4 is additive only (default '[]'::jsonb, non-null via default) so it is safe to deploy before the code change. admin_chat has two parallel real-payment confirmation paths (button AND free-text reply) that must both continue to work \u2014 that is why real_confirmed_by is a frozenset, and T11.1 explicitly tests both branches. Keep final responses terse and end the execution turn by running the full validation order from T12.",
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Phase 1 Step 1: Define PaymentActor vocabulary (PaymentActorKind enum + PaymentActor dataclass) in payment_service.py",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 1 Step 2: Create PRODUCER_FLOWS registry in new producer_flows.py with frozenset actor-kind sets and get_flow helper",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 1 Step 3: Rewrite PaymentService.confirm_payment with _authorize_actor reading PRODUCER_FLOWS, preserving hardening invariants and dropping privileged_override",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 1 Step 4: Thin the four confirm_payment call sites (PaymentConfirmView, admin_chat _handle_confirmation_received, grants auto-confirm, admin_chat auto-confirm)",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 2 Step 5: Add tx_signature_history jsonb column and idempotent backfill in sql/payments.sql",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 2 Step 6: Append history entries in db_handler.py \u2014 requeue_payment, mark_payment_submitted, mark_payment_confirmed \u2014 with consistent shape",
+        "finalize_task_ids": [
+          "T5"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 3 Step 7: Extract PaymentWorkerCog including worker loop, terminal handoff, admin success-DM state, _redact_wallet copy, and safe_delete_messages wiring",
+        "finalize_task_ids": [
+          "T7"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 3 Step 8: Extract PaymentUICog with PaymentConfirmView, send_confirmation_request, and cog_load persistent-view re-registration",
+        "finalize_task_ids": [
+          "T8"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 3 Step 9: Retarget main.py _bind_cap_breach_dm to PaymentWorkerCog, register both new cogs, delete payment_cog.py, update all imports and get_cog references",
+        "finalize_task_ids": [
+          "T9"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 4 Step 10: Add safe_delete_messages primitive in discord_utils.py with DeleteCounts and full error handling",
+        "finalize_task_ids": [
+          "T6"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 5 Step 11: Migrate existing tests (test_admin_payments, conftest, test_caller_paths) to PaymentActor API and new cog names",
+        "finalize_task_ids": [
+          "T10"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 5 Step 12: Add targeted new tests \u2014 payment_authorization, tx_signature_history, safe_delete_messages, payment_cog_split (restart+cap-breach wiring), terminal_cleanup_wiring",
+        "finalize_task_ids": [
+          "T11"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 5 Step 13: Run all test suites in order, perform final greps, full pytest green",
+        "finalize_task_ids": [
+          "T12"
+        ]
+      }
+    ],
+    "orphan_tasks": [],
+    "completeness_notes": "All 13 plan steps across 5 phases map to tasks. T1 intentionally bundles Steps 1+2 (the vocabulary and the registry are trivially small and naturally co-located). T6 is ordered before T7 per the plan's explicit execution ordering because PaymentWorkerCog imports safe_delete_messages. FLAG-003 (still open in the flag registry) is explicitly addressed in T3's executor notes and watch_items \u2014 the executor must retain a pre-check in PaymentConfirmView so the two distinct user-visible failure messages continue to differentiate auth-mismatch from backend failure.",
+    "coverage_complete": true
+  },
+  "baseline_test_failures": [],
+  "baseline_test_command": "pytest --tb=no -q --no-header",
+  "baseline_test_note": "Baseline not executed in this finalize step. Executor should run `pytest` once at T12 start to establish current state before completing T12's validation slices, so any pre-existing failures are attributable to the main branch rather than this refactor."
+}

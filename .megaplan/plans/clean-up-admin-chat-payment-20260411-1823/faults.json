@@ -1,0 +1,28 @@
+{
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Admin-chat message lifecycle: the plan reuses `receipt_prompt_message_id` for the single status message, but `PaymentUICog` still posts its own \"queued for sending\" channel update and then deletes `receipt_prompt_message_id` on admin approval. That means the status message would be removed before the final reply, and the flow would still emit an extra public message.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed FLAG-001 by adding a new Step 5 that rewrites `PaymentUICog._post_admin_approval_thread_update` to edit the shared status message instead of sending a new \"queued for sending\" note, and amends `_cleanup_admin_intent_messages` to filter `status_message_id` out of the deletion list so the shared message survives admin approval even when `receipt_prompt_message_id` points at it. Added two new tests for that path and renumbered the test step to Step 6. Addressed FLAG-002 by rewriting Step 2 so the column-absent retry lives inside a nested try inside the existing outer exception handler \u2014 `update_admin_payment_intent` still returns `None` on any non-`status_message_id` failure, preserving the fail-closed caller contract. Updated the test for Step 2 to explicitly verify the None-on-unrelated-errors contract. Expanded the Overview constraints section to call out both flag findings explicitly. No scope growth beyond what's strictly required to make the collapse safe.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "DB handler error contract: Step 2 says unrelated `update_admin_payment_intent` errors should not be swallowed, but this helper currently returns `None` on all failures and many callers rely on that contract for fail-closed recovery. Turning non-`status_message_id` failures into exceptions would bypass existing recovery paths and change behavior far outside this feature.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed FLAG-001 by adding a new Step 5 that rewrites `PaymentUICog._post_admin_approval_thread_update` to edit the shared status message instead of sending a new \"queued for sending\" note, and amends `_cleanup_admin_intent_messages` to filter `status_message_id` out of the deletion list so the shared message survives admin approval even when `receipt_prompt_message_id` points at it. Added two new tests for that path and renumbered the test step to Step 6. Addressed FLAG-002 by rewriting Step 2 so the column-absent retry lives inside a nested try inside the existing outer exception handler \u2014 `update_admin_payment_intent` still returns `None` on any non-`status_message_id` failure, preserving the fail-closed caller contract. Updated the test for Step 2 to explicitly verify the None-on-unrelated-errors contract. Expanded the Overview constraints section to call out both flag findings explicitly. No scope growth beyond what's strictly required to make the collapse safe.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    }
+  ]
+}

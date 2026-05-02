@@ -1,0 +1,380 @@
+{
+  "version": 5,
+  "timestamp": "2026-04-23T20:00:25Z",
+  "hash": "sha256:c9e955056c64ee456baa2da0c74b0e61348635e16e6c90a3f3f812fb6a398412",
+  "changes_summary": "v5 makes two narrow corrections to v4. (1) Guild ID flows through data rather than a hardcoded frontend constant: a new `discord_guild_id BIGINT` column on `assets` (nullable) and on `asset_comments` (NOT NULL), populated by the promoter from `discord_messages.guild_id`, SELECTed by `useAssetComments` and the four resource hooks, and read directly by `ResourceDetail` when building `https://discord.com/channels/{discord_guild_id}/{discord_thread_id}/{discord_message_id}` jump URLs. This matches the existing multi-server infrastructure (`supabase/migrations/20260320000000_multi_server.sql:140-145`) and the guild-aware URL helper pattern at `brain-of-bndc/src/common/urls.py:7-12`. Fixes callers / all_locations / FLAG-011. (2) The markdown component reference is redirected from the nonexistent `PostBodyRenderer.tsx` \"plugin + sanitization config\" to the real pipeline at `banodoco-website/src/components/posts/MarkdownRenderer.tsx:122-126` \u2014 `react-markdown` + `remarkGfm` only. Step 18's preferred implementation is for `AssetDescription` to import and wrap `MarkdownRenderer` directly (with inline fallback if reuse is awkward). Drops the \"sanitize/rehype\" language entirely since no such layer exists in this path. Fixes issue_hints. The PL/pgSQL pivot flag `issue_hints-1` remains gate-settled DEC-003 and is acknowledged once in the Overview per prior guidance.",
+  "flags_addressed": [
+    {
+      "id": "callers",
+      "resolution": "addressed",
+      "reason": "Denormalized `discord_guild_id BIGINT` column is added to both `assets` and `asset_comments`. The promoter populates it from `discord_messages.guild_id` (same row used to populate the existing `discord_channel_id` and `discord_thread_id`). The frontend reads the stored guild_id per comment/asset and constructs jump URLs from the row, matching the existing caller contract in `brain-of-bndc/src/common/urls.py:7-12`."
+    },
+    {
+      "id": "all_locations",
+      "resolution": "addressed",
+      "reason": "Supporting infrastructure (guild_id already stored on `discord_messages` and indexed on `discord_channels` per `20260320000000_multi_server.sql:140-145`) is now fully utilized. Step 17 adds `discord_guild_id` to the SELECT of all four resource hooks; Step 22's `useAssetComments` SELECTs it per comment; Step 21 builds jump URLs from the stored value."
+    },
+    {
+      "id": "FLAG-011",
+      "resolution": "addressed",
+      "reason": "Hard-coded frontend `GUILD_ID` constant is entirely removed. The 'View on Discord' link is built per row from `comment.discord_guild_id` (and, for asset-level links, `resource.discord_guild_id`). No frontend constant is introduced; if all 5 resource channels currently share one guild, that's a runtime property of the data, not a compile-time assumption."
+    },
+    {
+      "id": "issue_hints",
+      "resolution": "addressed",
+      "reason": "Step 18 now references the real markdown pipeline at `banodoco-website/src/components/posts/MarkdownRenderer.tsx:122-126` (react-markdown + remarkGfm only). The 'plugin + sanitization config' language is dropped, since no such layer exists in this path. Preferred implementation is for `AssetDescription` to import and reuse `MarkdownRenderer` directly, rather than reimplementing a parallel component."
+    },
+    {
+      "id": "issue_hints-1",
+      "resolution": "addressed",
+      "reason": "Per gate signals, this flag is already marked status='addressed' across iterations; it is a gate-endorsed settled decision (DEC-003). v5 retains the one-line acknowledgment in the Overview and does not reopen the architectural call."
+    }
+  ],
+  "questions": [
+    "Step 1 audit: full column list of `supabase/migrations/20251210000000_create_system_logs.sql` beyond `logger_name`, `level`, `message`, `extra` \u2014 particularly any NOT NULL columns requiring explicit values.",
+    "Step 1 audit: exact literal used by manual-upload `media.classification` for OP imports (likely `'post'` or `'primary'`).",
+    "Step 1 / Step 13 audit: the exact column `cloudflare-stream-webhook` uses to look up `media` rows (Stream UID in which named column).",
+    "Step 5: is `internal` an acceptable schema to introduce, or should it be `discord_sync` / something already present?",
+    "Step 12: is `user-uploads` the right Supabase Storage bucket for Discord image imports?",
+    "Step 18: should `AssetDescription` literally import and reuse `MarkdownRenderer` (shipping as a thin wrapper), or is there a reason to duplicate the minimal react-markdown config \u2014 e.g. different styling overrides for asset descriptions vs. post bodies?",
+    "Step 21: confirm that `discord_messages.guild_id` is always populated for rows in the 5 resource channels \u2014 the Phase 2 INSERTs treat it as non-NULL for `asset_comments.discord_guild_id` (NOT NULL) and the migration will fail any row missing it. If historical rows exist where guild_id is NULL, the promoter must skip or log them."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "All Phase 1 migrations apply cleanly via `supabase db reset` on a scratch branch (including `internal.secrets` with no pre-existing value and the new partial index on `discord_messages`)",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "`assets` gains source, discord_guild_id, discord_channel_id, discord_thread_id, imported_at, last_synced_at, reactions_reached_threshold_at, is_hidden plus unique partial index on discord_thread_id",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`asset_comments` includes `discord_guild_id BIGINT NOT NULL` in addition to the other specified columns; `asset_comment_media` exists with `is_deleted`; `media_import_jobs` exists with the specified columns and indexes; all FKs target `members(member_id)`",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`asset_media` gains is_deleted BOOLEAN DEFAULT FALSE",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "RLS enabled on all new tables; asset_comments / asset_comment_media have public-read SELECT filtered by is_deleted=false; media_import_jobs and internal.secrets have no policies (service-role / postgres only)",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`internal.secrets` is postgres-owned with RLS enabled; `internal.get_service_role_key()` is SECURITY DEFINER with EXECUTE only to postgres; migration applies cleanly without a pre-seeded secret",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Partial composite index `discord_messages_resource_op_idx ON discord_messages (channel_id, reaction_count DESC) WHERE message_id = thread_id AND is_deleted = FALSE` exists and is used by the promoter's discovery query (confirmed via EXPLAIN ANALYZE)",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "`internal.discord_promote_resources(dry_run BOOLEAN DEFAULT FALSE)` exists, is SECURITY DEFINER, and is callable via pg_cron without HTTP",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Promoter populates `assets.discord_guild_id` and `asset_comments.discord_guild_id` from `discord_messages.guild_id` on every new row; values are non-NULL and match the source message",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Dry-run `SELECT * FROM internal.discord_promote_resources(dry_run := TRUE)` returns expected counts, writes a single `system_logs` row per channel with `logger_name='discord_resource_promoter'`, `level='info'`, `extra->>'dry_run'='true'`, and performs zero writes to assets/asset_comments/media_import_jobs",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "All `system_logs` INSERTs use the real columns `logger_name, level, message, extra`; no reference to `component` or `payload`",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Promoter discovery has no `created_at` time window; any qualifying OP of any age imports on the next tick",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Main asset INSERT includes `AND NOT EXISTS (SELECT 1 FROM assets a WHERE a.discord_thread_id = m.message_id)`; same for comments INSERT; drift is handled by separate conditional UPDATE; reruns yield `assets_inserted = assets_updated = comments_inserted = comments_updated = 0`",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "An OP older than 60 days manually updated to `reaction_count=5` is imported on the next promoter tick",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Promoter uses `WHERE EXISTS (SELECT 1 FROM members ...)` prefilter on asset and comment inserts; missing-member rows are logged with `logger_name='discord_resource_promoter'` and `level='warning'`",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "With a manually-deleted referenced `members` row, the promoter completes successfully, logs the skipped OP, and imports all other OPs",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "Promoter maps channel 1149372684220768367 -> type='workflow'; the four model-family channels -> type='lora'",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`regexp_match(url, '/attachments/\\d+/(\\d+)/')` correctly extracts the attachment ID from a Discord CDN URL with `?ex=\u2026&is=\u2026&hm=\u2026` query parameters",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "A Discord edit that removes an attachment marks the corresponding junction row `is_deleted=TRUE` on the next promoter tick",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "A Discord message edit updates `asset_comments.content` and `discord_edited_at`; a Discord deletion sets `asset_comments.is_deleted=true`",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Media importer processes a seeded job end-to-end: creates a `media` row (Stream UID for video; Storage URL for image), creates the junction row, marks `status='done'` with `media_id`",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files",
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "Video importer does NOT poll Cloudflare; existing `cloudflare-stream-webhook` populates `cloudflare_playback_hls_url` + `cloudflare_thumbnail_url`; duration is intentionally not promised",
+      "priority": "must",
+      "requires": [
+        "observe_runtime_logs",
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Rehosted video URLs return a valid HLS playlist (HTTP 200, `#EXTM3U` in body); image URLs return HTTP 200 with image content-type",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "A simulated failed job increments `attempts`, records `last_error`, is re-queued with growing `locked_until`, and moves to `status='failed'` after 5 attempts",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "pg_cron has two schedules: `discord-resource-promoter` (*/10, direct SQL to `internal.discord_promote_resources()`, dry_run=FALSE by default) and `discord-media-importer` (*/2, `net.http_post` with Authorization via `internal.get_service_role_key()`)",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "`useResources`, `useCommunityResources`, `useCommunityResource`, `useUserProfile` all SELECT `source, discord_guild_id, discord_channel_id, discord_thread_id, is_hidden` and filter `is_hidden=false`",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Shared `AssetDescription` component reuses (imports/wraps) or mirrors `banodoco-website/src/components/posts/MarkdownRenderer.tsx:122-126` (react-markdown + remarkGfm only); no separate sanitize/rehype layer is introduced; no custom embed tokens are registered",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "`ResourceDetail/index.tsx:166-169` renders description via `AssetDescription` for both manual and Discord-imported assets",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "`ResourceModal.tsx:186-189` renders description via `AssetDescription`",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "ResourceDetail shows 'Made with this' grid, 'Discussion' thread, and 'From Discord' badge only when `resource.source === 'discord_import'`; manual assets render unchanged",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Comment media and 'Made with this' tiles are anchor tags with `target=\"_blank\" rel=\"noopener noreferrer\"` pointing at the rehosted URL; no lightbox in v1",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "'View on Discord' links are built from the row's own `discord_guild_id` / `discord_thread_id` / `discord_message_id` (comment-level) or `discord_guild_id` / `discord_channel_id` / `discord_thread_id` (asset-level); the frontend code contains NO hard-coded `GUILD_ID` or equivalent guild constant",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Each rendered comment shows author avatar + name, markdown content via `AssetDescription`, reply chip when applicable, attachment tiles, reaction count, and working 'View on Discord' link",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "`useAssetComments` fetches joined data in one query, filters `is_deleted=false` on both layers, orders by `discord_created_at` ascending, and SELECTs `discord_guild_id, discord_thread_id, discord_message_id` on every row",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Setting `assets.is_hidden=true` on an imported asset makes it disappear from all four hook-backed surfaces and from `ResourceDetail` by URL",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Existing website tests and Supabase type generation still pass after schema additions",
+      "priority": "must",
+      "requires": [
+        "run_tests",
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Resource cards show a subtle 'From Discord' badge with the channel friendly name for imported assets",
+      "priority": "should",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Media importer wall-clock stays under 400s per invocation; promoter (SQL) finishes in under 10s per run",
+      "priority": "should",
+      "requires": [
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "Health-check SQL returns usable output (stuck jobs, 24h failures, staleness, recent promoter/importer system_logs)",
+      "priority": "should",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Rollback + follow-up doc exists and explicitly names deferred items (comment lightbox, Cloudflare duration webhook extension, supabase_vault migration)",
+      "priority": "should",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "No Cloudflare Stream quota / storage cost surprises during backfill",
+      "priority": "info",
+      "requires": [
+        "subjective_judgment"
+      ]
+    }
+  ],
+  "assumptions": [
+    "Channel-to-type mapping: 1149372684220768367 -> `workflow`; the four model-family channels -> `lora`.",
+    "`system_logs` schema is `(id, logger_name TEXT, level TEXT, message TEXT, extra JSONB, created_at TIMESTAMPTZ)` per `supabase/migrations/20251210000000_create_system_logs.sql:5-18`. Step 1 verifies the full column list before any migration is written.",
+    "`discord_messages.guild_id` is populated on every row (multi-server migration `20260320000000_multi_server.sql:140-145`). The promoter's INSERTs read it directly and copy it to `assets.discord_guild_id` and `asset_comments.discord_guild_id`.",
+    "Archive pipeline populates `members` before referencing the author in a message; EXISTS prefilter catches rare races and logs them.",
+    "`internal.secrets` is an acceptable schema to introduce; operator seeds the service-role key via a one-line INSERT after first deploy.",
+    "`cloudflare-stream-webhook/index.ts:210-240` writes `cloudflare_playback_hls_url`, `cloudflare_thumbnail_url`, `storage_provider`. Duration is intentionally not promised.",
+    "Existing pg_cron usage schedules direct SQL; the promoter follows that pattern. Only the media importer needs HTTP via `net.http_post` with auth from `internal.get_service_role_key()`.",
+    "The PL/pgSQL pivot + cursor-table removal is gate-endorsed (DEC-003); the anti-join on `assets.discord_thread_id` fully replaces the cursor's role.",
+    "Discord attachment ID parsed from the CDN URL path via `regexp_match`; returns NULL on miss.",
+    "`members.username` is NOT NULL; FKs target `members(member_id)`; no thin-member fallback.",
+    "`MarkdownRenderer.tsx:122-126` uses `react-markdown` + `remarkGfm` only, with no sanitize/rehype layer and no custom embed tokens in that path. `AssetDescription` reuses it directly or inlines the same minimal config.",
+    "`admin_status='Listed'` is a valid value in the existing `assets.admin_status` enum/CHECK.",
+    "OP attachments use the existing manual-upload `media.classification` value (captured in Step 1); reply attachments use `'discord-comment'`.",
+    "`reaction_count >= 5` is maintained by `sync_message_reactors` trigger.",
+    "Partial composite index on `discord_messages(channel_id, reaction_count DESC) WHERE message_id = thread_id AND is_deleted = FALSE` supports the all-history scan.",
+    "Comment media and 'Made with this' tiles use `<a target=\"_blank\">` in v1; real lightbox is a follow-up.",
+    "Denormalizing `discord_guild_id` (rather than joining `discord_channels` at read time) is the preferred pattern, matching the existing denormalization of `discord_channel_id` and `discord_thread_id` on assets."
+  ],
+  "delta_from_previous_percent": 43.53,
+  "structure_warnings": []
+}

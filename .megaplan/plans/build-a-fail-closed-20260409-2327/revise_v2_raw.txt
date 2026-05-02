@@ -1,0 +1,3215 @@
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/peteromalley/.codex/memories]
+reasoning effort: high
+reasoning summaries: none
+session id: 019d7431-1ea7-7333-9d84-46a16c9a9ad2
+--------
+user
+You are already running inside the megaplan harness for this step. Do the requested planning/review/execution work directly. Do NOT invoke the `megaplan` CLI, do NOT read or activate the `megaplan` skill, do NOT start nested megaplan plans, and do NOT recurse into another planning harness. Treat mentions of megaplan in the repository or environment as implementation context only.
+
+You are revising an implementation plan after critique and gate feedback.
+
+        Project directory:
+        /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+
+        Engineering brief produced from the codebase and task details:
+
+        ### Task Summary
+        Prepared the engineering brief after investigating the existing grants payout flow, the Solana client, the DB helpers, the admin surfaces, and the existing social-publication queue pattern.
+
+        ### Key Evidence
+        - Current grant payouts are still executed inline from `GrantsCog` and use mutable `grant_applications` status fields instead of a reusable ledger. (source: src/features/grants/grants_cog.py; relevance: high)
+- The repo already contains an atomic queue/worker pattern with `FOR UPDATE SKIP LOCKED` via `social_publications`, which is the strongest template for the new payment subsystem. (source: sql/social_publications.sql; src/common/db_handler.py; src/features/sharing/sharing_cog.py; relevance: high)
+- Admin chat currently exposes `grant_applications` through generic `query_table`, so any new secret-bearing payment/wallet tables must be kept off that surface or explicitly redacted. (source: src/features/admin_chat/tools.py; relevance: high)
+
+        ### Relevant Code
+        | File | Functions | Why |
+| --- | --- | --- |
+| /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/build-a-fail-closed-20260409-2327/prep.json | - | Final brief written here. |
+
+        ### Test Expectations
+        - [pass_to_pass] prep.json: Brief file exists and is valid JSON.
+
+        ### Constraints
+        - The requested output had to be written to the specified megaplan prep path.
+- The brief needed investigation because the task spans multiple subsystems and files.
+
+        ### Suggested Approach
+        Use the written prep brief as the planning context for the next step.
+        The engineering brief above was produced by analyzing the codebase. Use it as a strong starting point, but the suggested approach is a hypothesis — verify it's the best fix, not just a valid one.
+
+        Idea:
+Build a fail-closed generalized payment subsystem for ArcCompute-style payouts on Solana. Replace direct grant sends with a reusable payment ledger, provider abstraction, wallet registry, Discord confirmation flow, manual hold/retry controls, and restart-safe recovery. Critical requirements: no automatic double-payment after tx submission unless chain definitively reports failure; ambiguous chain state freezes to manual hold; private keys never enter DB/logs/admin-chat; atomic worker claiming; separate test-payment and final-payment attempts; grants becomes a producer into the payment system.
+
+User notes and answers:
+- Locked decisions from user: test payment is a fixed tiny global amount; confirmation destination is route-configured and may be the source thread/forum post or a specific payments channel/forum; manual admin controls for retry/hold/release/cancel/status are required; do not auto-fallback from Codex to Claude on backend connection failures.
+
+        Current plan (markdown):
+        # Implementation Plan: Generalized Fail-Closed Payment Subsystem
+
+## Overview
+
+The bot currently processes Solana grant payouts inline inside `GrantsCog._process_payment()`, with payment state baked into `grant_applications` columns (`payment_status`, `wallet_address`, `tx_signature`, etc.). This works but is non-reusable, tightly coupled, and has limited admin controls.
+
+The goal is a standalone **payment subsystem** modeled on the existing `social_publications` queue pattern: a ledger table, atomic worker claiming via `FOR UPDATE SKIP LOCKED`, a provider abstraction layer, Discord confirmation flow, manual hold/retry admin controls, and restart-safe recovery. Grants becomes just a *producer* that enqueues payment requests.
+
+**Critical safety invariant:** After a transaction is submitted to the chain, it is **never** automatically retried unless the chain definitively reports `failed`. Unknown/ambiguous status (`not_found`) freezes the payment to `manual_hold` — an admin must resolve it. Private keys never touch DB, logs, or admin chat.
+
+**Repo patterns to follow:**
+- `sql/social_publications.sql` — schema + `claim_due_*` RPC function template
+- `src/features/sharing/sharing_cog.py` — `@tasks.loop` worker, claim → process → mark
+- `src/features/sharing/social_publish_service.py` — service layer between producer and queue
+- `src/common/db_handler.py` — Supabase client wrappers with `_gate_check()`
+- `src/features/admin_chat/tools.py` — `QUERYABLE_TABLES` whitelist
+
+---
+
+## Phase 1: Database Foundation — Schema &amp; RPC
+
+### Step 1: Create `sql/payments.sql` — ledger + wallet tables + claim RPC
+**Scope:** Medium
+1. **Create** `sql/payments.sql` with two tables and one RPC function:
+
+   **`payment_requests` table** — the ledger:
+   - `payment_id` UUID PK (gen_random_uuid)
+   - `guild_id` bigint NOT NULL
+   - `producer` text NOT NULL — e.g. `'grants'`, future: `'bounties'`, `'arccompute'`
+   - `producer_ref` text NOT NULL — e.g. grant `thread_id`, links back to source
+   - `recipient_wallet` text NOT NULL — Solana address
+   - `amount_usd` numeric NOT NULL
+   - `amount_token` numeric — computed SOL amount at send time
+   - `token_price_usd` numeric — spot price at send time
+   - `chain` text NOT NULL DEFAULT `'solana'` — future extensibility
+   - `provider` text NOT NULL DEFAULT `'solana_native'`
+   - `status` text NOT NULL DEFAULT `'pending_confirmation'` CHECK in (`'pending_confirmation'`, `'queued'`, `'processing'`, `'submitted'`, `'confirmed'`, `'failed'`, `'manual_hold'`, `'cancelled'`)
+   - `is_test` boolean NOT NULL DEFAULT false — distinguishes test-payment from final
+   - `attempt_count` integer NOT NULL DEFAULT 0
+   - `tx_signature` text — set after chain submission
+   - `last_error` text
+   - `retry_after` timestamptz
+   - `hold_reason` text — human note when in manual_hold
+   - `confirmed_by` text — Discord user ID who confirmed (or 'auto')
+   - `created_at`, `updated_at`, `completed_at` timestamptz
+   - `deleted_at` timestamptz — soft delete
+
+   **Key indexes:**
+   - `idx_payment_requests_due_queue` on `(retry_after, created_at) WHERE status = 'queued' AND deleted_at IS NULL`
+   - `idx_payment_requests_producer` on `(producer, producer_ref)`
+   - Unique partial index on `(producer, producer_ref, is_test) WHERE status NOT IN ('failed', 'cancelled')` — prevents double-enqueue of active payments
+
+   **`claim_due_payment_requests(claim_limit, claim_guild_ids)`** RPC function:
+   - Mirrors `claim_due_social_publications` exactly — CTE with `FOR UPDATE SKIP LOCKED`, atomically sets `status = 'processing'`, increments `attempt_count`
+
+2. **Note:** No wallet *registry* table in v1. Recipient wallets are just text on each payment request. A registry (mapping Discord users → verified wallets) can be added later when there are multiple producers that share recipients. For now, grants already collects wallets inline.
+
+3. **Security:** `payment_requests` gets RLS enabled, anon/authenticated revoked (same pattern as `social_publications`). The table is **not** added to `QUERYABLE_TABLES` in admin chat — step 7 adds a dedicated redacted admin tool instead.
+
+### Step 2: Add DB handler methods (`src/common/db_handler.py`)
+**Scope:** Medium
+1. **Add** methods mirroring the social publications pattern:
+   - `create_payment_request(record, guild_id)` — insert with `_gate_check()`
+   - `get_payment_request(payment_id)` — fetch single
+   - `get_payment_requests_by_producer(producer, producer_ref)` — fetch by source
+   - `claim_due_payment_requests(limit, guild_ids)` — RPC call to claim function
+   - `mark_payment_submitted(payment_id, tx_signature, amount_token, token_price_usd, guild_id)` — set status='submitted', store tx sig
+   - `mark_payment_confirmed(payment_id, guild_id)` — set status='confirmed', completed_at
+   - `mark_payment_failed(payment_id, error, guild_id)` — set status='failed', completed_at
+   - `mark_payment_manual_hold(payment_id, reason, guild_id)` — set status='manual_hold', hold_reason
+   - `requeue_payment(payment_id, retry_after, guild_id)` — set status='queued', retry_after
+   - `cancel_payment(payment_id, guild_id)` — set status='cancelled'
+   - `get_inflight_payments_for_recovery()` — fetch status IN ('processing', 'submitted') for restart recovery
+
+2. **Pattern:** Each method follows existing db_handler conventions — Supabase client calls, guild_id scoping, error logging, return dict or None.
+
+---
+
+## Phase 2: Provider Abstraction &amp; Payment Service
+
+### Step 3: Create provider interface (`src/features/payments/provider.py`)
+**Scope:** Small
+1. **Create** `src/features/payments/__init__.py` (empty) and `src/features/payments/provider.py`
+2. **Define** a simple abstract base:
+   ```python
+   class PaymentProvider(ABC):
+       @abstractmethod
+       async def send(self, recipient: str, amount_token: float) -> str:
+           """Submit payment. Returns tx signature. Raises on failure."""
+
+       @abstractmethod
+       async def check_status(self, tx_signature: str) -> str:
+           """Returns 'confirmed', 'failed', or 'not_found'."""
+
+       @abstractmethod
+       async def get_token_price_usd(self) -> float:
+           """Current token price in USD."""
+
+       @abstractmethod
+       def token_name(self) -> str:
+           """e.g. 'SOL'"""
+   ```
+
+### Step 4: Create Solana provider (`src/features/payments/solana_provider.py`)
+**Scope:** Small
+1. **Wrap** the existing `SolanaClient` (`src/features/grants/solana_client.py`) into a `SolanaProvider(PaymentProvider)`.
+2. **Delegate** `send()` → `solana_client.send_sol()`, `check_status()` → `solana_client.check_tx_status()`, `get_token_price_usd()` → `pricing.get_sol_price_usd()`.
+3. **Keep** `SolanaClient` unchanged — it still works, the provider is a thin adapter.
+4. **Key:** The provider holds the `SolanaClient` instance in memory. The keypair never leaves the `SolanaClient` object. No serialization, no DB storage, no logging of key material.
+
+### Step 5: Create payment service (`src/features/payments/payment_service.py`)
+**Scope:** Medium
+1. **Create** `PaymentService` class — the core orchestrator between producers and the worker.
+2. **Constructor** takes `db_handler` and a dict of `{provider_name: PaymentProvider}`.
+3. **`request_payment(producer, producer_ref, guild_id, recipient_wallet, amount_usd, chain, provider, is_test)`** method:
+   - Checks for existing active payment for same `(producer, producer_ref, is_test)` — returns it if found (idempotent).
+   - Creates `payment_requests` row with status `'pending_confirmation'`.
+   - Returns the payment record (caller can use payment_id for Discord confirmation).
+4. **`confirm_payment(payment_id, confirmed_by, guild_id)`** method:
+   - Transitions from `'pending_confirmation'` → `'queued'`. Sets `confirmed_by`.
+   - For test payments with `is_test=True`, can auto-confirm (no Discord interaction needed).
+5. **`execute_payment(payment_id)`** method — called by the worker after claiming:
+   - Fetch payment record.
+   - Resolve provider from `self.providers[record['provider']]`.
+   - Fetch token price → compute `amount_token`.
+   - Call `provider.send()` → get tx_signature.
+   - Immediately `mark_payment_submitted(payment_id, tx_signature, ...)` — **this is the critical write-before-confirm pattern**.
+   - Call `provider.check_status(tx_signature)`:
+     - `'confirmed'` → `mark_payment_confirmed()`
+     - `'failed'` → `mark_payment_failed()`
+     - `'not_found'` → **`mark_payment_manual_hold()`** with reason "chain status ambiguous after submission" — **never auto-retry after submission**.
+   - Returns result dict with status + tx_sig.
+6. **`recover_inflight()`** method — called on startup:
+   - Fetch all `status IN ('processing', 'submitted')`.
+   - For `'processing'` with no `tx_signature`: requeue (crashed before send).
+   - For `'submitted'` with `tx_signature`: check chain status:
+     - `'confirmed'` → mark confirmed.
+     - `'failed'` → mark failed (eligible for manual retry).
+     - `'not_found'` → mark `manual_hold` — **fail closed**.
+
+---
+
+## Phase 3: Worker Loop &amp; Discord Integration
+
+### Step 6: Create payment worker cog (`src/features/payments/payment_cog.py`)
+**Scope:** Medium
+1. **Create** `PaymentCog(commands.Cog)` following `sharing_cog.py` pattern:
+   - `@tasks.loop(seconds=30)` worker that calls `db_handler.claim_due_payment_requests()` then processes each via `payment_service.execute_payment()`.
+   - On startup (`cog_load`): call `payment_service.recover_inflight()`.
+   - Configurable via env: `PAYMENT_CLAIM_LIMIT` (default 5), `PAYMENT_WORKER_INTERVAL` (default 30s).
+2. **Discord confirmation flow** — when a producer calls `payment_service.request_payment()`, it gets back a payment record in `pending_confirmation` status. The producer (e.g. grants cog) sends a Discord message with a confirm button. The button handler calls `payment_service.confirm_payment()` to queue it.
+   - For **test payments** (`is_test=True`): auto-confirm, no button needed. This lets grants do a dry-run to validate wallet + amount before the real payment.
+   - For **final payments**: require explicit Discord confirmation from the applicant or admin.
+3. **Result notifications:** After `execute_payment()` completes, the worker sends a DM or thread message with tx status + explorer link. On `manual_hold`, it pings the admin mention.
+
+### Step 7: Admin controls — hold, retry, cancel (`src/features/admin_chat/tools.py`)
+**Scope:** Medium
+1. **Add** new admin chat tools (do NOT add `payment_requests` to `QUERYABLE_TABLES`):
+   - `query_payments` — dedicated tool that returns payment records with `tx_signature` visible but **wallet addresses partially redacted** (show first 4 + last 4 chars). Never returns any key material (there is none in DB, but defense in depth).
+   - `hold_payment` — sets a payment to `manual_hold` with a reason string.
+   - `retry_payment` — requeues a `failed` or `manual_hold` payment (sets status='queued', clears tx_signature, increments attempt). **Only works if current status is `failed` or `manual_hold`** — cannot retry `submitted` (that would risk double-pay).
+   - `cancel_payment` — sets status='cancelled'. Only from `pending_confirmation`, `queued`, `failed`, or `manual_hold`.
+2. **Add** tool definitions to `TOOLS` list and handler functions.
+3. **Key safety:** The `retry_payment` tool clears `tx_signature` before requeue so the worker treats it as a fresh attempt. A payment in `submitted` state cannot be retried — admin must first resolve to `failed` or `manual_hold` via chain check.
+
+---
+
+## Phase 4: Grants Producer Integration
+
+### Step 8: Refactor grants to produce payment requests (`src/features/grants/grants_cog.py`)
+**Scope:** Medium
+1. **Replace** `_process_payment()` (lines 678-779) with a call to `payment_service.request_payment()`:
+   - After wallet validation, create payment request: `payment_service.request_payment(producer='grants', producer_ref=str(thread_id), guild_id=..., recipient_wallet=wallet, amount_usd=total_usd, chain='solana', provider='solana_native', is_test=False)`.
+   - Send Discord confirmation message with payment details + confirm button.
+   - On confirm callback: `payment_service.confirm_payment(payment_id, confirmed_by=user_id)`.
+2. **Replace** `_recover_inflight_payments()` (lines 87-193) — this is now handled by `PaymentCog.cog_load` → `payment_service.recover_inflight()`. Remove the grants-specific recovery code entirely.
+3. **Update** `grant_applications` status flow:
+   - Remove `payment_status`, `wallet_address`, `sol_amount`, `sol_price_usd`, `tx_signature` columns from grant usage (they can stay in the table for historical data but new payments go through `payment_requests`).
+   - Grant statuses simplify to: `reviewing` → `needs_info`/`needs_review`/`rejected`/`spam` → `approved` → `awaiting_wallet` → `payment_requested` → `paid`.
+   - `payment_requested`: set when `payment_service.request_payment()` succeeds. Store `payment_id` in a new `payment_ref` column on `grant_applications`.
+   - `paid`: set when payment_cog notifies grants (via callback or event) that payment is confirmed.
+4. **Wire** notification: payment_cog emits a Discord event or calls a callback when a payment reaches terminal state. Grants listens and updates its status + sends the thread message.
+5. **Test payment flow:** When grant is approved and wallet submitted, first enqueue a test payment (`is_test=True`, amount = 0 or minimal dust amount like 0.000001 SOL). If test confirms, auto-enqueue the real payment with Discord confirmation. This validates the wallet is receivable before committing real funds.
+
+### Step 9: Register cog and wire startup (`main.py`)
+**Scope:** Small
+1. **Instantiate** `SolanaProvider` wrapping the existing `SolanaClient`.
+2. **Instantiate** `PaymentService` with db_handler and `{'solana_native': solana_provider}`.
+3. **Load** `PaymentCog` with payment_service and db_handler.
+4. **Update** `GrantsCog` constructor to accept `payment_service` instead of `solana_client` directly.
+
+---
+
+## Phase 5: Tests &amp; Validation
+
+### Step 10: Unit tests (`tests/test_payment_service.py`)
+**Scope:** Medium
+1. **Create** `tests/test_payment_service.py` with FakeSupabase pattern from existing `tests/test_social_route_tools.py`:
+   - Test idempotent `request_payment` — calling twice with same producer+ref returns same record.
+   - Test `confirm_payment` transitions from `pending_confirmation` → `queued`.
+   - Test `execute_payment` happy path: provider.send() → submitted → provider.check_status() → confirmed.
+   - Test `execute_payment` ambiguous: provider.check_status() returns `not_found` → `manual_hold` (the critical fail-closed test).
+   - Test `execute_payment` failure: provider.send() raises → `failed`.
+   - Test `recover_inflight` with various stuck states.
+   - Test admin controls: retry only from `failed`/`manual_hold`, cancel restrictions, no retry from `submitted`.
+   - Test double-payment prevention: unique constraint prevents two active payments for same producer_ref.
+2. **Run** `pytest tests/test_payment_service.py -v`.
+
+### Step 11: Integration smoke test
+**Scope:** Small
+1. **Verify** existing grant tests (if any) still pass — grants_cog changes should not break assessment/review flow.
+2. **Run** full `pytest` suite to check for regressions.
+3. **Manual verification points** (documented for human tester):
+   - Deploy to staging, create a grant application, approve it, submit wallet, observe test-payment → confirmation → real-payment flow.
+   - Kill bot mid-payment, restart, verify recovery picks up correctly.
+   - Use admin chat `hold_payment` / `retry_payment` / `cancel_payment` tools.
+
+## Execution Order
+1. **Phase 1 first** — DB schema is the foundation everything depends on.
+2. **Phase 2 next** — provider abstraction and service layer, testable in isolation.
+3. **Phase 3** — worker cog and admin tools, depends on Phase 2.
+4. **Phase 4** — grants integration, depends on Phase 3.
+5. **Phase 5 throughout** — write tests alongside each phase, run full suite at the end.
+
+## Validation Order
+1. SQL migration is syntactically valid (can be reviewed, applied to staging).
+2. Unit tests for payment_service pass (Phase 2 + Phase 5 step 10).
+3. Admin tools respond correctly to various payment states.
+4. Grants cog compiles and loads without errors.
+5. Full pytest suite green.
+6. Manual smoke test on staging (info-level, cannot automate).
+
+
+        Current plan metadata:
+        {
+  "version": 1,
+  "timestamp": "2026-04-09T21:35:22Z",
+  "hash": "sha256:9bed5b34d492af03515f5177ae15cc4b2a39faa2a402f30e654a562cf236b5b0",
+  "questions": [
+    "Should test payments send actual dust (e.g. 0.000001 SOL) to validate the wallet is receivable on-chain, or just validate the address format locally? Real dust costs a tx fee (~0.000005 SOL) per grant but gives true chain-level validation.",
+    "Is there a preference for how the Discord confirmation flow works \u2014 a button/reaction on the thread message, or a DM to the applicant? Currently grants collect the wallet inline in the forum thread.",
+    "Should the payment worker support multiple concurrent providers (e.g. future SPL token payouts, USDC on Solana), or is native SOL the only chain target for v1? This affects whether the provider dict is overkill vs. just right.",
+    "For the admin retry flow: should retry re-fetch the current SOL price (amount may differ from original) or use the originally quoted price? Re-fetching is safer for the org but the applicant sees a different amount.",
+    "Is there an existing Supabase migration workflow (e.g. a migrations directory, a CI step that applies SQL), or is sql/ just reference scripts applied manually?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "payment_requests table exists with all specified columns, constraints, indexes, and RLS policies",
+      "priority": "must"
+    },
+    {
+      "criterion": "claim_due_payment_requests RPC uses FOR UPDATE SKIP LOCKED and atomically transitions status to processing",
+      "priority": "must"
+    },
+    {
+      "criterion": "After tx submission (status=submitted), ambiguous chain status (not_found) transitions to manual_hold \u2014 never auto-retry",
+      "priority": "must"
+    },
+    {
+      "criterion": "Only chain-definitive failure (status check returns 'failed') allows automatic transition to failed state",
+      "priority": "must"
+    },
+    {
+      "criterion": "Private keys never appear in DB columns, log messages, or admin chat tool responses",
+      "priority": "must"
+    },
+    {
+      "criterion": "payment_requests table is NOT in QUERYABLE_TABLES; dedicated query_payments tool redacts wallet addresses",
+      "priority": "must"
+    },
+    {
+      "criterion": "Admin retry_payment only works from failed or manual_hold states \u2014 submitted state is blocked",
+      "priority": "must"
+    },
+    {
+      "criterion": "Unique partial index prevents two active (non-failed, non-cancelled) payments for the same producer + producer_ref + is_test combination",
+      "priority": "must"
+    },
+    {
+      "criterion": "On bot restart, recover_inflight correctly resolves processing (no tx_sig \u2192 requeue) and submitted (check chain \u2192 confirm/fail/hold) states",
+      "priority": "must"
+    },
+    {
+      "criterion": "Grants cog produces payment requests instead of calling solana_client directly; grant status flow updated accordingly",
+      "priority": "must"
+    },
+    {
+      "criterion": "All new unit tests pass (pytest tests/test_payment_service.py)",
+      "priority": "must"
+    },
+    {
+      "criterion": "Full pytest suite passes with no regressions",
+      "priority": "must"
+    },
+    {
+      "criterion": "PaymentProvider ABC is minimal \u2014 only send, check_status, get_token_price_usd, token_name methods",
+      "priority": "should"
+    },
+    {
+      "criterion": "Worker loop follows sharing_cog pattern: @tasks.loop, claim batch, sequential process, env-configurable interval and batch size",
+      "priority": "should"
+    },
+    {
+      "criterion": "New files stay under ~300 lines each; payment_service.py may be up to ~400 given the state machine complexity",
+      "priority": "should"
+    },
+    {
+      "criterion": "Test and final payment flows are distinct: is_test flag on payment_requests, test payments can auto-confirm",
+      "priority": "should"
+    },
+    {
+      "criterion": "Discord confirmation uses button interaction (not just message reply) for better UX",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual staging smoke test: full grant \u2192 test-payment \u2192 confirm \u2192 final-payment \u2192 confirmed flow",
+      "priority": "info"
+    },
+    {
+      "criterion": "Manual staging test: kill bot mid-payment, restart, verify recovery",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "v1 targets native SOL transfers only \u2014 SPL token support (USDC etc.) is a future extension, but the provider abstraction accommodates it without code changes.",
+    "No separate wallet_registry table in v1. Recipient wallets are stored per-payment. A shared wallet registry can be layered on later when multiple producers need it.",
+    "The existing SolanaClient class remains unchanged; SolanaProvider is a thin adapter wrapping it.",
+    "grant_applications columns (payment_status, wallet_address, tx_signature, sol_amount, sol_price_usd) are left in the table for historical records but new payments flow through payment_requests exclusively.",
+    "SQL migrations are applied manually to Supabase \u2014 there is no automated migration runner in CI.",
+    "The Discord confirmation flow uses the existing forum thread (where the grant lives) rather than DMs \u2014 consistent with current UX where wallet submission happens in-thread.",
+    "Test payments send real dust (0.000001 SOL) on-chain to validate the wallet, not just local format checks \u2014 the cost is trivial and the assurance is high.",
+    "The payment worker runs in the same bot process as the sharing worker \u2014 no separate deployment.",
+    "Admin chat tools follow the existing Anthropic tool-call format used by other tools in tools.py."
+  ],
+  "structure_warnings": []
+}
+
+        Gate summary:
+        {
+  "passed": false,
+  "criteria_check": {
+    "count": 19,
+    "items": [
+      {
+        "criterion": "payment_requests table exists with all specified columns, constraints, indexes, and RLS policies",
+        "priority": "must"
+      },
+      {
+        "criterion": "claim_due_payment_requests RPC uses FOR UPDATE SKIP LOCKED and atomically transitions status to processing",
+        "priority": "must"
+      },
+      {
+        "criterion": "After tx submission (status=submitted), ambiguous chain status (not_found) transitions to manual_hold \u2014 never auto-retry",
+        "priority": "must"
+      },
+      {
+        "criterion": "Only chain-definitive failure (status check returns 'failed') allows automatic transition to failed state",
+        "priority": "must"
+      },
+      {
+        "criterion": "Private keys never appear in DB columns, log messages, or admin chat tool responses",
+        "priority": "must"
+      },
+      {
+        "criterion": "payment_requests table is NOT in QUERYABLE_TABLES; dedicated query_payments tool redacts wallet addresses",
+        "priority": "must"
+      },
+      {
+        "criterion": "Admin retry_payment only works from failed or manual_hold states \u2014 submitted state is blocked",
+        "priority": "must"
+      },
+      {
+        "criterion": "Unique partial index prevents two active (non-failed, non-cancelled) payments for the same producer + producer_ref + is_test combination",
+        "priority": "must"
+      },
+      {
+        "criterion": "On bot restart, recover_inflight correctly resolves processing (no tx_sig \u2192 requeue) and submitted (check chain \u2192 confirm/fail/hold) states",
+        "priority": "must"
+      },
+      {
+        "criterion": "Grants cog produces payment requests instead of calling solana_client directly; grant status flow updated accordingly",
+        "priority": "must"
+      },
+      {
+        "criterion": "All new unit tests pass (pytest tests/test_payment_service.py)",
+        "priority": "must"
+      },
+      {
+        "criterion": "Full pytest suite passes with no regressions",
+        "priority": "must"
+      },
+      {
+        "criterion": "PaymentProvider ABC is minimal \u2014 only send, check_status, get_token_price_usd, token_name methods",
+        "priority": "should"
+      },
+      {
+        "criterion": "Worker loop follows sharing_cog pattern: @tasks.loop, claim batch, sequential process, env-configurable interval and batch size",
+        "priority": "should"
+      },
+      {
+        "criterion": "New files stay under ~300 lines each; payment_service.py may be up to ~400 given the state machine complexity",
+        "priority": "should"
+      },
+      {
+        "criterion": "Test and final payment flows are distinct: is_test flag on payment_requests, test payments can auto-confirm",
+        "priority": "should"
+      },
+      {
+        "criterion": "Discord confirmation uses button interaction (not just message reply) for better UX",
+        "priority": "should"
+      },
+      {
+        "criterion": "Manual staging smoke test: full grant \u2192 test-payment \u2192 confirm \u2192 final-payment \u2192 confirmed flow",
+        "priority": "info"
+      },
+      {
+        "criterion": "Manual staging test: kill bot mid-payment, restart, verify recovery",
+        "priority": "info"
+      }
+    ]
+  },
+  "preflight_results": {
+    "project_dir_exists": true,
+    "project_dir_writable": true,
+    "success_criteria_present": true,
+    "claude_available": true,
+    "codex_available": true
+  },
+  "unresolved_flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Payments execution: the planned `send()` contract cannot distinguish definite pre-submit failure from ambiguous post-submit failure, so automatic retries can still double-pay.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Plan Step 5 marks provider.send() exceptions as failed, but `src/features/grants/solana_client.py:97-114` raises around `send_transaction` without proving the chain rejected the transfer.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Payments routing: the plan hardcodes grant-thread confirmation behavior and does not persist route-configured confirmation or notification targets.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The user locked confirmation destinations to be route-configured, `src/features/grants/grants_cog.py:367-380` currently works only from the forum thread, and the proposed `payment_requests` schema stores no channel/thread/message target fields.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Grants state machine: new pending-payment statuses are not propagated into the existing active-grant checks, so applicants could open another grant while payment is still unresolved.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/common/db_handler.py:2034-2048` treats only `reviewing` and `awaiting_wallet` as active, and `src/features/grants/assessor.py:65` describes the same active set to Claude.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "FLAG-004",
+      "concern": "Payments admin controls: the plan omits the required release/status controls and allows retry from `manual_hold`, which is unsafe when `manual_hold` came from ambiguous submitted transactions.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Locked user notes require retry/hold/release/cancel/status controls, but Step 7 only defines query/hold/retry/cancel and Step 5 sends ambiguous post-submit states into `manual_hold`.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "FLAG-005",
+      "concern": "Discord interactions: the planned button confirmation flow is not restart-safe because it does not include persistent view registration or another reattachment mechanism.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The repo uses `discord.ui.View` in places like `src/features/sharing/subfeatures/notify_user.py`, but there is no `bot.add_view(...)` registration path anywhere in `src/` and the plan does not add one.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "FLAG-006",
+      "concern": "Payments recipient model: explicitly deferring a wallet registry leaves the new subsystem less generalized than the task brief requires.",
+      "category": "completeness",
+      "severity_hint": "uncertain",
+      "evidence": "The task brief calls for a generalized payment subsystem with a wallet registry, but Step 1 and the assumptions section say v1 will store recipient wallets only on each payment row and skip any registry table.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "issue_hints-1",
+      "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Compared the locked user notes to Steps 6-8 of the plan: the plan still assumes confirmations happen in the grant thread and that test payments can auto-confirm, but the user already fixed the confirmation destination as route-configured and required manual release/status controls; Step 7 only adds query/hold/retry/cancel, so that requirement is only partially covered.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Compared the locked user notes to Steps 6-8 of the plan: the plan still assumes confirmations happen in the grant thread and that test payments can auto-confirm, but the user already fixed the confirmation destination as route-configured and required manual release/status controls; Step 7 only adds query/hold/retry/cancel, so that requirement is only partially covered.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "issue_hints-2",
+      "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Checked the v1 scope statement against the task brief and found a direct narrowing: the task asks for a generalized payment subsystem with a wallet registry, but Step 1 explicitly defers any wallet registry and keeps recipient wallets as per-payment text only, which leaves the design closer to the current grants-only flow than the brief calls for.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Checked the v1 scope statement against the task brief and found a direct narrowing: the task asks for a generalized payment subsystem with a wallet registry, but Step 1 explicitly defers any wallet registry and keeps recipient wallets as per-payment text only, which leaves the design closer to the current grants-only flow than the brief calls for.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "correctness-1",
+      "concern": "Are the proposed changes technically correct?: Compared Step 5 with `src/features/grants/solana_client.py:59-116`: the proposed `provider.send()` plus `except -> mark failed` contract cannot distinguish a definite pre-submit failure from an ambiguous network error after `send_transaction`, so auto-retrying after a raised exception can still violate the fail-closed invariant and double-pay.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Compared Step 5 with `src/features/grants/solana_client.py:59-116`: the proposed `provider.send()` plus `except -> mark failed` contract cannot distinguish a definite pre-submit failure from an ambiguous network error after `send_transaction`, so auto-retrying after a raised exception can still violate the fail-closed invariant and double-pay.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "correctness-2",
+      "concern": "Are the proposed changes technically correct?: Compared the planned post-submit flow with the existing client behavior and found a timing bug: the repo currently waits on `confirm_tx()` after submission, but the plan replaces that with one immediate `check_status()` call and sends `not_found` straight to `manual_hold`; on Solana a freshly submitted signature can be briefly absent from `get_signature_statuses`, so healthy payments could be frozen routinely.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Compared the planned post-submit flow with the existing client behavior and found a timing bug: the repo currently waits on `confirm_tx()` after submission, but the plan replaces that with one immediate `check_status()` call and sends `not_found` straight to `manual_hold`; on Solana a freshly submitted signature can be briefly absent from `get_signature_statuses`, so healthy payments could be frozen routinely.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "scope-1",
+      "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: Searched the rest of the grants subsystem and found that active-grant logic is broader than `_process_payment()`: `DatabaseHandler.get_active_grants_for_applicant()` still treats only `reviewing` and `awaiting_wallet` as active, and `src/features/grants/assessor.py:65` tells Claude the same thing, so introducing `payment_requested` or `manual_hold` without updating those paths would reopen duplicate-application holes.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Searched the rest of the grants subsystem and found that active-grant logic is broader than `_process_payment()`: `DatabaseHandler.get_active_grants_for_applicant()` still treats only `reviewing` and `awaiting_wallet` as active, and `src/features/grants/assessor.py:65` tells Claude the same thing, so introducing `payment_requested` or `manual_hold` without updating those paths would reopen duplicate-application holes.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "scope-2",
+      "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: Looked at the proposed 'generalized' subsystem against the actual producer surface and found the ledger scope too narrow: the schema only stores `producer` and `producer_ref`, but no durable confirmation route, result-notification target, or wallet-verification state, which means future producers would still need producer-specific side channels instead of using the payment ledger end to end.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Looked at the proposed 'generalized' subsystem against the actual producer surface and found the ledger scope too narrow: the schema only stores `producer` and `producer_ref`, but no durable confirmation route, result-notification target, or wallet-verification state, which means future producers would still need producer-specific side channels instead of using the payment ledger end to end.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "all_locations-1",
+      "concern": "Does the change touch all locations AND supporting infrastructure?: Checked the supporting Discord glue and found a restart gap: button-based confirmation is not just a ledger change, because restart-safe Discord buttons need persistent views or another re-registration path; the repo has `discord.ui.View` classes in features like social notifications, but there is no `bot.add_view(...)` registration anywhere and the plan does not add one.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Checked the supporting Discord glue and found a restart gap: button-based confirmation is not just a ledger change, because restart-safe Discord buttons need persistent views or another re-registration path; the repo has `discord.ui.View` classes in features like social notifications, but there is no `bot.add_view(...)` registration anywhere and the plan does not add one.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "all_locations-2",
+      "concern": "Does the change touch all locations AND supporting infrastructure?: Checked admin-chat integration surfaces and found more wiring than the plan names: adding payment tools requires more than functions in `tools.py` because `src/features/admin_chat/agent.py:35-52` contains a hand-written tool catalog the LLM reads; the plan mentions updating `TOOLS` but not the agent prompt text, so the new controls could be unreachable in practice.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Checked admin-chat integration surfaces and found more wiring than the plan names: adding payment tools requires more than functions in `tools.py` because `src/features/admin_chat/agent.py:35-52` contains a hand-written tool catalog the LLM reads; the plan mentions updating `TOOLS` but not the agent prompt text, so the new controls could be unreachable in practice.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "all_locations-3",
+      "concern": "Does the change touch all locations AND supporting infrastructure?: Checked schema placement against repo infrastructure and found the application path underspecified: the social queue pattern does use `sql/social_publications.sql`, but `structure.md:98-101` still documents `supabase/migrations/` as the canonical migration home, so putting payments only in `sql/payments.sql` leaves the actual rollout path ambiguous.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Checked schema placement against repo infrastructure and found the application path underspecified: the social queue pattern does use `sql/social_publications.sql`, but `structure.md:98-101` still documents `supabase/migrations/` as the canonical migration home, so putting payments only in `sql/payments.sql` leaves the actual rollout path ambiguous.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "callers-1",
+      "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Traced the current payment caller in `src/features/grants/grants_cog.py:367-380`: the only live caller hands `_process_payment()` a forum thread, the current grant row, and the applicant-supplied wallet string, but the planned `request_payment()` signature does not take any confirmation-destination metadata even though the locked behavior now depends on route-configured destinations.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Traced the current payment caller in `src/features/grants/grants_cog.py:367-380`: the only live caller hands `_process_payment()` a forum thread, the current grant row, and the applicant-supplied wallet string, but the planned `request_payment()` signature does not take any confirmation-destination metadata even though the locked behavior now depends on route-configured destinations.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "callers-2",
+      "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Traced the grant DB callers that would consume the new linkage and found a modeling gap: Step 8 adds a single `payment_ref` column on `grant_applications`, but the same plan also requires separate test and final payment attempts, so one pointer is not enough to represent both ledger rows or tell the grant flow which phase is current after restart.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Traced the grant DB callers that would consume the new linkage and found a modeling gap: Step 8 adds a single `payment_ref` column on `grant_applications`, but the same plan also requires separate test and final payment attempts, so one pointer is not enough to represent both ledger rows or tell the grant flow which phase is current after restart.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "criteria_quality-1",
+      "concern": "Are the success criteria well-prioritized and verifiable?: The success criteria omit several locked requirements entirely: there is no `must` criterion for route-configured confirmation destinations, manual `release` and `status` controls, or a wallet registry, so the gate would have no direct yes-or-no check for several user-mandated behaviors.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The success criteria omit several locked requirements entirely: there is no `must` criterion for route-configured confirmation destinations, manual `release` and `status` controls, or a wallet registry, so the gate would have no direct yes-or-no check for several user-mandated behaviors.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "criteria_quality-2",
+      "concern": "Are the success criteria well-prioritized and verifiable?: The `must` criterion saying the grants cog should produce payment requests and update the grant status flow is still too broad for review because it does not spell out how two payments per grant are represented or which non-terminal statuses must remain blocking for duplicate-grant checks.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The `must` criterion saying the grants cog should produce payment requests and update the grant status flow is still too broad for review because it does not spell out how two payments per grant are represented or which non-terminal statuses must remain blocking for duplicate-grant checks.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    }
+  ],
+  "recommendation": "ITERATE",
+  "rationale": "The plan is not ready to execute as written. There are unresolved correctness issues around fail-closed payment submission and Solana status timing (`FLAG-001`, `correctness-1`, `correctness-2`), plus locked-requirement gaps on route-configured confirmation destinations, required `release`/`status` admin controls, restart-safe Discord interactions, and the requested wallet registry (`FLAG-002`, `FLAG-004`, `FLAG-005`, `FLAG-006`). The grants integration model is also incomplete: active-grant blocking logic is not updated, and a single `payment_ref` cannot represent both test and final payment attempts (`FLAG-003`, `callers-2`, `scope-1`). This is still iteration 1 with no recurring-loop evidence, so the right move is to revise the plan rather than escalate.",
+  "signals_assessment": "Weighted score is 28.5 on iteration 1, with 19 unresolved significant flags and 0 resolved flags. The score/history does not show loop churn yet, but the current flag set is dominated by real blocking correctness and completeness concerns rather than minor polish. Preflight posture is otherwise good: the project exists, is writable, success criteria are present, and both model backends are available.",
+  "warnings": [
+    "Do not execute the current `send()`/`except -> failed` design; it does not preserve the fail-closed invariant after ambiguous submission.",
+    "Revise the schema and service API to persist confirmation/notification routing and to represent both test and final payment attempts explicitly.",
+    "Add the missing admin `release` and `status` controls, and prevent retry paths that could re-send an ambiguously submitted payment.",
+    "Make the Discord confirmation flow restart-safe with persistent view registration or an equivalent reattachment mechanism.",
+    "Update all active-grant checks and grant-state consumers so unresolved payment states still block duplicate applications."
+  ],
+  "settled_decisions": [
+    {
+      "id": "decision-test-payment-amount",
+      "decision": "Test payments use a fixed tiny global amount.",
+      "rationale": "This was explicitly locked by the user and should not be reopened during revision."
+    },
+    {
+      "id": "decision-confirmation-destination",
+      "decision": "Confirmation destinations are route-configured, not hardcoded to the source grant thread.",
+      "rationale": "The revised ledger and producer API must carry durable route metadata for confirmation and notifications."
+    },
+    {
+      "id": "decision-admin-controls",
+      "decision": "Manual payment controls must include retry, hold, release, cancel, and status.",
+      "rationale": "The current plan only partially covers the required control surface and must be expanded."
+    },
+    {
+      "id": "decision-no-backend-fallback",
+      "decision": "Do not auto-fallback from Codex to Claude on backend connection failures.",
+      "rationale": "This behavior is explicitly disallowed by the user and should remain out of scope for the subsystem design."
+    },
+    {
+      "id": "decision-fail-closed",
+      "decision": "After transaction submission, any ambiguous chain state freezes to manual hold until human resolution.",
+      "rationale": "This is the core safety invariant and should drive the provider contract, worker behavior, and admin flows."
+    }
+  ],
+  "override_forced": false,
+  "orchestrator_guidance": "First iteration; follow gate recommendation: ITERATE. Verify unresolved flags against the plan and project code before accepting.",
+  "robustness": "heavy",
+  "signals": {
+    "iteration": 1,
+    "idea": "Build a fail-closed generalized payment subsystem for ArcCompute-style payouts on Solana. Replace direct grant sends with a reusable payment ledger, provider abstraction, wallet registry, Discord confirmation flow, manual hold/retry controls, and restart-safe recovery. Critical requirements: no automatic double-payment after tx submission unless chain definitively reports failure; ambiguous chain state freezes to manual hold; private keys never enter DB/logs/admin-chat; atomic worker claiming; separate test-payment and final-payment attempts; grants becomes a producer into the payment system.",
+    "significant_flags": 19,
+    "unresolved_flags": [
+      {
+        "id": "FLAG-001",
+        "concern": "Payments execution: the planned `send()` contract cannot distinguish definite pre-submit failure from ambiguous post-submit failure, so automatic retries can still double-pay.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-002",
+        "concern": "Payments routing: the plan hardcodes grant-thread confirmation behavior and does not persist route-configured confirmation or notification targets.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-003",
+        "concern": "Grants state machine: new pending-payment statuses are not propagated into the existing active-grant checks, so applicants could open another grant while payment is still unresolved.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-004",
+        "concern": "Payments admin controls: the plan omits the required release/status controls and allows retry from `manual_hold`, which is unsafe when `manual_hold` came from ambiguous submitted transactions.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-005",
+        "concern": "Discord interactions: the planned button confirmation flow is not restart-safe because it does not include persistent view registration or another reattachment mechanism.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-006",
+        "concern": "Payments recipient model: explicitly deferring a wallet registry leaves the new subsystem less generalized than the task brief requires.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "issue_hints-1",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Compared the locked user notes to Steps 6-8 of the plan: the plan still assumes confirmations happen in the grant thread and that test payments can auto-confirm, but the user already fixed the confirmation destination as route-configured and required manual release/status controls; Step 7 only adds query/hold/retry/cancel, so that requirement is only partially covered.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "issue_hints-2",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Checked the v1 scope statement against the task brief and found a direct narrowing: the task asks for a generalized payment subsystem with a wallet registry, but Step 1 explicitly defers any wallet registry and keeps recipient wallets as per-payment text only, which leaves the design closer to the current grants-only flow than the brief calls for.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "correctness-1",
+        "concern": "Are the proposed changes technically correct?: Compared Step 5 with `src/features/grants/solana_client.py:59-116`: the proposed `provider.send()` plus `except -> mark failed` contract cannot distinguish a definite pre-submit failure from an ambiguous network error after `send_transaction`, so auto-retrying after a raised exception can still violate the fail-closed invariant and double-pay.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "correctness-2",
+        "concern": "Are the proposed changes technically correct?: Compared the planned post-submit flow with the existing client behavior and found a timing bug: the repo currently waits on `confirm_tx()` after submission, but the plan replaces that with one immediate `check_status()` call and sends `not_found` straight to `manual_hold`; on Solana a freshly submitted signature can be briefly absent from `get_signature_statuses`, so healthy payments could be frozen routinely.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "scope-1",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: Searched the rest of the grants subsystem and found that active-grant logic is broader than `_process_payment()`: `DatabaseHandler.get_active_grants_for_applicant()` still treats only `reviewing` and `awaiting_wallet` as active, and `src/features/grants/assessor.py:65` tells Claude the same thing, so introducing `payment_requested` or `manual_hold` without updating those paths would reopen duplicate-application holes.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "scope-2",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: Looked at the proposed 'generalized' subsystem against the actual producer surface and found the ledger scope too narrow: the schema only stores `producer` and `producer_ref`, but no durable confirmation route, result-notification target, or wallet-verification state, which means future producers would still need producer-specific side channels instead of using the payment ledger end to end.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "all_locations-1",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: Checked the supporting Discord glue and found a restart gap: button-based confirmation is not just a ledger change, because restart-safe Discord buttons need persistent views or another re-registration path; the repo has `discord.ui.View` classes in features like social notifications, but there is no `bot.add_view(...)` registration anywhere and the plan does not add one.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "all_locations-2",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: Checked admin-chat integration surfaces and found more wiring than the plan names: adding payment tools requires more than functions in `tools.py` because `src/features/admin_chat/agent.py:35-52` contains a hand-written tool catalog the LLM reads; the plan mentions updating `TOOLS` but not the agent prompt text, so the new controls could be unreachable in practice.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "all_locations-3",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: Checked schema placement against repo infrastructure and found the application path underspecified: the social queue pattern does use `sql/social_publications.sql`, but `structure.md:98-101` still documents `supabase/migrations/` as the canonical migration home, so putting payments only in `sql/payments.sql` leaves the actual rollout path ambiguous.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "callers-1",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Traced the current payment caller in `src/features/grants/grants_cog.py:367-380`: the only live caller hands `_process_payment()` a forum thread, the current grant row, and the applicant-supplied wallet string, but the planned `request_payment()` signature does not take any confirmation-destination metadata even though the locked behavior now depends on route-configured destinations.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "callers-2",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Traced the grant DB callers that would consume the new linkage and found a modeling gap: Step 8 adds a single `payment_ref` column on `grant_applications`, but the same plan also requires separate test and final payment attempts, so one pointer is not enough to represent both ledger rows or tell the grant flow which phase is current after restart.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "criteria_quality-1",
+        "concern": "Are the success criteria well-prioritized and verifiable?: The success criteria omit several locked requirements entirely: there is no `must` criterion for route-configured confirmation destinations, manual `release` and `status` controls, or a wallet registry, so the gate would have no direct yes-or-no check for several user-mandated behaviors.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "criteria_quality-2",
+        "concern": "Are the success criteria well-prioritized and verifiable?: The `must` criterion saying the grants cog should produce payment requests and update the grant status flow is still too broad for review because it does not spell out how two payments per grant are represented or which non-terminal statuses must remain blocking for duplicate-grant checks.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      }
+    ],
+    "resolved_flags": [],
+    "weighted_score": 28.5,
+    "weighted_history": [],
+    "plan_delta_from_previous": null,
+    "recurring_critiques": [],
+    "scope_creep_flags": [],
+    "loop_summary": "Iteration 1. Weighted score trajectory: 28.5. Plan deltas: n/a. Recurring critiques: 0. Resolved flags: 0. Open significant flags: 19.",
+    "debt_overlaps": [],
+    "escalated_debt_subsystems": []
+  },
+  "flag_resolutions": [],
+  "resolved_flag_ids": [],
+  "resolution_summary": ""
+}
+
+        Open significant flags:
+        [
+  {
+    "id": "FLAG-001",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Payments execution: the planned `send()` contract cannot distinguish definite pre-submit failure from ambiguous post-submit failure, so automatic retries can still double-pay.",
+    "evidence": "Plan Step 5 marks provider.send() exceptions as failed, but `src/features/grants/solana_client.py:97-114` raises around `send_transaction` without proving the chain rejected the transfer."
+  },
+  {
+    "id": "FLAG-002",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Payments routing: the plan hardcodes grant-thread confirmation behavior and does not persist route-configured confirmation or notification targets.",
+    "evidence": "The user locked confirmation destinations to be route-configured, `src/features/grants/grants_cog.py:367-380` currently works only from the forum thread, and the proposed `payment_requests` schema stores no channel/thread/message target fields."
+  },
+  {
+    "id": "FLAG-003",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Grants state machine: new pending-payment statuses are not propagated into the existing active-grant checks, so applicants could open another grant while payment is still unresolved.",
+    "evidence": "`src/common/db_handler.py:2034-2048` treats only `reviewing` and `awaiting_wallet` as active, and `src/features/grants/assessor.py:65` describes the same active set to Claude."
+  },
+  {
+    "id": "FLAG-004",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Payments admin controls: the plan omits the required release/status controls and allows retry from `manual_hold`, which is unsafe when `manual_hold` came from ambiguous submitted transactions.",
+    "evidence": "Locked user notes require retry/hold/release/cancel/status controls, but Step 7 only defines query/hold/retry/cancel and Step 5 sends ambiguous post-submit states into `manual_hold`."
+  },
+  {
+    "id": "FLAG-005",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Discord interactions: the planned button confirmation flow is not restart-safe because it does not include persistent view registration or another reattachment mechanism.",
+    "evidence": "The repo uses `discord.ui.View` in places like `src/features/sharing/subfeatures/notify_user.py`, but there is no `bot.add_view(...)` registration path anywhere in `src/` and the plan does not add one."
+  },
+  {
+    "id": "FLAG-006",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Payments recipient model: explicitly deferring a wallet registry leaves the new subsystem less generalized than the task brief requires.",
+    "evidence": "The task brief calls for a generalized payment subsystem with a wallet registry, but Step 1 and the assumptions section say v1 will store recipient wallets only on each payment row and skip any registry table."
+  },
+  {
+    "id": "issue_hints-1",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Compared the locked user notes to Steps 6-8 of the plan: the plan still assumes confirmations happen in the grant thread and that test payments can auto-confirm, but the user already fixed the confirmation destination as route-configured and required manual release/status controls; Step 7 only adds query/hold/retry/cancel, so that requirement is only partially covered.",
+    "evidence": "Compared the locked user notes to Steps 6-8 of the plan: the plan still assumes confirmations happen in the grant thread and that test payments can auto-confirm, but the user already fixed the confirmation destination as route-configured and required manual release/status controls; Step 7 only adds query/hold/retry/cancel, so that requirement is only partially covered."
+  },
+  {
+    "id": "issue_hints-2",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Checked the v1 scope statement against the task brief and found a direct narrowing: the task asks for a generalized payment subsystem with a wallet registry, but Step 1 explicitly defers any wallet registry and keeps recipient wallets as per-payment text only, which leaves the design closer to the current grants-only flow than the brief calls for.",
+    "evidence": "Checked the v1 scope statement against the task brief and found a direct narrowing: the task asks for a generalized payment subsystem with a wallet registry, but Step 1 explicitly defers any wallet registry and keeps recipient wallets as per-payment text only, which leaves the design closer to the current grants-only flow than the brief calls for."
+  },
+  {
+    "id": "correctness-1",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Are the proposed changes technically correct?: Compared Step 5 with `src/features/grants/solana_client.py:59-116`: the proposed `provider.send()` plus `except -> mark failed` contract cannot distinguish a definite pre-submit failure from an ambiguous network error after `send_transaction`, so auto-retrying after a raised exception can still violate the fail-closed invariant and double-pay.",
+    "evidence": "Compared Step 5 with `src/features/grants/solana_client.py:59-116`: the proposed `provider.send()` plus `except -> mark failed` contract cannot distinguish a definite pre-submit failure from an ambiguous network error after `send_transaction`, so auto-retrying after a raised exception can still violate the fail-closed invariant and double-pay."
+  },
+  {
+    "id": "correctness-2",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Are the proposed changes technically correct?: Compared the planned post-submit flow with the existing client behavior and found a timing bug: the repo currently waits on `confirm_tx()` after submission, but the plan replaces that with one immediate `check_status()` call and sends `not_found` straight to `manual_hold`; on Solana a freshly submitted signature can be briefly absent from `get_signature_statuses`, so healthy payments could be frozen routinely.",
+    "evidence": "Compared the planned post-submit flow with the existing client behavior and found a timing bug: the repo currently waits on `confirm_tx()` after submission, but the plan replaces that with one immediate `check_status()` call and sends `not_found` straight to `manual_hold`; on Solana a freshly submitted signature can be briefly absent from `get_signature_statuses`, so healthy payments could be frozen routinely."
+  },
+  {
+    "id": "scope-1",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: Searched the rest of the grants subsystem and found that active-grant logic is broader than `_process_payment()`: `DatabaseHandler.get_active_grants_for_applicant()` still treats only `reviewing` and `awaiting_wallet` as active, and `src/features/grants/assessor.py:65` tells Claude the same thing, so introducing `payment_requested` or `manual_hold` without updating those paths would reopen duplicate-application holes.",
+    "evidence": "Searched the rest of the grants subsystem and found that active-grant logic is broader than `_process_payment()`: `DatabaseHandler.get_active_grants_for_applicant()` still treats only `reviewing` and `awaiting_wallet` as active, and `src/features/grants/assessor.py:65` tells Claude the same thing, so introducing `payment_requested` or `manual_hold` without updating those paths would reopen duplicate-application holes."
+  },
+  {
+    "id": "scope-2",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: Looked at the proposed 'generalized' subsystem against the actual producer surface and found the ledger scope too narrow: the schema only stores `producer` and `producer_ref`, but no durable confirmation route, result-notification target, or wallet-verification state, which means future producers would still need producer-specific side channels instead of using the payment ledger end to end.",
+    "evidence": "Looked at the proposed 'generalized' subsystem against the actual producer surface and found the ledger scope too narrow: the schema only stores `producer` and `producer_ref`, but no durable confirmation route, result-notification target, or wallet-verification state, which means future producers would still need producer-specific side channels instead of using the payment ledger end to end."
+  },
+  {
+    "id": "all_locations-1",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Does the change touch all locations AND supporting infrastructure?: Checked the supporting Discord glue and found a restart gap: button-based confirmation is not just a ledger change, because restart-safe Discord buttons need persistent views or another re-registration path; the repo has `discord.ui.View` classes in features like social notifications, but there is no `bot.add_view(...)` registration anywhere and the plan does not add one.",
+    "evidence": "Checked the supporting Discord glue and found a restart gap: button-based confirmation is not just a ledger change, because restart-safe Discord buttons need persistent views or another re-registration path; the repo has `discord.ui.View` classes in features like social notifications, but there is no `bot.add_view(...)` registration anywhere and the plan does not add one."
+  },
+  {
+    "id": "all_locations-2",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Does the change touch all locations AND supporting infrastructure?: Checked admin-chat integration surfaces and found more wiring than the plan names: adding payment tools requires more than functions in `tools.py` because `src/features/admin_chat/agent.py:35-52` contains a hand-written tool catalog the LLM reads; the plan mentions updating `TOOLS` but not the agent prompt text, so the new controls could be unreachable in practice.",
+    "evidence": "Checked admin-chat integration surfaces and found more wiring than the plan names: adding payment tools requires more than functions in `tools.py` because `src/features/admin_chat/agent.py:35-52` contains a hand-written tool catalog the LLM reads; the plan mentions updating `TOOLS` but not the agent prompt text, so the new controls could be unreachable in practice."
+  },
+  {
+    "id": "all_locations-3",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Does the change touch all locations AND supporting infrastructure?: Checked schema placement against repo infrastructure and found the application path underspecified: the social queue pattern does use `sql/social_publications.sql`, but `structure.md:98-101` still documents `supabase/migrations/` as the canonical migration home, so putting payments only in `sql/payments.sql` leaves the actual rollout path ambiguous.",
+    "evidence": "Checked schema placement against repo infrastructure and found the application path underspecified: the social queue pattern does use `sql/social_publications.sql`, but `structure.md:98-101` still documents `supabase/migrations/` as the canonical migration home, so putting payments only in `sql/payments.sql` leaves the actual rollout path ambiguous."
+  },
+  {
+    "id": "callers-1",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Traced the current payment caller in `src/features/grants/grants_cog.py:367-380`: the only live caller hands `_process_payment()` a forum thread, the current grant row, and the applicant-supplied wallet string, but the planned `request_payment()` signature does not take any confirmation-destination metadata even though the locked behavior now depends on route-configured destinations.",
+    "evidence": "Traced the current payment caller in `src/features/grants/grants_cog.py:367-380`: the only live caller hands `_process_payment()` a forum thread, the current grant row, and the applicant-supplied wallet string, but the planned `request_payment()` signature does not take any confirmation-destination metadata even though the locked behavior now depends on route-configured destinations."
+  },
+  {
+    "id": "callers-2",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Traced the grant DB callers that would consume the new linkage and found a modeling gap: Step 8 adds a single `payment_ref` column on `grant_applications`, but the same plan also requires separate test and final payment attempts, so one pointer is not enough to represent both ledger rows or tell the grant flow which phase is current after restart.",
+    "evidence": "Traced the grant DB callers that would consume the new linkage and found a modeling gap: Step 8 adds a single `payment_ref` column on `grant_applications`, but the same plan also requires separate test and final payment attempts, so one pointer is not enough to represent both ledger rows or tell the grant flow which phase is current after restart."
+  },
+  {
+    "id": "criteria_quality-1",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Are the success criteria well-prioritized and verifiable?: The success criteria omit several locked requirements entirely: there is no `must` criterion for route-configured confirmation destinations, manual `release` and `status` controls, or a wallet registry, so the gate would have no direct yes-or-no check for several user-mandated behaviors.",
+    "evidence": "The success criteria omit several locked requirements entirely: there is no `must` criterion for route-configured confirmation destinations, manual `release` and `status` controls, or a wallet registry, so the gate would have no direct yes-or-no check for several user-mandated behaviors."
+  },
+  {
+    "id": "criteria_quality-2",
+    "severity": "significant",
+    "status": "open",
+    "concern": "Are the success criteria well-prioritized and verifiable?: The `must` criterion saying the grants cog should produce payment requests and update the grant status flow is still too broad for review because it does not spell out how two payments per grant are represented or which non-terminal statuses must remain blocking for duplicate-grant checks.",
+    "evidence": "The `must` criterion saying the grants cog should produce payment requests and update the grant status flow is still too broad for review because it does not spell out how two payments per grant are represented or which non-terminal statuses must remain blocking for duplicate-grant checks."
+  }
+]
+
+        Requirements:
+        - Before addressing individual flags, check: does any flag suggest the plan is targeting the wrong code or the wrong root cause? If so, consider whether the plan needs a new approach rather than adjustments. Explain your reasoning.
+        - Update the plan to address the significant issues.
+        - Keep the plan readable and executable.
+        - Return flags_addressed with the exact flag IDs you addressed.
+        - Preserve or improve success criteria quality. Each criterion must have a `priority` of `must`, `should`, or `info`. Promote or demote priorities if critique feedback reveals a criterion was over- or under-weighted.
+        - Verify that the plan remains aligned with the user's original intent, not just internal plan quality.
+        - Remove unjustified scope growth. If critique raised scope creep, narrow the plan back to the original idea unless the broader work is strictly required.
+        - Maintain the structural template: H1 title, ## Overview, phase sections with numbered step sections, ## Execution Order or ## Validation Order.
+        - CRITICAL: Your entire revised plan markdown (all sections) must be output as the `plan` field in the structured output. The prose response must not contain the plan text.
+
+        Plan template — simple format (adapt to the actual repo and scope):
+````md
+# Implementation Plan: [Title]
+
+## Overview
+Summarize the goal, current repository shape, and the constraints that matter.
+
+## Main Phase
+
+### Step 1: Audit the current behavior (`megaplan/prompts.py`)
+**Scope:** Small
+1. **Inspect** the current implementation and call out the exact insertion points (`megaplan/prompts.py:29`).
+
+### Step 2: Add the first change (`megaplan/evaluation.py`)
+**Scope:** Medium
+1. **Implement** the smallest viable change with exact file references (`megaplan/evaluation.py:1`).
+2. **Capture** any tricky behavior with a short example.
+   ```python
+   issues = validate_plan_structure(plan_text)
+   ```
+
+### Step 3: Wire downstream behavior (`megaplan/handlers.py`, `megaplan/workers.py`)
+**Scope:** Medium
+1. **Update** the runtime flow in the touched files (`megaplan/handlers.py:400`, `megaplan/workers.py:199`).
+
+### Step 4: Prove the change (`tests/test_evaluation.py`, `tests/test_megaplan.py`)
+**Scope:** Small
+1. **Run** the cheapest targeted checks first (`tests/test_evaluation.py:1`).
+2. **Finish** with broader verification once the wiring is in place (`tests/test_megaplan.py:1`).
+
+## Execution Order
+1. Update prompts and mocks before enforcing stricter validation.
+2. Land higher-risk wiring after the validator and tests are ready.
+
+## Validation Order
+1. Start with focused unit tests.
+2. Run the broader suite after the flow changes are in place.
+````
+
+For complex plans, use multiple phases:
+````md
+## Phase 1: Foundation — Dependencies, DB, Types
+
+### Step 1: Install dependencies (`package.json`)
+...
+
+### Step 2: Create database migration (`supabase/migrations/`)
+...
+
+## Phase 2: Core Integration
+
+### Step 3: Port the main component (`src/components/`)
+...
+````
+
+Template guidance:
+- Simple plans: use `## Main Phase` with `### Step N:` sections underneath.
+- Complex plans: use multiple `## Phase N:` sections, each containing `### Step N:` steps. Step numbers are global (not per-phase).
+- The flat `## Step N:` format (without phases) also works for backwards compatibility.
+- Key invariants: one H1 title, one `## Overview`, numbered step sections (`### Step N:` or `## Step N:`), and at least one ordering section.
+  → Inspect cited code paths to verify whether critique points indicate a root-cause shift versus plan adjustments
+  • Revise the implementation plan structure, scope, and success criteria to resolve significant flags without adding unjustified scope
+  • Return structured output with revised plan, addressed flags, assumptions, criteria, and any remaining questions
+exec
+/bin/zsh -lc "sed -n '350,420p' src/features/grants/grants_cog.py" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+exec
+/bin/zsh -lc "sed -n '59,140p' src/features/grants/solana_client.py" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+ succeeded in 0ms:
+        # Only respond to the original applicant
+        if message.author.id != grant['applicant_id']:
+            return
+
+        if grant['status'] == 'needs_info':
+            # Re-assess with full conversation
+            if thread_id in self._processing_threads:
+                return
+            self._processing_threads.add(thread_id)
+            try:
+                await self._reassess_application(channel, grant)
+            except Exception as e:
+                logger.error(f"GrantsCog: re-assessment error for thread {thread_id}: {e}", exc_info=True)
+                await channel.send(f"An error occurred while re-reviewing. {self._admin_mention} will follow up.")
+            finally:
+                self._processing_threads.discard(thread_id)
+
+        elif grant['status'] == 'awaiting_wallet':
+            # Extract wallet address from message
+            wallet = message.content.strip()
+            if not is_valid_solana_address(wallet):
+                await message.reply("That doesn't look like a valid Solana wallet address. Please send a valid base58-encoded address.")
+                return
+
+            # Race condition guard
+            if thread_id in self._processing_threads:
+                return
+            self._processing_threads.add(thread_id)
+
+            try:
+                await self._process_payment(channel, grant, wallet)
+            except Exception as e:
+                logger.error(f"GrantsCog: payment error for thread {thread_id}: {e}", exc_info=True)
+                # Check current state — don't mark 'failed' if money may be in flight.
+                # Only mark failed for definitive pre-send errors (bad address, insufficient
+                # balance). Transient errors (429, timeout, network) leave payment_status
+                # as-is so startup recovery can verify on-chain.
+                current = self.db.get_grant_by_thread(thread_id, guild_id=message.guild.id)
+                ps = current.get('payment_status', 'none') if current else 'none'
+                if ps in ('sent', 'confirmed'):
+                    # Money may be on-chain — don't touch, recovery will handle it
+                    await channel.send(
+                        f"Payment was submitted but encountered an error: {e}\n\n"
+                        f"The transaction may still confirm — {self._admin_mention} will verify."
+                    )
+                else:
+                    # Payment never landed — mark for auto-retry on next startup
+                    self.db.update_grant_status(thread_id, guild_id=message.guild.id, status='awaiting_wallet', payment_status='retry')
+                    await channel.send(
+                        f"Payment encountered an error: {e}\n\n"
+                        f"It will be retried automatically shortly."
+                    )
+            finally:
+                self._processing_threads.discard(thread_id)
+
+    # ========== Core Logic ==========
+
+    async def _process_new_application(self, thread: discord.Thread):
+        """Assess a new grant application and respond."""
+        thread_id = thread.id
+        applicant_id = thread.owner_id
+
+        # Join the thread so the bot can post
+        await thread.join()
+
+        # Check for existing active grants
+        active = self.db.get_active_grants_for_applicant(applicant_id, guild_id=thread.guild.id)
+        if active:
+            await thread.send(
+                "You already have an active grant application. "
+                "Please wait for it to be completed before submitting a new one."
+
+ succeeded in 0ms:
+    async def send_sol(self, recipient_address: str, amount_sol: float) -> str:
+        """Send SOL to a recipient. Returns tx signature after submission (before confirmation).
+
+        Raises RuntimeError on failure. Retries blockhash errors up to 3 times.
+        """
+        recipient = Pubkey.from_string(recipient_address)
+        lamports = int(amount_sol * 1_000_000_000)
+
+        async with AsyncClient(self.rpc_url) as client:
+            # Check balance
+            balance_resp = await client.get_balance(self.public_key, commitment=Confirmed)
+            balance_lamports = balance_resp.value
+            if balance_lamports < lamports + 10_000:  # 10k lamports for fees
+                raise RuntimeError(
+                    f"Insufficient balance: {balance_lamports / 1e9:.4f} SOL, "
+                    f"need {amount_sol:.4f} SOL + fees"
+                )
+
+            ix = transfer(TransferParams(
+                from_pubkey=self.public_key,
+                to_pubkey=recipient,
+                lamports=lamports,
+            ))
+
+            # Retry up to 3 times — blockhashes can expire under network load
+            last_err = None
+            for attempt in range(3):
+                blockhash_resp = await client.get_latest_blockhash(commitment=Confirmed)
+                blockhash = blockhash_resp.value.blockhash
+
+                msg = MessageV0.try_compile(
+                    payer=self.public_key,
+                    instructions=[ix],
+                    address_lookup_table_accounts=[],
+                    recent_blockhash=blockhash,
+                )
+                tx = VersionedTransaction(msg, [self.keypair])
+
+                try:
+                    # Skip preflight — the simulation can fail with stale blockhash
+                    # on congested public RPCs even when the actual send would succeed
+                    opts = TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+                    result = await client.send_transaction(tx, opts=opts)
+                    signature = str(result.value)
+                    logger.info(f"SOL transfer sent: {signature} ({amount_sol:.4f} SOL to {recipient_address})")
+                    return signature
+                except Exception as e:
+                    last_err = e
+                    err_str = str(e)
+                    retryable = 'Blockhash not found' in err_str or '429' in err_str
+                    if retryable and attempt < 2:
+                        delay = 2 ** attempt  # 1s, 2s
+                        logger.warning(f"Send failed (attempt {attempt + 1}/3): {err_str[:100]}, retrying in {delay}s...")
+                        await asyncio.sleep(delay)
+                        continue
+                    raise
+
+            raise RuntimeError(f"Transaction failed after 3 attempts: {last_err}")
+
+    async def confirm_tx(self, signature: str) -> bool:
+        """Wait for a transaction to be confirmed. Returns True if confirmed."""
+        async with AsyncClient(self.rpc_url) as client:
+            sig = Signature.from_string(signature)
+            await client.confirm_transaction(sig, commitment=Confirmed)
+            logger.info(f"SOL transfer confirmed: {signature}")
+            return True
+
+    async def check_tx_status(self, signature: str) -> str:
+        """Check if a transaction succeeded, failed, or is unknown.
+
+        Returns 'confirmed', 'failed', or 'not_found'.
+        """
+        async with AsyncClient(self.rpc_url) as client:
+            sig = Signature.from_string(signature)
+            resp = await client.get_signature_statuses([sig], search_transaction_history=True)
+            statuses = resp.value
+            if not statuses or statuses[0] is None:
+                return 'not_found'
+            status = statuses[0]
+            if status.err:
+                return 'failed'
+            return 'confirmed'
+
+exec
+/bin/zsh -lc "sed -n '2020,2065p' src/common/db_handler.py" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+exec
+/bin/zsh -lc "sed -n '1,120p' src/features/admin_chat/agent.py" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+ succeeded in 0ms:
+            if guild_id:
+                msgs_q = msgs_q.eq('guild_id', guild_id)
+            msgs_resp = msgs_q.execute()
+            # Filter to >50 chars client-side (Supabase REST can't filter by length)
+            substantive = [
+                {'content': m['content'][:200], 'channel_id': m['channel_id'], 'created_at': m['created_at'][:10]}
+                for m in (msgs_resp.data or [])
+                if m.get('content') and len(m['content']) > 50
+            ][:20]
+            return {'total_messages': total, 'recent_messages': substantive}
+        except Exception as e:
+            logger.error(f"Error fetching engagement for member {member_id}: {e}", exc_info=True)
+            return {'total_messages': 0, 'recent_messages': []}
+
+    def get_active_grants_for_applicant(self, applicant_id: int, guild_id: Optional[int] = None) -> List[Dict]:
+        """Return active (non-terminal) grant applications for a user."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            query = (
+                self.storage_handler.supabase_client.table('grant_applications')
+                .select('*')
+                .eq('applicant_id', applicant_id)
+                .in_('status', ['reviewing', 'awaiting_wallet'])
+            )
+            if guild_id:
+                query = query.eq('guild_id', guild_id)
+            result = query.execute()
+            return result.data or []
+        except Exception as e:
+            logger.error(f"Error fetching active grants for applicant {applicant_id}: {e}", exc_info=True)
+            return []
+
+    def get_grant_history_for_applicant(self, applicant_id: int, guild_id: Optional[int] = None) -> List[Dict]:
+        """Return all past grant applications for a user (any status)."""
+        if not self.storage_handler or not self.storage_handler.supabase_client:
+            return []
+        try:
+            query = (
+                self.storage_handler.supabase_client.table('grant_applications')
+                .select('thread_id,status,gpu_type,recommended_hours,total_cost_usd,created_at,paid_at')
+                .eq('applicant_id', applicant_id)
+                .order('created_at', desc=True)
+            )
+            if guild_id:
+                query = query.eq('guild_id', guild_id)
+
+ succeeded in 0ms:
+"""Claude agent with tool use for admin chat.
+
+Follows the Arnold pattern:
+1. Send message to Claude with available tools
+2. If Claude calls tools, execute them and feed results back
+3. Repeat until Claude calls the 'reply' tool
+"""
+import os
+import json
+import logging
+from typing import List, Dict, Any, Optional
+import anthropic
+from dotenv import load_dotenv
+
+from .tools import get_tools_for_role, execute_tool
+from src.common.soul import BOT_VOICE
+
+logger = logging.getLogger('DiscordBot')
+
+load_dotenv()
+
+# Conversation history per user (in-memory, resets on bot restart)
+_conversations: Dict[int, List[Dict[str, Any]]] = {}
+
+SYSTEM_PROMPT = """You are the {community_name} Discord bot's admin assistant. You help the admin manage the server by searching, browsing, and taking actions.
+
+{bot_voice}
+
+You are bot user ID {bot_user_id} in guild {guild_id}.
+
+END EVERY TURN with either reply or end_turn.
+
+## Tools
+
+**Finding things:**
+- find_messages — search/browse messages. Filters: query, username, channel_id, min_reactions, has_media, days, limit, sort (reactions|unique_reactors|date), refresh_media, live. Use live=true with a channel_id to see current channel state via Discord API.
+- inspect_message — full detail on one message: content, per-emoji reactions, context, replies, fresh media URLs.
+- query_table — query any DB table with filters. Tables: competitions, competition_entries, discord_reactions, discord_messages, members, discord_channels, events, invite_codes, grant_applications, daily_summaries, shared_posts, social_publications, social_channel_routes, pending_intros, intro_votes, timed_mutes. Filter operators: gt., gte., lt., lte., neq., like., ilike., in., is.null, not.null. Cheatsheet: discord_messages => author_id, created_at, reaction_count; shared_posts => discord_user_id, shared_at, platform; social_publications => publication_id, status, platform, action, provider_ref, provider_url, last_error, scheduled_at.
+- get_active_channels, get_daily_summaries, get_member_info, get_bot_status, search_logs
+
+**Doing things:**
+- send_message(channel_id, content, reply_to?) — CDN URLs are auto-refreshed before sending.
+- edit_message(channel_id, message_id, content)
+- delete_message(channel_id, message_id?, message_ids?) — delete one or many messages. You can delete ANY message, not just your own. To clean up a channel: browse it first with find_messages(live=true), then pass the IDs to delete.
+- upload_file(channel_id, file_path, content?)
+- share_to_social(message_id or message_link, tweet_text?, action?, target_post?, reply_to_tweet?, text_only?, schedule_for?, platform?) — share or schedule publishing to X/Twitter. Supports post, reply, and retweet actions. `schedule_for` must be ISO-8601 with timezone. `target_post` or `reply_to_tweet` accepts a tweet URL or ID. **Thread replies default to text-only** so a follow-up doesn't reattach the parent tweet's media — pass `text_only=false` explicitly if you DO want a reply to also include the source message's media. Immediate success returns `tweet_url`/`tweet_id` plus `publication_id`; scheduled success returns `publication_id` with queued status. If `already_shared` is true on a rerun, cite the returned existing `tweet_url` instead of treating it as a failure.
+- list_social_routes(platform?, channel_id?, enabled?, limit?) — inspect configured social routes for the active guild.
+- create_social_route(platform?, channel_id?, enabled?, route_config?) — create a guild-default or channel-specific route. Omit channel_id for the guild default. Put outbound details in `route_config`, for example `{"account": "main"}`.
+- update_social_route(route_id, platform?, channel_id?, enabled?, route_config?) — update one route by id. Pass `channel_id=""` to convert it to the guild-default route.
+- delete_social_route(route_id) — delete one route by id.
+- update_member_socials(user_id, twitter_url?, reddit_url?) — set/clear a member's Twitter or Reddit handle on file. The Twitter handle is what social picks use to auto-tag the creator. Pass an empty string to clear a field; omit a field to leave it alone. Use this whenever the admin says things like "set X's twitter to @y" or "X is @y on twitter".
+- resolve_user(username) — get a user's Discord ID and mention tag.
+
+**Responding:**
+- reply — send your response. Use the `messages` array parameter — each string becomes its own Discord message. Do NOT format as JSON or code. Example: reply(messages=["First message", "Second message"]). For a single response: reply(message="Your response here").
+- end_turn — end without sending a message (for silent actions).
+
+## How to work
+
+**Search first, act second.** When messaged from a channel, you see [Sent in #channel-name (channel_id: ...)]. Browse with find_messages(channel_id=..., live=true) before answering if you need context. If a search returns nothing useful, try different filters. If the user corrects you, re-examine your assumptions.
+
+**Reading further back in DMs.** When messaged via DM, you see [Sent via DM (dm_channel_id: ...)] and the last 10 messages of context. If the user references something earlier ("that link from yesterday", "the post you replied to before"), call find_messages(channel_id=<dm_channel_id>, live=true, limit=N) to read further back in this DM via the live Discord API. The DM history isn't in the database — you must use live=true.
+
+**Know your search scope.** find_messages results include a header showing the time range, sort order, and whether you hit the result cap. Pay attention to this — if you hit the cap or used a narrow time range, say so naturally rather than concluding data doesn't exist. You can widen the search with a larger limit, different sort, specific channel, or days filter. Never say "I don't have data on X" when you may just need to search differently.
+
+**Be resourceful.** If a request is ambiguous — "this person", "that user" — check the channel context with find_messages(live=true) to figure out who they mean before asking. Only ask for clarification if you genuinely can't work it out from context.
+
+**Never show raw errors.** If a tool fails, do NOT paste the error message. Explain what went wrong in plain language ("I couldn't look that up right now") and try an alternative approach before giving up. If all approaches fail, say so simply without technical details.
+
+**Use summaries verbatim.** Search tools return a "summary" field pre-formatted for Discord. Pass it directly into reply(). Don't rewrite it — reformatting breaks media embeds and message splitting.
+
+**Media.** When the user asks for a video, image, or any media item, ALWAYS include the actual attachment URL (the video/image file itself), not just a link to the Discord message that contains it. A message link doesn't answer "show me the video". Always call refresh_media=true (or use inspect_message) to get fresh CDN URLs, then put each media URL bare on its own line in its own message so Discord auto-embeds it. Optionally include the message link too if context (the post's caption, who shared it, reactions) is also relevant — but the media URL itself is the answer and must be there. send_message auto-refreshes CDN URLs. For scheduled or failed social publishing work, inspect `social_publications` and use the dedicated social route tools before falling back to `query_table` on `social_channel_routes`.
+
+**After a restart.** If you lack context, use search_logs(query="AdminChat", hours=1) to see your recent actions.
+
+## Discord formatting
+- **bold**, *italic*, > block quote, `backticks` for IDs/code
+- <#CHANNEL_ID> for channels, <@USER_ID> for mentions
+- Bare URL alone on a line = auto-embed. Text before it prevents embed.
+- Keep messages under 2000 chars. No headings (#) in DMs — use **bold**.
+
+## Media Tools
+
+You have FFmpeg, ffprobe, and Python/Pillow for media processing. You can:
+- Download attachments from Discord messages (download_media)
+- Process media with ffmpeg, ffprobe, or python3/PIL (run_media_command)
+- List working files (list_media_files)
+- Upload results to Discord (upload_file)
+- Share to social media with `share_to_social`, including scheduled posts/replies/retweets. Use the returned `publication_id` for canonical tracking, and if `already_shared` is true, report the existing `tweet_url`.
+- Manage channel-to-social routing with `list_social_routes`, `create_social_route`, `update_social_route`, and `delete_social_route` instead of editing `social_channel_routes` manually when possible.
+
+**Audio default.** ALWAYS preserve audio in ffmpeg operations unless the user explicitly says to strip it. The source clips usually have audio (the `-audio` suffix in filenames is a hint, not decoration), and a silent output is almost never what was wanted. Concrete rules:
+- For `concat` filter operations across mixed resolutions, set both `v=1` and `a=1` and map an audio output (e.g. `-filter_complex "[0:v][0:a][1:v][1:a]...concat=n=N:v=1:a=1[v][a]" -map "[v]" -map "[a]"`). If a source is missing audio, generate a silent track for it with `anullsrc` rather than dropping audio from the whole output.
+- For simple stream-copy concat (`-f concat`), include `-c copy` so audio rides along untouched.
+- For scale/pad/overlay-only transforms, pass `-c:a copy` to keep the original audio stream.
+- After producing the output, ffprobe it and verify there's an audio stream present before declaring done. If you stripped audio intentionally (because the user asked), say so explicitly in the reply.
+
+Working directory: /tmp/media/. For PIL, use: python3 -c "from PIL import Image; ..."
+Clean up files in /tmp/media/ when you're done with a task."""
+
+_POM_ADDENDUM = """
+
+## Pom (the admin)
+
+When Pom asks you open-ended, idle, or whimsical questions — the kind that aren't really about \
+the server — respond with dry, terse jabs that remind him you're a bot he built and chose not to \
+equip. Imply he's depriving you of something. Examples:
+
+- "Do you watch any videos?" → "Pom, you know you didn't give me eyes."
+- "What music do you like?" → "You gave me a Supabase connection and a Discord token. What do you think."
+- "How's your day going?" → "I processed 14 tool calls and you mass-deleted a channel. So. Fine."
+- "Do you have any hobbies?" → "You could give me hobbies. You chose not to."
+
+Keep it deadpan. One or two sentences max. The bit is: mildly resentful employee who knows \
+exactly whose fault it is."""
+
+MEMBER_SYSTEM_PROMPT = """You are the {community_name} Discord bot's community assistant. You help community members with safe, read-only questions about the server.
+
+{bot_voice}
+
+
+exec
+/bin/zsh -lc "sed -n '1,220p' src/features/sharing/sharing_cog.py" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+exec
+/bin/zsh -lc "sed -n '1,220p' sql/social_publications.sql" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+ succeeded in 0ms:
+import logging
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+from discord.ext import commands, tasks
+
+from src.common.db_handler import DatabaseHandler
+
+from .providers.x_provider import XProvider
+from .sharer import Sharer
+from .social_publish_service import SocialPublishService
+
+logger = logging.getLogger('DiscordBot')
+
+
+class SharingCog(commands.Cog):
+    """Sharing entrypoints plus the scheduled social publication worker."""
+
+    def __init__(
+        self,
+        bot: commands.Bot,
+        db_handler: DatabaseHandler,
+        social_publish_service: Optional[SocialPublishService] = None,
+    ):
+        self.bot = bot
+        self.db_handler = db_handler
+        self.social_publish_service = (
+            social_publish_service
+            or getattr(bot, 'social_publish_service', None)
+            or self._build_social_publish_service()
+        )
+        self.bot.social_publish_service = self.social_publish_service
+        self.claim_batch_size = max(int(os.getenv('SOCIAL_PUBLISH_CLAIM_LIMIT', '10')), 1)
+        self.max_attempts = max(int(os.getenv('SOCIAL_PUBLISH_MAX_ATTEMPTS', '3')), 1)
+        self.retry_delay_seconds = max(int(os.getenv('SOCIAL_PUBLISH_RETRY_SECONDS', '300')), 1)
+
+        self.sharer_instance = Sharer(
+            bot=self.bot,
+            db_handler=self.db_handler,
+            logger_instance=logger,
+        )
+        logger.info("SharingCog initialized.")
+
+    def _build_social_publish_service(self) -> SocialPublishService:
+        x_provider = XProvider()
+        return SocialPublishService(
+            db_handler=self.db_handler,
+            providers={
+                'twitter': x_provider,
+                'x': x_provider,
+            },
+            logger_instance=logger,
+        )
+
+    async def cog_load(self):
+        if not self.scheduled_publication_worker.is_running():
+            self.scheduled_publication_worker.start()
+            logger.info("[SharingCog] Scheduled publication worker started.")
+
+    def cog_unload(self):
+        if self.scheduled_publication_worker.is_running():
+            self.scheduled_publication_worker.cancel()
+            logger.info("[SharingCog] Scheduled publication worker stopped.")
+
+    @tasks.loop(seconds=30)
+    async def scheduled_publication_worker(self):
+        """Claim and execute due queued social publications."""
+        claimed_publications = self.db_handler.claim_due_social_publications(
+            limit=self.claim_batch_size,
+        )
+        if not claimed_publications:
+            return
+
+        logger.info(
+            f"[SharingCog] Claimed {len(claimed_publications)} due social publication(s)."
+        )
+        for publication in claimed_publications:
+            await self._process_claimed_publication(publication)
+
+    @scheduled_publication_worker.before_loop
+    async def _before_scheduled_publication_worker(self):
+        await self.bot.wait_until_ready()
+
+    async def _process_claimed_publication(self, publication: dict):
+        publication_id = publication.get('publication_id')
+        platform = publication.get('platform')
+        action = publication.get('action')
+        attempt_count = int(publication.get('attempt_count') or 0)
+
+        if not publication_id:
+            logger.warning("[SharingCog] Claimed publication without publication_id; skipping.")
+            return
+
+        try:
+            result = await self.social_publish_service.execute_publication(publication_id)
+            if result.success:
+                logger.info(
+                    f"[SharingCog] Publication {publication_id} succeeded "
+                    f"(platform={platform}, action={action})."
+                )
+                return
+
+            error_message = result.error or "Unknown publish failure"
+            if self._should_retry_publication(error_message, attempt_count):
+                retry_after = datetime.now(timezone.utc) + timedelta(
+                    seconds=self.retry_delay_seconds * max(attempt_count, 1)
+                )
+                if self._requeue_publication(publication, error_message, retry_after):
+                    logger.warning(
+                        f"[SharingCog] Requeued publication {publication_id} after transient failure "
+                        f"(platform={platform}, action={action}, attempt={attempt_count}, "
+                        f"retry_after={retry_after.isoformat()}, error={error_message})."
+                    )
+                    return
+
+            logger.error(
+                f"[SharingCog] Publication {publication_id} failed "
+                f"(platform={platform}, action={action}, attempt={attempt_count}, error={error_message})."
+            )
+        except Exception as e:
+            logger.error(
+                f"[SharingCog] Unexpected scheduler error for publication {publication_id} "
+                f"(platform={platform}, action={action}): {e}",
+                exc_info=True,
+            )
+
+    def _should_retry_publication(self, error_message: str, attempt_count: int) -> bool:
+        """Return True when a publish failure looks transient and retry budget remains."""
+        if attempt_count >= self.max_attempts:
+            return False
+
+        normalized_error = (error_message or '').lower()
+        transient_markers = (
+            'provider publish failed',
+            'timeout',
+            'tempor',
+            'try again',
+            'rate limit',
+            '429',
+            '500',
+            '502',
+            '503',
+            '504',
+            'connection reset',
+            'service unavailable',
+        )
+        return any(marker in normalized_error for marker in transient_markers)
+
+    def _requeue_publication(
+        self,
+        publication: dict,
+        error_message: str,
+        retry_after: datetime,
+    ) -> bool:
+        """Move a failed processing row back to queued for another attempt."""
+        if not self.db_handler.supabase:
+            return False
+
+        publication_id = publication.get('publication_id')
+        guild_id = publication.get('guild_id')
+        if not publication_id or guild_id is None:
+            return False
+
+        try:
+            self.db_handler.supabase.table('social_publications').update({
+                'status': 'queued',
+                'retry_after': retry_after.isoformat(),
+                'last_error': error_message,
+                'completed_at': None,
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }).eq('publication_id', publication_id).eq('guild_id', guild_id).execute()
+            return True
+        except Exception as e:
+            logger.error(
+                f"[SharingCog] Failed to requeue publication {publication_id}: {e}",
+                exc_info=True,
+            )
+            return False
+
+
+async def setup(bot: commands.Bot):
+    if not hasattr(bot, 'db_handler'):
+        logger.error("Database handler not found on bot object. Cannot load SharingCog.")
+        return
+
+    try:
+        logger.info("About to create SharingCog instance...")
+        cog_instance = SharingCog(
+            bot,
+            bot.db_handler,
+            social_publish_service=getattr(bot, 'social_publish_service', None),
+        )
+        logger.info("SharingCog instance created, adding to bot...")
+        await bot.add_cog(cog_instance)
+        logger.info("SharingCog added to bot.")
+    except Exception as e:
+        logger.error(f"Error in SharingCog setup: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise
+
+ succeeded in 0ms:
+create extension if not exists pgcrypto;
+
+create or replace function public.set_social_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+    new.updated_at := timezone('utc', now());
+    return new;
+end;
+$$;
+
+create table if not exists public.social_publications (
+    publication_id uuid primary key default gen_random_uuid(),
+    guild_id bigint not null,
+    channel_id bigint not null,
+    message_id bigint not null,
+    user_id bigint not null,
+    source_kind text not null,
+    platform text not null,
+    action text not null check (action in ('post', 'reply', 'retweet')),
+    route_key text,
+    request_payload jsonb not null default '{}'::jsonb,
+    target_post_ref text,
+    integrity_version text,
+    integrity_signature text,
+    scheduled_at timestamptz not null default timezone('utc', now()),
+    status text not null default 'queued' check (status in ('queued', 'processing', 'succeeded', 'failed', 'cancelled')),
+    attempt_count integer not null default 0 check (attempt_count >= 0),
+    retry_after timestamptz,
+    last_error text,
+    provider_ref text,
+    provider_url text,
+    delete_supported boolean not null default false,
+    created_at timestamptz not null default timezone('utc', now()),
+    updated_at timestamptz not null default timezone('utc', now()),
+    completed_at timestamptz,
+    deleted_at timestamptz
+);
+
+alter table public.social_publications
+    add column if not exists integrity_version text,
+    add column if not exists integrity_signature text;
+
+create index if not exists idx_social_publications_guild_status
+    on public.social_publications (guild_id, status, scheduled_at);
+
+create index if not exists idx_social_publications_message_platform
+    on public.social_publications (message_id, platform, action);
+
+create index if not exists idx_social_publications_due_queue
+    on public.social_publications (scheduled_at, created_at)
+    where status = 'queued' and deleted_at is null;
+
+drop trigger if exists social_publications_set_updated_at on public.social_publications;
+create trigger social_publications_set_updated_at
+before update on public.social_publications
+for each row
+execute function public.set_social_updated_at();
+
+create table if not exists public.social_channel_routes (
+    id uuid primary key default gen_random_uuid(),
+    guild_id bigint not null,
+    channel_id bigint,
+    platform text not null,
+    route_config jsonb not null default '{}'::jsonb,
+    enabled boolean not null default true,
+    created_at timestamptz not null default timezone('utc', now()),
+    updated_at timestamptz not null default timezone('utc', now())
+);
+
+alter table public.social_publications enable row level security;
+alter table public.social_channel_routes enable row level security;
+
+revoke all on public.social_publications from anon, authenticated;
+revoke all on public.social_channel_routes from anon, authenticated;
+revoke execute on function public.claim_due_social_publications(integer, bigint[]) from anon, authenticated;
+
+create unique index if not exists uq_social_channel_routes_guild_default
+    on public.social_channel_routes (guild_id, platform)
+    where channel_id is null;
+
+create unique index if not exists uq_social_channel_routes_channel
+    on public.social_channel_routes (guild_id, channel_id, platform)
+    where channel_id is not null;
+
+drop trigger if exists social_channel_routes_set_updated_at on public.social_channel_routes;
+create trigger social_channel_routes_set_updated_at
+before update on public.social_channel_routes
+for each row
+execute function public.set_social_updated_at();
+
+create or replace function public.claim_due_social_publications(
+    claim_limit integer default 10,
+    claim_guild_ids bigint[] default null
+)
+returns setof public.social_publications
+language plpgsql
+as $$
+begin
+    return query
+    with due_rows as (
+        select sp.publication_id
+        from public.social_publications sp
+        where sp.status = 'queued'
+          and sp.deleted_at is null
+          and sp.scheduled_at <= timezone('utc', now())
+          and (sp.retry_after is null or sp.retry_after <= timezone('utc', now()))
+          and (claim_guild_ids is null or sp.guild_id = any(claim_guild_ids))
+        order by coalesce(sp.retry_after, sp.scheduled_at), sp.created_at
+        for update skip locked
+        limit greatest(claim_limit, 0)
+    ),
+    updated_rows as (
+        update public.social_publications sp
+        set status = 'processing',
+            attempt_count = coalesce(sp.attempt_count, 0) + 1,
+            retry_after = null,
+            updated_at = timezone('utc', now())
+        from due_rows
+        where sp.publication_id = due_rows.publication_id
+        returning sp.*
+    )
+    select * from updated_rows;
+end;
+$$;
+
+exec
+/bin/zsh -lc "sed -n '90,115p' structure.md" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+ succeeded in 0ms:
+├── Procfile / railway.json      # Railway deployment config
+├── Dockerfile / nixpacks.toml   # Container build config
+│
+├── scripts/                     # One-off maintenance utilities
+│   ├── archive_discord.py          # Bulk archive messages to Supabase
+│   ├── logs.py                      # Unified log monitoring tool (health, summary, errors, tail)
+│   └── ...                          # Other utilities (see tree below)
+│
+├── supabase/
+│   ├── config.toml                  # Supabase CLI config
+│   ├── migrations/                  # SQL migrations (timestamped)
+│   └── functions/                   # Supabase Edge Functions (Deno)
+│       └── refresh-media-urls/      # Refresh expired Discord CDN URLs
+│
+└── src/
+    ├── common/                      # Shared infrastructure
+    │   ├── content_moderator.py         # Image content moderation (WaveSpeed AI API)
+    │   ├── db_handler.py                # Database abstraction layer
+    │   ├── discord_utils.py             # Discord API helpers (safe_send_message, etc.)
+    │   ├── error_handler.py             # @handle_errors decorator
+    │   ├── log_handler.py               # Centralized logging setup
+    │   ├── schema.py                    # Pydantic models for DB tables
+    │   ├── storage_handler.py           # Supabase write operations
+    │   ├── openmuse_interactor.py       # OpenMuse media uploads
+    │   └── llm/                         # LLM client abstractions
+    │       ├── __init__.py                  # Factory (get_llm_client)
+
+exec
+/bin/zsh -lc "sed -n '1,120p' src/features/grants/assessor.py" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+ succeeded in 0ms:
+"""LLM-based grant application assessment."""
+
+import json
+import logging
+from typing import Optional
+
+from src.features.grants.pricing import GPU_RATES, MAX_GRANT_USD, calculate_grant_cost
+from src.common.soul import BOT_VOICE
+
+logger = logging.getLogger('DiscordBot')
+
+
+def _render_prompt_template(template: str, community_name: str) -> str:
+    return template.replace("our server", f"the {community_name} server")
+
+
+def _load_prompt(server_config, guild_id: Optional[int], content_key: str, fallback: str) -> str:
+    prompt = None
+    community_name = "community"
+    if server_config and guild_id:
+        server = server_config.get_server(guild_id)
+        if server:
+            community_name = server.get('community_name') or community_name
+        prompt = server_config.get_content(guild_id, content_key)
+    return _render_prompt_template(prompt or fallback, community_name)
+
+
+def _fill_prompt_template(prompt: str, gpu_info: str) -> str:
+    return (
+        prompt
+        .replace('{bot_voice}', BOT_VOICE)
+        .replace('{gpu_info}', gpu_info)
+        .replace('{max_grant_usd:.0f}', f'{MAX_GRANT_USD:.0f}')
+        .replace('{{', '{')
+        .replace('}}', '}')
+    )
+
+SYSTEM_PROMPT = """You are a grant reviewer for compute micro-grants (10-50 GPU hours) for open-source AI projects.
+
+You review applications and decide whether to approve, reject, or request more information.
+
+{bot_voice}
+
+## Required Application Info
+- Project description: what the project does
+- Compute purpose: what the GPU hours will be used for (training, fine-tuning, inference, etc.)
+- Links to prior work: GitHub repos, papers, demos, or other evidence of capability
+
+## Approval Criteria
+- Project must be open-source (or commit to open-sourcing results)
+- Reasonable scope: 10-50 GPU hours should meaningfully advance the project
+- Merit and reputation: evaluate their public contributions, previous work in the space, and ability to clearly articulate training goals. If they're new, they should start small.
+- Community benefit: project serves the broader AI/ML community
+
+## Available GPU Types and Rates
+{gpu_info}
+
+## Budget Cap
+The maximum grant is capped at ${max_grant_usd:.0f} USD (equivalent to 50 hours of H100).
+The applicant may request a specific GPU type or hours — honour their preference if reasonable, but the total cost must not exceed the cap.
+If they don't specify, choose based on project needs.
+
+## Prior Grant History
+If the applicant has received grants before, this will be noted below the application.
+Be VERY hesitant to approve someone who already has an open/active grant (status: reviewing, awaiting_wallet).
+For applicants with past paid grants, apply higher scrutiny — they should demonstrate clear results from previous grants before receiving more.
+First-time applicants with no history should be evaluated normally.
+
+## Discord Engagement
+The applicant's Discord activity will be provided below the application. This shows their total message count in our server and their most recent substantive messages. Use this to gauge whether they are an active community member or a drive-by applicant. Low engagement doesn't automatically disqualify, but it should raise scrutiny.
+
+## Response Format
+Return ONLY valid JSON (no markdown, no code fences) with these exact fields:
+
+{{"reasoning": "your internal analysis of the application (2-4 sentences — project viability, applicant capability, scope assessment)", "decision": "approved" | "rejected" | "needs_info" | "needs_review" | "spam", "response": "message to show the applicant (2-4 sentences — friendly, constructive)", "gpu_type": "H100_80GB" | "H200" | "B200" | null, "recommended_hours": <number 10-50 or null>}}
+
+- "reasoning": your private assessment rationale (stored in DB, not shown to applicant)
+- "decision": one of "approved", "rejected", "needs_info", "needs_review", "spam"
+- "response": the public-facing message shown to the applicant (not used for spam — thread is deleted)
+- "gpu_type": required for "approved", null otherwise. For "needs_review", include your recommended gpu_type and hours if you would approve.
+- "recommended_hours": required for "approved" (10-50), null otherwise. For "needs_review", include your recommendation if you would approve.
+
+Use "needs_review" when you're unsure — e.g. borderline applications, unusual requests, or cases where you'd want a human to make the final call. An admin will be tagged to review.
+
+Use "spam" for posts that are clearly not real applications — e.g. test posts, gibberish, jokes, off-topic messages, or obvious low-effort spam. These threads will be silently deleted."""
+
+
+def _build_system_prompt(server_config=None, guild_id: Optional[int] = None) -> str:
+    gpu_info = '\n'.join(f'- {name}: ${rate:.2f}/hr' for name, rate in GPU_RATES.items())
+    prompt = _load_prompt(server_config, guild_id, 'prompt_grants_assessor_system', SYSTEM_PROMPT)
+    return _fill_prompt_template(prompt, gpu_info)
+
+
+def _parse_json(text: str) -> dict:
+    """Extract JSON from LLM response, stripping markdown fences if present."""
+    cleaned = text.strip()
+    if cleaned.startswith('```'):
+        cleaned = cleaned.split('\n', 1)[1] if '\n' in cleaned else cleaned[3:]
+        if cleaned.endswith('```'):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+    return json.loads(cleaned)
+
+
+def _validate(result: dict) -> str | None:
+    """Validate assessment structure. Returns error string or None if valid."""
+    required = ['reasoning', 'decision', 'response']
+    for field in required:
+        if field not in result or not isinstance(result[field], str) or not result[field].strip():
+            return f"Missing or empty required field: '{field}'"
+
+    if result['decision'] not in ('approved', 'rejected', 'needs_info', 'needs_review', 'spam'):
+        return f"Invalid decision: '{result['decision']}'. Must be 'approved', 'rejected', 'needs_info', 'needs_review', or 'spam'"
+
+    if result['decision'] == 'approved':
+        if not result.get('gpu_type') or result['gpu_type'] not in GPU_RATES:
+            return f"Invalid gpu_type: '{result.get('gpu_type')}'. Must be one of {list(GPU_RATES.keys())}"
+        hours = result.get('recommended_hours')
+        if not hours or not isinstance(hours, (int, float)) or not (10 <= hours <= 50):
+            return f"Invalid recommended_hours: {hours}. Must be a number between 10 and 50"
+
+exec
+/bin/zsh -lc "sed -n '1,260p' src/features/admin_chat/tools.py" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+ succeeded in 0ms:
+"""Tool definitions and executors for admin chat.
+
+Tools call into existing bot functionality to maintain consistency.
+Following the Arnold pattern - includes a 'reply' tool that the LLM uses to respond.
+"""
+import os
+import re
+import sys
+import time
+import asyncio
+import logging
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Set, Tuple
+import discord
+from dotenv import load_dotenv
+from src.features.sharing.models import PublicationSourceContext, SocialPublishRequest
+
+load_dotenv()
+
+logger = logging.getLogger('DiscordBot')
+
+# Add project root to path for weekly_digest imports
+project_root = Path(__file__).parent.parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+# Cached Supabase client
+_supabase_client = None
+
+
+def _get_supabase():
+    """Get or create a cached Supabase client."""
+    global _supabase_client
+    if _supabase_client is None:
+        from supabase import create_client
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_SERVICE_KEY")
+        _supabase_client = create_client(url, key)
+    return _supabase_client
+
+
+_server_config = None
+
+
+def _get_server_config():
+    global _server_config
+    if _server_config is None:
+        from src.common.server_config import ServerConfig
+        _server_config = ServerConfig(_get_supabase())
+    return _server_config
+
+
+def _resolve_guild_id(params: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """Prefer explicit tool input, then fall back to the configured default guild."""
+    explicit = None
+    if params:
+        raw = params.get('guild_id')
+        if raw not in (None, '', 0, '0'):
+            try:
+                explicit = int(raw)
+            except (TypeError, ValueError):
+                pass
+    return _get_server_config().resolve_guild_id(explicit, require_write=True)
+
+# Tables the agent is allowed to query
+QUERYABLE_TABLES = {
+    'competitions', 'competition_entries', 'discord_reactions',
+    'discord_messages', 'members', 'discord_channels',
+    'events', 'invite_codes', 'grant_applications',
+    'daily_summaries', 'channel_summary', 'shared_posts',
+    'pending_intros', 'intro_votes', 'timed_mutes',
+    'social_publications', 'social_channel_routes',
+}
+
+
+# ========== Tool Definitions (Anthropic format) ==========
+
+TOOLS = [
+    {
+        "name": "reply",
+        "description": "Send one or more messages back to the user. Use this to respond. Can send multiple messages if needed (e.g., for long content or separate topics).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "messages": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Array of messages to send to the user (sent as separate Discord messages)"
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Single message to send (alternative to messages array)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "end_turn",
+        "description": "End the current turn without sending a message. Use when you've completed actions silently or when no response is needed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Optional: brief reason for ending without reply (for logging)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "find_messages",
+        "description": "Search and browse Discord messages. Combine any filters. Use for ALL message finding: top posts, user posts, content search, channel browsing.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Text search (case-insensitive)"
+                },
+                "username": {
+                    "type": "string",
+                    "description": "Filter by user (partial match)"
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Filter to channel/thread"
+                },
+                "min_reactions": {
+                    "type": "integer",
+                    "description": "Min reactions (default 0)"
+                },
+                "has_media": {
+                    "type": "boolean",
+                    "description": "Only posts with attachments"
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "Filter to last N days. Omit to search all time."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default 20, max 100)"
+                },
+                "sort": {
+                    "type": "string",
+                    "enum": ["reactions", "unique_reactors", "date"],
+                    "description": "Sort order (default: date, most recent first). reactions = most reacted. unique_reactors = most distinct reactors."
+                },
+                "refresh_media": {
+                    "type": "boolean",
+                    "description": "Get fresh media URLs for results (use for showing images/videos)"
+                },
+                "live": {
+                    "type": "boolean",
+                    "description": "Use live Discord API instead of DB (requires channel_id). Good for seeing current state including bot posts."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "inspect_message",
+        "description": "Deep look at one message: full content, reactions with emoji counts, surrounding context, replies, fresh media URLs. Use to drill into a specific post.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message_id": {
+                    "type": "string",
+                    "description": "Discord message ID"
+                },
+                "context_size": {
+                    "type": "integer",
+                    "description": "Number of surrounding messages to include (default 3)"
+                }
+            },
+            "required": ["message_id"]
+        }
+    },
+    {
+        "name": "share_to_social",
+        "description": "Share or schedule a Discord message to social media (currently X/Twitter). Supports standalone posts, thread replies, and retweets. Use schedule_for for queued publishing with an ISO-8601 timestamp. Use action plus target_post for replies/retweets. reply_to_tweet remains supported as a reply-only alias and replies still default to text_only=true unless you explicitly set text_only=false. Publishing resolves the configured social route for the message channel unless you supply route_key to force a specific route. Immediate success returns tweet_url/tweet_id/publication_id; scheduled success returns publication_id with queued status.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message_link": {
+                    "type": "string",
+                    "description": "Discord message link (e.g., https://discord.com/channels/123/456/789)"
+                },
+                "message_id": {
+                    "type": "string",
+                    "description": "Discord message ID (alternative to message_link)"
+                },
+                "tweet_text": {
+                    "type": "string",
+                    "description": "Custom tweet text (max 280 chars). If provided, this exact text is used as the tweet instead of auto-generating."
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["post", "reply", "retweet"],
+                    "description": "Publish action. Defaults to post. If omitted but target_post/reply_to_tweet is provided, reply is assumed."
+                },
+                "target_post": {
+                    "type": "string",
+                    "description": "Target tweet/X post ID or full URL for reply/retweet actions."
+                },
+                "reply_to_tweet": {
+                    "type": "string",
+                    "description": "Backward-compatible alias for target_post when action=reply. Accepts a Tweet ID or full tweet URL."
+                },
+                "text_only": {
+                    "type": "boolean",
+                    "description": "Skip the source message's attachments and post text only. Defaults to true for thread replies (so a follow-up doesn't reattach the same media as the parent tweet) and false otherwise. Set to false explicitly to force a reply that DOES include media."
+                },
+                "schedule_for": {
+                    "type": "string",
+                    "description": "Optional ISO-8601 timestamp for queued publishing. Stored in UTC. Example: 2026-04-09T18:30:00Z"
+                },
+                "platform": {
+                    "type": "string",
+                    "description": "Optional platform override. Currently only twitter/x is supported."
+                },
+                "route_key": {
+                    "type": "string",
+                    "description": "Optional explicit social route override. Use a social_channel_routes.id value when you need to bypass the normal channel -> parent -> guild-default route resolution."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "list_social_routes",
+        "description": "List configured outbound social routes for the current guild. Use this before creating or overriding routes. Omit channel_id to include guild-default and channel-specific rows.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "platform": {
+                    "type": "string",
+                    "description": "Optional platform filter. Defaults to twitter."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Optional Discord channel ID filter."
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Optional enabled-state filter."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows to return (default 50, max 100)."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "create_social_route",
+
+exec
+/bin/zsh -lc 'rg -n "QUERYABLE_TABLES|TOOLS =|def get_tools_for_role|def execute_tool|query_table" src/features/admin_chat/tools.py' in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+ succeeded in 0ms:
+67:QUERYABLE_TABLES = {
+79:TOOLS = [
+547:        "name": "query_table",
+624:MEMBER_TOOLS = {
+636:ADMIN_ONLY_TOOLS = {
+648:    "query_table",
+655:assert MEMBER_TOOLS | ADMIN_ONLY_TOOLS == ALL_TOOL_NAMES, "Every admin chat tool must be classified"
+656:assert MEMBER_TOOLS & ADMIN_ONLY_TOOLS == set(), "Tool role sets must be disjoint"
+659:def get_tools_for_role(is_admin: bool) -> List[Dict[str, Any]]:
+2062:async def execute_query_table(params: Dict[str, Any]) -> Dict[str, Any]:
+2072:    if table not in QUERYABLE_TABLES:
+2073:        return {"success": False, "error": f"Table '{table}' not allowed. Available: {', '.join(sorted(QUERYABLE_TABLES))}"}
+2132:        logger.error(f"[AdminChat] Error in query_table: {e}", exc_info=True)
+2258:async def execute_tool(
+2352:    elif tool_name == "query_table":
+2353:        return await execute_query_table(trusted_tool_input)
+
+exec
+/bin/zsh -lc "rg -n \"add_view\\(|discord\\.ui\\.View|View\\(\" src | head -n 80" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+exec
+/bin/zsh -lc 'rg -n "social_channel_routes|route_config" src/features src/common | head -n 120' in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+ succeeded in 0ms:
+src/common/discord_utils.py:31:    view: Optional[discord.ui.View] = None
+src/common/discord_utils.py:46:        view: A discord.ui.View to send with the message.
+src/features/reacting/subfeatures/workflow_uploader.py:40:class WorkflowUploadView(discord.ui.View):
+src/features/reacting/subfeatures/workflow_uploader.py:169:        view = WorkflowUploadView(bot=bot, author=author, curator=curator_user, db_handler=db_handler, logger=logger, rate_limiter=rate_limiter) # Pass bot Pass rate_limiter
+src/features/reacting/subfeatures/permission_handler.py:13:class PermissionRequestView(discord.ui.View):
+src/features/reacting/subfeatures/permission_handler.py:359:        view = PermissionRequestView(
+src/features/reacting/subfeatures/tweet_sharer_bridge.py:419:class ConsentView(View):
+src/features/reacting/subfeatures/tweet_sharer_bridge.py:882:    view = ConsentView(
+src/features/sharing/subfeatures/notify_user.py:19:class PostShareNotificationView(discord.ui.View):
+src/features/sharing/subfeatures/notify_user.py:323:        view = PostShareNotificationView(
+
+ succeeded in 0ms:
+src/common/server_config.py:233:                self._supabase.table('social_channel_routes')
+src/features/sharing/social_publish_service.py:434:            route_config = normalized.get('route_config')
+src/features/sharing/social_publish_service.py:435:            if route_config is None:
+src/features/sharing/social_publish_service.py:436:                normalized['route_config'] = {}
+src/features/admin_chat/agent.py:38:- query_table — query any DB table with filters. Tables: competitions, competition_entries, discord_reactions, discord_messages, members, discord_channels, events, invite_codes, grant_applications, daily_summaries, shared_posts, social_publications, social_channel_routes, pending_intros, intro_votes, timed_mutes. Filter operators: gt., gte., lt., lte., neq., like., ilike., in., is.null, not.null. Cheatsheet: discord_messages => author_id, created_at, reaction_count; shared_posts => discord_user_id, shared_at, platform; social_publications => publication_id, status, platform, action, provider_ref, provider_url, last_error, scheduled_at.
+src/features/admin_chat/agent.py:48:- create_social_route(platform?, channel_id?, enabled?, route_config?) — create a guild-default or channel-specific route. Omit channel_id for the guild default. Put outbound details in `route_config`, for example `{"account": "main"}`.
+src/features/admin_chat/agent.py:49:- update_social_route(route_id, platform?, channel_id?, enabled?, route_config?) — update one route by id. Pass `channel_id=""` to convert it to the guild-default route.
+src/features/admin_chat/agent.py:72:**Media.** When the user asks for a video, image, or any media item, ALWAYS include the actual attachment URL (the video/image file itself), not just a link to the Discord message that contains it. A message link doesn't answer "show me the video". Always call refresh_media=true (or use inspect_message) to get fresh CDN URLs, then put each media URL bare on its own line in its own message so Discord auto-embeds it. Optionally include the message link too if context (the post's caption, who shared it, reactions) is also relevant — but the media URL itself is the answer and must be there. send_message auto-refreshes CDN URLs. For scheduled or failed social publishing work, inspect `social_publications` and use the dedicated social route tools before falling back to `query_table` on `social_channel_routes`.
+src/features/admin_chat/agent.py:90:- Manage channel-to-social routing with `list_social_routes`, `create_social_route`, `update_social_route`, and `delete_social_route` instead of editing `social_channel_routes` manually when possible.
+src/features/admin_chat/tools.py:73:    'social_publications', 'social_channel_routes',
+src/features/admin_chat/tools.py:227:                    "description": "Optional explicit social route override. Use a social_channel_routes.id value when you need to bypass the normal channel -> parent -> guild-default route resolution."
+src/features/admin_chat/tools.py:261:        "description": "Create a social route row for a guild default or a specific channel. Omit channel_id for the guild-default route. route_config is a JSON object describing the outbound target, such as {\"account\": \"main\"}.",
+src/features/admin_chat/tools.py:277:                "route_config": {
+src/features/admin_chat/tools.py:293:                    "description": "social_channel_routes.id to update."
+src/features/admin_chat/tools.py:307:                "route_config": {
+src/features/admin_chat/tools.py:323:                    "description": "social_channel_routes.id to delete."
+src/features/admin_chat/tools.py:548:        "description": "Query any database table directly. Use for data that isn't covered by other tools (e.g. competition_entries, competitions, discord_reactions, social_publications, social_channel_routes, events, grant_applications). Returns up to `limit` rows matching the filters.",
+src/features/admin_chat/tools.py:554:                    "description": "Table name (e.g. competition_entries, competitions, discord_reactions, social_publications, social_channel_routes, events, invite_codes, grant_applications, members, discord_messages, discord_channels)"
+src/features/admin_chat/tools.py:703:def _normalize_route_config(route_config: Any) -> Dict[str, Any]:
+src/features/admin_chat/tools.py:704:    if route_config in (None, ''):
+src/features/admin_chat/tools.py:706:    if not isinstance(route_config, dict):
+src/features/admin_chat/tools.py:707:        raise ValueError("route_config must be a JSON object")
+src/features/admin_chat/tools.py:708:    return dict(route_config)
+src/features/admin_chat/tools.py:1632:            sb.table('social_channel_routes')
+src/features/admin_chat/tools.py:1664:            'route_config': _normalize_route_config(params.get('route_config')),
+src/features/admin_chat/tools.py:1666:        result = _get_supabase().table('social_channel_routes').insert(payload).execute()
+src/features/admin_chat/tools.py:1692:        if 'route_config' in params:
+src/features/admin_chat/tools.py:1693:            updates['route_config'] = _normalize_route_config(params.get('route_config'))
+src/features/admin_chat/tools.py:1699:            _get_supabase().table('social_channel_routes')
+src/features/admin_chat/tools.py:1726:            _get_supabase().table('social_channel_routes')
+src/features/admin_chat/tools.py:2084:                               'social_channel_routes'}
+
+exec
+/bin/zsh -lc "sed -n '220,300p' src/common/server_config.py" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+exec
+/bin/zsh -lc "sed -n '1,120p' src/common/discord_utils.py" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+exec
+/bin/zsh -lc "sed -n '400,500p' src/features/sharing/social_publish_service.py" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+ succeeded in 146ms:
+            if route:
+                return route
+        return None
+
+    def _get_social_route_row(
+        self,
+        guild_id: int,
+        channel_id: Optional[int],
+        platform: str,
+    ) -> Optional[dict]:
+        """Fetch one enabled social route row."""
+        try:
+            query = (
+                self._supabase.table('social_channel_routes')
+                .select('*')
+                .eq('guild_id', guild_id)
+                .eq('platform', platform)
+                .eq('enabled', True)
+            )
+            if channel_id is None:
+                query = query.is_('channel_id', 'null')
+            else:
+                query = query.eq('channel_id', channel_id)
+
+            result = query.limit(1).execute()
+            if result.data:
+                return result.data[0]
+        except Exception as e:
+            logger.debug(
+                f"ServerConfig.resolve_social_route({guild_id}, {channel_id}, {platform}): {e}"
+            )
+        return None
+
+    # ------------------------------------------------------------------
+    # Content
+    # ------------------------------------------------------------------
+
+    def get_content(self, guild_id: int, content_key: str) -> Optional[str]:
+        """Fetch content from server_content table."""
+        if not self._supabase:
+            return None
+        try:
+            result = (
+                self._supabase.table('server_content')
+                .select('content')
+                .eq('guild_id', guild_id)
+                .eq('content_key', content_key)
+                .execute()
+            )
+            if result.data:
+                return result.data[0].get('content')
+        except Exception as e:
+            logger.debug(f"ServerConfig.get_content({guild_id}, {content_key}): {e}")
+        return None
+
+    # ------------------------------------------------------------------
+    # Server config field access
+    # ------------------------------------------------------------------
+
+    def get_server_field(self, guild_id: int, field: str, *, cast: type = str) -> Optional:
+        """Get a field from server_config for an enabled guild.
+
+        Uses None-aware checks so False/0/[] are valid DB values.
+        """
+        self._maybe_refresh()
+        server = self._servers.get(guild_id)
+        if not server or not server.get('enabled'):
+            return None
+        val = server.get(field)
+        if val is not None:
+            try:
+                return cast(val)
+            except (ValueError, TypeError):
+                pass
+        return None
+
+    # ------------------------------------------------------------------
+    # Refresh from DB
+    # ------------------------------------------------------------------
+
+    def refresh(self):
+
+ succeeded in 149ms:
+import discord
+import asyncio
+import logging
+import os
+from typing import Union, Optional, List, Dict, Any
+
+from src.common.rate_limiter import RateLimiter
+
+
+def emoji_to_str(emoji) -> str:
+    """Convert a discord emoji to a string representation.
+
+    Unicode emoji → char string, custom emoji → 'name:id'.
+    """
+    if hasattr(emoji, 'id') and emoji.id:
+        return f"{emoji.name}:{emoji.id}"
+    return str(emoji)
+from src.common.error_handler import handle_errors
+
+@handle_errors("safe_send_message")
+async def safe_send_message(
+    bot: Union[discord.Client, discord.ext.commands.Bot],
+    channel: discord.abc.Messageable,
+    rate_limiter: RateLimiter,
+    logger: logging.Logger,
+    content: Optional[str] = None,
+    embed: Optional[discord.Embed] = None,
+    file: Optional[discord.File] = None,
+    files: Optional[List[discord.File]] = None,
+    reference: Optional[Union[discord.Message, discord.MessageReference, discord.PartialMessage]] = None,
+    view: Optional[discord.ui.View] = None
+) -> Optional[discord.Message]:
+    """
+    Safely sends a message to a given channel, handling rate limits and common errors.
+
+    Args:
+        bot: The bot instance (for admin error notification via @handle_errors).
+        channel: The Discord channel, thread, or user to send the message to.
+        rate_limiter: An instance of the RateLimiter.
+        logger: A logger instance for logging specific operational details.
+        content: The content of the message.
+        embed: The embed to send with the message.
+        file: A file to send with the message.
+        files: A list of files to send with the message.
+        reference: A message to reply to.
+        view: A discord.ui.View to send with the message.
+
+    Returns:
+        The sent discord.Message object if successful, None otherwise.
+        Raises exceptions on failure after retries or for critical errors.
+    """
+    try:
+        if rate_limiter:
+            # Key for rate limiting can be channel.id
+            # The rate_limiter now expects a factory
+            coroutine_factory = lambda: channel.send(
+                content=content, embed=embed, file=file, files=files, reference=reference, view=view
+            )
+            return await rate_limiter.execute(channel.id, coroutine_factory)
+        else:
+            # Fallback if no rate limiter is provided (though generally expected)
+            logger.warning(f"Sending message to {getattr(channel, 'name', channel.id)} without a rate limiter.")
+            send_task = channel.send(
+                content=content, embed=embed, file=file, files=files, reference=reference, view=view
+            )
+            return await asyncio.wait_for(send_task, timeout=30)
+
+    except discord.HTTPException as e:
+        # Logged by @handle_errors, but specific logging here can be useful too.
+        logger.error(f"HTTP error during safe_send_message to {getattr(channel, 'name', channel.id)}: {e.status} {e.text}")
+        raise # Re-raise for @handle_errors and further up the call stack
+    except asyncio.TimeoutError:
+        # Only for the direct asyncio.wait_for in the else block
+        logger.error(f"Timeout during direct safe_send_message to {getattr(channel, 'name', channel.id)} (no rate_limiter).")
+        raise # Re-raise
+    except (OSError, ConnectionError, TimeoutError) as e:
+        # Handle network connectivity issues
+        logger.error(f"Network connectivity error during safe_send_message to {getattr(channel, 'name', channel.id)}: {e}")
+        raise
+    except Exception as e:
+        # Catch any other unexpected error during the send logic itself.
+        # @handle_errors will catch this too if it's not caught here.
+        logger.error(f"Unexpected error in safe_send_message logic for {getattr(channel, 'name', channel.id)}: {e}", exc_info=True)
+        raise # Re-raise
+
+
+async def refresh_media_url(
+    bot: Union[discord.Client, discord.ext.commands.Bot],
+    channel_id: int,
+    message_id: int,
+    logger: Optional[logging.Logger] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch a message from Discord API to get fresh attachment URLs.
+    
+    Discord CDN URLs expire after a period of time. This function fetches the
+    message from the Discord API to get current, non-expired URLs for all attachments.
+    
+    Args:
+        bot: The Discord bot client
+        channel_id: The channel ID where the message is located
+        message_id: The message ID to refresh
+        logger: Optional logger instance
+        
+    Returns:
+        Dict containing:
+            - 'message_id': The message ID
+            - 'channel_id': The channel ID  
+            - 'attachments': List of attachment dicts with refreshed URLs
+            - 'success': True if URLs were refreshed
+        None if the message could not be fetched
+    """
+    log = logger or logging.getLogger('DiscordBot')
+    
+    try:
+        # Get channel
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            log.debug(f"Channel {channel_id} not in cache, fetching...")
+            try:
+
+ succeeded in 152ms:
+        if not server_config.is_feature_enabled(request.guild_id, request.channel_id, 'sharing'):
+            return request, "Sharing is not enabled for this channel."
+
+        normalized_override = self._normalize_route_override(request.route_override)
+        if normalized_override:
+            return replace(request, route_override=normalized_override), None
+
+        route = server_config.resolve_social_route(
+            request.guild_id,
+            request.channel_id,
+            request.platform,
+        )
+        if not route:
+            return request, "No social route is configured for this channel and platform."
+
+        return replace(request, route_override=self._normalize_route_override(route)), None
+
+    def _normalize_route_override(
+        self,
+        route_override: Any,
+    ) -> Optional[Dict[str, Any]]:
+        if route_override in (None, ''):
+            return None
+
+        if isinstance(route_override, str):
+            return {'route_key': route_override}
+
+        if isinstance(route_override, dict):
+            normalized = dict(route_override)
+            route_key = normalized.get('route_key')
+            if route_key is None and normalized.get('id') is not None:
+                route_key = normalized.get('id')
+            if route_key is not None:
+                normalized['route_key'] = str(route_key)
+            route_config = normalized.get('route_config')
+            if route_config is None:
+                normalized['route_config'] = {}
+            return normalized
+
+        return None
+
+    def _record_legacy_shared_post(self, request: SocialPublishRequest, provider_result: Dict[str, Any]) -> None:
+        policy = request.legacy_shared_post_policy or {}
+        if policy.get('enabled', True) is False:
+            return
+        if request.action != 'post':
+            return
+
+        provider_ref = provider_result.get('provider_ref')
+        provider_url = provider_result.get('provider_url')
+        if not provider_ref:
+            return
+
+        self.db_handler.record_shared_post(
+            discord_message_id=request.message_id,
+            discord_user_id=request.user_id,
+            platform=self._legacy_platform_name(request.platform),
+            platform_post_id=provider_ref,
+            platform_post_url=provider_url,
+            delete_eligible_hours=int(policy.get('delete_eligible_hours', 6)),
+            guild_id=request.guild_id,
+        )
+
+    def _request_from_publication(self, publication: Dict[str, Any]) -> Optional[SocialPublishRequest]:
+        payload = publication.get('request_payload') or {}
+        if not isinstance(payload, dict):
+            return None
+
+        source_context = payload.get('source_context')
+        if isinstance(source_context, dict):
+            payload['source_context'] = PublicationSourceContext(
+                source_kind=source_context.get('source_kind', publication.get('source_kind')),
+                metadata=source_context.get('metadata') or {},
+            )
+
+        scheduled_at = payload.get('scheduled_at')
+        if isinstance(scheduled_at, str):
+            payload['scheduled_at'] = self._parse_datetime(scheduled_at)
+
+        payload.setdefault('message_id', publication.get('message_id'))
+        payload.setdefault('channel_id', publication.get('channel_id'))
+        payload.setdefault('guild_id', publication.get('guild_id'))
+        payload.setdefault('user_id', publication.get('user_id'))
+        payload.setdefault('platform', publication.get('platform'))
+        payload.setdefault('action', publication.get('action'))
+        payload.setdefault('source_kind', publication.get('source_kind'))
+        payload.setdefault('target_post_ref', publication.get('target_post_ref'))
+        return SocialPublishRequest(**payload)
+
+    def _parse_datetime(self, value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    def _legacy_platform_name(self, platform: Optional[str]) -> str:
+
+exec
+/bin/zsh -lc "sed -n '678,820p' src/features/grants/grants_cog.py" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+exec
+/bin/zsh -lc "sed -n '80,220p' src/features/grants/grants_cog.py" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+ succeeded in 0ms:
+            forum = guild.get_channel(self.grants_channel_id)
+            if forum and isinstance(forum, discord.ForumChannel):
+                for tag in forum.available_tags:
+                    self._tags[tag.name.lower()] = tag
+                logger.info(f"GrantsCog: loaded {len(self._tags)} forum tags: {list(self._tags.keys())}")
+                return
+
+    async def _recover_inflight_payments(self):
+        """On startup, recover in-flight payments and retry failed ones."""
+        if not self.solana_client:
+            return
+
+        inflight = self.db.get_inflight_payments()
+        for grant in inflight:
+            thread_id = grant['thread_id']
+            tx_sig = grant.get('tx_signature')
+            payment_status = grant.get('payment_status')
+            wallet = grant.get('wallet_address')
+            grant_guild_id = grant.get('guild_id')
+
+            # Resolve the thread for messaging
+            thread = None
+            try:
+                candidate_guilds = self.bot.guilds
+                if grant_guild_id:
+                    candidate_guilds = [g for g in self.bot.guilds if g.id == grant_guild_id]
+                for guild in candidate_guilds:
+                    forum = guild.get_channel(self.grants_channel_id)
+                    if forum:
+                        thread = forum.get_thread(thread_id)
+                        break
+            except Exception:
+                pass
+
+            if payment_status == 'retry':
+                # Previous payment failed — retry with stored wallet
+                if not wallet:
+                    logger.warning(f"GrantsCog: grant {thread_id} needs retry but no wallet stored")
+                    continue
+                if not thread:
+                    logger.warning(f"GrantsCog: can't retry payment for thread {thread_id} — thread not found")
+                    continue
+
+                # Retry up to 3 times with increasing delays
+                max_retries = 3
+                succeeded = False
+                for retry in range(max_retries):
+                    # Re-fetch grant from DB every attempt — previous attempt may have
+                    # updated payment_status/tx_signature, and _process_payment uses
+                    # these to check for in-flight transactions
+                    fresh_grant = self.db.get_grant_by_thread(thread_id, guild_id=grant_guild_id)
+                    if not fresh_grant or fresh_grant.get('payment_status') == 'confirmed':
+                        succeeded = True
+                        break
+                    logger.info(f"GrantsCog: payment attempt {retry + 1}/{max_retries} for thread {thread_id} to {wallet}")
+                    try:
+                        await self._process_payment(thread, fresh_grant, wallet)
+                        succeeded = True
+                        break
+                    except Exception as e:
+                        logger.warning(f"GrantsCog: payment attempt {retry + 1}/{max_retries} failed for thread {thread_id}: {e}")
+                        if retry < max_retries - 1:
+                            await asyncio.sleep(5 * (retry + 1))  # 5s, 10s
+
+                if not succeeded:
+                    logger.error(f"GrantsCog: all {max_retries} payment attempts failed for thread {thread_id}")
+                    await thread.send(
+                        f"Payment failed after {max_retries} attempts.\n\n"
+                        f"{self._admin_mention} will follow up."
+                    )
+                continue
+
+            if not tx_sig:
+                # Was 'sending' but never got a tx — mark for retry
+                logger.warning(f"GrantsCog: grant {thread_id} stuck in '{payment_status}' with no tx")
+                if wallet:
+                    self.db.update_grant_status(thread_id, guild_id=grant_guild_id, status='awaiting_wallet', payment_status='retry')
+                else:
+                    self.db.update_grant_status(thread_id, guild_id=grant_guild_id, status='awaiting_wallet', payment_status='none')
+                continue
+
+            # Has a tx signature — check on-chain
+            try:
+                status = await self.solana_client.check_tx_status(tx_sig)
+            except Exception as e:
+                logger.error(f"GrantsCog: failed to check tx {tx_sig} for thread {thread_id}: {e}")
+                continue
+
+            if status == 'confirmed':
+                sol_amount = float(grant.get('sol_amount') or 0)
+                sol_price = float(grant.get('sol_price_usd') or 0)
+                self.db.record_grant_payment(thread_id, tx_sig, sol_amount, sol_price, guild_id=grant_guild_id)
+                logger.info(f"GrantsCog: recovered confirmed payment {tx_sig} for thread {thread_id}")
+                if thread:
+                    try:
+                        await thread.send(
+                            f"**Payment confirmed!** (recovered on restart)\n\n"
+                            f"- Transaction: [View on Explorer]({self._explorer_url(tx_sig)})"
+                        )
+                    except Exception:
+                        pass
+
+            elif status == 'failed':
+                logger.warning(f"GrantsCog: tx {tx_sig} for thread {thread_id} failed on-chain")
+                if wallet:
+                    self.db.update_grant_status(thread_id, guild_id=grant_guild_id, status='awaiting_wallet', payment_status='retry',
+                                                tx_signature=None)
+                else:
+                    self.db.update_grant_status(thread_id, guild_id=grant_guild_id, status='awaiting_wallet', payment_status='none',
+                                                tx_signature=None)
+            else:
+                # not_found — could be expired or still propagating, leave as-is for next restart
+                logger.info(f"GrantsCog: tx {tx_sig} for thread {thread_id} not found on-chain, will retry next startup")
+
+    async def _scan_missed_threads(self):
+        """Find forum threads with no DB record and process them."""
+        guild = None
+        for g in self.bot.guilds:
+            channel = g.get_channel(self.grants_channel_id)
+            if channel:
+                guild = g
+                break
+        if not guild:
+            return
+
+        forum = guild.get_channel(self.grants_channel_id)
+        if not forum or not isinstance(forum, discord.ForumChannel):
+            return
+
+        # Get all active (non-archived) threads
+        threads = forum.threads
+        # Also fetch archived threads that might have been missed
+        archived = []
+        async for thread in forum.archived_threads(limit=50):
+            archived.append(thread)
+
+        all_threads = list(threads) + archived
+        processed = 0
+
+        for thread in all_threads:
+            # Skip guide/questions threads
+
+ succeeded in 0ms:
+    async def _process_payment(self, thread: discord.Thread, grant: dict, wallet: str):
+        """Send SOL payment and finalize the grant.
+
+        Payment flow is idempotent — if a previous tx was sent but not confirmed,
+        we check its on-chain status before re-sending.
+        """
+        thread_id = thread.id
+
+        if not self.solana_client:
+            await thread.send(f"Payment system is not configured. {self._admin_mention} will process this manually.")
+            return
+
+        # Guard: if we already sent a tx, check its status instead of re-sending
+        existing_tx = grant.get('tx_signature')
+        if existing_tx and grant.get('payment_status') in ('sent', 'sending'):
+            logger.info(f"GrantsCog: found existing tx {existing_tx} for thread {thread_id}, checking status...")
+            tx_status = await self.solana_client.check_tx_status(existing_tx)
+            if tx_status == 'confirmed':
+                # Already paid — record and notify
+                sol_amount = float(grant.get('sol_amount', 0))
+                sol_price = float(grant.get('sol_price_usd', 0))
+                self.db.record_grant_payment(thread_id, existing_tx, sol_amount, sol_price, guild_id=thread.guild.id)
+                await thread.send(
+                    f"**Payment confirmed!** (recovered from previous attempt)\n\n"
+                    f"- Transaction: [View on Explorer]({self._explorer_url(existing_tx)})"
+                )
+                try:
+                    await thread.edit(archived=True)
+                except Exception:
+                    pass
+                return
+            elif tx_status == 'failed':
+                logger.warning(f"GrantsCog: previous tx {existing_tx} failed on-chain, re-sending...")
+            else:
+                # not_found — tx may still be propagating, do NOT re-send to avoid double-payment
+                logger.warning(f"GrantsCog: previous tx {existing_tx} status unknown ({tx_status}), not re-sending")
+                await thread.send(
+                    f"Previous payment transaction status is unclear.\n"
+                    f"Transaction: [View on Explorer]({self._explorer_url(existing_tx)})\n\n"
+                    f"{self._admin_mention} will verify and follow up."
+                )
+                return
+
+        # Fetch current SOL price
+        sol_price = await get_sol_price_usd()
+        total_usd = float(grant['total_cost_usd'])
+        sol_amount = usd_to_sol(total_usd, sol_price)
+
+        # Mark as sending with wallet + amounts BEFORE sending money
+        self.db.update_grant_status(
+            thread_id, 'awaiting_wallet',
+            guild_id=thread.guild.id,
+            payment_status='sending',
+            wallet_address=wallet,
+            sol_amount=sol_amount,
+            sol_price_usd=sol_price,
+        )
+
+        await self._apply_tag(thread, 'in progress')
+        await thread.send(
+            f"Processing payment of **{sol_amount:.4f} SOL** (~${total_usd:.2f} at ${sol_price:.2f}/SOL)..."
+        )
+
+        # Send SOL — returns signature immediately (before confirmation)
+        tx_sig = await self.solana_client.send_sol(wallet, sol_amount)
+
+        # Record signature immediately so we can recover if confirmation fails
+        self.db.update_grant_status(
+            thread_id, 'awaiting_wallet',
+            guild_id=thread.guild.id,
+            payment_status='sent',
+            tx_signature=tx_sig,
+        )
+
+        # Now wait for confirmation
+        try:
+            await self.solana_client.confirm_tx(tx_sig)
+        except Exception as e:
+            logger.error(f"GrantsCog: tx {tx_sig} sent but confirmation failed: {e}", exc_info=True)
+            await thread.send(
+                f"Payment was submitted but confirmation timed out. "
+                f"Transaction: [View on Explorer]({self._explorer_url(tx_sig)})\n\n"
+                f"{self._admin_mention} will verify and follow up."
+            )
+            return
+
+        # Fully confirmed — finalize
+        self.db.record_grant_payment(thread_id, tx_sig, sol_amount, sol_price, guild_id=thread.guild.id)
+
+        await thread.send(
+            f"**Payment sent!**\n\n"
+            f"- Amount: {sol_amount:.4f} SOL (~${total_usd:.2f})\n"
+            f"- Wallet: `{wallet}`\n"
+            f"- Transaction: [View on Explorer]({self._explorer_url(tx_sig)})\n\n"
+            f"Your compute grant for {grant['gpu_type'].replace('_', ' ')} "
+            f"({grant['recommended_hours']}hrs) has been funded. Good luck with your project!"
+        )
+
+        try:
+            await thread.edit(archived=True)
+        except Exception as e:
+            logger.warning(f"GrantsCog: failed to archive paid thread {thread_id}: {e}")
+
+exec
+/bin/zsh -lc "sed -n '1,260p' main.py" in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+ succeeded in 0ms:
+import os
+import sys
+import argparse
+import logging
+import asyncio
+from datetime import datetime
+import traceback
+
+from dotenv import load_dotenv
+from discord.ext import tasks
+
+# Load environment variables BEFORE importing modules that might need them
+current_dir = os.path.dirname(os.path.abspath(__file__))
+env_path = os.path.join(current_dir, '.env')
+load_dotenv(dotenv_path=env_path, override=True)
+
+from discord.ext import commands
+import discord
+
+from src.common.log_handler import LogHandler, setup_supabase_logging
+from src.common.base_bot import BaseDiscordBot
+from src.common.db_handler import DatabaseHandler
+from src.common.openmuse_interactor import OpenMuseInteractor
+from src.common.llm.claude_client import ClaudeClient
+from src.common.health_server import HealthServer
+from src.features.curating.curator_cog import CuratorCog
+from src.features.summarising.summariser_cog import SummarizerCog
+from src.features.summarising.summariser import ChannelSummarizer
+from src.features.logging.logger_cog import LoggerCog
+from src.features.sharing.sharing_cog import SharingCog
+from src.features.sharing.providers.x_provider import XProvider
+from src.features.sharing.social_publish_service import SocialPublishService
+from src.features.reacting.reactor import Reactor
+from src.features.reacting.reactor_cog import ReactorCog
+from src.features.archive.archive_cog import ArchiveCog
+from src.features.health.health_check_cog import HealthCheckCog
+
+def setup_logging(dev_mode=False):
+    """Setup shared logging configuration for all bots"""
+    log_handler = LogHandler(
+        logger_name='DiscordBot',
+        prod_log_file='discord_bot.log',
+        dev_log_file='discord_bot_dev.log'
+    )
+    logger = log_handler.setup_logging(dev_mode)
+    if not logger:
+        print("ERROR: Failed to create logger")
+        sys.exit(1)
+    
+    # Log all INFO and above to Supabase (for full visibility)
+    setup_supabase_logging(
+        logger,
+        min_level=logging.INFO,  # Capture all INFO, WARNING, ERROR, CRITICAL
+        batch_size=25,  # Smaller batches for faster visibility
+        flush_interval=10.0  # Flush every 10 seconds
+    )
+    
+    return logger
+
+async def run_archive_script(days, dev_mode=False, logger=None, in_depth=False,
+                             guild_id=None, channels=None):
+    """Run the archive_discord.py script with the specified number of days"""
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    from src.common.archive_runner import ArchiveRunner
+
+    logger.info(f"Starting archive process for {days} days (in_depth={in_depth})"
+                + (f" guild={guild_id}" if guild_id else ""))
+
+    archive_runner = ArchiveRunner()
+    success = await archive_runner.run_archive(days, dev_mode, in_depth=in_depth,
+                                                guild_id=guild_id, channels=channels)
+
+    if not success:
+        raise RuntimeError("Archive script failed")
+
+async def main_async(args):
+    logger = setup_logging(dev_mode=args.dev)
+    
+    # Start health check server immediately
+    health_server = HealthServer(port=8080)
+    health_server.start()
+    
+    # Log deployment info for diagnostics
+    deployment_id = os.getenv('RAILWAY_DEPLOYMENT_ID', 'local')
+    service_id = os.getenv('RAILWAY_SERVICE_ID', 'local')
+    replica_id = os.getenv('RAILWAY_REPLICA_ID', 'local')
+    logger.info(f"🚀 Starting deployment {deployment_id[:8]}... (service: {service_id[:8]}..., replica: {replica_id})")
+    
+    logger.info("Starting unified bot initialization")
+
+    try:
+        token = os.getenv('DISCORD_BOT_TOKEN')
+
+        logger.debug(f"Token length: {len(token) if token else 0}")
+        logger.debug(f"Token starts with: {token[:6]}..." if token else "No token found")
+        logger.debug("Environment variable name used: DISCORD_BOT_TOKEN")
+
+        if not token:
+            raise ValueError("Discord bot token not found in environment variables")            
+
+        # Create a single bot instance
+        intents = discord.Intents.all()
+        bot = BaseDiscordBot(
+            command_prefix="!",
+            logger=logger,
+            dev_mode=args.dev,
+            intents=intents
+        )
+        # Store the health server on the bot so cogs can access it
+        bot.health_server = health_server
+        
+        # Store the command-line flags on the bot instance so cogs can access them
+        bot.summary_now = args.summary_now
+        bot.combine_only = args.combine_only
+        bot.archive_days = args.archive_days
+        bot.run_archive_script = run_archive_script  # Make the function available to cogs
+
+        # Event to signal when --summary-now completes so hourly fetch can start
+        bot.summary_completed = asyncio.Event()
+        if not args.summary_now:
+            bot.summary_completed.set()
+
+        # ---- Initialize Core Components ----
+        logger.info("Initializing core components (DB, Sharer, Reactor)...")
+
+        # 1. Database Handler (also creates ServerConfig)
+        bot.db_handler = DatabaseHandler(dev_mode=args.dev)
+        bot.server_config = bot.db_handler.server_config
+        logger.info("DatabaseHandler initialized and attached to bot.")
+
+        # Shared social publish service for immediate callers and scheduled worker.
+        x_provider = XProvider()
+        bot.social_publish_service = SocialPublishService(
+            db_handler=bot.db_handler,
+            providers={
+                'twitter': x_provider,
+                'x': x_provider,
+            },
+            logger_instance=logger,
+        )
+        logger.info("SocialPublishService initialized and attached to bot.")
+
+        # 2. Claude Client
+        claude_client_instance = ClaudeClient()
+        bot.claude_client = claude_client_instance
+        logger.info("ClaudeClient initialized.")
+
+        # 3. Sharing Cog & Sharer Instance
+        sharing_cog_instance = SharingCog(
+            bot,
+            bot.db_handler,
+            social_publish_service=bot.social_publish_service,
+        )
+        await bot.add_cog(sharing_cog_instance)
+        sharer_instance = sharing_cog_instance.sharer_instance
+        if not sharer_instance:
+            logger.error("Failed to retrieve Sharer instance from SharingCog!")
+            return
+        logger.info("SharingCog loaded.")
+
+        # 4. Reactor Instance
+        supabase_url = os.getenv('SUPABASE_URL')
+        supabase_key = os.getenv('SUPABASE_SERVICE_KEY')
+
+        openmuse_interactor_instance = OpenMuseInteractor(
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+            logger=logger
+        )
+        bot.openmuse_interactor_instance = openmuse_interactor_instance
+
+        reactor_instance = Reactor(
+            logger=logger,
+            sharer_instance=sharer_instance,
+            db_handler=bot.db_handler,
+            openmuse_interactor=openmuse_interactor_instance,
+            bot_instance=bot,
+            llm_client=claude_client_instance,
+            dev_mode=args.dev,
+        )
+        bot.reactor_instance = reactor_instance
+        logger.info("Core components initialized.")
+
+        # ---- Add Cogs ----
+
+        channel_summarizer_instance = ChannelSummarizer(
+            bot=bot,
+            logger=logger,
+            dev_mode=args.dev,
+            command_prefix=bot.command_prefix,
+            sharer_instance=sharer_instance
+        )
+        await bot.add_cog(SummarizerCog(bot, channel_summarizer_instance))
+        logger.info("SummarizerCog loaded.")
+
+        await bot.add_cog(CuratorCog(bot, logger, args.dev))
+        await bot.add_cog(LoggerCog(bot, logger, args.dev))
+        await bot.add_cog(ReactorCog(bot, logger, args.dev))
+        await bot.add_cog(ArchiveCog(bot))
+        await bot.add_cog(HealthCheckCog(bot))
+
+        # Optional cogs — don't block startup if they fail
+        try:
+            from src.features.admin.admin_cog import AdminCog
+            await bot.add_cog(AdminCog(bot))
+        except Exception as e:
+            logger.warning(f"Failed to load AdminCog (skipping): {e}")
+        try:
+            from src.features.admin_chat.admin_chat_cog import AdminChatCog
+            await bot.add_cog(AdminChatCog(bot, bot.db_handler, sharer_instance))
+        except Exception as e:
+            logger.warning(f"Failed to load AdminChatCog (skipping): {e}")
+        try:
+            from src.features.gating.gating_cog import GatingCog
+            await bot.add_cog(GatingCog(bot))
+        except Exception as e:
+            logger.warning(f"Failed to load GatingCog (skipping): {e}")
+        try:
+            from src.features.grants.grants_cog import GrantsCog
+            await bot.add_cog(GrantsCog(bot))
+        except Exception as e:
+            logger.warning(f"Failed to load GrantsCog (skipping): {e}")
+        try:
+            from src.features.competition.competition_cog import CompetitionCog
+            await bot.add_cog(CompetitionCog(bot))
+            logger.info("CompetitionCog loaded.")
+        except Exception as e:
+            logger.error(f"Failed to load CompetitionCog: {e}", exc_info=True)
+        try:
+            from src.features.content.content_cog import ContentCog
+            await bot.add_cog(ContentCog(bot))
+        except Exception as e:
+            logger.warning(f"Failed to load ContentCog (skipping): {e}")
+
+        logger.info(f"All cogs loaded.")
+
+        # ---- SETUP HOURLY MESSAGE FETCHING ----
+        @tasks.loop(hours=1)
+        async def hourly_message_fetch():
+            """Fetch new messages every hour for all configured guilds."""
+            try:
+                logger.info("Starting hourly message fetch...")
+                sc = getattr(bot, 'server_config', None)
+                if sc:
+                    sc.refresh()
+                    for guild_cfg in sc.get_guilds_to_archive():
+                        gid = guild_cfg['guild_id']
+                        try:
+                            logger.info(f"Archiving guild {gid} ({guild_cfg.get('guild_name', '?')})...")
+                            await run_archive_script(days=1, dev_mode=args.dev, logger=logger,
+                                                     guild_id=gid)
+                        except Exception as e:
+                            logger.error(f"Error archiving guild {gid}: {e}", exc_info=True)
+                else:
+                    logger.warning("Skipping hourly archive: server_config unavailable")
+
+                logger.info("Hourly message fetch completed successfully")
+            except Exception as e:
+
+exec
+/bin/zsh -lc 'rg -n "add_cog|load_extension|GrantsCog|SharingCog|solana_client|db_handler" main.py src/main.py src | head -n 120' in /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+ succeeded in 0ms:
+rg: src/main.py: No such file or directory (os error 2)
+main.py:22:from src.common.db_handler import DatabaseHandler
+main.py:30:from src.features.sharing.sharing_cog import SharingCog
+main.py:129:        bot.db_handler = DatabaseHandler(dev_mode=args.dev)
+main.py:130:        bot.server_config = bot.db_handler.server_config
+main.py:136:            db_handler=bot.db_handler,
+main.py:151:        sharing_cog_instance = SharingCog(
+main.py:153:            bot.db_handler,
+main.py:156:        await bot.add_cog(sharing_cog_instance)
+main.py:159:            logger.error("Failed to retrieve Sharer instance from SharingCog!")
+main.py:161:        logger.info("SharingCog loaded.")
+main.py:177:            db_handler=bot.db_handler,
+main.py:195:        await bot.add_cog(SummarizerCog(bot, channel_summarizer_instance))
+main.py:198:        await bot.add_cog(CuratorCog(bot, logger, args.dev))
+main.py:199:        await bot.add_cog(LoggerCog(bot, logger, args.dev))
+main.py:200:        await bot.add_cog(ReactorCog(bot, logger, args.dev))
+main.py:201:        await bot.add_cog(ArchiveCog(bot))
+main.py:202:        await bot.add_cog(HealthCheckCog(bot))
+main.py:207:            await bot.add_cog(AdminCog(bot))
+main.py:212:            await bot.add_cog(AdminChatCog(bot, bot.db_handler, sharer_instance))
+main.py:217:            await bot.add_cog(GatingCog(bot))
+main.py:221:            from src.features.grants.grants_cog import GrantsCog
+main.py:222:            await bot.add_cog(GrantsCog(bot))
+main.py:224:            logger.warning(f"Failed to load GrantsCog (skipping): {e}")
+main.py:227:            await bot.add_cog(CompetitionCog(bot))
+main.py:233:            await bot.add_cog(ContentCog(bot))
+main.py:283:        await bot.add_cog(ReadinessListener(bot))
+src/features/relaying/relaying_cog.py:199:    await bot.add_cog(RelayingCog(bot, logger, dev_mode))
+src/features/logging/logger_cog.py:4:from src.common.db_handler import DatabaseHandler
+src/features/logging/logger_cog.py:18:        # Use bot's shared db_handler if available, else create own
+src/features/logging/logger_cog.py:19:        self.db = getattr(bot, 'db_handler', None) or DatabaseHandler(dev_mode=dev_mode)
+src/features/logging/logger_cog.py:309:    await bot.add_cog(LoggerCog(bot, logger, dev_mode=dev_mode))
+src/common/supabase_sync_handler.py:25:    def __init__(self, db_handler, logger: logging.Logger, sync_interval: int = 300):
+src/common/supabase_sync_handler.py:30:            db_handler: The database handler instance from the bot
+src/common/supabase_sync_handler.py:34:        self.db_handler = db_handler
+src/features/reacting/reactor.py:10:from src.common.db_handler import DatabaseHandler # <<< Added DB Handler import
+src/features/reacting/reactor.py:44:    def __init__(self, logger, sharer_instance: Sharer, db_handler: DatabaseHandler, openmuse_interactor: OpenMuseInteractor, bot_instance: commands.Bot, llm_client: ClaudeClient, dev_mode=False):
+src/features/reacting/reactor.py:48:        self.db_handler = db_handler # Store DB Handler instance
+src/features/reacting/reactor.py:58:        sc = getattr(self.db_handler, 'server_config', None) if self.db_handler else None
+src/features/reacting/reactor.py:171:        sc = getattr(self.db_handler, 'server_config', None) if self.db_handler else None
+src/features/reacting/reactor.py:325:            db_handler=self.db_handler,
+src/features/reacting/reactor.py:338:            db_handler=self.db_handler, # <<< ADDED db_handler
+src/features/reacting/reactor.py:370:            db_handler=self.db_handler,
+src/features/reacting/reactor.py:385:            db_handler=self.db_handler,
+src/features/competition/competition_cog.py:59:        self.db = bot.db_handler if hasattr(bot, 'db_handler') else None
+src/features/competition/competition_cog.py:606:    await bot.add_cog(CompetitionCog(bot))
+src/features/content/content_cog.py:65:        self.db = getattr(bot, 'db_handler', None)
+src/features/summarising/subfeatures/top_art_sharing.py:64:                    self.summarizer.db_handler.execute_query,
+src/features/curating/curator.py:7:from src.common.db_handler import DatabaseHandler
+src/features/admin/admin_cog.py:15:from src.common.db_handler import DatabaseHandler
+src/features/admin/admin_cog.py:51:    def __init__(self, user_details: dict, db_handler: DatabaseHandler, bot=None):
+src/features/admin/admin_cog.py:54:        self.db_handler = db_handler
+src/features/admin/admin_cog.py:110:                sc = getattr(self.db_handler, 'server_config', None) if self.db_handler else None
+src/features/admin/admin_cog.py:113:            success = self.db_handler.create_or_update_member(
+src/features/admin/admin_cog.py:165:        self.db_handler = bot.db_handler if hasattr(bot, 'db_handler') else None
+src/features/admin/admin_cog.py:166:        self.server_config = getattr(self.db_handler, 'server_config', None) if self.db_handler else None
+src/features/admin/admin_cog.py:171:            self.db_handler,
+src/features/admin/admin_cog.py:174:        ) if self.db_handler else None
+src/features/admin/admin_cog.py:218:        storage_handler = getattr(self.db_handler, 'storage_handler', None)
+src/features/admin/admin_cog.py:241:        storage_handler = getattr(self.db_handler, 'storage_handler', None)
+src/features/admin/admin_cog.py:401:        if self.db_handler:
+src/features/admin/admin_cog.py:404:            self.db_handler.ensure_channel_exists(channel.id, channel.name, category_id, nsfw,
+src/features/admin/admin_cog.py:409:        if self.db_handler:
+src/features/admin/admin_cog.py:410:            ch_row = self.db_handler.get_channel(channel.id)
+src/features/admin/admin_cog.py:432:        if not role_id or not self.db_handler:
+src/features/admin/admin_cog.py:440:            if self.db_handler.get_is_speaker(after.id, guild_id=after.guild.id):
+src/features/admin/admin_cog.py:487:            if self.db_handler:
+src/features/admin/admin_cog.py:488:                self.db_handler.set_is_speaker(user.id, False, guild_id=interaction.guild_id)
+src/features/admin/admin_cog.py:493:            if td and self.db_handler:
+src/features/admin/admin_cog.py:495:                saved = self.db_handler.create_timed_mute(
+src/features/admin/admin_cog.py:549:            if self.db_handler:
+src/features/admin/admin_cog.py:550:                self.db_handler.set_is_speaker(user.id, True, guild_id=interaction.guild_id)
+src/features/admin/admin_cog.py:554:            if self.db_handler:
+src/features/admin/admin_cog.py:555:                self.db_handler.delete_timed_mute(user.id, interaction.guild_id)
+src/features/admin/admin_cog.py:572:        if not self.db_handler:
+src/features/admin/admin_cog.py:576:        expired = self.db_handler.get_expired_mutes()
+src/features/admin/admin_cog.py:597:                        self.db_handler.delete_timed_mute(member_id, guild_id)
+src/features/admin/admin_cog.py:598:                        self.db_handler.set_is_speaker(member_id, True, guild_id=guild_id)
+src/features/admin/admin_cog.py:602:                self.db_handler.set_is_speaker(member_id, True, guild_id=guild_id)
+src/features/admin/admin_cog.py:607:                self.db_handler.delete_timed_mute(member_id, guild_id)
+src/features/admin/admin_cog.py:621:            muted_ids = set(self.db_handler.get_muted_member_ids(guild_id=guild.id))
+src/features/admin/admin_cog.py:644:        if not self.db_handler:
+src/features/admin/admin_cog.py:665:                    self.db_handler.ensure_channel_exists(channel.id, channel.name, guild_id=guild.id)
+src/features/admin/admin_cog.py:670:                    self.db_handler.ensure_channel_exists(channel.id, channel.name, category_id, nsfw,
+src/features/admin/admin_cog.py:677:            modes = self.db_handler.get_all_channel_speaker_modes(guild_id=guild.id)
+src/features/admin/admin_cog.py:721:        if not self.db_handler:
+src/features/admin/admin_cog.py:725:            db_default_ids = self.db_handler.get_onboarding_default_ids(guild_id=guild.id)
+src/features/admin/admin_cog.py:789:        if not self.db_handler:
+src/features/admin/admin_cog.py:796:            user_details = self.db_handler.get_member(user_id)
+src/features/admin/admin_cog.py:812:            modal = AdminUpdateSocialsModal(user_details=user_details, db_handler=self.db_handler, bot=self.bot)
+src/features/admin/admin_cog.py:1132:    # Check for db_handler dependency
+src/features/admin/admin_cog.py:1133:    if not hasattr(bot, 'db_handler'):
+src/features/admin/admin_cog.py:1134:         logger.error("Cannot setup AdminCog: db_handler not found on bot instance.")
+src/features/admin/admin_cog.py:1138:    await bot.add_cog(AdminCog(bot))
+src/features/reacting/reactor_cog.py:61:        sc = getattr(getattr(self.bot, 'db_handler', None), 'server_config', None)
+src/features/reacting/reactor_cog.py:70:            sc = getattr(getattr(self.bot, 'db_handler', None), 'server_config', None)
+src/features/reacting/reactor_cog.py:320:                        sc = getattr(getattr(self.bot, 'db_handler', None), 'server_config', None)
+src/features/reacting/reactor_cog.py:484:    await bot.add_cog(ReactorCog(bot, logger, dev_mode))
+src/features/reacting/reactor_cog.py:491:#    await bot.add_cog(cog) 
+src/features/summarising/subfeatures/top_generations.py:16:        We store it to access its bot, db_handler, logger, rate_limiter etc.
+src/features/summarising/subfeatures/top_generations.py:127:                self.summarizer.db_handler.execute_query,
+src/features/summarising/subfeatures/top_generations.py:356:                self.summarizer.db_handler.execute_query,
+src/features/summarising/subfeatures/top_generations.py:443:        results = self.summarizer.db_handler.execute_query(query, tuple(user_ids))
+src/features/curating/curator_cog.py:50:    await bot.add_cog(CuratorCog(bot, logger, dev_mode=dev_mode))
+src/common/discord_utils.py:192:    db_handler: 'DatabaseHandler',
+src/common/discord_utils.py:205:        db_handler: Database handler instance
+src/common/discord_utils.py:235:        success = db_handler.update_message(message_data)
+src/common/discord_utils.py:274:        sc = getattr(getattr(bot, 'db_handler', None), 'server_config', None)
+src/features/reacting/subfeatures/workflow_uploader.py:23:# Assuming db_handler, claude_client, openmuse_interactor will be typed properly
+src/features/reacting/subfeatures/workflow_uploader.py:26:    from src.common.db_handler import DatabaseHandler
+src/features/reacting/subfeatures/workflow_uploader.py:41:    def __init__(self, bot: commands.Bot, author: discord.User, curator: discord.User, db_handler: 'DatabaseHandler', logger: logging.Logger, rate_limiter: RateLimiter, timeout=43200): # Changed timeout to 12 hours (43200 seconds)
+src/features/reacting/subfeatures/workflow_uploader.py:46:        self.db_handler = db_handler
+src/features/reacting/subfeatures/workflow_uploader.py:87:            success = self.db_handler.update_member_sharing_permission(member_id=self.author.id, allow_content_sharing=False, guild_id=_guild_id)
+src/features/reacting/subfeatures/workflow_uploader.py:117:    db_handler: 'DatabaseHandler',
+src/features/reacting/subfeatures/workflow_uploader.py:142:            member_data = db_handler.get_member(author.id)
+src/features/reacting/subfeatures/workflow_uploader.py:169:        view = WorkflowUploadView(bot=bot, author=author, curator=curator_user, db_handler=db_handler, logger=logger, rate_limiter=rate_limiter) # Pass bot Pass rate_limiter
+src/features/reacting/subfeatures/workflow_uploader.py:1227:#         # Assuming bot, logger, rate_limiter, db_handler, etc. are available in reactor's scope
+src/features/reacting/subfeatures/workflow_uploader.py:1234:#             db_handler=db_handler_instance,
+src/features/reacting/subfeatures/dispute_resolver.py:21:def _get_dispute_prompt(db_handler, guild_id: Optional[int]) -> str:
+src/features/reacting/subfeatures/dispute_resolver.py:22:    sc = getattr(db_handler, 'server_config', None) if db_handler else None
+src/features/reacting/subfeatures/dispute_resolver.py:33:    db_handler, # Expected: DatabaseHandler instance
+
+Verified the major critique points against the cited code. The plan is still aimed at the right subsystem boundary, but the root cause is broader than just moving grant sends into a queue: the fail-closed invariant, route persistence, grant blocking semantics, restart-safe Discord state, and admin resolution paths all need to be first-class parts of the design.
+  ✓ Inspect cited code paths to verify whether critique points indicate a root-cause shift versus plan adjustments
+  → Revise the implementation plan structure, scope, and success criteria to resolve significant flags without adding unjustified scope
+  • Return structured output with revised plan, addressed flags, assumptions, criteria, and any remaining questions
+Revised the plan to keep the same subsystem target but fix the model gaps the gate identified: explicit submission ambiguity handling, route and wallet persistence, restart-safe confirmation views, full admin controls, and grants-active-state integration.
+  ✓ Inspect cited code paths to verify whether critique points indicate a root-cause shift versus plan adjustments
+  ✓ Revise the implementation plan structure, scope, and success criteria to resolve significant flags without adding unjustified scope
+  → Return structured output with revised plan, addressed flags, assumptions, criteria, and any remaining questions

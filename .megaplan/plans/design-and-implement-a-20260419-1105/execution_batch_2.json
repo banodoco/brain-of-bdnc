@@ -1,0 +1,45 @@
+{
+  "output": "Added the three `DatabaseHandler` helpers required for moderation-decision logging in `src/common/db_handler.py` and verified the new block directly. `record_moderation_decision` is fail-closed on `_gate_check(guild_id)`, uses the same fluent Supabase insert + try/except pattern as `log_reaction_event`, and the two read helpers return the requested row shapes from `discord_reactions` and `discord_messages`. Ran `python -m py_compile src/common/db_handler.py` as a module-level syntax check and wrote the batch checkpoint to `.megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_2.json`.",
+  "files_changed": [
+    "src/common/db_handler.py",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_2.json"
+  ],
+  "commands_run": [
+    "rg -n \"def log_reaction_event|def add_reaction|def remove_reaction|def _gate_check\" src/common/db_handler.py",
+    "sed -n '620,780p' src/common/db_handler.py",
+    "sed -n '548,590p' src/common/db_handler.py",
+    "sed -n '590,626p' src/common/db_handler.py",
+    "sed -n '675,780p' src/common/db_handler.py",
+    "rg -n \"def record_moderation_decision|def get_active_reactors|def get_message_snapshot|_gate_check\\(guild_id\\)|moderation_decisions|discord_reactions'\\)\" src/common/db_handler.py",
+    "python -m py_compile src/common/db_handler.py",
+    "git diff -- src/common/db_handler.py",
+    "git status --short -- src/common/db_handler.py .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_2.json"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_2.json",
+    "Advisory quality: code changes lacked test updates: src/common/db_handler.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis/, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/, .megaplan/plans/add-scheduled-twitter-x-20260409-1553/, .megaplan/plans/add-scheduled-twitter-x-20260409-1556/, .megaplan/plans/add-scheduled-twitter-x-20260409-1557/, .megaplan/plans/admin-triggered-payments-let-20260410-1448/, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/, .megaplan/plans/build-a-fail-closed-20260409-2327/, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/, .megaplan/plans/design-a-generalized-solana-20260409-2227/, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241/, .megaplan/plans/design-and-implement-a-20260419-1105/, .megaplan/plans/final-polish-and-gremlin-20260411-0020/, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/, .megaplan/plans/harden-the-solana-payment-20260410-2147/, .megaplan/plans/identity-based-routing-for-20260411-0256/, .megaplan/plans/implement-a-unified-social-20260409-1710/, .megaplan/plans/implement-a-unified-social-20260409-1732/, .megaplan/plans/implement-a-unified-social-20260409-1748/, .megaplan/plans/implement-a-unified-social-20260409-1856/, .megaplan/plans/payment-subsystem-follow-up-20260410-2339/, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/execution_doc.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/schemas/tiebreaker_challenger.json, .megaplan/schemas/tiebreaker_researcher.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/test_notification_delete.py, tests/test_social_publications.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Added `record_moderation_decision`, `get_active_reactors`, and `get_message_snapshot` near `log_reaction_event` in `src/common/db_handler.py`. Verified `record_moderation_decision` begins with `_gate_check(guild_id)`, uses the same fluent-client insert + try/except structure as `log_reaction_event`, `get_active_reactors` reads `user_id`/`emoji`/`guild_id` from `discord_reactions` with `removed_at IS NULL` and optional emoji filtering, and `get_message_snapshot` returns `author_id`/`author_name`/`content`/`channel_id`/`guild_id` from `discord_messages`.",
+      "files_changed": [
+        "src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "sed -n '675,780p' src/common/db_handler.py",
+        "rg -n \"def record_moderation_decision|def get_active_reactors|def get_message_snapshot|_gate_check\\(guild_id\\)|moderation_decisions\" src/common/db_handler.py",
+        "python -m py_compile src/common/db_handler.py"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "Confirmed `record_moderation_decision`, `get_active_reactors`, and `get_message_snapshot` now exist in `src/common/db_handler.py`. `record_moderation_decision` calls `_gate_check(guild_id)` as its first statement and follows the same try/except write pattern as `log_reaction_event`; the read helpers use the fluent Supabase client only and return the documented dict shapes."
+    }
+  ]
+}

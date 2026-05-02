@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/../src/features/curating/curator.py
+# hypothesis_version: 6.151.11
+
+[30.0, 120.0, 300.0, 512, 1800, '\n> ', '!', '**Your comment:**\n', '.apng', '.avi', '.bmp', '.flv', '.gif', '.heic', '.heif', '.jpeg', '.jpg', '.m4v', '.mkv', '.mov', '.mp4', '.png', '.svg', '.tiff', '.webm', '.webp', '.wmv', 'ArtCurator', 'BOT_USER_ID', 'Cleanup completed', 'Closed HTTP session', 'ReactorCog', 'Rejection cancelled.', 'Starting cleanup...', '[]', 'art_channel_id', 'banner', 'bot_curator_reject', 'curator_ids', 'curator_reject', 'ddinstagram.com', 'fixupx.com', 'forget', 'fxtwitter.com', 'guild_id', 'has_other_reaction', 'http', 'http://', 'https://', 'image/', 'is_new', 'message', 'no_art_share_link', 'notifications', 'rxddit.com', 'server_config', 'streamable.com', 'task', 'tiktok.com', 'twitch.tv', 'twittpr.com', 'video/', 'vimeo.com', 'vxtwitter.com', 'youtu.be', 'youtube.com', '❌', '📥']

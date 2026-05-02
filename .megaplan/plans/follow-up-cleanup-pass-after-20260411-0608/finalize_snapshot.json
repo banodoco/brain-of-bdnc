@@ -1,0 +1,350 @@
+{
+  "baseline_test_command": "pytest --tb=no -q --no-header",
+  "baseline_test_failures": [],
+  "baseline_test_note": "Plan documents a baseline of approximately 189 tests; success is 'no previously passing test regresses', not an exact count. Expect baseline +7 new tests and -1 deleted (test_approved_member_no_longer_routed_to_agent).",
+  "meta_commentary": "SCOPE FENCE IS CRITICAL. Touch only src/features/admin_chat/{admin_chat_cog.py,agent.py,tools.py} and tests/. Do NOT touch src/features/admin/admin_cog.py \u2014 it has its own live _can_user_message_bot for DM routing that must stay. Do NOT touch payment subsystem files, state-machine transitions, orphan sweep, AdminApprovalView, or upsert_wallet_for_user.\n\nEXECUTION ORDER MATTERS: rename keyword classifier first (T2) so existing tests stay green while you build the LLM wrapper (T3). Then wire dispatch (T4), then handler UX fixes (T5-T6), then dead-code deletion in cog\u2192agent\u2192tools order (T7-T9), then test updates (T10-T11), then full validation (T12).\n\nKEY GOTCHAS:\n- The dispatch in _handle_pending_recipient_message currently uses a getattr-based handler_name dict. You must replace it with explicit if/elif because the new clarification_reply kwarg can't pass through a generic dict dispatch.\n- _classify_confirmation now returns a TUPLE (classification, clarification_reply); update the call site accordingly.\n- The keyword fallback still returns just a Literal \u2014 wrap it as `(self._classify_confirmation_keyword(content), None)` everywhere in the new instance method.\n- The autouse admin_chat_env fixture deletes ANTHROPIC_API_KEY. New LLM-path tests must monkeypatch.setenv it AND set cog._classifier_client = AsyncMock() directly so no real client is constructed.\n- Fail-closed semantics: classifier exception \u2192 keyword fallback (NOT auto-positive). Malformed tool_use \u2192 keyword fallback. Unknown classification string \u2192 keyword fallback.\n- Two channel sends in _handle_test_receipt_negative: recipient-facing FIRST, then existing detail message. Then _notify_intent_admin DM.\n- agent.py: dropping is_admin parameter means the cog call site at admin_chat_cog.py:1144-1151 must drop is_admin=True; keep requester_id=None (plumbing stays per scope fence).\n- tools.py: ALL_TOOL_NAMES \u2014 grep src/+tests/ first; if referenced externally, rewrite as `{tool['name'] for tool in TOOLS}`; otherwise delete.\n- _classifier_model stays at the existing string (\"claude-opus-4-6\"); do NOT swap to Haiku \u2014 the brief permits the existing value and swapping is extra surface area.\n- Step 7 deletes _message_access_cache field init at line 59, but _guild_context_cache and _ACCESS_CACHE_TTL_SECONDS STAY (used by _resolve_context_guild_id).\n- Grep verification scopes: every grep for _can_user_message_bot is scoped to src/features/admin_chat/ + tests/ ONLY. The unrelated src/features/admin/admin_cog.py implementation is expected to remain.",
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Audit current shape: confirm _classify_confirmation is only called from _handle_pending_recipient_message and the keyword tests; confirm self._classifier_client has no current readers; confirm admin_chat-local _can_user_message_bot, _is_directed_at_bot, MEMBER_SYSTEM_PROMPT, MEMBER_TOOLS, ADMIN_ONLY_TOOLS, get_tools_for_role, MEMBER_MAX_CONVERSATION_LENGTH, and the is_admin parameter on AdminChatAgent.chat() have no live readers outside src/features/admin_chat/ and the two test files. Re-verify that the same-name _can_user_message_bot in src/features/admin/admin_cog.py is a different feature and stays untouched.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T2",
+      "description": "In src/features/admin_chat/admin_chat_cog.py, rename the existing @classmethod def _classify_confirmation (lines ~96-143) to _classify_confirmation_keyword with same body, decorator, and return type Literal['positive','negative','ambiguous']. Update parametrized keyword tests at tests/test_admin_payments.py:597-607 to call cog._classify_confirmation_keyword(content) so the deterministic keyword path stays directly testable without async/mocking.",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T3",
+      "description": "Add module-level constants _CLASSIFIER_TOOL (Anthropic tool_use schema with classification enum confirmed/not_received/unclear and optional reply field) and _CLASSIFIER_SYSTEM_PROMPT (strict stateless prompt: 'ok'/'thanks' alone is NOT confirmed, 'wait let me check' is unclear, etc.) in admin_chat_cog.py. Then add an async instance method `async def _classify_confirmation(self, content: str) -> tuple[Literal['positive','negative','ambiguous'], Optional[str]]` that: (a) returns (keyword_result, None) when self._classifier_client is None; (b) calls self._classifier_client.messages.create with model=self._classifier_model, max_tokens=256, system=_CLASSIFIER_SYSTEM_PROMPT, tools=[_CLASSIFIER_TOOL], tool_choice={'type':'tool','name':'classify_payment_reply'}, messages=[{'role':'user','content':content or ''}]; (c) on Exception, logs warning with exc_info and returns (keyword_result, None); (d) parses tool_use block; falls back to keyword on missing/malformed tool_input or unknown classification; (e) maps confirmed\u2192positive, not_received\u2192negative, unclear\u2192ambiguous and returns (mapped, reply_text). Keep self._classifier_model unchanged. Extend typing import to include Optional/Tuple/Dict as needed.",
+      "depends_on": [
+        "T2"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T4",
+      "description": "Update _handle_pending_recipient_message near line 1022 in admin_chat_cog.py to call `classification, clarification_reply = await self._classify_confirmation(content)` and dispatch via explicit if/elif: positive\u2192_handle_test_receipt_positive, negative\u2192_handle_test_receipt_negative, else\u2192_handle_test_receipt_ambiguous(message, intent, clarification_reply=clarification_reply). Replace the existing handler_name dict/getattr dispatch (it cannot forward the new kwarg).",
+      "depends_on": [
+        "T3"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T5",
+      "description": "Fix the silent-on-ambiguous UX hole in _handle_test_receipt_ambiguous (admin_chat_cog.py:532-544). Change signature to `async def _handle_test_receipt_ambiguous(self, message, intent, *, clarification_reply: Optional[str] = None)`. After successfully incrementing the counter and BEFORE the >=2 escalation branch, when post-increment count < 2, post a recipient-facing in-thread clarification: default text `f\"<@{intent['recipient_user_id']}> I didn't quite understand \u2014 please reply with **confirmed** or **yes** once you see the test SOL in your wallet, or **not received** if you don't see it.\"`; if clarification_reply is set, use `f\"<@{intent['recipient_user_id']}> {clarification_reply}\"` instead. Send via `await message.channel.send(text)`. Leave the existing >=2 \u2192 _handle_test_receipt_negative delegation untouched and do NOT forward clarification_reply into the negative path.",
+      "depends_on": [
+        "T4"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T6",
+      "description": "Fix the negative-path recipient messaging gap in _handle_test_receipt_negative (admin_chat_cog.py:491-530). BEFORE the existing `await message.channel.send(detail)` (line ~514), send an additional recipient-directed message: `f\"Hey <@{intent.get('recipient_user_id')}> \u2014 I've flagged this for admin review. Please wait for {self._admin_mention} to follow up.\"` Keep the existing detail send and the existing _notify_intent_admin DM exactly as-is. Order: recipient notice, then admin-tag detail, then admin DM.",
+      "depends_on": [
+        "T5"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T7",
+      "description": "Delete dead code in admin_chat_cog.py: (a) remove _is_directed_at_bot (lines ~870-897) in full; (b) remove _can_user_message_bot (lines ~903-923) in full; (c) remove the _message_access_cache instance field initialization at line ~59 (KEEP _guild_context_cache and _ACCESS_CACHE_TTL_SECONDS \u2014 used by _resolve_context_guild_id); (d) remove the retention comment at lines 1052-1053 inside _handle_admin_message. Do NOT touch src/features/admin/admin_cog.py. Then grep src/features/admin_chat/ and tests/ for `_can_user_message_bot`, `_is_directed_at_bot`, `_message_access_cache` and confirm zero hits within those scopes (the live definition+call inside src/features/admin/admin_cog.py is expected and must remain).",
+      "depends_on": [
+        "T6"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T8",
+      "description": "Delete dead code in src/features/admin_chat/agent.py: (a) remove MEMBER_SYSTEM_PROMPT (lines ~166-207) and MEMBER_MAX_CONVERSATION_LENGTH (line ~210); (b) simplify _trim_conversation (line ~246): drop is_admin parameter, always use ADMIN_MAX_CONVERSATION_LENGTH; (c) simplify AdminChatAgent.chat() (line ~279): drop is_admin: bool = True parameter; remove every `if is_admin` branch (lines 349, 377-382, 390-391, 453, 472, 522); always use SYSTEM_PROMPT (with existing server-config override when present), always append _POM_ADDENDUM, always pass available_tools = TOOLS; keep _ADMIN_IDENTITY_INJECTED_TOOLS injection (collapse `if is_admin and ...` to `if ...`), always call execute_tool with requester_id=None (keyword stays \u2014 requester_id plumbing in tools.py is out of scope); (d) update import on agent.py:15 from `from .tools import get_tools_for_role, execute_tool` to `from .tools import TOOLS, execute_tool`; (e) update call site in admin_chat_cog.py:1144-1151 to drop is_admin=True from self.agent.chat(...) but keep requester_id=None.",
+      "depends_on": [
+        "T7"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T9",
+      "description": "Delete dead code in src/features/admin_chat/tools.py: (a) remove MEMBER_TOOLS (line ~1033), ADMIN_ONLY_TOOLS (line ~1045), the two assert sanity checks (lines ~1082-1083), and get_tools_for_role (lines ~1086-1089). (b) For ALL_TOOL_NAMES: grep src/ + tests/ first; if referenced externally, rewrite as `ALL_TOOL_NAMES = {tool['name'] for tool in TOOLS}` derived directly from TOOLS; if zero external references, delete it. (c) Do NOT touch _ADMIN_IDENTITY_INJECTED_TOOLS, requester_id branches in execute_tool (~lines 3737-3767), or any query/batch/upsert tool implementations.",
+      "depends_on": [
+        "T8"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T10",
+      "description": "Update existing tests that reference deleted symbols or changed handler behavior. (a) tests/test_social_route_tools.py:293-320 \u2014 rewrite test_route_tools_are_admin_only into test_expected_admin_tools_are_registered: build `registered = {tool['name'] for tool in admin_tools.TOOLS}` and assert the expected set is a subset; drop member_tool_names assertions. (b) tests/test_social_route_tools.py:857-873 \u2014 rewrite test_admin_tool_registration_and_identity_injection_sets to assert expected tools exist in `{t['name'] for t in admin_tools.TOOLS}`; keep _ADMIN_IDENTITY_INJECTED_TOOLS and _CHANNEL_POSTING_TOOLS assertions untouched. (c) tests/test_admin_payments.py:697-709 \u2014 DELETE test_approved_member_no_longer_routed_to_agent entirely (redundant with the line-654 fall-through test once _can_user_message_bot is gone). (d) tests/test_admin_payments.py:654-668 \u2014 in test_identity_router_falls_through_for_non_admin_without_intent, remove the cog._can_user_message_bot = AsyncMock(...) line and its .assert_not_awaited(); keep the core fall-through assertions. (e) tests/test_admin_payments.py:1496-1537 \u2014 update test_handle_test_receipt_ambiguous_escalates_on_second_reply: change `assert channel.sent_messages == []` to assert exactly one message containing '<@42>' and 'confirmed' was sent after the first call; second-call assertions unchanged. (f) tests/test_admin_payments.py:1420-1454 \u2014 update test_handle_test_receipt_negative_moves_to_manual_review: assert two channel messages \u2014 first containing '<@42>' and 'admin review', second containing the existing sig-123/wallet detail; admin DM assertion stays. Then grep tests/ for MEMBER_SYSTEM_PROMPT, MEMBER_MAX_CONVERSATION_LENGTH, get_tools_for_role, MEMBER_TOOLS, ADMIN_ONLY_TOOLS, _can_user_message_bot, _is_directed_at_bot \u2014 confirm zero hits.",
+      "depends_on": [
+        "T9"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T11",
+      "description": "Add new tests in tests/test_admin_payments.py covering: (1) test_classify_confirmation_llm_confirmed_maps_to_positive \u2014 monkeypatch.setenv ANTHROPIC_API_KEY='test-key', construct cog, set cog._classifier_client = AsyncMock() with messages.create returning SimpleNamespace(content=[SimpleNamespace(type='tool_use', name='classify_payment_reply', input={'classification':'confirmed'})]); assert result == ('positive', None); verify await_args.kwargs['tool_choice'] == {'type':'tool','name':'classify_payment_reply'}. (2) parallel _not_received_maps_to_negative and _unclear_maps_to_ambiguous_with_reply (the latter includes a 'reply' field and asserts it propagates). (3) test_classify_confirmation_falls_back_to_keywords_when_api_key_missing \u2014 relies on autouse fixture, assert await cog._classify_confirmation('confirmed, got it') == ('positive', None) without network mock. (4) test_classify_confirmation_falls_back_to_keywords_on_api_error \u2014 set ANTHROPIC_API_KEY, patch cog._classifier_client.messages.create = AsyncMock(side_effect=RuntimeError('boom')); assert returns ('positive', None) and mock awaited once. (5) test_handle_test_receipt_ambiguous_first_reply_posts_default_clarification \u2014 seed intent ambiguous_reply_count=0, call handler, assert last sent message contains '<@42>', 'confirmed', and 'not received'; assert db ambiguous_reply_count == 1. (6) test_handle_test_receipt_ambiguous_first_reply_uses_llm_reply_when_provided \u2014 call with clarification_reply='Please say yes once you see 0.01 SOL' and assert the sent message contains that string. (7) test_handle_test_receipt_negative_sends_recipient_facing_notice \u2014 assert len(channel.sent_messages) == 2; first contains '<@42>', 'admin review', and the configured admin mention; second contains sig-123 and the wallet; admin DM still arrives. (8) test_dead_code_is_removed \u2014 assert not hasattr on admin_agent for MEMBER_SYSTEM_PROMPT and MEMBER_MAX_CONVERSATION_LENGTH; assert not hasattr on admin_tools for MEMBER_TOOLS, ADMIN_ONLY_TOOLS, get_tools_for_role; assert not hasattr on AdminChatCog (the admin_chat one) for _can_user_message_bot and _is_directed_at_bot.",
+      "depends_on": [
+        "T10"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T12",
+      "description": "Validate the change. Run `pytest tests/test_admin_payments.py -x -q` first (fastest signal on cog/classifier/handler changes), then `pytest tests/test_social_route_tools.py -x -q` (catches tool palette cleanup), then full `pytest -x -q`. Baseline ~189 tests; expect baseline + ~7 new \u2212 1 deleted; success is 'no previously passing test regresses'. Then write a short throwaway script that exercises the LLM classifier path with a mocked AsyncAnthropic client (e.g., classifying 'ok thanks' as unclear and verifying the bot would post the LLM's clarification reply via _handle_test_receipt_ambiguous), run it to confirm end-to-end behavior, then delete the script. Final scoped grep sweep: `MEMBER_SYSTEM_PROMPT`, `MEMBER_MAX_CONVERSATION_LENGTH`, `MEMBER_TOOLS`, `ADMIN_ONLY_TOOLS`, `get_tools_for_role`, `_is_directed_at_bot` should return zero hits across src/ and tests/; `_can_user_message_bot` should return zero hits across src/features/admin_chat/ and tests/, with the only remaining hits being the live definition+call inside src/features/admin/admin_cog.py (expected, untouched). Fix any failures by reading the error and adjusting the code; do NOT create new test files in this step.",
+      "depends_on": [
+        "T11"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    }
+  ],
+  "watch_items": [
+    "SCOPE FENCE: only modify src/features/admin_chat/{admin_chat_cog.py,agent.py,tools.py} and tests/. Do NOT touch src/features/admin/admin_cog.py \u2014 its _can_user_message_bot is a live, unrelated DM-routing helper.",
+    "Do NOT touch payment subsystem files: solana_client.py, solana_provider.py, payment_service.py, payment_worker_cog.py, payment_ui_cog.py, producer_flows.py, db_handler.py, or upsert_wallet_for_user.",
+    "Do NOT modify state-machine transitions (awaiting_wallet, awaiting_test_receipt_confirmation, awaiting_admin_approval) \u2014 only the HANDLERS may change to add recipient messaging.",
+    "Do NOT touch the orphan sweep, AdminApprovalView, query/batch tools, _ADMIN_IDENTITY_INJECTED_TOOLS, or requester_id plumbing inside tools.py (lines 3737-3767).",
+    "Fail-closed posture is non-negotiable: classifier exception, missing API key, malformed tool_use, unknown classification \u2192 keyword fallback (NOT auto-positive).",
+    "Classifier must be stateless: only inputs are static _CLASSIFIER_SYSTEM_PROMPT and a single user message containing the raw recipient reply. No channel history.",
+    "_classifier_model stays at the existing value ('claude-opus-4-6'); do NOT swap to Haiku \u2014 model swap is extra surface area outside this cleanup.",
+    "_classify_confirmation now returns a TUPLE \u2014 every call site (currently only the dispatch in _handle_pending_recipient_message) must unpack (classification, clarification_reply).",
+    "The dispatch in _handle_pending_recipient_message uses a getattr-based handler_name dict today; replacing with explicit if/elif is REQUIRED so clarification_reply can be forwarded as a kwarg.",
+    "_handle_test_receipt_ambiguous: clarification_reply is keyword-only and ONLY consumed on the first reply (count < 2). Do NOT forward it to _handle_test_receipt_negative on the >=2 escalation branch.",
+    "_handle_test_receipt_negative ordering: recipient notice FIRST, then existing detail send, then admin DM. Two channel sends + one admin DM total.",
+    "_message_access_cache field at line ~59 should be deleted, but _guild_context_cache and _ACCESS_CACHE_TTL_SECONDS must STAY \u2014 they back _resolve_context_guild_id.",
+    "Test fixture autouse `admin_chat_env` deletes ANTHROPIC_API_KEY. New LLM-path tests must monkeypatch.setenv it AND directly set cog._classifier_client = AsyncMock() so no real Anthropic client is constructed.",
+    "Existing keyword classifier tests at tests/test_admin_payments.py:597-607 must be re-pointed at _classify_confirmation_keyword (the renamed sync helper) so they don't break before the LLM path is in place.",
+    "tools.py ALL_TOOL_NAMES handling: grep src/+tests/ first. If referenced externally, rewrite as derivation from TOOLS; if zero hits, delete. Don't assume.",
+    "agent.py: keep execute_tool's requester_id=None keyword (the requester_id plumbing inside tools.py is intentionally retained per scope fence, even though it will always be None post-cleanup).",
+    "admin_chat_cog.py:1144-1151 call site to self.agent.chat(...) must drop is_admin=True (agent signature loses the parameter) but keep requester_id=None.",
+    "DEBT WATCH: 'admin-chat-classification: anthropic client may not be initialized when interceptor fires before _ensure_agent' \u2014 verify that _classifier_client is constructed in __init__ (line ~65) so it exists before any classifier call regardless of _ensure_agent ordering.",
+    "Grep verification scopes are intentionally narrowed for _can_user_message_bot to src/features/admin_chat/ + tests/ ONLY; the same-name live method in src/features/admin/admin_cog.py must remain.",
+    "test_approved_member_no_longer_routed_to_agent at tests/test_admin_payments.py:697 is to be DELETED outright (not skipped) \u2014 it's redundant with the fall-through test at line 654.",
+    "Use existing <@id> mention convention; do NOT introduce a new mention-formatting helper. The new sends should follow surrounding code style."
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Did the audit confirm zero live readers of self._classifier_client, _can_user_message_bot, _is_directed_at_bot, MEMBER_SYSTEM_PROMPT, MEMBER_TOOLS, ADMIN_ONLY_TOOLS, get_tools_for_role, MEMBER_MAX_CONVERSATION_LENGTH, and the is_admin parameter outside src/features/admin_chat/ and the two flagged test files? Did it explicitly verify that the same-name _can_user_message_bot in src/features/admin/admin_cog.py is a separate feature and is being preserved?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Was _classify_confirmation renamed (not duplicated) to _classify_confirmation_keyword with body and decorator unchanged, and were the keyword-path tests at tests/test_admin_payments.py:597-607 re-pointed at the new name without changing what they assert?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Does the new async _classify_confirmation instance method actually call self._classifier_client.messages.create with tools=[_CLASSIFIER_TOOL] and tool_choice forcing classify_payment_reply, return (keyword_result, None) when the client is None, fall back to keyword on Exception (logged with exc_info), fall back to keyword on missing/malformed tool_use blocks and unknown classification values, and correctly map confirmed\u2192positive / not_received\u2192negative / unclear\u2192ambiguous while propagating any non-empty reply string?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Was the dict/getattr dispatch in _handle_pending_recipient_message replaced with an explicit if/elif that unpacks (classification, clarification_reply) from await self._classify_confirmation(content) and forwards clarification_reply as a kwarg ONLY into _handle_test_receipt_ambiguous?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC5",
+      "task_id": "T5",
+      "question": "Does _handle_test_receipt_ambiguous now post a recipient-facing in-thread message on the first reply (count < 2), using the LLM-supplied clarification_reply when present and the default 'confirmed/yes/not received' template otherwise, while leaving the >=2 escalation untouched and NOT forwarding clarification_reply into the negative path?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "question": "Does _handle_test_receipt_negative now send a recipient-directed mention message BEFORE the existing detail send, while keeping the existing detail send and the _notify_intent_admin DM unchanged, in the order: recipient notice \u2192 admin-tag detail \u2192 admin DM?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC7",
+      "task_id": "T7",
+      "question": "Were _is_directed_at_bot, _can_user_message_bot, the _message_access_cache field init, and the dead-code retention comment removed from admin_chat_cog.py while leaving _guild_context_cache, _ACCESS_CACHE_TTL_SECONDS, and src/features/admin/admin_cog.py untouched? Does a scoped grep across src/features/admin_chat/ and tests/ return zero hits for those symbols?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC8",
+      "task_id": "T8",
+      "question": "In agent.py, were MEMBER_SYSTEM_PROMPT, MEMBER_MAX_CONVERSATION_LENGTH, the is_admin parameter on chat() and _trim_conversation, and every if is_admin branch removed; did the import switch from get_tools_for_role to TOOLS; was _ADMIN_IDENTITY_INJECTED_TOOLS injection preserved (with the if collapsed); and was the cog call site at admin_chat_cog.py:1144-1151 updated to drop is_admin=True while keeping requester_id=None?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC9",
+      "task_id": "T9",
+      "question": "In tools.py, were MEMBER_TOOLS, ADMIN_ONLY_TOOLS, the two assert sanity checks, and get_tools_for_role removed; was ALL_TOOL_NAMES handled correctly based on a fresh grep (rewritten as a TOOLS-derivation if referenced, deleted otherwise); and were _ADMIN_IDENTITY_INJECTED_TOOLS, requester_id branches, and query/batch/upsert tools left untouched?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC10",
+      "task_id": "T10",
+      "question": "Were the listed existing tests updated correctly: route-tools tests rewritten to use admin_tools.TOOLS, test_approved_member_no_longer_routed_to_agent DELETED outright, the fall-through test cleaned of _can_user_message_bot mocks, the ambiguous escalation test now expecting one clarification message after the first call, and the negative-path test now expecting two channel messages plus the admin DM?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC11",
+      "task_id": "T11",
+      "question": "Do the new tests cover ALL eight required scenarios (LLM confirmed/not_received/unclear+reply, keyword fallback when API key missing, keyword fallback when API raises, default ambiguous clarification, LLM-provided ambiguous clarification, negative-path recipient message + admin DM still sent, dead-code hasattr removal) \u2014 and do the LLM-path tests both monkeypatch.setenv ANTHROPIC_API_KEY AND directly set cog._classifier_client to a stub so no real client is built?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC12",
+      "task_id": "T12",
+      "question": "Did the targeted test files pass first, then the full suite? Was the throwaway end-to-end LLM-path repro script written, run successfully, and deleted? Did the final scoped grep sweep return zero hits as specified, with _can_user_message_bot still appearing only inside src/features/admin/admin_cog.py and nowhere in src/features/admin_chat/ or tests/?",
+      "executor_note": "",
+      "verdict": ""
+    }
+  ],
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Step 1: Audit current classifier + handlers + dead symbols",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 2: Split keyword classifier out as _classify_confirmation_keyword and re-point existing keyword tests",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 3: Add LLM-backed async classifier instance method with tool_use schema and fail-closed fallbacks",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 4: Wire new tuple-returning classifier into the state-machine dispatch with explicit if/elif",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 5: Fix silent-on-ambiguous UX hole with recipient-facing first-reply clarification",
+        "finalize_task_ids": [
+          "T5"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 6: Fix negative-path recipient messaging gap with parallel recipient-directed message",
+        "finalize_task_ids": [
+          "T6"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 7: Delete dead code in admin_chat_cog.py (_can_user_message_bot, _is_directed_at_bot, _message_access_cache, retention comment)",
+        "finalize_task_ids": [
+          "T7"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 8: Delete dead code in agent.py (MEMBER_SYSTEM_PROMPT, MEMBER_MAX_CONVERSATION_LENGTH, is_admin branches, import + call site update)",
+        "finalize_task_ids": [
+          "T8"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 9: Delete dead code in tools.py (MEMBER_TOOLS, ADMIN_ONLY_TOOLS, get_tools_for_role, ALL_TOOL_NAMES handling)",
+        "finalize_task_ids": [
+          "T9"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 10: Update existing tests that reference deleted symbols or changed handler behavior",
+        "finalize_task_ids": [
+          "T10"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 11: Add new tests for classifier wiring, ambiguous clarification, negative recipient message, dead-code removal",
+        "finalize_task_ids": [
+          "T11"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 12: Validate (targeted then full pytest, throwaway repro script, final scoped grep sweep)",
+        "finalize_task_ids": [
+          "T12"
+        ]
+      }
+    ],
+    "orphan_tasks": [],
+    "completeness_notes": "Every plan step (1-12) maps 1:1 to a finalize task (T1-T12). No orphan tasks; no plan steps elided. The audit step (Step 1 / T1) is preserved as its own task because the plan explicitly relies on its findings (especially for the ALL_TOOL_NAMES decision in Step 9 / T9 and the sibling-file caveat from FLAG-001). The throwaway-script repro requirement and final scoped grep sweep are folded into T12 alongside the pytest validation.",
+    "coverage_complete": true
+  }
+}

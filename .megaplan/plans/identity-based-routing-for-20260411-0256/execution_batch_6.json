@@ -1,0 +1,57 @@
+{
+  "task_updates": [
+    {
+      "id": "T11",
+      "status": "done",
+      "executor_notes": "Updated `execute_initiate_payment` so verified wallets no longer create a test-phase intent; the executor now calls `AdminChatCog._gate_fresh_intent_atomic(...)` directly and leaves the unverified-wallet prompt path unchanged. Verified with `python -m py_compile src/features/admin_chat/tools.py tests/test_admin_payments.py` and `pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py tests/test_social_route_tools.py -x`.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py",
+        "tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py tests/test_admin_payments.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py tests/test_social_route_tools.py -x"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T11"
+    },
+    {
+      "id": "T13",
+      "status": "done",
+      "executor_notes": "Added the `initiate_batch_payment` tool schema, admin-only classification, dispatcher wiring, and executor with all-or-none validation plus a single `create_admin_payment_intents_batch(...)` insert before per-intent fan-out. Verified-wallet entries are inserted as `awaiting_admin_init` and fan out through `_gate_existing_intent`, while unverified entries remain `awaiting_wallet` and receive the wallet prompt; verified with `python -m py_compile src/features/admin_chat/tools.py tests/test_admin_payments.py` and `pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py tests/test_social_route_tools.py -x`.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py",
+        "tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py tests/test_admin_payments.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py tests/test_social_route_tools.py -x"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T13"
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "id": "SC11",
+      "executor_note": "Confirmed `execute_initiate_payment` now routes verified wallets through `_gate_fresh_intent_atomic` with no test payment or precreated `awaiting_test` intent, while the unverified-wallet path still creates `awaiting_wallet`, sends the wallet prompt, and persists `prompt_message_id`.",
+      "verdict": "",
+      "sense_check_id": "SC11"
+    },
+    {
+      "id": "SC13",
+      "executor_note": "Confirmed `initiate_batch_payment` performs one `create_admin_payment_intents_batch` call for the full batch, inserts verified recipients as `awaiting_admin_init` and unverified recipients as `awaiting_wallet`, and verified fan-out calls `_gate_existing_intent` rather than `_gate_fresh_intent_atomic`.",
+      "verdict": "",
+      "sense_check_id": "SC13"
+    }
+  ],
+  "deviations": [
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: src/features/admin_chat/tools.py, tests/test_admin_payments.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC15 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC19 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC20 is missing an executor acknowledgment."
+  ]
+}

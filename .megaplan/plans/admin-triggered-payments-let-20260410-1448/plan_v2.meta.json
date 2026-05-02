@@ -1,0 +1,119 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-10T13:06:14Z",
+  "hash": "sha256:2f1ff9b6bb9e9291a7d36991e49840e66a78aac507bf61fb76f232d9165435bc",
+  "changes_summary": "Complete plan redesign to match the approved v1 user requirement. Removed the `wallet_address` parameter from the tool schema. Added in-channel wallet collection: when no wallet is on file, the tool creates a pending payment intent (in-memory on AdminChatCog), pings the recipient in the originating channel, and a new wallet-reply handler at the top of `on_message` intercepts the recipient's reply before the `_can_user_message_bot` permission gate. Added `source_channel_id` injection in agent.py so the tool knows which channel the admin sent the message from. Scoped the tool to guild channels only (admin DMs fail-closed since there's no guild context or channel to ping in). Added a dedicated test file `tests/test_admin_payments.py` with 8 test cases covering both paths, validation, wallet replies, and terminal callbacks. Clarified that the final-payment confirmation uses the existing in-channel PaymentConfirmView button (recipient clicks in the originating channel), and that `handle_payment_result` posts producer-specific notifications distinct from PaymentCog's generic notifications.",
+  "flags_addressed": [
+    "FLAG-ADMIN-PAY-001",
+    "FLAG-ADMIN-PAY-002",
+    "FLAG-ADMIN-PAY-003",
+    "issue_hints-1",
+    "issue_hints-2",
+    "correctness",
+    "scope-1",
+    "scope-2",
+    "all_locations-1",
+    "all_locations-2",
+    "all_locations-3",
+    "callers",
+    "criteria_quality-1",
+    "criteria_quality-2"
+  ],
+  "questions": [
+    "Should the pending intent have a TTL/expiry (e.g. expire after 24 hours if the recipient never replies)? If so, what timeout is appropriate?",
+    "If the admin initiates a payment for a user who already has a pending intent in the same channel (e.g. admin says 'pay @user $50' twice), should it overwrite the existing intent or reject as a duplicate?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "initiate_payment tool appears in TOOLS list, ADMIN_ONLY_TOOLS set, and the assertion at tools.py:916 passes",
+      "priority": "must"
+    },
+    {
+      "criterion": "initiate_payment does NOT accept a wallet_address parameter \u2014 wallet is either on file or collected in-channel",
+      "priority": "must"
+    },
+    {
+      "criterion": "When recipient has a wallet on file: calling initiate_payment creates a test payment via PaymentService.request_payment with producer='admin_chat' and auto-confirms it",
+      "priority": "must"
+    },
+    {
+      "criterion": "When no wallet on file: calling initiate_payment creates a pending intent, sends a channel message pinging the recipient for their wallet, and returns status='awaiting_wallet'",
+      "priority": "must"
+    },
+    {
+      "criterion": "Calling initiate_payment from a DM (no guild_id/source_channel_id) returns a fail-closed error",
+      "priority": "must"
+    },
+    {
+      "criterion": "Calling initiate_payment with amount_usd <= 0 or invalid recipient_user_id returns a fail-closed error",
+      "priority": "must"
+    },
+    {
+      "criterion": "Recipient wallet reply in the originating channel is intercepted by _check_wallet_reply before the _is_directed_at_bot and _can_user_message_bot permission gates",
+      "priority": "must"
+    },
+    {
+      "criterion": "Invalid wallet reply (not a valid Solana address) is rejected with an error message and the intent is NOT consumed",
+      "priority": "must"
+    },
+    {
+      "criterion": "Valid wallet reply triggers upsert_wallet, request_payment(is_test=True), and auto-confirm",
+      "priority": "must"
+    },
+    {
+      "criterion": "AdminChatCog.handle_payment_result handles producer='admin_chat' test-confirmed by creating the final payment with is_test=False and calling PaymentCog.send_confirmation_request to post the in-channel confirmation button",
+      "priority": "must"
+    },
+    {
+      "criterion": "AdminChatCog.handle_payment_result handles test-failed by NOT creating a final payment (fail-closed)",
+      "priority": "must"
+    },
+    {
+      "criterion": "producer_ref is unique per payment (includes timestamp) to satisfy the unique index constraint on (producer, producer_ref, is_test)",
+      "priority": "must"
+    },
+    {
+      "criterion": "source_channel_id is injected into tool_input in agent.py alongside guild_id, using the key 'source_channel_id' which does not conflict with existing tools",
+      "priority": "must"
+    },
+    {
+      "criterion": "All existing tests pass: test_scheduler.py, test_social_route_tools.py, and the full test suite",
+      "priority": "must"
+    },
+    {
+      "criterion": "System prompt in agent.py documents the new tool including that it must be called from a guild channel",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test file tests/test_admin_payments.py covers: wallet-on-file path, no-wallet path, validation failures, wallet reply handling, and terminal callbacks",
+      "priority": "must"
+    },
+    {
+      "criterion": "execute_initiate_payment and _start_admin_payment_flow are each under ~80 lines with clear early-return error paths",
+      "priority": "should"
+    },
+    {
+      "criterion": "handle_payment_result follows the same structure as GrantsCog's version (guard \u2192 branch on is_test \u2192 branch on status)",
+      "priority": "should"
+    },
+    {
+      "criterion": "_check_wallet_reply has minimal overhead for non-matching messages (dict lookup returns quickly)",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke test: admin mentions bot in #channel with 'pay @user $50', bot pings user, user replies with wallet, test payment queues, confirmation button appears after test succeeds, user clicks confirm, payout executes",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "Using producer name 'admin_chat' so PaymentCog._candidate_producer_cog_names auto-discovers AdminChatCog without modifying PaymentCog.",
+    "Pending payment intents are in-memory (dict on AdminChatCog). Lost on bot restart, but admin can re-initiate. This avoids a DB migration for v1.",
+    "Admin must initiate payments from a guild channel, not DM. Admin DMs have no guild_id (AdminChatCog skips guild resolution for admins) and no channel to ping the recipient in.",
+    "The wallet-reply handler intercepts messages before _is_directed_at_bot() and _can_user_message_bot() checks. The recipient does NOT need can_message_bot permission or to @mention the bot \u2014 they just reply in the channel where they were pinged.",
+    "The confirmation button for the final payment is posted to the channel resolved by resolve_payment_destinations (same pattern as grants). The existing PaymentConfirmView button enforces recipient_discord_id check, so only the intended recipient can confirm.",
+    "No maximum payment amount guardrail in v1 \u2014 the admin is trusted.",
+    "handle_payment_result posts producer-specific messages (with payment details, explorer links) in addition to PaymentCog's generic terminal notification. This matches how GrantsCog handles it \u2014 both the generic notify and the grant-specific thread message are posted."
+  ],
+  "delta_from_previous_percent": 79.18,
+  "structure_warnings": []
+}

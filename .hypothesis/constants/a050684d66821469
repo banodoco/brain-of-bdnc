@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/../src/features/reacting/subfeatures/__init__.py
+# hypothesis_version: 6.151.11
+
+['dispute_resolver', 'message_linker', 'openmuse_uploader', 'permission_handler', 'tweet_sharer_bridge', 'workflow_uploader']

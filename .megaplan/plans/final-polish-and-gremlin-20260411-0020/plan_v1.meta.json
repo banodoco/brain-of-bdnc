@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-10T22:25:28Z",
+  "hash": "sha256:7a067b48c7d266fe107f7c19889692110594f1f0a153ffdf9bde0fe8801c5fb4",
+  "questions": [
+    "The idea text references 'solana_client.py' for items C7 (dynamic priority fees) and F16 (structured confirm logging). There is no file at src/features/payments/solana_client.py \u2014 the relevant file is src/features/grants/solana_client.py (the shared SolanaClient class used by both grants and payouts providers). The plan targets src/features/grants/solana_client.py. Is that the right target, or did you intend to create a new solana_client.py inside src/features/payments/?",
+    "A3 (consolidate _redact_wallet): should the shared helper live in src/common/discord_utils.py, or in a new src/common/redaction.py module? discord_utils.py has the right import graph but is Discord-specific; the redaction helper itself is chain-agnostic. My default is discord_utils.py (minimal churn) unless you prefer a new module.",
+    "A3: admin_chat/tools.py has a separate _redact_wallet_address helper with a different signature (accepts Any, not just Optional[str]) and additional _redact_wallet_row/_redact_payment_row wrappers. Should this pass also unify those, or leave them as a separate follow-up? My default is to leave them alone (they are distinct behavior).",
+    "F15 asks for the invariant checker to run 'daily via CI or cron'. This repo uses Railway \u2014 should I add a scripts/ cron entry, a GitHub Actions workflow, or just ship the script and leave wiring as an operator task? My default is to ship the script plus a README note in docs/runbook-payments.md and leave the scheduler wire-up as an info-priority follow-up.",
+    "D10 investigation: if the race between recover_inflight and the worker loop turns out to be real, my default fix is a conditional update that only reclaims processing/submitted rows older than 2 minutes. Is 2 minutes acceptable, or is there a tighter bound you want (e.g. matching worker tick interval)? If you want a different mechanism entirely (e.g., a generation counter on the row), tell me and I'll plan for that.",
+    "D11: the preferred fix for same-second admin collision is millisecond precision in producer_ref (Option A). Acceptable, or do you want full randomness (Option B with uuid suffix) to permanently break idempotency on this path?",
+    "B4: my heuristic for 'blockhash expired' in the reconcile_with_chain method is 'submitted_at older than 150 seconds'. Solana's blockhash lifetime is ~60\u201390 seconds; 150 is a safety margin. Is that margin acceptable, or do you want a real getLatestBlockhash-based check (more RPC calls but authoritative)?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "All 14 polish items from the idea are either implemented or explicitly deferred with a written justification in the plan artifact.",
+      "priority": "must"
+    },
+    {
+      "criterion": "A1: PaymentService.request_payment is decomposed into the 5 named helpers; public signature and return values unchanged; all existing tests pass without modification.",
+      "priority": "must"
+    },
+    {
+      "criterion": "A2: PaymentService.__init__ raises ValueError when test_payment_amount is below 2_000_000 lamports; duplicate guard removed from main.py; new unit test covers this.",
+      "priority": "must"
+    },
+    {
+      "criterion": "A3: _redact_wallet is defined exactly once in src/common/ and imported by payment_service.py, payment_cog.py (or post-cleanup worker cog), and db_handler.py.",
+      "priority": "must"
+    },
+    {
+      "criterion": "B4: execute_retry_payment and execute_release_payment call reconcile_with_chain before mutating state; the four decision branches (reconciled_confirmed, reconciled_failed, allow_requeue, keep_in_hold) are each covered by a unit test.",
+      "priority": "must"
+    },
+    {
+      "criterion": "B5: /payment-resolve slash command (admin-only) and admin_chat execute_payment_resolve tool both exist, call reconcile_with_chain, and append to tx_signature_history.",
+      "priority": "must"
+    },
+    {
+      "criterion": "B6: Worker startup migrates legacy provider='solana' rows to solana_grants or solana_payouts; unknown producers go to manual_hold; unit test covers all three branches.",
+      "priority": "must"
+    },
+    {
+      "criterion": "C7: SolanaClient.send_sol uses a dynamic priority fee (75th percentile of recent fees) clamped to [floor, ceiling] with fallback-on-error; unit test covers percentile math, clamps, and fallback.",
+      "priority": "must"
+    },
+    {
+      "criterion": "C8: Admin DM failure falls back to ADMIN_FALLBACK_CHANNEL_ID; both-failed path logs at ERROR level; unit test covers Forbidden and double-failure paths.",
+      "priority": "must"
+    },
+    {
+      "criterion": "C9: A distinct 'rpc_unreachable' manual_hold reason is emitted when the confirmation RPC is unreachable (as opposed to a legitimate confirmation timeout); unit test covers the distinction.",
+      "priority": "must"
+    },
+    {
+      "criterion": "D10: tests/test_payment_race.py exists and passes; a written verdict ('proven safe' or 'fixed with commit N') is recorded as a file-level comment.",
+      "priority": "must"
+    },
+    {
+      "criterion": "D11: A regression test reproduces or refutes the same-second admin collision; if reproduced, producer_ref precision is upgraded and the test becomes a regression guard.",
+      "priority": "must"
+    },
+    {
+      "criterion": "D12: tests/test_payment_state_machine.py uses hypothesis RuleBasedStateMachine; hypothesis is added to requirements.txt; all five invariants are asserted.",
+      "priority": "must"
+    },
+    {
+      "criterion": "docs/payments.md and docs/runbook-payments.md are committed with the specified sections.",
+      "priority": "must"
+    },
+    {
+      "criterion": "scripts/check_payment_invariants.py exists, implements all five checks (a\u2013e), exits nonzero on any violation, and has a fixture-based test for synthetic violations.",
+      "priority": "must"
+    },
+    {
+      "criterion": "F16: SolanaClient.confirm_tx emits a structured log with event='tx_confirm_decision' on all three decision branches (confirmed, not_found, errored).",
+      "priority": "must"
+    },
+    {
+      "criterion": "Full pytest suite passes after every phase lands.",
+      "priority": "must"
+    },
+    {
+      "criterion": "No regression in existing grants or admin_chat payment flows (verified via tests/test_admin_payments.py and tests/test_solana_client.py).",
+      "priority": "must"
+    },
+    {
+      "criterion": "Phase A refactor does not introduce any behavior change \u2014 same inputs produce same outputs and same log messages.",
+      "priority": "should"
+    },
+    {
+      "criterion": "docs/payments.md readable by a new engineer in under 15 minutes (target \u2264400 lines).",
+      "priority": "should"
+    },
+    {
+      "criterion": "docs/runbook-payments.md covers every non-happy-path scenario listed in the idea.",
+      "priority": "should"
+    },
+    {
+      "criterion": "scripts/check_payment_invariants.py runs successfully against prod DB (or a production-like snapshot) and reports no false positives on a healthy dataset.",
+      "priority": "info"
+    },
+    {
+      "criterion": "After this pass, an operator can sleep at night with real money in the wallets \u2014 subjective, operator-reported confidence.",
+      "priority": "info"
+    },
+    {
+      "criterion": "Daily CI or cron wire-up for check_payment_invariants.py is in place (deferred to operator as a follow-up per Question 4).",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "The cleanup megaplan (payment-subsystem-follow-up-20260410-2339) will have landed before Phase A starts, producing PaymentWorkerCog + PaymentUICog split and the PaymentActor-based confirm_payment signature. If cleanup has not landed when this plan executes, Phase A is paused until it has.",
+    "The admin-DM approval megaplan will have landed before Phase D (specifically D12) runs, so the hypothesis state machine sees the final set of PaymentActorKind values including ADMIN_DM.",
+    "The idea's reference to 'solana_client.py' in items C7 and F16 means src/features/grants/solana_client.py (the shared SolanaClient), not a new file inside src/features/payments/. The SolanaClient is the thing that actually calls the RPC.",
+    "_redact_wallet consolidation lands in src/common/discord_utils.py (smallest graph change) unless the user requests a dedicated redaction module.",
+    "B4 blockhash-expiry heuristic uses a 150-second submitted_at age as a safe approximation of Solana's ~90s blockhash lifetime, avoiding an extra getLatestBlockhash RPC call per reconcile. If the user wants an authoritative check, swap in Question 7's alternative.",
+    "D11 fix defaults to millisecond-precision producer_ref (Option A) rather than a random UUID suffix (Option B); cheapest fix and preserves idempotency for legitimate retries.",
+    "scripts/check_payment_invariants.py is shipped as a standalone script; daily scheduling wire-up (cron, GitHub Actions, Railway scheduled job) is deferred to the operator as an info-priority follow-up.",
+    "Property-based tests use hypothesis's RuleBasedStateMachine against a fake DB handler, not a live Supabase instance \u2014 so the test suite remains hermetic and fast.",
+    "admin_chat/tools.py's separate _redact_wallet_address helper is out of scope for the A3 consolidation because it has a different signature and wrapper semantics.",
+    "F16's structured log uses Python's standard logging 'extra' dict; downstream log aggregation (if any) will pick up the event key without further wiring \u2014 if the bot's log handler strips 'extra', a follow-up is needed but is out of scope here.",
+    "D10's fix-if-gremlin-found is a conditional update restricting recover_inflight to rows with updated_at older than 2 minutes, not a generation counter or schema change. If a more invasive fix is required, it becomes a follow-up."
+  ],
+  "structure_warnings": []
+}

@@ -1,0 +1,152 @@
+{
+  "skip": false,
+  "task_summary": "Design and implement a generalized Solana-first payment ledger service that extracts the current grants payment flow into a reusable, provider-based architecture. The system must guarantee no double payments under crashes/retries/restarts, support variable source wallets, optional test payments, Discord-mediated recipient confirmation, and allow the existing grants flow to plug in as a \"producer\" rather than owning the SOL transfer logic directly.",
+  "key_evidence": [
+    {
+      "point": "A fully working Solana payment flow already exists in GrantsCog._process_payment (lines 678-780) with idempotent guards, write-before-send, tx recovery on startup, and a payment_status state machine (none\u2192sending\u2192sent\u2192confirmed, with retry). This is the extraction target.",
+      "source": "src/features/grants/grants_cog.py:678-780",
+      "relevance": "high"
+    },
+    {
+      "point": "SolanaClient already implements send_sol, confirm_tx, check_tx_status with blockhash retry logic. It reads a single SOLANA_PRIVATE_KEY from env. Multi-wallet support (variable source wallets by stable key) does not exist yet.",
+      "source": "src/features/grants/solana_client.py:36-141",
+      "relevance": "high"
+    },
+    {
+      "point": "The codebase has an established provider pattern in src/features/sharing/providers/ \u2014 an ABC base class (SocialPublishProvider) with publish/delete/normalize_target_ref, registered by name in a dict on the bot. This is the pattern to replicate for payment providers.",
+      "source": "src/features/sharing/providers/__init__.py:1-23",
+      "relevance": "high"
+    },
+    {
+      "point": "DB layer uses Supabase via storage_handler.supabase_client.table(). Grant payment data is embedded in the grant_applications table (payment_status, tx_signature, sol_amount, sol_price_usd, wallet_address, paid_at). The new ledger needs its own table.",
+      "source": "src/common/db_handler.py:1883-1997",
+      "relevance": "high"
+    },
+    {
+      "point": "Recovery on startup: _recover_inflight_payments scans for payment_status in ['sending','sent','retry'] and reconciles against on-chain state. New service needs equivalent startup reconciliation.",
+      "source": "src/features/grants/grants_cog.py:87-193",
+      "relevance": "high"
+    },
+    {
+      "point": "Server config manages per-guild feature flags (is_feature_enabled) and channel-level overrides. Wallet secrets should NOT go in server_config (which is cached/logged); they need a separate secrets table or env-var mapping.",
+      "source": "src/common/server_config.py",
+      "relevance": "medium"
+    },
+    {
+      "point": "Cogs are loaded in main.py with try/except and access shared services via bot attributes (bot.db_handler, bot.social_publish_service). The payment service should be registered as bot.payment_service.",
+      "source": "main.py",
+      "relevance": "medium"
+    },
+    {
+      "point": "No existing tests directory for grants or payments. Tests exist only for social_publications, scheduler, and notifications. New service should be testable with mocked Supabase/Solana.",
+      "source": "tests/",
+      "relevance": "medium"
+    },
+    {
+      "point": "The grants flow handles Discord-mediated wallet collection (user replies with wallet address in forum thread) but has no explicit 'confirm yes' step before payment. The new system needs a confirmation gate.",
+      "source": "src/features/grants/grants_cog.py:370-380",
+      "relevance": "medium"
+    }
+  ],
+  "relevant_code": [
+    {
+      "file_path": "src/features/grants/grants_cog.py",
+      "why": "Contains the entire existing payment flow that must be refactored to use the new ledger service. _process_payment, _recover_inflight_payments, wallet collection, and payment status tracking all live here.",
+      "functions": [
+        "_process_payment",
+        "_recover_inflight_payments",
+        "on_message (wallet handling)",
+        "_handle_assessment"
+      ]
+    },
+    {
+      "file_path": "src/features/grants/solana_client.py",
+      "why": "The SOL transfer implementation to wrap inside the new provider. Must be extended for multi-wallet support (wallet key \u2192 keypair lookup).",
+      "functions": [
+        "SolanaClient.__init__",
+        "send_sol",
+        "confirm_tx",
+        "check_tx_status",
+        "is_valid_solana_address"
+      ]
+    },
+    {
+      "file_path": "src/common/db_handler.py",
+      "why": "All grant payment DB methods live here (lines 1883-1997). New ledger table methods must follow the same patterns (_gate_check, storage_handler.supabase_client.table, guild_id filtering).",
+      "functions": [
+        "create_grant_application",
+        "update_grant_status",
+        "record_grant_payment",
+        "get_inflight_payments"
+      ]
+    },
+    {
+      "file_path": "src/features/sharing/providers/__init__.py",
+      "why": "The ABC provider pattern to replicate for PaymentProvider(ABC) with send/confirm/check_status methods.",
+      "functions": [
+        "SocialPublishProvider"
+      ]
+    },
+    {
+      "file_path": "src/features/sharing/models.py",
+      "why": "Dataclass pattern with source_context metadata to replicate for PaymentRequest/PaymentRecord models.",
+      "functions": [
+        "SocialPublishRequest",
+        "PublicationSourceContext"
+      ]
+    },
+    {
+      "file_path": "main.py",
+      "why": "Where the payment service must be registered on the bot object, following the social_publish_service pattern.",
+      "functions": [
+        "main (cog loading section)"
+      ]
+    },
+    {
+      "file_path": "src/common/server_config.py",
+      "why": "Feature flag infrastructure. Payment feature enablement goes here, but wallet secrets must NOT.",
+      "functions": [
+        "is_feature_enabled",
+        "is_guild_enabled"
+      ]
+    }
+  ],
+  "test_expectations": [
+    {
+      "test_id": "test_no_double_payment_on_retry",
+      "what_it_checks": "Submitting a payment request with the same idempotency key twice does not create two on-chain transactions",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "test_recovery_confirmed_tx",
+      "what_it_checks": "On startup, a payment stuck in 'sent' with a confirmed on-chain tx gets finalized",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "test_recovery_failed_tx",
+      "what_it_checks": "On startup, a payment stuck in 'sent' with a failed on-chain tx transitions to 'failed' for retry",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "test_state_machine_transitions",
+      "what_it_checks": "Payment status only transitions through valid states: pending\u2192awaiting_confirmation\u2192sending\u2192sent\u2192confirmed, or \u2192failed\u2192pending",
+      "status": "fail_to_pass"
+    },
+    {
+      "test_id": "test_grants_uses_payment_service",
+      "what_it_checks": "GrantsCog delegates payment to the payment service instead of calling SolanaClient directly",
+      "status": "fail_to_pass"
+    }
+  ],
+  "constraints": [
+    "No double payments: write-before-send pattern must be preserved. DB record with idempotency key must exist before any on-chain transaction is submitted.",
+    "Wallet secrets must NOT go in server_config (cached, logged). Need a separate env-var-keyed or secrets-table approach.",
+    "Existing grant_applications table schema should not be broken. Grants flow continues to work during migration \u2014 payment_status fields stay until grants is fully cut over.",
+    "Provider interface must be async and chain-agnostic (SOL first, but the ABC shouldn't have Solana-specific methods).",
+    "Discord confirmation (reply 'yes') must be a gate in the payment state machine, not in the producer. The ledger service owns the confirmation requirement.",
+    "Test payment flow (small amount to verify wallet) must be optional and configurable per payment request.",
+    "Recovery logic must run on bot startup and handle all non-terminal payment states by checking on-chain status.",
+    "Must follow existing codebase patterns: Supabase for DB, cog architecture, bot attribute registration, _gate_check for guild scoping."
+  ],
+  "suggested_approach": "Create `src/features/payments/` with four components:\n\n1. **models.py** \u2014 `PaymentRequest` (producer, recipient_address, amount, currency, source_wallet_key, idempotency_key, test_payment flag, discord_channel_id for confirmation) and `PaymentRecord` (ledger row representation with status enum).\n\n2. **providers/__init__.py** \u2014 `PaymentProvider(ABC)` with `async send(address, amount) \u2192 tx_id`, `async confirm(tx_id) \u2192 bool`, `async check_status(tx_id) \u2192 str`. **providers/sol_provider.py** \u2014 wraps existing SolanaClient, extended to accept a wallet key that maps to a Keypair (env var `SOLANA_WALLET_{key}` pattern).\n\n3. **payment_service.py** \u2014 `PaymentService` class registered as `bot.payment_service`. Core methods:\n   - `create_payment(request) \u2192 payment_id` \u2014 inserts ledger row with status `pending_confirmation`\n   - `confirm_payment(payment_id)` \u2014 moves to `ready` (called when Discord user replies yes)\n   - `execute_payment(payment_id)` \u2014 runs the write-before-send flow (ready\u2192sending\u2192sent\u2192confirmed)\n   - `recover_all()` \u2014 startup scan for non-terminal rows\n   - Uses the provider registry to dispatch by currency.\n\n4. **DB additions in db_handler.py** \u2014 New `payment_ledger` table methods following existing patterns. Table columns: id, idempotency_key (unique), producer (e.g. 'grants'), producer_ref, source_wallet_key, recipient_address, amount, currency, status, tx_signature, discord_channel_id, discord_message_id, created_at, updated_at, confirmed_at.\n\n5. **Grants migration** \u2014 Refactor GrantsCog._process_payment to create a PaymentRequest and call payment_service.create_payment(), then wait for confirmation + execution. Remove direct SolanaClient usage from grants_cog.py.\n\nState machine: `pending_confirmation \u2192 ready \u2192 sending \u2192 sent \u2192 confirmed` (happy path), with `\u2192 failed` from sending/sent (retryable). The `pending_confirmation` state is where Discord \"reply yes\" lives. Test payments add a `test_sending \u2192 test_confirmed \u2192 ready` prefix.\n\nSQL migration for the `payment_ledger` table goes in `sql/payment_ledger.sql` with a unique constraint on `idempotency_key` to prevent double-inserts at the DB level."
+}

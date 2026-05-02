@@ -1,0 +1,62 @@
+{
+  "output": "Executed batch 2 task T2 in `src/features/admin_chat/tools.py`. Added a direct-post branch to `execute_share_to_social` for calls without `message_link` or `message_id`: it validates direct-mode inputs, downloads `media_urls` to temp files, builds a `SocialPublishRequest` with sentinel IDs and `user_details={'direct_post': True}`, disables announce/first-share/legacy/duplicate policies, preserves temp files for scheduled enqueue, and cleans them up after immediate publish or failed download. Verification passed with `python -m py_compile src/features/admin_chat/tools.py`, `python -m pytest tests/test_caller_paths.py -q`, and an inline direct-mode harness covering immediate publish, scheduled enqueue without cleanup, and retweet validation. Checkpoint written to `.megaplan/plans/add-a-direct-post-mode-to-20260412-2125/execution_batch_2.json`.",
+  "files_changed": [
+    "src/features/admin_chat/tools.py"
+  ],
+  "commands_run": [
+    "sed -n '1,140p' /Users/peteromalley/.codex/skills/megaplan/SKILL.md",
+    "sed -n '1800,2085p' src/features/admin_chat/tools.py",
+    "sed -n '1,220p' src/features/sharing/models.py",
+    "sed -n '1,140p' src/features/sharing/providers/x_provider.py",
+    "sed -n '100,140p' src/features/sharing/subfeatures/social_poster.py",
+    "rg -n \"_download_media_from_url|SocialPublishRequest\\(|enqueue\\(|publish_now\\(\" src/features -S",
+    "sed -n '1,140p' src/features/sharing/sharer.py",
+    "sed -n '250,345p' src/features/reacting/subfeatures/tweet_sharer_bridge.py",
+    "sed -n '1,220p' src/features/sharing/social_publish_service.py",
+    "rg -n \"def _cleanup_files|_cleanup_files\\(\" src/features/sharing/sharer.py src/features/admin_chat/tools.py -S",
+    "sed -n '520,590p' src/features/sharing/sharer.py",
+    "sed -n '150,240p' tests/test_caller_paths.py",
+    "sed -n '1,170p' tests/test_caller_paths.py",
+    "sed -n '220,360p' src/features/sharing/social_publish_service.py",
+    "sed -n '620,655p' src/features/sharing/sharer.py",
+    "rg -n \"channel_id.*route|guild default|route_key|_prepare_request_for_delivery|channel_id == 0|channel_id=0\" src/features/sharing/social_publish_service.py src/common -S",
+    "sed -n '381,455p' src/features/sharing/social_publish_service.py",
+    "sed -n '180,255p' src/common/server_config.py",
+    "sed -n '1805,1995p' src/features/admin_chat/tools.py",
+    "git diff -- src/features/admin_chat/tools.py",
+    "python -m py_compile src/features/admin_chat/tools.py",
+    "python -m pytest tests/test_caller_paths.py -q",
+    "python - <<'PY'  # inline direct-mode verification harness\n...\nPY",
+    "rg -n \"media_urls = params|getattr\\(sharer, 'social_publish_service'|message_id=0|user_details': \\{'direct_post': True\\}|duplicate_policy=\\{'check_existing': False\\}|announce_policy=\\{'enabled': False\\}|first_share_notification_policy=\\{'enabled': False\\}|legacy_shared_post_policy=\\{'enabled': False\\}|preserve_downloads = True|guild_id is required for direct social posts\" src/features/admin_chat/tools.py",
+    "git status --short src/features/admin_chat/tools.py .megaplan/plans/add-a-direct-post-mode-to-20260412-2125",
+    "python -m json.tool .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/execution_batch_2.json >/dev/null"
+  ],
+  "deviations": [
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/tools.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: src/features/admin_chat/agent.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment."
+  ],
+  "task_updates": [
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Implemented the direct-post branch in `src/features/admin_chat/tools.py`. Verified `media_urls = params.get('media_urls') or []` is extracted at line 1816. In the no-message branch, direct mode validates retweet restrictions, requires `guild_id` for direct posts, downloads each URL through `sharer._download_media_from_url`, constructs `SocialPublishRequest` with sentinel IDs at lines 1938-1941, sets `source_context.metadata['user_details']` to `{'direct_post': True}` at line 1958, and disables duplicate detection plus announce/first-share/legacy policies at lines 1950-1954. Scheduled direct posts preserve temp files via `preserve_downloads = True` at line 1968; immediate publishes clean up in `finally`. Verification passed with `python -m py_compile src/features/admin_chat/tools.py`, `python -m pytest tests/test_caller_paths.py -q`, and an inline direct-mode harness covering immediate publish, scheduled enqueue without cleanup, and retweet validation.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py",
+        "python -m pytest tests/test_caller_paths.py -q",
+        "python - <<'PY'  # inline direct-mode verification harness\n...\nPY"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "Confirmed in `src/features/admin_chat/tools.py` that the direct-post branch builds `SocialPublishRequest` with `source_context.metadata['user_details'] = {'direct_post': True}` and disables duplicate detection plus announce/first-share/legacy policies. The inline harness also verified the request shape and cleanup behavior."
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "output": "Completed batch 3 task T5 in `src/features/payments/payment_ui_cog.py`. Admin approval thread updates now edit the shared admin-chat status message in place when `status_message_id` is available and fetchable, falling back to the legacy channel send only when the status message is missing or cannot be fetched. Cleanup now preserves `status_message_id`, so a shared `receipt_prompt_message_id == status_message_id` survives the admin-approval cleanup path. Verification included `python -m py_compile src/features/payments/payment_ui_cog.py`, `pytest tests/test_payment_cog_split.py tests/test_admin_payments.py -q`, and an inline runtime simulation that confirmed one in-place edit, zero fallback sends, and cleanup deleting only the non-shared prompt id.",
+  "files_changed": [
+    "src/features/payments/payment_ui_cog.py",
+    ".megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_3.json"
+  ],
+  "commands_run": [
+    "sed -n '500,620p' src/features/payments/payment_ui_cog.py",
+    "rg -n \"_post_admin_approval_thread_update|_cleanup_admin_intent_messages|status_message_id|receipt_prompt_message_id|Payout queued for sending|queued for sending\" src/features/payments/payment_ui_cog.py tests/test_admin_payments.py tests/test_payment_cog_split.py",
+    "sed -n '1940,2015p' tests/test_admin_payments.py",
+    "sed -n '330,370p' tests/test_payment_cog_split.py",
+    "sed -n '1,80p' src/features/payments/payment_ui_cog.py",
+    "rg -n \"async def _resolve_destination|safe_delete_messages\" src/features/payments/payment_ui_cog.py",
+    "sed -n '430,505p' src/features/payments/payment_ui_cog.py",
+    "git diff -- src/features/payments/payment_ui_cog.py",
+    "python -m py_compile src/features/payments/payment_ui_cog.py",
+    "pytest tests/test_payment_cog_split.py tests/test_admin_payments.py -q",
+    "python - <<'PY'\nfrom importlib.util import module_from_spec, spec_from_file_location\nfrom pathlib import Path\nfrom types import SimpleNamespace\nimport asyncio\n\nspec = spec_from_file_location('test_admin_payments', Path('tests/test_admin_payments.py'))\nmodule = module_from_spec(spec)\nspec.loader.exec_module(module)\n\nFakeBot = module.FakeBot\nFakeIntentDB = module.FakeIntentDB\nFakeAdminPaymentService = module.FakeAdminPaymentService\nPaymentUICog = __import__('src.features.payments.payment_ui_cog', fromlist=['PaymentUICog']).PaymentUICog\npayment_ui_module = __import__('src.features.payments.payment_ui_cog', fromlist=['safe_delete_messages'])\n\nclass StatusMessage(SimpleNamespace):\n    def __init__(self, channel, message_id, content='', kwargs=None):\n        super().__init__(id=message_id, channel=channel, content=content, kwargs=kwargs or {}, edits=[])\n    async def edit(self, *, content=None, suppress=None):\n        self.edits.append({'content': content, 'suppress': suppress})\n        if content is not None:\n            self.content = content\n        return self\n\nclass StatusChannel:\n    def __init__(self):\n        self.id = 55\n        self.guild = SimpleNamespace(id=1)\n        self.parent_id = None\n        self.sent_messages = []\n        self._messages = {900: StatusMessage(self, 900, 'Confirmation received. Awaiting admin approval for the final payout.')}\n    async def send(self, content, **kwargs):\n        message = StatusMessage(self, 901 + len(self.sent_messages), content, kwargs)\n        self.sent_messages.append(message)\n        return message\n    async def fetch_message(self, message_id):\n        return self._messages[message_id]\n\nasync def main():\n    channel = StatusChannel()\n    bot = FakeBot(channel, payment_service=FakeAdminPaymentService())\n    db = FakeIntentDB()\n    intent = db.create_admin_payment_intent({\n        'channel_id': 55,\n        'recipient_user_id': 42,\n        'prompt_message_id': 901,\n        'receipt_prompt_message_id': 900,\n        'status_message_id': 900,\n        'final_payment_id': 'payment-final',\n        'status': 'awaiting_admin_approval',\n        'producer_ref': '1_42_123',\n        'requested_amount_sol': 1.75,\n    }, guild_id=1)\n    db.find_admin_chat_intent_by_payment_id = lambda payment_id: dict(intent) if payment_id == 'payment-final' else None\n    ui_cog = PaymentUICog(bot, db, payment_service=bot.payment_service)\n\n    delete_calls = []\n    async def fake_safe_delete_messages(channel_obj, message_ids, *, logger):\n        delete_calls.append((channel_obj, list(message_ids)))\n        return None\n\n    original_safe_delete = payment_ui_module.safe_delete_messages\n    payment_ui_module.safe_delete_messages = fake_safe_delete_messages\n    try:\n        await ui_cog._post_admin_approval_thread_update({'payment_id': 'payment-final', 'recipient_discord_id': 42})\n        await ui_cog._cleanup_admin_intent_messages({'payment_id': 'payment-final'})\n    finally:\n        payment_ui_module.safe_delete_messages = original_safe_delete\n\n    status_message = channel._messages[900]\n    print('status_edits', status_message.edits)\n    print('sent_messages', [m.content for m in channel.sent_messages])\n    print('delete_calls', [(call[0].id, call[1]) for call in delete_calls])\n\nasyncio.run(main())\nPY",
+    "nl -ba src/features/payments/payment_ui_cog.py | sed -n '546,592p'",
+    "test -w /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/clean-up-admin-chat-payment-20260411-1823 && echo writable"
+  ],
+  "deviations": [
+    "`pytest tests/test_payment_cog_split.py tests/test_admin_payments.py -q` still reports the same three already-known stale-text assertion failures introduced by the planned T4 behavior change and scheduled for T6 test updates: `tests/test_admin_payments.py::test_handle_payment_result_test_confirmed`, `tests/test_admin_payments.py::test_handle_test_receipt_positive_marks_wallet_verified_and_queues_admin_approval`, and `tests/test_admin_payments.py::test_handle_payment_result_test_failed`. No additional failures were introduced by T5.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/execution_batch_3.json",
+    "Advisory quality: src/features/payments/payment_ui_cog.py has similar functions _disable_all_items and _disable_all_items (100% similarity).",
+    "Advisory quality: code changes lacked test updates: src/features/payments/payment_ui_cog.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment."
+  ],
+  "task_updates": [
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Rewrote `_post_admin_approval_thread_update` at `src/features/payments/payment_ui_cog.py:550-579` so it resolves the linked admin intent, fetches `status_message_id`, and edits that message to `Payout queued for sending.` with `suppress=True`; it falls back to the existing `channel.send(...)` path only when the status message id is absent or fetch fails with `discord.NotFound` / `discord.HTTPException`. Updated `_cleanup_admin_intent_messages` at `:581-595` to filter `status_message_id` out of the delete list so a shared `receipt_prompt_message_id == status_message_id` survives cleanup. Verification: `python -m py_compile src/features/payments/payment_ui_cog.py` passed; `pytest tests/test_payment_cog_split.py tests/test_admin_payments.py -q` showed only the three pre-existing stale-text assertion failures from T4; an inline runtime simulation confirmed one in-place edit, zero fallback sends, and cleanup deleting only the non-shared prompt id.",
+      "files_changed": [
+        "src/features/payments/payment_ui_cog.py"
+      ],
+      "commands_run": [
+        "git diff -- src/features/payments/payment_ui_cog.py",
+        "python -m py_compile src/features/payments/payment_ui_cog.py",
+        "pytest tests/test_payment_cog_split.py tests/test_admin_payments.py -q",
+        "python - <<'PY' ... inline payment_ui status-message edit and cleanup simulation ... PY",
+        "nl -ba src/features/payments/payment_ui_cog.py | sed -n '546,592p'"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Yes. `_post_admin_approval_thread_update` now resolves the admin intent, fetches `status_message_id`, and edits that message with `content='Payout queued for sending.'` and `suppress=True`; it falls back to `channel.send(...)` only when the id is absent or fetch fails with `discord.NotFound` / `discord.HTTPException`. `_cleanup_admin_intent_messages` now excludes `status_message_id` from the ids passed to `safe_delete_messages`, including the shared `receipt_prompt_message_id == status_message_id` case. An inline runtime simulation confirmed one edit, no fallback send, and cleanup deleting only the non-shared prompt id."
+    }
+  ]
+}

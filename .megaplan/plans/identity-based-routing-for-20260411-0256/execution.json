@@ -1,0 +1,343 @@
+{
+  "output": "Aggregated execute batches: completed 1/1.\nBatch 1: Implemented the rework for the review kickback by adding the missing direct regression coverage for AdminApprovalView behavior, state-aware restart filtering / PaymentConfirmView suppression, and the promised admin-tool query/upsert/resolve paths. Revalidated with the focused suites, the required admin/payment/scheduler quartet, a throwaway repro script, and full pytest.",
+  "files_changed": [
+    "tests/test_admin_payments.py",
+    "tests/test_social_route_tools.py"
+  ],
+  "commands_run": [
+    "python -m py_compile tests/test_admin_payments.py tests/test_social_route_tools.py",
+    "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_social_route_tools.py -x",
+    "python tmp_admin_approval_repro.py",
+    "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_scheduler.py tests/test_social_route_tools.py -x",
+    "pytest"
+  ],
+  "deviations": [
+    "Advisory quality: tests/test_admin_payments.py grew by 212 lines (threshold 200).",
+    "Advisory quality: tests/test_social_route_tools.py grew by 216 lines (threshold 200).",
+    "Advisory: done tasks rely on commands_run without files_changed (FLAG-006 softening): T1, T3, T12, T14, T18",
+    "Advisory audit finding: Executor claimed changed files not present in git status: tmp_admin_approval_repro.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql/admin_payment_intents.sql, src/features/payments/producer_flows.py, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_payment_cog_split.py, tests/test_social_publications.py",
+    "Advisory audit finding: Executor claimed changed files not present in git status: tmp_admin_approval_repro.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql/admin_payment_intents.sql, src/features/payments/producer_flows.py, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_payment_cog_split.py, tests/test_social_publications.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "No additional schema work was needed in this rework pass. The migration remained aligned with the approved statuses/columns and the unchanged unique partial index.",
+      "files_changed": [],
+      "commands_run": [
+        "pytest tests/test_admin_payments.py -x"
+      ]
+    },
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "No DB-helper changes were needed in this rework pass. The batch insert and stale-intent helpers remained valid while this pass focused on direct regression coverage.",
+      "files_changed": [
+        "src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/common/db_handler.py src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x"
+      ]
+    },
+    {
+      "task_id": "T3",
+      "status": "done",
+      "executor_notes": "No producer-flow changes were needed in this rework pass. ADMIN_DM authorization for admin_chat real payments remained intact.",
+      "files_changed": [],
+      "commands_run": [
+        "pytest tests/test_admin_payments.py -x"
+      ]
+    },
+    {
+      "task_id": "T4",
+      "status": "done",
+      "executor_notes": "No restart-filter implementation changes were needed in this rework pass. The state-aware confirmation-view registration remained intact and is now directly covered by the new tests.",
+      "files_changed": [
+        "src/features/payments/payment_ui_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x"
+      ]
+    },
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "The negative-phrase precedence fix in `_classify_confirmation()` remained intact; this pass only added surrounding regression coverage.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py tests/test_admin_payments.py",
+        "python tmp_confirmation_overlap_repro.py",
+        "pytest tests/test_admin_payments.py -x",
+        "pytest"
+      ]
+    },
+    {
+      "task_id": "T6",
+      "status": "done",
+      "executor_notes": "No identity-router changes were needed in this rework pass. The admin path remains a strict author-identity branch with no direction or approved-member gating.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/common/db_handler.py src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x"
+      ]
+    },
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "No pending-recipient dispatch changes were needed in this rework pass. `awaiting_admin_init` remains a silent no-op and the dedicated test coverage remains in place.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x"
+      ]
+    },
+    {
+      "task_id": "T8",
+      "status": "done",
+      "executor_notes": "No test-success rewiring changes were needed in this rework pass. Confirmed test payments still park in `awaiting_test_receipt_confirmation` without creating the real payment inline.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py",
+        "tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py tests/test_admin_payments.py tests/test_payment_cog_split.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x"
+      ]
+    },
+    {
+      "task_id": "T9",
+      "status": "done",
+      "executor_notes": "No gate-helper changes were needed in this rework pass. `_gate_existing_intent` and `_gate_fresh_intent_atomic` still follow the approved ordering.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py",
+        "tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py tests/test_admin_payments.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x"
+      ]
+    },
+    {
+      "task_id": "T10",
+      "status": "done",
+      "executor_notes": "No admin-approval UI implementation changes were needed in this rework pass. The view and DM behavior were already correct and are now directly covered by new regression tests.",
+      "files_changed": [
+        "src/features/payments/payment_ui_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/common/db_handler.py src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x"
+      ]
+    },
+    {
+      "task_id": "T11",
+      "status": "done",
+      "executor_notes": "No verified-wallet fast-path changes were needed in this rework pass. Single initiate still uses `_gate_fresh_intent_atomic()` with no test payment.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py",
+        "tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py tests/test_admin_payments.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py tests/test_social_route_tools.py -x"
+      ]
+    },
+    {
+      "task_id": "T12",
+      "status": "done",
+      "executor_notes": "The read-only query tools remained unchanged in code; this rework added direct tests covering their canonical DB reads and wallet-override rejection behavior.",
+      "files_changed": [],
+      "commands_run": [
+        "pytest tests/test_admin_payments.py -x"
+      ]
+    },
+    {
+      "task_id": "T13",
+      "status": "done",
+      "executor_notes": "No batch-initiate changes were needed in this rework pass. The single atomic intent insert contract and verified fan-out behavior remained intact.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py",
+        "tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py tests/test_admin_payments.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py tests/test_social_route_tools.py -x"
+      ]
+    },
+    {
+      "task_id": "T14",
+      "status": "done",
+      "executor_notes": "The wallet-upsert implementation remained unchanged; this rework added direct tests for admin-only rejection, explicit admin DM delivery, and forced unverified state.",
+      "files_changed": [],
+      "commands_run": [
+        "pytest tests/test_admin_payments.py -x"
+      ]
+    },
+    {
+      "task_id": "T15",
+      "status": "done",
+      "executor_notes": "No agent/tool-registration changes were needed in this rework pass. The prompt and admin-only tool wiring remained intact.",
+      "files_changed": [
+        "src/features/admin_chat/agent.py",
+        "tests/test_social_route_tools.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/agent.py src/features/admin_chat/tools.py tests/test_social_route_tools.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_authorization.py tests/test_social_route_tools.py -x"
+      ]
+    },
+    {
+      "task_id": "T16",
+      "status": "done",
+      "executor_notes": "No orphan-sweep implementation changes were needed in this rework pass. The PaymentUICog-owned reconciliation and 5-minute loop remained intact and still pass their split-cog tests.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py",
+        "src/features/payments/payment_ui_cog.py",
+        "tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py tests/test_admin_payments.py tests/test_payment_cog_split.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x"
+      ]
+    },
+    {
+      "task_id": "T17",
+      "status": "done",
+      "executor_notes": "No stale-receipt sweep changes were needed in this rework pass. The 15-minute timeout escalation remained intact.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_ui_cog.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_payment_authorization.py -x"
+      ]
+    },
+    {
+      "task_id": "T18",
+      "status": "done",
+      "executor_notes": "The cancel-only `resolve_admin_intent` implementation remained unchanged; this rework added direct regression coverage for linked-payment cascade cancellation and admin DM behavior.",
+      "files_changed": [],
+      "commands_run": [
+        "pytest tests/test_admin_payments.py -x"
+      ]
+    },
+    {
+      "task_id": "T19",
+      "status": "done",
+      "executor_notes": "Added the missing direct regression coverage the reviewer called out: AdminApprovalView re-registration, admin-only click rejection, successful queued-for-sending click cleanup of both prompt ids, state-aware PaymentConfirmView restart filtering, explicit PaymentConfirmView suppression for new-flow admin_chat real payments, and direct query/upsert/resolve admin-tool coverage.",
+      "files_changed": [
+        "tests/test_admin_payments.py",
+        "tests/test_social_route_tools.py"
+      ],
+      "commands_run": [
+        "python -m py_compile tests/test_admin_payments.py tests/test_social_route_tools.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_social_route_tools.py -x"
+      ]
+    },
+    {
+      "task_id": "T20",
+      "status": "done",
+      "executor_notes": "Revalidated the rework with a throwaway admin-approval/restart-filter repro script, the focused admin/payment regression suite, the required admin/payment/scheduler quartet, and full pytest. The repro script passed and was deleted after execution; full pytest finished green at 201 passed.",
+      "files_changed": [
+        "tmp_admin_approval_repro.py"
+      ],
+      "commands_run": [
+        "python tmp_admin_approval_repro.py",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_scheduler.py tests/test_social_route_tools.py -x",
+        "pytest"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "Confirmed unchanged from the prior pass; this rework only expanded tests and did not alter the migration or index behavior."
+    },
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "Confirmed unchanged from the prior pass; this rework did not touch DB-helper behavior."
+    },
+    {
+      "sense_check_id": "SC3",
+      "executor_note": "Confirmed unchanged from the prior pass; ADMIN_DM authorization remains wired only in producer flows."
+    },
+    {
+      "sense_check_id": "SC4",
+      "executor_note": "Confirmed by the new direct restart-filter regression test; new-flow admin_chat rows are skipped while legacy awaiting_confirmation and grants still register PaymentConfirmView."
+    },
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Confirmed unchanged from the prior pass; the deterministic wallet and confirmation parsers were not modified."
+    },
+    {
+      "sense_check_id": "SC6",
+      "executor_note": "Confirmed unchanged from the prior pass; `on_message` remains the strict three-way identity router."
+    },
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "Confirmed unchanged from the prior pass; `awaiting_admin_init` remains silently ignored and its dedicated test remains in place."
+    },
+    {
+      "sense_check_id": "SC8",
+      "executor_note": "Confirmed unchanged from the prior pass; test-payment success still parks the intent in `awaiting_test_receipt_confirmation` without creating a real payment inline."
+    },
+    {
+      "sense_check_id": "SC9",
+      "executor_note": "Confirmed unchanged from the prior pass; the gate helpers still follow the approved ordering."
+    },
+    {
+      "sense_check_id": "SC10",
+      "executor_note": "Confirmed by the new direct AdminApprovalView tests: timeout None, custom_id `payment_admin_approve:{payment_id}`, queued wording, and cleanup of both prompt ids remain correct."
+    },
+    {
+      "sense_check_id": "SC11",
+      "executor_note": "Confirmed unchanged from the prior pass; the verified-wallet single-initiate path still uses `_gate_fresh_intent_atomic()`."
+    },
+    {
+      "sense_check_id": "SC12",
+      "executor_note": "Confirmed by the new direct query-tool tests; they remain read-only, redacted, and ignore injected wallet fields."
+    },
+    {
+      "sense_check_id": "SC13",
+      "executor_note": "Confirmed unchanged from the prior pass; batch initiate still uses one atomic intent insert and verified fan-out through `_gate_existing_intent()`."
+    },
+    {
+      "sense_check_id": "SC14",
+      "executor_note": "Confirmed by the new direct upsert-wallet tests; admin-only validation, Solana address validation, unverified persistence, and explicit admin DM remain correct."
+    },
+    {
+      "sense_check_id": "SC15",
+      "executor_note": "Confirmed unchanged from the prior pass; the admin-only tool registration and identity-injection sets remain intact."
+    },
+    {
+      "sense_check_id": "SC16",
+      "executor_note": "Confirmed unchanged from the prior pass; orphan reconciliation stays inside PaymentUICog with the 5-minute loop."
+    },
+    {
+      "sense_check_id": "SC17",
+      "executor_note": "Confirmed unchanged from the prior pass; the 15-minute stale receipt sweep remains wired and green."
+    },
+    {
+      "sense_check_id": "SC18",
+      "executor_note": "Confirmed by the new direct resolve-intent regression test; the tool remains cancel-only and cascade-cancels linked cancellable payments."
+    },
+    {
+      "sense_check_id": "SC19",
+      "executor_note": "Confirmed the missing direct coverage now exists: AdminApprovalView re-registration/click tests are present, restart filtering and PaymentConfirmView suppression are asserted, query/upsert/resolve tool tests are present, and the existing state-machine/no-LLM coverage remains intact."
+    },
+    {
+      "sense_check_id": "SC20",
+      "executor_note": "Confirmed the rework reran the required quartet with `-x`, full pytest passed at 201 tests, and the throwaway admin-approval/restart-filter repro script passed before deletion."
+    }
+  ]
+}

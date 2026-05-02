@@ -1,0 +1,145 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "findings": [
+        {
+          "detail": "The approved user note for v1 explicitly says not to require `wallet_address` in the admin tool call and to continue only from the intended recipient's wallet reply in the originating channel/thread, but the plan still centers the feature on an optional `wallet_address` parameter and a fail-if-missing path. That is a direct divergence from the accepted product requirement, not just an implementation choice.",
+          "flagged": true
+        },
+        {
+          "detail": "The plan keeps the final payment on the existing confirmation-button flow, which is at least in-channel rather than DM, but it never adds the equally explicit requirement to ping the recipient in the source channel/thread and resume only from that recipient's follow-up message. The core recipient-driven continuation path is therefore still missing from the proposed work.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "findings": [
+        {
+          "detail": "The proposed `execute_initiate_payment` logic depends on a `source_channel_id` from tool input, but the planned schema does not include `channel_id`, and the current `execute_tool()` path does not inject channel/thread identifiers into admin tool calls. As written, `resolve_payment_destinations()` and any 'ping them where this started' behavior do not have a reliable source channel to work from.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked `PaymentService.confirm_payment()` against `GrantsCog._start_payment_flow()`: auto-confirming the test payment with `confirmed_by='auto'` and `confirmed_by_user_id=<recipient id>` is consistent with the current contract and should move a pending test payment to `queued` without needing `privileged_override=True`.",
+          "flagged": false
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "findings": [
+        {
+          "detail": "The closest existing flow is not just `request_payment()` plus a callback; `GrantsCog` also owns the surrounding state machine that waits for the applicant's wallet reply in `on_message`, validates it, and only then starts payments. That means the admin-payment problem is broader than one new tool executor and one handoff callback, because the repository already solves 'wait for user wallet input in-channel' as a cog-level workflow.",
+          "flagged": true
+        },
+        {
+          "detail": "Recipient participation crosses subsystem boundaries with `AdminChatCog` access control. The plan fixes the admin-initiated half of the feature but does not cover how a normal member's wallet reply or follow-up confirmation request re-enters the system when admin chat currently treats member access as a gated capability.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "findings": [
+        {
+          "detail": "There is no existing admin-payment intent store in the repo, and the plan does not add one. Without persisted or at least explicitly tracked pending state keyed by guild/channel/recipient, there is nowhere to remember 'admin asked to pay user X, waiting for wallet reply in channel Y' after the tool returns, so the required async continuation path has no supporting infrastructure.",
+          "flagged": true
+        },
+        {
+          "detail": "Supporting glue is also missing in `src/features/admin_chat/admin_chat_cog.py`: the current listener only routes general admin/member chat into the LLM agent, while the proposed feature needs a deterministic handler for recipient wallet replies in the originating channel/thread. The plan never names or modifies that listener despite the user requirement hinging on it.",
+          "flagged": true
+        },
+        {
+          "detail": "The verification section updates `tests/test_social_route_tools.py` and reuses scheduler coverage, but there is no planned test file or case for the new admin payment workflow itself. Given the new producer name, callback, and recipient reply behavior, that leaves key supporting infrastructure untested.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "findings": [
+        {
+          "detail": "Checked the only caller of `execute_tool()` in `AdminChatAgent.chat()`: admin calls pass `requester_id=None`, and `AdminChatCog` does not resolve a guild context for admin DMs. The plan's assumption that admin initiation can work from DMs with a resolved `guild_id` and source channel fallback does not match the actual caller behavior.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked `PaymentCog._candidate_producer_cog_names('admin_chat')`, which generates `AdminChatCog` first. That part of the plan is aligned with the current caller/lookup behavior, so using `producer='admin_chat'` would let `PaymentCog` find `AdminChatCog` without patching the handoff lookup.",
+          "flagged": false
+        }
+      ]
+    },
+    {
+      "id": "conventions",
+      "question": "Does the approach match how the codebase solves similar problems?",
+      "findings": [
+        {
+          "detail": "The repository's established pattern for 'user must reply with a wallet before payment continues' is `GrantsCog.on_message()` plus `is_valid_solana_address()` plus `_start_payment_flow()`, not an admin tool parameter. The plan diverges from that convention exactly where the approved v1 asked to reuse in-channel recipient replies instead of requiring the admin to supply the wallet.",
+          "flagged": true
+        },
+        {
+          "detail": "The shared payment subsystem already sends a terminal notify message before producer handoff in `PaymentCog._handle_terminal_payment()`. The plan also instructs `AdminChatCog.handle_payment_result()` to notify the admin channel on test failure and final outcome, which would duplicate the current shared-payment convention unless those extra messages are intentionally sent to a different location.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "verification",
+      "question": "Is there convincing verification for the change?",
+      "findings": [
+        {
+          "detail": "The proposed test coverage only mentions tool classification and existing scheduler tests. It does not add any verification for the new high-risk branches: recipient wallet reply in-channel, non-recipient reply rejection, producer `admin_chat` handoff, or final confirmation posting after a confirmed test payment.",
+          "flagged": true
+        },
+        {
+          "detail": "Running the full suite is useful regression coverage, but it does not make the new behavior convincing on its own because none of the listed existing tests exercise the planned admin-payment workflow. The verification plan needs new targeted tests, not just broader reruns.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "criteria_quality",
+      "question": "Are the success criteria well-prioritized and verifiable?",
+      "findings": [
+        {
+          "detail": "Several `must` criteria validate the discarded `wallet_address` design rather than the approved v1 behavior, including the success case that explicitly requires `wallet_address` and the fail-closed case that errors when no wallet is on file. Those criteria are crisp, but they are measuring the wrong product requirement.",
+          "flagged": true
+        },
+        {
+          "detail": "The `must` criterion that `AdminChatCog.handle_payment_result` posts a success notification is ambiguous because `PaymentCog` already posts a terminal notify-channel result message. Without specifying whether the reviewed change should produce one shared notify message or an additional producer-specific message somewhere else, that criterion is not cleanly verifiable.",
+          "flagged": true
+        }
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "id": "FLAG-ADMIN-PAY-001",
+      "concern": "Admin payments: Plan contradicts the approved v1 by requiring `wallet_address` or a preexisting wallet instead of creating an in-channel pending intent and resuming from the intended recipient's reply.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The user note for v1 explicitly defers DM collection and says to ask the recipient for their wallet in the originating channel/thread, but the plan overview, Step 1 schema, Step 2 flow, and multiple must-criteria still rely on `wallet_address` and fail when no wallet exists."
+    },
+    {
+      "id": "FLAG-ADMIN-PAY-002",
+      "concern": "Admin chat context: Planned payment-route resolution depends on source guild/channel metadata that the current admin tool execution path does not inject for admin users, especially from DMs.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`AdminChatAgent.chat()` only copies `guild_id` into tool input if present in channel context, `execute_tool()` does not inject channel IDs for admin tools, and `AdminChatCog` does not resolve a DM guild context for admins, so the plan's `source_channel_id` assumptions are not backed by the current callers."
+    },
+    {
+      "id": "FLAG-ADMIN-PAY-003",
+      "concern": "Admin chat permissions: Recipient wallet replies routed through `AdminChatCog` would currently be dropped for members without `members.can_message_bot`, so the plan needs a dedicated listener or bypass for pending payment prompts.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`AdminChatCog.on_message()` calls `_can_user_message_bot()` for every non-admin requester before invoking the agent. The approved flow depends on the intended recipient replying in-channel, but the plan does not account for that gate."
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

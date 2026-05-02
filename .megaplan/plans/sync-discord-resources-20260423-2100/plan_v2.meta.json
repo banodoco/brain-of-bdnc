@@ -1,0 +1,357 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-23T19:25:29Z",
+  "hash": "sha256:db8c29c79150e3da733f5b55f60ed7712dc9cf44cdfe47dd4d0087d77e65f374",
+  "changes_summary": "Reworked v1 to address all 17 gate-identified defects. Largest structural changes: (1) promoter becomes a PL/pgSQL stored function invoked by pg_cron directly, matching the repo's existing `schedule_priority_scores_cron.sql` pattern and eliminating the edge-function auth problem; (2) discovery uses an anti-join on `assets.discord_thread_id` within a rolling 60-day window instead of a `created_at > cursor` scan, so late-threshold crossings are imported; (3) media importer reuses the existing `cloudflare-stream-webhook` + `cloudflare-stream-backfill` functions (no Cloudflare polling); (4) frontend work moves to `ResourceDetail/index.tsx` (the live surface) with matching changes at `ResourceModal.tsx` to honor the user's scope note; (5) asset `type` mapping fixed to `workflow`/`lora` matching `SubmitResource/index.tsx:10-13`; (6) member fallback removed \u2014 trust archive pipeline; (7) `useResources`, `useCommunityResources`, `useCommunityResource`, `useUserProfile` all updated to SELECT + filter on `is_hidden`; (8) `asset_comment_media` + `asset_media` gain `is_deleted` columns for attachment-removal-on-edit; (9) vault bootstrap for service-role key is a first-class migration step; (10) shared `AssetDescription` component applies markdown rendering to both manual and Discord-imported asset descriptions with an explicit success criterion, no custom embed tokens.",
+  "flags_addressed": [
+    {
+      "id": "FLAG-001",
+      "resolution": "addressed",
+      "reason": "Replaced created_at-based cursor with an anti-join on assets.discord_thread_id within a rolling 60-day window; late-threshold crossings now import regardless of original message creation time. Explicit regression test added."
+    },
+    {
+      "id": "FLAG-002",
+      "resolution": "addressed",
+      "reason": "Removed the username=NULL member fallback entirely. Trusting the archive pipeline to populate members (which always supplies username); any rare FK race is logged and retried on the next promoter tick."
+    },
+    {
+      "id": "FLAG-003",
+      "resolution": "addressed",
+      "reason": "Channel-to-type map now uses the website's real enum: `resources` -> `workflow`; the four model-family channels -> `lora`. `tool` is removed entirely."
+    },
+    {
+      "id": "FLAG-004",
+      "resolution": "addressed",
+      "reason": "Primary frontend surface is now ResourceDetail/index.tsx. ResourceModal.tsx still receives the markdown change per the user's explicit scope note, but all new sections (Made with this, Discussion, badge) land in ResourceDetail."
+    },
+    {
+      "id": "FLAG-005",
+      "resolution": "addressed",
+      "reason": "Promoter converted to PL/pgSQL so cron invokes SQL directly (matching schedule_priority_scores_cron.sql). Media importer still needs HTTP, and a first-class vault-bootstrap migration is added. Media importer reuses cloudflare-stream-webhook for completion instead of polling."
+    },
+    {
+      "id": "issue_hints-1",
+      "resolution": "addressed",
+      "reason": "Added a dedicated Step 16 creating a shared AssetDescription markdown component (react-markdown + remark-gfm, mirroring PostBodyRenderer, no custom embed tokens) and Steps 17-18 applying it to both ResourceDetail and ResourceModal. Success criterion added for universal markdown rendering on manual + Discord-imported assets."
+    },
+    {
+      "id": "issue_hints-2",
+      "resolution": "addressed",
+      "reason": "Added is_deleted BOOLEAN DEFAULT FALSE to asset_comment_media (and asset_media). Promoter reconciliation marks it true when a Discord edit removes an attachment. UI filters on is_deleted=false."
+    },
+    {
+      "id": "correctness-1",
+      "resolution": "addressed",
+      "reason": "Same fix as FLAG-001 (they are duplicates). Anti-join + 60-day rolling window covers late threshold crossings."
+    },
+    {
+      "id": "correctness-2",
+      "resolution": "addressed",
+      "reason": "Same fix as FLAG-002. Member fallback removed."
+    },
+    {
+      "id": "correctness-3",
+      "resolution": "addressed",
+      "reason": "Same fix as FLAG-003. Asset type mapping now workflow/lora only."
+    },
+    {
+      "id": "scope-1",
+      "resolution": "addressed",
+      "reason": "Frontend work re-scoped to ResourceDetail/index.tsx (live surface). ResourceModal is still touched for the user's markdown scope note, but not the primary target."
+    },
+    {
+      "id": "scope-2",
+      "resolution": "addressed",
+      "reason": "is_hidden filter now applied in useResources.ts, useCommunityResources.ts, useCommunityResource.ts, useUserProfile.ts (Step 15). Validation step 8 explicitly tests that flipping is_hidden hides the asset across all four hook-backed surfaces."
+    },
+    {
+      "id": "all_locations-1",
+      "resolution": "addressed",
+      "reason": "Step 15 adds source, discord_channel_id, is_hidden to the SELECT list in all four consuming hooks and updates their TypeScript shapes."
+    },
+    {
+      "id": "all_locations-2",
+      "resolution": "addressed",
+      "reason": "Importer no longer polls Cloudflare; it initiates Stream uploads and relies on existing cloudflare-stream-webhook for completion and cloudflare-stream-backfill for retries. Step 11 confirms the webhook contract before cutting over."
+    },
+    {
+      "id": "all_locations-3",
+      "resolution": "addressed",
+      "reason": "Promoter is SQL-native (no HTTP, no secret). Only the media importer needs HTTP; a first-class vault-bootstrap migration (Step 5) seeds the service-role key in supabase_vault and exposes it via a SECURITY DEFINER helper `internal.get_service_role_key()`."
+    },
+    {
+      "id": "callers-1",
+      "resolution": "addressed",
+      "reason": "Step 15 updates all resource-consuming hooks to select and filter on the new columns, so downstream badge/jump-link/hide logic has real inputs."
+    },
+    {
+      "id": "callers-2",
+      "resolution": "addressed",
+      "reason": "Primary UI target is now ResourceDetail (the actually-rendered page). ResourceModal still gets the markdown change to satisfy the user's explicit scope note, even though it currently has no callers."
+    }
+  ],
+  "questions": [
+    "Step 1 audit findings: what is the exact current value set of `media.classification` (CHECK list vs. Postgres ENUM), and what literal does manual OP/primary media currently use? This decides how `'discord-comment'` is added and what OP imports use.",
+    "Step 1 / Step 11 audit: what is `cloudflare-stream-webhook`'s lookup key and the exact `media` row columns it updates on completion? The importer must insert a `media` row shaped to match so the webhook can find it by Stream UID.",
+    "Is `supabase_vault` enabled on `ujlwuvkrxlvoswwkerdf`? If not, should the bootstrap migration enable it, or should we use a postgres-owned `internal.secrets` table with the same SECURITY DEFINER accessor pattern?",
+    "Storage bucket layout: do manually-uploaded image resources live in the `user-uploads` bucket? Our imports use `user-uploads/discord-imports/{discord_message_id}/{attachment_id}-{filename}` \u2014 OK, or should the path match an existing convention?",
+    "Should `ResourceDetail` already have any notion of a 'Made with this' gallery for manual assets that we need to reconcile with, or is the v1 critique's claim that 'ResourceDetail already owns the visible Made with this gallery' referring to the existing primary+asset_media strip and not a separate section? If the former, we merge rather than append.",
+    "For universal markdown rendering: does `PostBodyRenderer`'s sanitization config allow raw HTML (or does it strip)? Discord message content can occasionally include raw HTML-like text; we mirror the same posture to stay consistent with existing security decisions.",
+    "Does the website already use the `members` table directly in any component (e.g., avatars on posts/comments elsewhere)? If so, we mirror that component rather than build a new author chip."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "All Phase 1 migrations apply cleanly via `supabase db reset` on a scratch branch with no errors",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "`assets` gains source, discord_thread_id, discord_channel_id, imported_at, last_synced_at, reactions_reached_threshold_at, is_hidden plus unique partial index on discord_thread_id",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`asset_comments`, `asset_comment_media` (with is_deleted), `media_import_jobs` exist with specified columns, indexes, and FKs to `members(member_id)` (not discord_members)",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`asset_media` gains is_deleted BOOLEAN DEFAULT FALSE",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "RLS enabled on all new tables; asset_comments and asset_comment_media have public-read SELECT policies filtered by is_deleted=false; media_import_jobs has no policies (service-role only)",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Vault bootstrap migration creates `internal.get_service_role_key()` SECURITY DEFINER helper; EXECUTE granted only to postgres",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`internal.discord_promote_resources()` PL/pgSQL function exists, is SECURITY DEFINER, and is callable via pg_cron without HTTP",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Running the promoter against a 60-day backfill produces assets for all qualifying OPs (reaction_count >= 5, message_id=thread_id) across all 5 channels, with type='workflow' for the `resources` channel and type='lora' for the four model-family channels",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Running the promoter a second time produces zero net new rows in assets, asset_comments, or media_import_jobs (idempotency)",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "A previously-imported OP that later has an attachment removed via Discord edit results in the matching `asset_comment_media`/`asset_media` row getting is_deleted=true on the next promoter tick",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "A message_id=thread_id row older than the 10-min polling window that has just crossed reaction_count=5 (simulated by manually setting the count) is imported on the next promoter tick (late-threshold regression test for FLAG-001)",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "A Discord message edit updates asset_comments.content and discord_edited_at; a Discord deletion (discord_messages.is_deleted=true) sets asset_comments.is_deleted=true",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Media importer, given a single seeded job, creates a media row (with Stream UID for video; with public Storage URL for image), creates the matching asset_media or asset_comment_media junction row, and marks the job status='done' with media_id set",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files",
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "For a video attachment: the importer does not poll Cloudflare; the existing cloudflare-stream-webhook populates the media row's HLS URL / thumbnail / duration when the Stream asset becomes ready",
+      "priority": "must",
+      "requires": [
+        "observe_runtime_logs",
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Rehosted video URLs return a valid HLS playlist (HTTP 200 with `#EXTM3U` in body); rehosted image URLs return HTTP 200 with an image content-type",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "A simulated failed job increments attempts, records last_error, is re-queued with growing locked_until, and moves to status='failed' after 5 attempts",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "pg_cron has two schedules: `discord-resource-promoter` (*/10, calls internal.discord_promote_resources() directly) and `discord-media-importer` (*/2, calls the edge function via net.http_post with Authorization from internal.get_service_role_key())",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "useResources.ts, useCommunityResources.ts, useCommunityResource.ts, useUserProfile.ts all SELECT source, discord_channel_id, is_hidden and filter is_hidden=false",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "A shared AssetDescription component (banodoco-website/src/components/resources/AssetDescription.tsx) renders asset.description using react-markdown + remark-gfm mirroring PostBodyRenderer.tsx, with NO custom embed tokens (::art[uuid], etc.)",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "ResourceDetail/index.tsx renders asset.description via AssetDescription for both manual and Discord-imported assets (the plain-text block at lines 166-169 is replaced)",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "ResourceModal.tsx renders asset.description via AssetDescription (the whitespace-pre-line <p> at lines 186-189 is replaced)",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "ResourceDetail shows 'Made with this' grid, 'Discussion' thread, and 'From Discord' badge only when resource.source === 'discord_import'; manual assets render unchanged",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Each rendered comment shows author avatar + name from members, markdown-rendered content via AssetDescription, reply chip when applicable, inline attachment thumbnails with working lightbox, reaction count chip, and a working 'View on Discord' link",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "useAssetComments fetches the joined data in a single Supabase query, filters is_deleted=false on both asset_comments and asset_comment_media, and orders by discord_created_at ascending",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Setting assets.is_hidden=true on an imported asset makes it disappear from all four hook-backed surfaces (useResources, useCommunityResources, useCommunityResource, useUserProfile) and from ResourceDetail if accessed by URL",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Existing website tests and Supabase type generation still pass after schema additions",
+      "priority": "must",
+      "requires": [
+        "run_tests",
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Resource cards show a subtle 'From Discord' badge with the channel name for imported assets",
+      "priority": "should",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Media importer wall-clock stays under 400s per invocation; promoter (SQL) finishes in under 10s per run \u2014 observed across several cron cycles",
+      "priority": "should",
+      "requires": [
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "Health-check SQL snippets return usable output (stuck jobs, 24h failures, staleness) against live tables",
+      "priority": "should",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Per-phase rollback documentation accurately reflects the migrations, cron jobs, edge function, and vault bootstrap introduced",
+      "priority": "should",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "No Cloudflare Stream quota / storage cost surprises during 60-day backfill",
+      "priority": "info",
+      "requires": [
+        "subjective_judgment"
+      ]
+    }
+  ],
+  "assumptions": [
+    "Channel-to-type mapping: `resources` (1149372684220768367) -> `workflow`; the four model-family channels (`flux_resources`, `wan_resources`, `ltx_resources`, `acestep_resources`) -> `lora`. Matches the website's existing `lora | workflow` enum in SubmitResource/index.tsx:10-13.",
+    "The archive pipeline populates `members` before it writes a `discord_messages` row that references the author, so no member-fallback insert is needed in the promoter. If a rare race occurs, the promoter's INSERT errors, logs to system_logs, and the next tick retries.",
+    "`supabase_vault` is enabled (or can be enabled) in this project; the bootstrap migration uses `vault.create_secret` / `vault.update_secret`. If vault isn't available, fall back to a postgres-owned `internal.secrets` table with the same SECURITY DEFINER accessor.",
+    "`cloudflare-stream-webhook` (existing in `supabase/functions/`) already updates a `media` row identified by Cloudflare Stream UID with `hls_url`, `thumbnail_url`, and `duration` when a Stream asset reaches `readyToStream`. The discord media importer inserts the `media` row up-front with the Stream UID populated; Step 11 verifies the webhook's lookup key before cutover.",
+    "Existing pg_cron usage (`supabase/migrations/20260403000005_schedule_priority_scores_cron.sql`) schedules direct SQL; our promoter follows the same pattern. Only the media importer needs `net.http_post` with service-role auth.",
+    "Parsing Discord's `attachment.id` out of the CDN URL path (`/attachments/{channel_id}/{attachment_id}/{filename}`) is reliable; the URL path segment is stable across signature refreshes. Confirmed the archive stores only `{url, filename}` per `brain-of-bndc/scripts/archive_discord.py:463-469`.",
+    "All 5 resource channels live in a single guild; its ID is hard-coded in a shared frontend constant for 'View on Discord' jump links.",
+    "The website's `members` table (renamed from `discord_members`) still has `username NOT NULL` per `supabase/migrations/20251101000000_create_discord_tables.sql:38-64`; FKs target `members(member_id)`.",
+    "`react-markdown` + `remark-gfm` are already dependencies of the website (used by `PostBodyRenderer.tsx`). No new dependency additions; `AssetDescription` reuses that pipeline minus the custom `::art[uuid]`-style embed tokens.",
+    "`admin_status='Listed'` is a valid value in the existing `assets` admin_status enum/CHECK (hooks already filter by admin_status, implying the value set is established).",
+    "OP attachments use the website's existing manual-upload classification (captured in Step 1 audit \u2014 likely `'post'` or `'primary'`); only reply attachments use the new `'discord-comment'` value.",
+    "`reaction_count >= 5` against `discord_messages.reaction_count` is the correct threshold check; the `sync_message_reactors` trigger maintains this denormalized total (see `supabase/migrations/20260319100000_fix_sync_reactors_trigger.sql:1-22`).",
+    "Applying markdown rendering universally (manual + Discord-imported) is safe because the sanitization in `PostBodyRenderer` is configured for trusted-ish author content; the existing pipeline's security posture is inherited."
+  ],
+  "delta_from_previous_percent": 91.49,
+  "structure_warnings": []
+}

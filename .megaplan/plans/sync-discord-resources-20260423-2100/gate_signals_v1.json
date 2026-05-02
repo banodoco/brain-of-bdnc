@@ -1,0 +1,516 @@
+{
+  "robustness": "standard",
+  "signals": {
+    "iteration": 1,
+    "idea": "Sync Discord `_resources` channel posts into banodoco-website as auto-published resources, with a \"Made with this\" section containing reply media and a Discord-style comments thread.\n\n# Context\n\nSingle shared Supabase project (`ujlwuvkrxlvoswwkerdf`) backs both brain-of-bndc (Discord archive bot, Python, Railway) and banodoco-website (React/Vite). Discord resource posts live in 5 forum channels: `resources` (1149372684220768367), `flux_resources` (1275200992136400967), `wan_resources` (1373291419434877078), `ltx_resources` (1457981813120176138), `acestep_resources` (1472633200491626526). Each is a forum, so every message has a `thread_id`; an OP is where `message_id == thread_id`. Archive pipeline already writes every message + reaction into `discord_messages`. Current volume: ~15 qualifying OPs in the last 30 days.\n\n# Trigger + scope\n\n- Thread OP in any of the 5 `_resources` channels with `reaction_count >= 5` (any emoji counts) becomes an `assets` row.\n- Backfill: last 60 days on first run, chronological oldest\u2192newest, resumable via per-channel cursor.\n- Ongoing: polled every 10 min.\n- No un-listing if reactions later drop.\n- Auto-publish `admin_status='Listed'`; admin kill switch via `assets.is_hidden`.\n- Each reply in the thread becomes an `asset_comments` row. Reply attachments become `media` rows linked via `asset_comment_media`. OP attachments go via existing `asset_media`.\n\n# Schema deltas\n\nExtend `assets`:\n- `source` TEXT ('manual' | 'discord_import')\n- `discord_thread_id` BIGINT UNIQUE NULL\n- `discord_channel_id` BIGINT NULL\n- `imported_at` TIMESTAMPTZ\n- `last_synced_at` TIMESTAMPTZ\n- `reactions_reached_threshold_at` TIMESTAMPTZ\n- `is_hidden` BOOLEAN DEFAULT FALSE\n\nNew `asset_comments`:\n- `id` UUID PK\n- `asset_id` UUID FK \u2192 assets(id) ON DELETE CASCADE\n- `discord_message_id` BIGINT UNIQUE NOT NULL\n- `discord_thread_id` BIGINT NOT NULL\n- `author_member_id` BIGINT FK \u2192 discord_members(member_id)\n- `content` TEXT\n- `reply_to_comment_id` UUID FK \u2192 asset_comments(id) NULL (resolves from Discord `reference_id`)\n- `reply_to_discord_message_id` BIGINT NULL (denormalized for resolvability even when the parent isn't imported)\n- `reaction_count` INT DEFAULT 0\n- `discord_created_at` TIMESTAMPTZ\n- `discord_edited_at` TIMESTAMPTZ\n- `is_deleted` BOOLEAN DEFAULT FALSE\n- `created_at`, `updated_at` TIMESTAMPTZ\n\nNew `asset_comment_media`:\n- `comment_id` UUID FK \u2192 asset_comments(id) ON DELETE CASCADE\n- `media_id` UUID FK \u2192 media(id) ON DELETE CASCADE\n- `sort_order` INT DEFAULT 0\n- PK (comment_id, media_id)\n\n`media` changes:\n- Add `'discord-comment'` as a valid `classification` value\n- Provenance stored in `media.metadata` JSONB: `{discord_message_id, discord_channel_id, discord_attachment_id, original_cdn_url, imported_at}`\n- Dedup by `discord_attachment_id` (query `metadata->>'discord_attachment_id'`)\n\nNew `media_import_jobs` queue:\n- `id` UUID PK\n- `discord_attachment_id` BIGINT UNIQUE\n- `discord_message_id` BIGINT\n- `target_kind` TEXT ('asset_media' | 'asset_comment_media')\n- `target_id` UUID (asset_id or comment_id depending on target_kind)\n- `original_cdn_url` TEXT\n- `filename` TEXT, `content_type` TEXT, `size_bytes` BIGINT\n- `status` TEXT ('pending' | 'in_progress' | 'done' | 'failed' | 'skipped')\n- `attempts` INT DEFAULT 0\n- `last_error` TEXT\n- `media_id` UUID FK \u2192 media(id) NULL (set on done)\n- `created_at`, `updated_at`, `locked_until` TIMESTAMPTZ\n\nAdd indexes for: `assets.discord_thread_id`, `asset_comments(asset_id, discord_created_at)`, `asset_comments.discord_message_id`, `media_import_jobs(status, locked_until)`.\n\nRLS on new tables: public read for `asset_comments` / `asset_comment_media` (matches `asset_media`); service-role only for `media_import_jobs`.\n\n# Runtime\n\nTwo Supabase Edge Functions + pg_cron:\n\n**`discord-resource-promoter`** (cron: every 10 min; ~30s wall clock):\n1. For each of the 5 channels, advance the per-channel cursor (`discord_resource_sync_cursors` table: `channel_id`, `last_processed_created_at`, `last_backfill_cursor_at`, `backfill_complete` BOOL).\n2. Discover qualifying thread OPs: `discord_messages` where `channel_id IN (...)`, `message_id = thread_id`, `reaction_count >= 5`, `created_at > cursor`.\n3. Upsert `assets` rows keyed on `discord_thread_id`. Populate: `name` (first line of content, truncated), `description` (full content), `type` (infer via channel \u2192 'lora' | 'tool'; default 'tool'), `member_id` (from author), `admin_status='Listed'`, `source='discord_import'`, `reactions_reached_threshold_at=NOW()`.\n4. For each imported thread, fetch all replies: `discord_messages WHERE thread_id = X AND message_id != thread_id`. Upsert `asset_comments` keyed on `discord_message_id`. Resolve `reply_to_comment_id` from Discord `reference_id` where possible.\n5. For every attachment (OP and replies), upsert a `media_import_jobs` row if not already present. Use Discord `attachment.id` as dedup key.\n6. Update `assets.last_synced_at`.\n7. Paginate/time-slice to stay under 30s budget; advance cursor even on partial progress.\n\n**`discord-media-importer`** (cron: every 2 min; up to 400s):\n1. Claim up to N pending jobs via `UPDATE ... SET status='in_progress', locked_until=NOW()+interval '10m' WHERE status='pending' AND (locked_until IS NULL OR locked_until < NOW()) ... RETURNING *`. Re-claim stuck `in_progress` past `locked_until`.\n2. For each job:\n   - Refresh Discord CDN URL (use bot token via Discord API `GET /channels/{channel_id}/messages/{message_id}` to get current signed URL \u2014 mirror logic from existing `refresh-media-urls` edge function).\n   - Stream download from Discord CDN.\n   - If video/gif: stream upload to Cloudflare Stream via tus; poll until `readyToStream`; capture `playback.hls`, `thumbnail`, `duration`.\n   - If image: stream upload to Supabase Storage `user-uploads/discord-imports/{discord_message_id}/{attachment_id}-{filename}`; generate thumbnail via image transform if available.\n   - Other (zip/json): upload to same bucket, no thumbnail.\n   - Insert `media` row: `classification='discord-comment'` (or `'post'` for OP attachments \u2014 decide convention in plan), `member_id` from message author, Cloudflare/storage URLs populated, `metadata` with Discord provenance.\n   - Insert junction row (`asset_media` or `asset_comment_media` based on `target_kind`).\n   - Mark job `done`, set `media_id`.\n3. On failure: increment `attempts`, write `last_error`, status back to `pending` with exponential backoff via `locked_until`. Skip permanently after 5 attempts (`status='failed'`).\n\nSecrets required on Supabase Edge Function config:\n- `DISCORD_BOT_TOKEN`\n- `CLOUDFLARE_STREAM_ACCOUNT_ID`\n- `CLOUDFLARE_STREAM_API_TOKEN`\n- Existing `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` implicit\n\n# Frontend\n\nUpdate `banodoco-website/src/pages/Resources/ResourceModal.tsx`:\n1. Keep existing gallery strip (primary media + `asset_media`).\n2. Add **\"Made with this\"** section below gallery \u2014 grid of all `asset_comment_media` thumbnails for the asset, newest first, click opens lightbox anchored to the parent comment.\n3. Add **Discussion** section below \u2014 flat chronological list of `asset_comments`. Each row:\n   - Author chip (avatar + global_name from `discord_members`) + timestamp\n   - \"Replying to @name\" chip with quoted excerpt if `reply_to_comment_id` set\n   - Markdown-rendered `content`\n   - Attached media grid (inline video/image thumbs, click \u2192 lightbox)\n   - Reaction count chip\n   - \"View on Discord\" link (build URL from channel_id + message_id)\n4. New hook `useAssetComments(assetId)` \u2014 single query joining `asset_comments` + `asset_comment_media` + `media` + `discord_members`, ordered by `discord_created_at`.\n5. Resource card: small \"From Discord\" badge (channel name) on imported assets \u2014 subtle, not a big label.\n\n# Observability + ops\n\n- `media_import_jobs` table is the operational dashboard (count by status, oldest pending, failures with `last_error`).\n- Errors logged to `system_logs` (existing infrastructure).\n- Health check query: failed jobs in last 24h, stuck `in_progress` past lock, per-channel cursor age.\n- Dry-run mode: env var `DRY_RUN=true` on promoter \u2192 logs would-be inserts without writing.\n\n# Idempotency + edge cases to handle in plan\n\n- Discord message edits: re-sync updates `asset_comments.content`, `discord_edited_at`.\n- Discord message deletions: `discord_messages.is_deleted=true` \u2192 set `asset_comments.is_deleted=true` (UI hides).\n- Attachment removal on edit: don't delete `media` (preserves history); could mark `is_deleted` on junction.\n- Race: promoter tries to insert comment before OP asset exists \u2014 only process replies for threads whose asset row already exists.\n- Rate limits: Discord API 50 req/s; space attachment URL refreshes.\n- Cloudflare Stream failures: retry; skip after N attempts.\n- `discord_members` might not yet have the author when a comment arrives \u2014 promoter should upsert a thin member row if missing (or the existing archive sync covers this \u2014 verify).\n- Already-imported content: must be fully idempotent \u2014 reruns should produce zero new rows.\n\n# Out of scope (do NOT include)\n\n- Live-update (websocket) \u2014 polling is fine.\n- Moderation UI beyond the `is_hidden` flag (no approval queue, no review surface).\n- Cross-posting from website back to Discord.\n- User-initiated imports (\"turn this Discord post into a resource\" button).\n- Migrating existing manually-created `assets` rows \u2014 they stay `source='manual'`.\n- Changing the archive pipeline on brain-of-bndc (the existing archive covers everything the promoter needs).\n\n# Deliverables megaplan should produce\n\n1. Ordered implementation phases with a clear first-working-version milestone (schema + promoter dry-run) before media rehosting is wired up.\n2. Migration SQL file list (timestamped, in `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/`).\n3. Edge function directory structure under `supabase/functions/` (promoter, importer, shared helpers \u2014 there's already a `supabase/functions/_shared/` in the workspace).\n4. Hook + component additions in `banodoco-website/src/` with concrete file paths.\n5. pg_cron SQL snippets to register the two scheduled invocations.\n6. Test/verification steps per phase (e.g. one-channel dry run, then rehost a single attachment, then full backfill).\n7. Rollback plan per phase.\n8. Explicit risk register (Cloudflare quota, Discord rate limits, edge function timeout, storage cost on 60-day backfill).",
+    "significant_flags": 17,
+    "unresolved_flags": [
+      {
+        "id": "FLAG-001",
+        "concern": "Discord resource promoter: created_at-based cursors will miss older threads that cross the reaction threshold after the cursor has advanced.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-002",
+        "concern": "Discord member fallback: the proposed thin upsert is incompatible with the current members schema because username is still required.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-003",
+        "concern": "Resource typing: importing assets as `tool` conflicts with the website\u2019s existing `lora`/`workflow` assumptions.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-004",
+        "concern": "Resource frontend surface: the plan targets an effectively unused modal and does not cover the route-driven ResourceDetail page that users actually hit.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-005",
+        "concern": "Edge scheduling/infrastructure: the plan introduces new cron auth and Cloudflare polling paths without reconciling existing pg_cron and Stream webhook/backfill patterns.",
+        "category": "maintainability",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "issue_hints-1",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: The user\u2019s added scope note about markdown-rendering resource descriptions is only partially reflected in the plan. The repo does have the exact plain-text `ResourceModal` block the note calls out at `banodoco-website/src/pages/Resources/ResourceModal.tsx:186-189`, but the plan never adds a concrete step for that rendering change or the requested success criterion; it only mentions using the existing markdown renderer for comment content.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "issue_hints-2",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: One of the explicit edge cases in the brief, attachment removal on Discord edit, is still unresolved in the plan. The proposed schema for `asset_comment_media` only has `(comment_id, media_id, sort_order)` and no visibility/deleted flag, so the plan\u2019s note that it 'could mark `is_deleted` on junction' is not actually backed by any migration or follow-up step.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "correctness-1",
+        "concern": "Are the proposed changes technically correct?: The cursor strategy in the promoter is not technically correct for the stated trigger. `discord_messages.reaction_count` is a denormalized field that gets recomputed from `discord_reactions` by the `sync_message_reactors` trigger (`supabase/migrations/20260319100000_fix_sync_reactors_trigger.sql:1-22`), so an older thread can cross the 5-reaction threshold long after its `created_at`. A promoter that only scans `created_at > cursor` will permanently miss those late-promoted OPs once the cursor advances past their creation time.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "correctness-2",
+        "concern": "Are the proposed changes technically correct?: The fallback member-write described in Phase 2 would violate the current schema. `members` is the renamed `discord_members` table, and its original definition still requires `username TEXT NOT NULL` (`supabase/migrations/20251101000000_create_discord_tables.sql:38-64`); the archive writer in `brain-of-bndc/src/common/storage_handler.py:190-209` also always supplies a username. The plan\u2019s 'insert only member_id, username=NULL' fallback would fail the FK-prep path instead of rescuing it.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "correctness-3",
+        "concern": "Are the proposed changes technically correct?: The proposed asset type mapping (`lora` or `tool`) does not match the website\u2019s current resource model. Manual resource creation only offers `lora` and `workflow` (`banodoco-website/src/pages/SubmitResource/index.tsx:10-13`), and the cards/filters branch on `asset.type === 'workflow'` (`ResourceModal.tsx:151-156`, `ResourceCard.tsx:151-154`, `useResourceFilters.ts:159-160`). Importing Discord rows with `type='tool'` would render them as LoRAs in some places and make them unfilterable in others.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "scope-1",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The plan scopes the frontend work around `ResourceModal`, but `rg -n \"ResourceModal\" banodoco-website/src` only finds the component definition and no callers. The live resource surface is `banodoco-website/src/pages/ResourceDetail/index.tsx`, which still renders `resource.description` as plain text at lines 166-169 and already owns the visible 'Made with this' gallery. Limiting the change to the dead modal leaves the actual resource page behavior unchanged.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "scope-2",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The broader 'resource visibility' surface is larger than the plan accounts for. Resource lists and profile counts currently come from `useResources.ts`, `useCommunityResources.ts`, `useCommunityResource.ts`, and `useUserProfile.ts`, all of which filter only on `admin_status` and never consider a future `assets.is_hidden` kill switch (`useResources.ts:51-74`, `useCommunityResources.ts:118-127`, `useCommunityResource.ts:103-113`, `useUserProfile.ts:125-133`). If `is_hidden` is meant to hide imported assets globally, the change needs to reach those callers too, not just one modal/card.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "all_locations-1",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The plan does not thread the new asset metadata through the existing data loaders that would need it for the requested UI. `useResources.ts`, `useCommunityResources.ts`, and `useCommunityResource.ts` currently select neither `source` nor `discord_channel_id` nor `is_hidden` (`useResources.ts:51-65`, `useCommunityResources.ts:118-124`, `useCommunityResource.ts:103-109`), so the proposed 'From Discord' badge and hide switch cannot work until those queries and their TypeScript shapes are expanded.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "all_locations-2",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The media-import plan also skips over existing Cloudflare support that already owns part of this lifecycle. The repo has `cloudflare-stream-webhook` for writing HLS/thumbnail URLs from a Stream UID and `cloudflare-stream-backfill` for retrying unfinished ingests (`supabase/functions/cloudflare-stream-backfill/index.ts:35-114`), but the new plan introduces a separate importer that polls Cloudflare to readiness itself. That duplication is a supporting-infrastructure gap unless the plan explicitly says which path becomes canonical and how the existing webhook/backfill jobs are reused or retired.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "all_locations-3",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The cron registration snippet assumes a secret-delivery pattern that is not present elsewhere in the repo. Existing pg_cron usage schedules local SQL directly (`supabase/migrations/20260403000005_schedule_priority_scores_cron.sql:4-23`), and `supabase/config.toml:45-46` only contains a commented `db.vault` stub. A migration that references `current_setting('app.settings.service_role_key')` without first establishing that setting will not be self-contained.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "callers-1",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: I traced the current callers that consume resource rows, and they all pass through the existing hooks with narrow assumptions about the payload: `useResources.ts` reads `id, type, name, description, admin_status, ...`, `useCommunityResources.ts` reads `id, name, description, type, lora_link, ...`, and `useCommunityResource.ts` reads `id, name, description, type, ...` (`useResources.ts:51-65`, `useCommunityResources.ts:118-124`, `useCommunityResource.ts:103-109`). None of those callers request `source`, `discord_channel_id`, or `is_hidden`, so the downstream badge, jump-link, and hide logic proposed in the plan would have no inputs unless the callers themselves are revised.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "callers-2",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: I also checked the direct callers of the UI surface the plan wants to edit. `rg -n \"ResourceModal\" banodoco-website/src` returns only the component definition and no imports/usages, which means there are currently no callers passing assets into that modal at all. The meaningful caller path today is the route-driven `ResourceDetail` page, so the proposed fix is landing at the wrong boundary unless the plan also restores or introduces actual `ResourceModal` usage.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      }
+    ],
+    "resolved_flags": [],
+    "weighted_score": 23.25,
+    "weighted_history": [],
+    "plan_delta_from_previous": null,
+    "recurring_critiques": [],
+    "scope_creep_flags": [],
+    "loop_summary": "Iteration 1. Weighted score trajectory: 23.25. Plan deltas: n/a. Recurring critiques: 0. Resolved flags: 0. Open significant flags: 17.",
+    "debt_overlaps": [],
+    "escalated_debt_subsystems": []
+  },
+  "warnings": [],
+  "criteria_check": {
+    "count": 23,
+    "items": [
+      {
+        "criterion": "All migrations in Phase 1 apply cleanly via `supabase db reset` on a scratch branch with no errors",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "observe_runtime_logs"
+        ]
+      },
+      {
+        "criterion": "`assets` table gains all 7 new columns (source, discord_thread_id, discord_channel_id, imported_at, last_synced_at, reactions_reached_threshold_at, is_hidden) and a unique partial index on `discord_thread_id`",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "`asset_comments`, `asset_comment_media`, `media_import_jobs`, and `discord_resource_sync_cursors` tables exist with the columns, constraints, and indexes described in Steps 3\u20134",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "RLS is enabled on `asset_comments`, `asset_comment_media`, `media_import_jobs`, and `discord_resource_sync_cursors`; `asset_comments`/`asset_comment_media` have public-read SELECT policies; the latter two have no policies (service-role only)",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "Promoter edge function with `DRY_RUN=true` logs the set of assets/comments/media-jobs it would write and performs zero DB mutations",
+        "priority": "must",
+        "requires": [
+          "observe_runtime_logs",
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "A live run of the promoter produces `assets` rows with `source='discord_import'`, `admin_status='Listed'`, correct `type` per channel, populated `discord_thread_id`/`discord_channel_id`, and corresponding `asset_comments` rows for replies",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "Running the promoter twice in a row produces zero net new `assets`, `asset_comments`, or `media_import_jobs` rows (full idempotency)",
+        "priority": "must",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "Media importer processes a single seeded `media_import_jobs` row end-to-end: creates a `media` row with the correct classification + populated Cloudflare/Storage URL, creates the matching `asset_media` or `asset_comment_media` junction row, and sets job `status='done'` with `media_id`",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files",
+          "observe_runtime_logs"
+        ]
+      },
+      {
+        "criterion": "Rehosted video URLs return a valid HLS playlist (HTTP 200 with `#EXTM3U` in body); rehosted image URLs return HTTP 200 with a supported image content-type",
+        "priority": "must",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "A failed job (simulated by pointing at a deleted Discord message) increments `attempts`, records a `last_error`, and is re-queued with a growing `locked_until`; after 5 attempts it moves to `status='failed'` and stops retrying",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "pg_cron has two registered schedules (`discord-resource-promoter` every 10 min, `discord-media-importer` every 2 min) both invoking the correct edge-function URLs with service-role auth",
+        "priority": "must",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "After a full backfill cycle, qualifying OPs from all 5 channels (thread_id == message_id, reaction_count >= 5, within 60-day window) are represented in `assets` with `source='discord_import'`, and no OPs below the threshold are imported",
+        "priority": "must",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "A Discord message edit after import updates `asset_comments.content` and `discord_edited_at` on the next promoter run; a Discord message deletion sets `asset_comments.is_deleted=true`",
+        "priority": "must",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "ResourceModal shows the new 'Made with this' grid and 'Discussion' thread only for assets where `source='discord_import'`; existing manual assets render unchanged",
+        "priority": "must",
+        "requires": [
+          "drive_browser",
+          "inspect_runtime_ui"
+        ]
+      },
+      {
+        "criterion": "Each rendered comment shows author avatar + name from `members`, markdown-rendered content, reply chip when applicable, inline attachment thumbnails with a working lightbox, reaction count, and a 'View on Discord' link that opens the correct message",
+        "priority": "must",
+        "requires": [
+          "drive_browser",
+          "inspect_runtime_ui"
+        ]
+      },
+      {
+        "criterion": "`useAssetComments` fetches the joined data in a single Supabase query and returns comments ordered by `discord_created_at` ascending, excluding deleted rows",
+        "priority": "must",
+        "requires": [
+          "read_files",
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "Resource cards show a subtle 'From Discord' badge with the channel name for imported assets",
+        "priority": "should",
+        "requires": [
+          "drive_browser",
+          "inspect_runtime_ui"
+        ]
+      },
+      {
+        "criterion": "`assets.is_hidden=true` suppresses the asset from the website listing and modal",
+        "priority": "must",
+        "requires": [
+          "drive_browser",
+          "inspect_runtime_ui"
+        ]
+      },
+      {
+        "criterion": "Existing website tests and Supabase type generation still pass after schema additions",
+        "priority": "must",
+        "requires": [
+          "run_tests",
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "Promoter wall-clock stays under 30s per invocation; importer stays under 400s \u2014 observed in edge-function logs across several runs",
+        "priority": "should",
+        "requires": [
+          "observe_runtime_logs"
+        ]
+      },
+      {
+        "criterion": "Health-check SQL snippets return usable output (stuck jobs, 24h failures, cursor staleness) against the live tables",
+        "priority": "should",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "No Cloudflare Stream quota / storage cost surprises during 60-day backfill \u2014 monitored via Cloudflare + Supabase dashboards after first full cycle",
+        "priority": "info",
+        "requires": [
+          "subjective_judgment"
+        ]
+      },
+      {
+        "criterion": "Per-phase rollback documentation exists and accurately reflects the migrations, cron jobs, and edge functions introduced",
+        "priority": "should",
+        "requires": [
+          "read_files"
+        ]
+      }
+    ]
+  },
+  "preflight_results": {
+    "project_dir_exists": true,
+    "project_dir_writable": true,
+    "success_criteria_present": true,
+    "claude_available": true,
+    "codex_available": true
+  },
+  "unresolved_flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Discord resource promoter: created_at-based cursors will miss older threads that cross the reaction threshold after the cursor has advanced.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan proposes qualifying OP discovery with `created_at > cursor`, but `discord_messages.reaction_count` is updated later by the `sync_message_reactors` trigger in `supabase/migrations/20260319100000_fix_sync_reactors_trigger.sql:1-22`.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Discord member fallback: the proposed thin upsert is incompatible with the current members schema because username is still required.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`discord_members` was created with `username TEXT NOT NULL` in `supabase/migrations/20251101000000_create_discord_tables.sql:38-64`, then renamed to `members`; the archive writer also always supplies username in `brain-of-bndc/src/common/storage_handler.py:190-209`.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Resource typing: importing assets as `tool` conflicts with the website\u2019s existing `lora`/`workflow` assumptions.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`SubmitResource` only offers `lora` and `workflow` (`banodoco-website/src/pages/SubmitResource/index.tsx:10-13`), and filters/cards branch on `asset.type === \"workflow\"` in `ResourceModal.tsx`, `ResourceCard.tsx`, and `useResourceFilters.ts`.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "FLAG-004",
+      "concern": "Resource frontend surface: the plan targets an effectively unused modal and does not cover the route-driven ResourceDetail page that users actually hit.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "`rg -n \"ResourceModal\" banodoco-website/src` finds only the component definition, while `banodoco-website/src/pages/ResourceDetail/index.tsx:166-169` still renders resource descriptions as plain text and owns the active gallery UI.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "FLAG-005",
+      "concern": "Edge scheduling/infrastructure: the plan introduces new cron auth and Cloudflare polling paths without reconciling existing pg_cron and Stream webhook/backfill patterns.",
+      "category": "maintainability",
+      "severity_hint": "uncertain",
+      "evidence": "Current cron usage is direct SQL in `supabase/migrations/20260403000005_schedule_priority_scores_cron.sql:4-23`; `supabase/config.toml:45-46` has no active vault setup; and the repo already ships `cloudflare-stream-webhook` plus `cloudflare-stream-backfill` for Stream completion/retry handling.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "issue_hints-1",
+      "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: The user\u2019s added scope note about markdown-rendering resource descriptions is only partially reflected in the plan. The repo does have the exact plain-text `ResourceModal` block the note calls out at `banodoco-website/src/pages/Resources/ResourceModal.tsx:186-189`, but the plan never adds a concrete step for that rendering change or the requested success criterion; it only mentions using the existing markdown renderer for comment content.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The user\u2019s added scope note about markdown-rendering resource descriptions is only partially reflected in the plan. The repo does have the exact plain-text `ResourceModal` block the note calls out at `banodoco-website/src/pages/Resources/ResourceModal.tsx:186-189`, but the plan never adds a concrete step for that rendering change or the requested success criterion; it only mentions using the existing markdown renderer for comment content.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "issue_hints-2",
+      "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: One of the explicit edge cases in the brief, attachment removal on Discord edit, is still unresolved in the plan. The proposed schema for `asset_comment_media` only has `(comment_id, media_id, sort_order)` and no visibility/deleted flag, so the plan\u2019s note that it 'could mark `is_deleted` on junction' is not actually backed by any migration or follow-up step.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "One of the explicit edge cases in the brief, attachment removal on Discord edit, is still unresolved in the plan. The proposed schema for `asset_comment_media` only has `(comment_id, media_id, sort_order)` and no visibility/deleted flag, so the plan\u2019s note that it 'could mark `is_deleted` on junction' is not actually backed by any migration or follow-up step.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "correctness-1",
+      "concern": "Are the proposed changes technically correct?: The cursor strategy in the promoter is not technically correct for the stated trigger. `discord_messages.reaction_count` is a denormalized field that gets recomputed from `discord_reactions` by the `sync_message_reactors` trigger (`supabase/migrations/20260319100000_fix_sync_reactors_trigger.sql:1-22`), so an older thread can cross the 5-reaction threshold long after its `created_at`. A promoter that only scans `created_at > cursor` will permanently miss those late-promoted OPs once the cursor advances past their creation time.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The cursor strategy in the promoter is not technically correct for the stated trigger. `discord_messages.reaction_count` is a denormalized field that gets recomputed from `discord_reactions` by the `sync_message_reactors` trigger (`supabase/migrations/20260319100000_fix_sync_reactors_trigger.sql:1-22`), so an older thread can cross the 5-reaction threshold long after its `created_at`. A promoter that only scans `created_at > cursor` will permanently miss those late-promoted OPs once the cursor advances past their creation time.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "correctness-2",
+      "concern": "Are the proposed changes technically correct?: The fallback member-write described in Phase 2 would violate the current schema. `members` is the renamed `discord_members` table, and its original definition still requires `username TEXT NOT NULL` (`supabase/migrations/20251101000000_create_discord_tables.sql:38-64`); the archive writer in `brain-of-bndc/src/common/storage_handler.py:190-209` also always supplies a username. The plan\u2019s 'insert only member_id, username=NULL' fallback would fail the FK-prep path instead of rescuing it.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The fallback member-write described in Phase 2 would violate the current schema. `members` is the renamed `discord_members` table, and its original definition still requires `username TEXT NOT NULL` (`supabase/migrations/20251101000000_create_discord_tables.sql:38-64`); the archive writer in `brain-of-bndc/src/common/storage_handler.py:190-209` also always supplies a username. The plan\u2019s 'insert only member_id, username=NULL' fallback would fail the FK-prep path instead of rescuing it.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "correctness-3",
+      "concern": "Are the proposed changes technically correct?: The proposed asset type mapping (`lora` or `tool`) does not match the website\u2019s current resource model. Manual resource creation only offers `lora` and `workflow` (`banodoco-website/src/pages/SubmitResource/index.tsx:10-13`), and the cards/filters branch on `asset.type === 'workflow'` (`ResourceModal.tsx:151-156`, `ResourceCard.tsx:151-154`, `useResourceFilters.ts:159-160`). Importing Discord rows with `type='tool'` would render them as LoRAs in some places and make them unfilterable in others.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The proposed asset type mapping (`lora` or `tool`) does not match the website\u2019s current resource model. Manual resource creation only offers `lora` and `workflow` (`banodoco-website/src/pages/SubmitResource/index.tsx:10-13`), and the cards/filters branch on `asset.type === 'workflow'` (`ResourceModal.tsx:151-156`, `ResourceCard.tsx:151-154`, `useResourceFilters.ts:159-160`). Importing Discord rows with `type='tool'` would render them as LoRAs in some places and make them unfilterable in others.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "scope-1",
+      "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The plan scopes the frontend work around `ResourceModal`, but `rg -n \"ResourceModal\" banodoco-website/src` only finds the component definition and no callers. The live resource surface is `banodoco-website/src/pages/ResourceDetail/index.tsx`, which still renders `resource.description` as plain text at lines 166-169 and already owns the visible 'Made with this' gallery. Limiting the change to the dead modal leaves the actual resource page behavior unchanged.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan scopes the frontend work around `ResourceModal`, but `rg -n \"ResourceModal\" banodoco-website/src` only finds the component definition and no callers. The live resource surface is `banodoco-website/src/pages/ResourceDetail/index.tsx`, which still renders `resource.description` as plain text at lines 166-169 and already owns the visible 'Made with this' gallery. Limiting the change to the dead modal leaves the actual resource page behavior unchanged.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "scope-2",
+      "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The broader 'resource visibility' surface is larger than the plan accounts for. Resource lists and profile counts currently come from `useResources.ts`, `useCommunityResources.ts`, `useCommunityResource.ts`, and `useUserProfile.ts`, all of which filter only on `admin_status` and never consider a future `assets.is_hidden` kill switch (`useResources.ts:51-74`, `useCommunityResources.ts:118-127`, `useCommunityResource.ts:103-113`, `useUserProfile.ts:125-133`). If `is_hidden` is meant to hide imported assets globally, the change needs to reach those callers too, not just one modal/card.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The broader 'resource visibility' surface is larger than the plan accounts for. Resource lists and profile counts currently come from `useResources.ts`, `useCommunityResources.ts`, `useCommunityResource.ts`, and `useUserProfile.ts`, all of which filter only on `admin_status` and never consider a future `assets.is_hidden` kill switch (`useResources.ts:51-74`, `useCommunityResources.ts:118-127`, `useCommunityResource.ts:103-113`, `useUserProfile.ts:125-133`). If `is_hidden` is meant to hide imported assets globally, the change needs to reach those callers too, not just one modal/card.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "all_locations-1",
+      "concern": "Does the change touch all locations AND supporting infrastructure?: The plan does not thread the new asset metadata through the existing data loaders that would need it for the requested UI. `useResources.ts`, `useCommunityResources.ts`, and `useCommunityResource.ts` currently select neither `source` nor `discord_channel_id` nor `is_hidden` (`useResources.ts:51-65`, `useCommunityResources.ts:118-124`, `useCommunityResource.ts:103-109`), so the proposed 'From Discord' badge and hide switch cannot work until those queries and their TypeScript shapes are expanded.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan does not thread the new asset metadata through the existing data loaders that would need it for the requested UI. `useResources.ts`, `useCommunityResources.ts`, and `useCommunityResource.ts` currently select neither `source` nor `discord_channel_id` nor `is_hidden` (`useResources.ts:51-65`, `useCommunityResources.ts:118-124`, `useCommunityResource.ts:103-109`), so the proposed 'From Discord' badge and hide switch cannot work until those queries and their TypeScript shapes are expanded.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "all_locations-2",
+      "concern": "Does the change touch all locations AND supporting infrastructure?: The media-import plan also skips over existing Cloudflare support that already owns part of this lifecycle. The repo has `cloudflare-stream-webhook` for writing HLS/thumbnail URLs from a Stream UID and `cloudflare-stream-backfill` for retrying unfinished ingests (`supabase/functions/cloudflare-stream-backfill/index.ts:35-114`), but the new plan introduces a separate importer that polls Cloudflare to readiness itself. That duplication is a supporting-infrastructure gap unless the plan explicitly says which path becomes canonical and how the existing webhook/backfill jobs are reused or retired.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The media-import plan also skips over existing Cloudflare support that already owns part of this lifecycle. The repo has `cloudflare-stream-webhook` for writing HLS/thumbnail URLs from a Stream UID and `cloudflare-stream-backfill` for retrying unfinished ingests (`supabase/functions/cloudflare-stream-backfill/index.ts:35-114`), but the new plan introduces a separate importer that polls Cloudflare to readiness itself. That duplication is a supporting-infrastructure gap unless the plan explicitly says which path becomes canonical and how the existing webhook/backfill jobs are reused or retired.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "all_locations-3",
+      "concern": "Does the change touch all locations AND supporting infrastructure?: The cron registration snippet assumes a secret-delivery pattern that is not present elsewhere in the repo. Existing pg_cron usage schedules local SQL directly (`supabase/migrations/20260403000005_schedule_priority_scores_cron.sql:4-23`), and `supabase/config.toml:45-46` only contains a commented `db.vault` stub. A migration that references `current_setting('app.settings.service_role_key')` without first establishing that setting will not be self-contained.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The cron registration snippet assumes a secret-delivery pattern that is not present elsewhere in the repo. Existing pg_cron usage schedules local SQL directly (`supabase/migrations/20260403000005_schedule_priority_scores_cron.sql:4-23`), and `supabase/config.toml:45-46` only contains a commented `db.vault` stub. A migration that references `current_setting('app.settings.service_role_key')` without first establishing that setting will not be self-contained.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "callers-1",
+      "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: I traced the current callers that consume resource rows, and they all pass through the existing hooks with narrow assumptions about the payload: `useResources.ts` reads `id, type, name, description, admin_status, ...`, `useCommunityResources.ts` reads `id, name, description, type, lora_link, ...`, and `useCommunityResource.ts` reads `id, name, description, type, ...` (`useResources.ts:51-65`, `useCommunityResources.ts:118-124`, `useCommunityResource.ts:103-109`). None of those callers request `source`, `discord_channel_id`, or `is_hidden`, so the downstream badge, jump-link, and hide logic proposed in the plan would have no inputs unless the callers themselves are revised.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "I traced the current callers that consume resource rows, and they all pass through the existing hooks with narrow assumptions about the payload: `useResources.ts` reads `id, type, name, description, admin_status, ...`, `useCommunityResources.ts` reads `id, name, description, type, lora_link, ...`, and `useCommunityResource.ts` reads `id, name, description, type, ...` (`useResources.ts:51-65`, `useCommunityResources.ts:118-124`, `useCommunityResource.ts:103-109`). None of those callers request `source`, `discord_channel_id`, or `is_hidden`, so the downstream badge, jump-link, and hide logic proposed in the plan would have no inputs unless the callers themselves are revised.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "callers-2",
+      "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: I also checked the direct callers of the UI surface the plan wants to edit. `rg -n \"ResourceModal\" banodoco-website/src` returns only the component definition and no imports/usages, which means there are currently no callers passing assets into that modal at all. The meaningful caller path today is the route-driven `ResourceDetail` page, so the proposed fix is landing at the wrong boundary unless the plan also restores or introduces actual `ResourceModal` usage.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "I also checked the direct callers of the UI surface the plan wants to edit. `rg -n \"ResourceModal\" banodoco-website/src` returns only the component definition and no imports/usages, which means there are currently no callers passing assets into that modal at all. The meaningful caller path today is the route-driven `ResourceDetail` page, so the proposed fix is landing at the wrong boundary unless the plan also restores or introduces actual `ResourceModal` usage.",
+      "raised_in": "critique_v1.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    }
+  ]
+}

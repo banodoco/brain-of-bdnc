@@ -1,0 +1,69 @@
+{
+  "output": "Completed batch 1 task `T1` using the approved staging fallback. The sibling workspace repo was audited for conflicting definitions and found clean, but direct-write to `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` was rejected by the sandbox, so the three migration files were staged in `brain-of-bndc/.migrations_staging/`, `/.migrations_staging/` was added to `.gitignore`, the staging handoff `README.md` was created, and the batch checkpoint was written to `.megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/execution_batch_1.json`. Verification confirmed the payments/admin files are exact source copies after the new headers, the payments RLS comment was preserved verbatim, and the social migration differs only by the required header plus the `REVOKE EXECUTE` reorder after the function definition.",
+  "files_changed": [
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.gitignore",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/README.md",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220000_backfill_payments.sql",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220100_backfill_admin_payment_intents.sql",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220200_backfill_social_publications.sql",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/execution_batch_1.json"
+  ],
+  "commands_run": [
+    "git -C /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc rev-parse --show-toplevel",
+    "git -C /Users/peteromalley/Documents/banodoco-workspace/supabase rev-parse --show-toplevel",
+    "ls -1 /Users/peteromalley/Documents/banodoco-workspace/supabase/migrations",
+    "rg -n \"wallet_registry|payment_channel_routes|payment_requests|admin_payment_intents|social_publications|social_channel_routes|claim_due_payment_requests|claim_due_social_publications\" /Users/peteromalley/Documents/banodoco-workspace/supabase/migrations",
+    "sed -n '1,260p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql",
+    "sed -n '1,260p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/admin_payment_intents.sql",
+    "sed -n '1,260p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/social_publications.sql",
+    "diff -u /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql <(tail -n +4 /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220000_backfill_payments.sql)",
+    "diff -u /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/admin_payment_intents.sql <(tail -n +5 /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220100_backfill_admin_payment_intents.sql)",
+    "python - <<'PY' ... verify social_publications staged content matches source except for the permitted revoke reorder ... PY",
+    "rg -n \"^/.migrations_staging/$\" /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.gitignore",
+    "python -m json.tool /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/execution_batch_1.json >/dev/null && echo json_ok",
+    "git -C /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc status --short .gitignore .migrations_staging /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/execution_batch_1.json",
+    "find /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging -maxdepth 1 -type f | sort"
+  ],
+  "deviations": [
+    "Direct-write to `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` was attempted first but rejected by sandbox policy because the sibling repo is outside writable roots; used the plan-approved `.migrations_staging/` fallback instead.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/execution_batch_1.json, .migrations_staging/20260411220000_backfill_payments.sql, .migrations_staging/20260411220100_backfill_admin_payment_intents.sql, .migrations_staging/20260411220200_backfill_social_publications.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.gitignore, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220000_backfill_payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220100_backfill_admin_payment_intents.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220200_backfill_social_publications.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC2 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment."
+  ],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "Audited `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` for pre-existing definitions of `wallet_registry`, `payment_channel_routes`, `payment_requests`, `admin_payment_intents`, `social_publications`, `social_channel_routes`, `claim_due_payment_requests`, and `claim_due_social_publications`; no conflicts were found. Direct-write was then attempted and rejected by the sandbox, so the fallback staging path was used. Created the three timestamped migration files in `.migrations_staging/` with prepended purpose/idempotency headers, preserved the payments RLS posture comment verbatim, added the admin FK dependency note, and moved the social `REVOKE EXECUTE` to after the function definition. Verified payments/admin staged files are exact copies of the source after stripping only the new header, and verified social matches exactly aside from the header and permitted revoke reorder.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.gitignore",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/README.md",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220000_backfill_payments.sql",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220100_backfill_admin_payment_intents.sql",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220200_backfill_social_publications.sql"
+      ],
+      "commands_run": [
+        "git -C /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc rev-parse --show-toplevel",
+        "git -C /Users/peteromalley/Documents/banodoco-workspace/supabase rev-parse --show-toplevel",
+        "ls -1 /Users/peteromalley/Documents/banodoco-workspace/supabase/migrations",
+        "rg -n \"wallet_registry|payment_channel_routes|payment_requests|admin_payment_intents|social_publications|social_channel_routes|claim_due_payment_requests|claim_due_social_publications\" /Users/peteromalley/Documents/banodoco-workspace/supabase/migrations",
+        "sed -n '1,260p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql",
+        "sed -n '1,260p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/admin_payment_intents.sql",
+        "sed -n '1,260p' /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/social_publications.sql",
+        "diff -u /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql <(tail -n +4 /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220000_backfill_payments.sql)",
+        "diff -u /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/admin_payment_intents.sql <(tail -n +5 /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.migrations_staging/20260411220100_backfill_admin_payment_intents.sql)",
+        "python - <<'PY' ... verify social_publications staged content matches source except for the permitted revoke reorder ... PY",
+        "rg -n \"^/.migrations_staging/$\" /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.gitignore"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "All three migration files exist in `.migrations_staging/` with the required `20260411220000`, `20260411220100`, and `20260411220200` prefixes. Payments retains the original RLS posture comment verbatim after the new header, admin_payment_intents carries the FK dependency note, social_publications has the `REVOKE EXECUTE` moved to after the `CREATE OR REPLACE FUNCTION`, and the staging fallback artifacts `.migrations_staging/README.md` plus the `/.migrations_staging/` `.gitignore` entry are present."
+    }
+  ]
+}

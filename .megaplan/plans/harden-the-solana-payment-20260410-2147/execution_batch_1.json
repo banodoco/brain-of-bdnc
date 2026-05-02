@@ -1,0 +1,198 @@
+{
+  "output": "Batch 1 completed. Tasks T1, T2, T3, T4, T6, T7, T11, and T12 are done; the batch checkpoint was written to .megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_1.json. Verification passed with `PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py` and `PYTHONPATH=. pytest tests/test_scheduler.py`, plus `python -m py_compile` on all touched Python files.",
+  "files_changed": [
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_1.json"
+  ],
+  "commands_run": [
+    "python -m megaplan config show",
+    "python -m megaplan progress --plan harden-the-solana-payment-20260410-2147",
+    "git log -p -S 'SOLANA_PRIVATE_KEY' -- .",
+    "git log -p -S 'HELIUS_API_KEY' -- .",
+    "git log -p -S 'ANTHROPIC_API_KEY' -- .",
+    "git log -p -S 'from_bytes' -- .",
+    "git log --all --full-history -- '**/*.env*' '**/.env' '**/secrets*'",
+    "git log -p -G 'sk-[a-zA-Z0-9]{20,}' --all",
+    "if command -v gitleaks >/dev/null 2>&1; then gitleaks detect --source . --no-banner; else echo 'gitleaks: not installed'; fi",
+    "git log -p -S 'ANTHROPIC_API_KEY' -- . | rg -n \"ANTHROPIC_API_KEY|sk-[A-Za-z0-9]{20,}|api_key\\s*=|os.getenv\\('ANTHROPIC_API_KEY'\\)\"",
+    "rg -n \"wallet_address|recipient_wallet|solana_address|\\baddress\\b|\\bwallet\\b\" src/features/admin_chat/tools.py",
+    "rg -n \"SOLANA_PRIVATE_KEY|HELIUS_API_KEY|ANTHROPIC_API_KEY|Keypair\\.from_bytes|Keypair\\(|SolanaClient\\(\" src -S",
+    "rg -n \"HELIUS_API_KEY\" src",
+    "rg -ni \"logger\\..*os\\.environ|logger\\..*(private_key|secret)\" src",
+    "PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py",
+    "PYTHONPATH=. pytest tests/test_scheduler.py",
+    "python -m py_compile src/features/payments/payment_service.py src/features/admin_chat/tools.py src/features/admin_chat/admin_chat_cog.py src/features/grants/grants_cog.py src/features/payments/payment_cog.py src/common/db_handler.py",
+    "python -m json.tool .megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_1.json >/tmp/execution_batch_1.validated.json && echo validated"
+  ],
+  "deviations": [
+    "Direct `pytest` collection failed in this environment because `src` was not on `PYTHONPATH`; full-module verification was rerun with `PYTHONPATH=.`.",
+    "`gitleaks` is not installed here, so that audit step could not run; the required git-history and regex-based audits were completed instead, and no real secret was found.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/harden-the-solana-payment-20260410-2147/execution_batch_1.json",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: src/features/grants/solana_client.py",
+    "Advisory quality: src/features/grants/solana_client.py adds unused imports: set_compute_unit_limit, set_compute_unit_price.",
+    "Advisory quality: src/features/payments/payment_service.py adds unused imports: DatabaseHandler.",
+    "Advisory quality: code changes lacked test updates: src/common/db_handler.py, src/features/admin_chat/admin_chat_cog.py, src/features/admin_chat/tools.py, src/features/grants/grants_cog.py, src/features/grants/solana_client.py, src/features/payments/payment_cog.py, src/features/payments/payment_service.py.",
+    "Advisory: done tasks rely on commands_run without files_changed (FLAG-006 softening): T3, T11",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, sql/payments.sql, src/common/db_handler.py, src/features/admin_chat/admin_chat_cog.py, src/features/admin_chat/tools.py, src/features/grants/grants_cog.py, src/features/grants/solana_client.py, src/features/payments/payment_cog.py, src/features/payments/payment_service.py, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "confirm_payment now fails closed unless privileged_override=True and both expected_user_id and confirmed_by_user_id are non-null and equal. Added inline call-site comments confirming matching recipient IDs at admin_chat_cog.py, grants_cog.py, and payment_cog.py. Verified with `PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py`, `PYTHONPATH=. pytest tests/test_scheduler.py`, and `python -m py_compile` on all touched Python files.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py"
+      ],
+      "commands_run": [
+        "sed -n '1,260p' src/features/payments/payment_service.py",
+        "sed -n '160,310p' src/features/admin_chat/admin_chat_cog.py",
+        "sed -n '540,615p' src/features/grants/grants_cog.py",
+        "sed -n '1,130p' src/features/payments/payment_cog.py",
+        "PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py",
+        "PYTHONPATH=. pytest tests/test_scheduler.py",
+        "python -m py_compile src/features/payments/payment_service.py src/features/admin_chat/tools.py src/features/admin_chat/admin_chat_cog.py src/features/grants/grants_cog.py src/features/payments/payment_cog.py src/common/db_handler.py"
+      ]
+    },
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Verified the P0 prompt-injection premise was already substantially satisfied: initiate_payment's schema accepts `recipient_user_id` / `amount_sol` / `reason` only, and the wallet lookup already comes from `wallet_registry`. Grep across `src/features/admin_chat/tools.py` found wallet-related strings only in redaction/listing helpers and row serializers, not as initiate_payment tool inputs. Added a docstring plus defensive `params.pop('wallet_address', None)` and `params.pop('recipient_wallet', None)` with redacted WARN logging at the top of `execute_initiate_payment`. Verified with the full admin payment and social publish modules plus `py_compile`.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py"
+      ],
+      "commands_run": [
+        "rg -n \"wallet_address|recipient_wallet|solana_address|\\baddress\\b|\\bwallet\\b\" src/features/admin_chat/tools.py",
+        "sed -n '520,660p' src/features/admin_chat/tools.py",
+        "sed -n '2430,2468p' src/features/admin_chat/tools.py",
+        "PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py",
+        "python -m py_compile src/features/admin_chat/tools.py"
+      ]
+    },
+    {
+      "task_id": "T3",
+      "status": "done",
+      "executor_notes": "Git history audit results: `git log -p -S 'SOLANA_PRIVATE_KEY' -- .` matched commits `2bed98390e5506f462a2bf709e350bc052332ccf` and `24f6b2f2599741e9acb63a30b1fc80d01ae39f79`, showing env-var names / `os.getenv` lookups and `Keypair.from_bytes(key_bytes)`, but no literal secret values. `git log -p -S 'HELIUS_API_KEY' -- .` returned no output. `git log -p -S 'ANTHROPIC_API_KEY' -- .` returned historical env-var lookups and placeholder examples only; targeted follow-up grep on that diff showed only `ANTHROPIC_API_KEY` env references / `api_key=os.getenv(...)`, no `sk-...` token material. `git log -p -S 'from_bytes' -- .` matched `24f6b2f2599741e9acb63a30b1fc80d01ae39f79` adding `Keypair.from_bytes(key_bytes)`. `git log --all --full-history -- '**/*.env*' '**/.env' '**/secrets*'` returned no output. `git log -p -G 'sk-[a-zA-Z0-9]{20,}' --all` returned no output. `gitleaks detect --source . --no-banner` could not run because `gitleaks` is not installed. No real secret was found, so execution continued.",
+      "files_changed": [],
+      "commands_run": [
+        "git log -p -S 'SOLANA_PRIVATE_KEY' -- .",
+        "git log -p -S 'HELIUS_API_KEY' -- .",
+        "git log -p -S 'ANTHROPIC_API_KEY' -- .",
+        "git log -p -S 'from_bytes' -- .",
+        "git log --all --full-history -- '**/*.env*' '**/.env' '**/secrets*'",
+        "git log -p -G 'sk-[a-zA-Z0-9]{20,}' --all",
+        "if command -v gitleaks >/dev/null 2>&1; then gitleaks detect --source . --no-banner; else echo 'gitleaks: not installed'; fi",
+        "git log -p -S 'ANTHROPIC_API_KEY' -- . | rg -n \"ANTHROPIC_API_KEY|sk-[A-Za-z0-9]{20,}|api_key\\s*=|os.getenv\\('ANTHROPIC_API_KEY'\\)\""
+      ]
+    },
+    {
+      "task_id": "T4",
+      "status": "done",
+      "executor_notes": "Added `DatabaseHandler.has_active_payment_or_intent(guild_id, discord_user_id)` with `_gate_check` + supabase guard. Verified `admin_payment_intents` statuses against `sql/admin_payment_intents.sql` and `db_handler.create_admin_payment_intent` before coding: `awaiting_wallet`, `awaiting_test`, `awaiting_confirmation`, `confirmed`, `completed`, `failed`, `cancelled`. The helper treats `completed/failed/cancelled` as terminal for `admin_payment_intents` and `confirmed/failed/manual_hold/cancelled` as terminal for `payment_requests`, matching the batch instructions.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "sed -n '1400,1885p' src/common/db_handler.py",
+        "sed -n '1,120p' sql/admin_payment_intents.sql",
+        "python -m py_compile src/common/db_handler.py"
+      ]
+    },
+    {
+      "task_id": "T6",
+      "status": "done",
+      "executor_notes": "Reworked `PaymentService.request_payment` to be index-aware. Added the `get_payment_requests_by_producer` invariant comment that all statuses are returned. `request_payment` now defines `INDEX_EXCLUDED={'failed','cancelled'}` and `TERMINAL_FOR_RETURN={'confirmed','failed','manual_hold','cancelled'}`, scans prior rows once, blocks different-wallet collisions when any non-index-excluded prior row exists (Branch B: WARN + `on_cap_breach` payload is the prior row + return `None` without insert), only returns an idempotent row when it is active and same-wallet, creates a fresh `manual_hold` row with `last_error='idempotency collision: prior wallet differs'` when only failed/cancelled rows exist (Branch A), and applies the same wallet-mismatch check in the post-insert duplicate reread path. Verified with the full admin payment, social publish, and scheduler modules plus `py_compile`.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py",
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "sed -n '1,260p' src/features/payments/payment_service.py",
+        "sed -n '1850,1935p' src/common/db_handler.py",
+        "PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_social_publish_service.py",
+        "PYTHONPATH=. pytest tests/test_scheduler.py",
+        "python -m py_compile src/features/payments/payment_service.py src/common/db_handler.py"
+      ]
+    },
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "Added `DatabaseHandler.get_rolling_24h_payout_usd(guild_id, provider)` returning a float sum of `amount_usd` for non-test `payment_requests` in statuses `pending_confirmation/queued/processing/submitted/confirmed` with `created_at >= now-24h`. The helper comment explicitly documents the residual Supabase REST burst-race window (`~100-500 ms`) and that it depends on T8 persisting derived `amount_usd` for capped amount_token-only callers.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "sed -n '1850,1995p' src/common/db_handler.py",
+        "python -m py_compile src/common/db_handler.py"
+      ]
+    },
+    {
+      "task_id": "T11",
+      "status": "done",
+      "executor_notes": "Log audit results: `rg -n \"SOLANA_PRIVATE_KEY|HELIUS_API_KEY|ANTHROPIC_API_KEY|Keypair\\.from_bytes|Keypair\\(|SolanaClient\\(\" src -S` returned only env-var lookups in `src/common/llm/claude_client.py`, `src/features/admin_chat/agent.py`, `src/features/admin_chat/admin_chat_cog.py`, `src/features/summarising/subfeatures/news_summary.py`, `src/features/grants/solana_client.py`, and `src/features/payments/solana_provider.py`. `rg -n \"HELIUS_API_KEY\" src` returned no matches. `rg -ni \"logger\\..*os\\.environ|logger\\..*(private_key|secret)\" src` returned no matches. Review of `src/features/grants/solana_client.py` and `src/features/payments/solana_provider.py` found no logger call that emits env vars or key material around `Keypair.from_bytes` / `SolanaClient` construction. No leak detected, no code change.",
+      "files_changed": [],
+      "commands_run": [
+        "rg -n \"SOLANA_PRIVATE_KEY|HELIUS_API_KEY|ANTHROPIC_API_KEY|Keypair\\.from_bytes|Keypair\\(|SolanaClient\\(\" src -S",
+        "rg -n \"HELIUS_API_KEY\" src",
+        "rg -ni \"logger\\..*os\\.environ|logger\\..*(private_key|secret)\" src",
+        "sed -n '1,220p' src/features/grants/solana_client.py",
+        "sed -n '1,120p' src/features/payments/solana_provider.py"
+      ]
+    },
+    {
+      "task_id": "T12",
+      "status": "done",
+      "executor_notes": "Added the required RLS posture comment block at the very top of `sql/payments.sql`. Verified it covers already-enabled status, service-role-only access via `DatabaseHandler`, revoked `anon/authenticated` access, parameterized writes via `supabase-py`, and the requirement to add explicit policies before changing posture. Diff check confirmed this task is comment-only and added zero `ALTER TABLE` statements.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql"
+      ],
+      "commands_run": [
+        "sed -n '1,20p' sql/payments.sql",
+        "git diff -- sql/payments.sql"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "Verified `confirm_payment` now rejects when `expected_user_id` is `None`, `confirmed_by_user_id` is `None`, or the IDs differ unless `privileged_override=True`, and each listed call site now has a one-line matching-recipient comment."
+    },
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "Verified `initiate_payment` schema does not accept `wallet_address` / `recipient_wallet` inputs, `execute_initiate_payment` now pops both keys with a WARN log, and the task notes explicitly state the prompt-injection premise was already substantially satisfied."
+    },
+    {
+      "sense_check_id": "SC3",
+      "executor_note": "Ran all required git-history audit commands, recorded the outputs in the task notes, and found no real secret that required stopping execution."
+    },
+    {
+      "sense_check_id": "SC4",
+      "executor_note": "Verified `admin_payment_intents` enum values from `sql/admin_payment_intents.sql` before coding and used the correct non-terminal status predicates for both `payment_requests` and `admin_payment_intents` in `has_active_payment_or_intent`."
+    },
+    {
+      "sense_check_id": "SC6",
+      "executor_note": "Verified `INDEX_EXCLUDED` and `TERMINAL_FOR_RETURN` exist, collision detection runs before same-wallet idempotent return, Branch A inserts `manual_hold` only when all prior rows are failed/cancelled, Branch B returns `None` without insert when any non-excluded prior row exists, and the duplicate reread path also rejects wallet mismatches."
+    },
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "Verified `get_rolling_24h_payout_usd` filters the correct statuses, excludes `is_test` rows, returns a float sum of `amount_usd`, and documents both the residual burst-race window and the T8 persistence dependency."
+    },
+    {
+      "sense_check_id": "SC11",
+      "executor_note": "Completed the required grep-based log audit, confirmed no logger path emits env vars / private keys / secrets, and recorded `no leak detected, no code change`."
+    },
+    {
+      "sense_check_id": "SC12",
+      "executor_note": "Verified the RLS posture block is at the top of `sql/payments.sql`, covers all required points, and the diff is comment-only with no `ALTER TABLE` additions."
+    }
+  ]
+}

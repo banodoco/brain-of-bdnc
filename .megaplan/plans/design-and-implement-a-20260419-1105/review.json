@@ -1,0 +1,116 @@
+{
+  "review_verdict": "approved",
+  "checks": [],
+  "pre_check_flags": [],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": [],
+  "criteria": [
+    {
+      "name": "A new `moderation_decisions` migration SQL file exists under `.migrations_staging/` with the full column set and a CHECK constraint covering exactly {bot_auto_restricted, bot_curator_reject, user_self_removal, moderator_cleared_all, moderator_cleared_emoji, message_deleted_cascade}.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "`DatabaseHandler.record_moderation_decision`, `get_active_reactors`, and `get_message_snapshot` exist in `src/common/db_handler.py` and are gated via `_gate_check` where they perform writes.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "ReactorCog exposes `register_bot_removal(message_id, user_id, emoji_str, classification, reason=None)` that stores a marker consumed by `on_raw_reaction_remove`.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "The restricted-emoji branch in `reactor_cog.on_raw_reaction_add` records a `bot_auto_restricted` moderation_decision with reason in {flag, political, religious} and registers a marker before calling `message.remove_reaction`.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "All 4 `message.remove_reaction('\u274c', user)` sites in `src/features/curating/curator.py` (lines 296, 339, 460, 472) are preceded by a `register_bot_removal(..., 'bot_curator_reject', reason='curator_reject')` call.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "`on_raw_reaction_remove` writes a `user_self_removal` decision when no marker is present; when a marker is present, it writes exactly one decision using the marker's classification/reason and does not also write `user_self_removal`.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "Self-removal of \ud83e\udd2e, \ud83d\udc4e, or \ud83d\ude2d sets `is_suspicious=true` and DMs `ADMIN_USER_ID` via the base_bot.py admin-DM pattern with a jump link, reactor mention, emoji, and content snippet.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "`on_raw_reaction_clear` writes one `moderator_cleared_all` row per active reactor enumerated from `discord_reactions`; `on_raw_reaction_clear_emoji` writes one `moderator_cleared_emoji` row per active reactor matching `payload.emoji`.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "`on_raw_message_delete` on ReactorCog writes one `message_deleted_cascade` row per active reactor, populated with author/content from `get_message_snapshot`.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "`tests/test_moderation_decisions.py` passes and covers all scenarios listed in Step 7.2.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "Full existing test suite (`pytest -q`) passes with no regressions in reactor/logger/curator tests.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "No new config surfaces, env vars, or feature flags added beyond reusing existing ADMIN_USER_ID.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "Message content snippet is truncated to 200 characters at call sites.",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "Marker TTL (~60s) pruning happens on each register call to bound memory.",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "`_is_restricted_emoji` is refactored into `_classify_restricted_emoji` returning {flag, political, religious, None}; boolean callers updated.",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    },
+    {
+      "name": "Manual smoke in dev Discord: flag reaction \u2192 bot_auto_restricted row; admin rejects a message via curator \u2192 bot_curator_reject row; \ud83e\udd2e self-retract \u2192 admin DM + suspicious row; moderator clears all \u2192 N rows; message deletion \u2192 N cascade rows.",
+      "priority": "info",
+      "pass": "deferred_human",
+      "evidence": "Requires human verification capabilities."
+    },
+    {
+      "name": "Migration file manually copied into `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` before deploy.",
+      "priority": "info",
+      "pass": "pass",
+      "evidence": "Light robustness: auto-approved."
+    }
+  ],
+  "issues": [],
+  "rework_items": [],
+  "summary": "Light robustness: review skipped; stub written for artifact parity.",
+  "task_verdicts": [],
+  "sense_check_verdicts": []
+}

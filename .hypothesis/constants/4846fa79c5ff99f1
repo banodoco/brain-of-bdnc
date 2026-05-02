@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/../src/common/server_config.py
+# hypothesis_version: 6.151.11
+
+[0.0, '*', '60', 'DiscordBot', 'GUILD_ID', 'channel_id', 'confirm', 'confirm_channel_id', 'confirm_thread_id', 'content', 'content_key', 'default_archiving', 'discord_channels', 'enabled', 'guild_id', 'id', 'notify', 'notify_channel_id', 'notify_thread_id', 'null', 'parent_id', 'platform', 'producer', 'route_config', 'route_key', 'server_config', 'server_content', 'sharing', 'source', 'source_channel', 'source_thread', 'target', 'twitter', 'use_source_thread', 'write_enabled', 'x']

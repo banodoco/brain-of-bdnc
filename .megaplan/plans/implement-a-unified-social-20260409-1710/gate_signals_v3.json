@@ -1,0 +1,251 @@
+{
+  "robustness": "standard",
+  "signals": {
+    "iteration": 3,
+    "idea": "Implement a unified social publishing system that preserves current immediate Twitter/X posting, adds scheduled queueing for tweets/replies/retweets, tracks success and failure, and is extensible to multiple outbound channels/platforms with per-channel routing and configuration.",
+    "significant_flags": 4,
+    "unresolved_flags": [
+      {
+        "id": "correctness",
+        "concern": "Are the proposed changes technically correct?: Checked db_handler.py write patterns: the codebase uses both execute_query (raw SQL via supabase_query_handler) and direct Supabase client fluent calls (e.g., .table().upsert().execute()). The plan proposes RPC for atomic claiming but doesn't clarify whether normal CRUD on social_publications will use the fluent client pattern or raw SQL. Both work, but mixing three access patterns (fluent, raw SQL, RPC) in one subsystem increases maintenance surface.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "all_locations",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The admin agent system prompt in agent.py line 38 lists queryable tables including shared_posts. The plan Step 6.5-6.6 covers updating tool descriptions and prompt text, but doesn't explicitly mention adding social_publications and social_channel_routes to the query_table whitelist in tools.py (line 70 and 1637). Missing these would make the new tables invisible to the admin agent.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "issue_hints",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: The plan's assumption that Supabase RPC is available is stated but the codebase has zero existing RPC usage. While the supabase>=1.0.0 client does support `.rpc()`, this is an untested integration pattern in this project and may require additional Supabase dashboard configuration (creating the SQL function). The plan does not call out this operational prerequisite explicitly.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "scope",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The plan introduces a new social_channel_routes table for per-channel routing configuration, but does not specify how routes are initially populated or managed. There's no admin command or migration step described for creating route entries, which means the routing system will be inert until someone manually inserts rows. The plan should clarify whether guild-default routing is the only first-release path or whether route management tooling is in scope.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      }
+    ],
+    "resolved_flags": [
+      {
+        "id": "FLAG-001",
+        "concern": "Social publishing: Legacy `shared_posts` compatibility collides with multi-action post/reply/retweet publishing.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "FLAG-002",
+        "concern": "Reaction bridge: Unified request shape is underspecified for consent, moderation, and reactor-facing side effects.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "FLAG-003",
+        "concern": "Queue claiming: Atomic claim/update semantics are not accounted for in the current Supabase access pattern.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "FLAG-004",
+        "concern": "Admin tooling: The plan omits the prompt and query-surface updates needed to inspect scheduled and failed publications.",
+        "resolution": "`QUERYABLE_TABLES` in `src/features/admin_chat/tools.py` only includes `shared_posts`, and `src/features/admin_chat/agent.py` still documents the old Twitter-only `share_to_social` arguments and table list."
+      },
+      {
+        "id": "issue_hints-1",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Flagged that admin-chat still exposes only the old Twitter-only `share_to_social` contract and `shared_posts`, so scheduling/failure tracking are not yet accounted for in the operator surface.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "issue_hints-2",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Flagged that the reaction consent bridge has moderation and DM side effects beyond publishing, and the plan does not explicitly preserve them when unifying onto the admin-chat-style request path.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "correctness-1",
+        "concern": "Are the proposed changes technically correct?: Flagged that blanket `shared_posts` compatibility is structurally incompatible with multiple `post|reply|retweet` outcomes for one Discord message because current duplicate/delete lookups assume one legacy row per message/platform.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "correctness-2",
+        "concern": "Are the proposed changes technically correct?: Flagged that `claim_due_social_publications` needs an explicit DB-atomic claim strategy; the current Supabase access pattern in `DatabaseHandler` does not provide one.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "correctness-3",
+        "concern": "Are the proposed changes technically correct?: Flagged that retweet deletion remains underspecified because the current delete path only calls the normal tweet-delete API.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "scope-1",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: Flagged that summary-triggered sharing also calls `finalize_sharing()` and is not mentioned in the rewiring steps even though it shares the same side effects and should move with the unified service.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "scope-2",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: Flagged that `notify_user.py` is part of the same subsystem because it still deletes via `social_poster.delete_tweet` and updates `shared_posts` directly.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "all_locations-1",
+        "concern": "Worker lifecycle: Recurring debt: scheduled worker startup is still ambiguous against the repository's real `SharingCog` load path.",
+        "resolution": "No open flag points to the wrong subsystem or a wrong root-cause diagnosis. The plan still belongs in the sharing stack, but it now closes the two remaining design holes explicitly: the scheduler is tied to the active `SharingCog` lifecycle used by `main.py` instead of the dead-end `setup()` path, and first-share notification and delete flows now carry a canonical `publication_id` so deletion targets one `social_publications` record even when a Discord message has multiple publications."
+      },
+      {
+        "id": "all_locations-2",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: Flagged that admin observability/supporting infrastructure is missing because the built-in query surface and prompt still expose only `shared_posts` and the old tool arguments.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "callers-1",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Flagged that admin chat and the reaction bridge pass materially different publish inputs, so the normalized request must carry bridge-specific metadata instead of mirroring the admin path only.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "callers-2",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Flagged that admin replies currently default to `text_only=True` in `execute_share_to_social()`, and that caller-specific rule can regress if normalization moves without preserving it.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "callers-3",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: Flagged that duplicate detection must stay action-aware because current callers suppress duplicates only for non-reply `finalize_sharing()` calls, while reaction `send_tweet()` does not suppress duplicates at all.",
+        "resolution": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract."
+      },
+      {
+        "id": "FLAG-005",
+        "concern": "Sharing deletion identity: Post-share delete flows need a canonical publication identifier once one Discord message can map to multiple `post|reply|retweet` records.",
+        "resolution": "No open flag points to the wrong subsystem or a wrong root-cause diagnosis. The plan still belongs in the sharing stack, but it now closes the two remaining design holes explicitly: the scheduler is tied to the active `SharingCog` lifecycle used by `main.py` instead of the dead-end `setup()` path, and first-share notification and delete flows now carry a canonical `publication_id` so deletion targets one `social_publications` record even when a Discord message has multiple publications."
+      }
+    ],
+    "weighted_score": 6.5,
+    "weighted_history": [
+      26.5,
+      7.0
+    ],
+    "plan_delta_from_previous": 32.29,
+    "recurring_critiques": [],
+    "scope_creep_flags": [],
+    "loop_summary": "Iteration 3. Weighted score trajectory: 26.5 -> 7.0 -> 6.5. Plan deltas: 90.0%, 32.3%. Recurring critiques: 0. Resolved flags: 17. Open significant flags: 4.",
+    "debt_overlaps": [],
+    "escalated_debt_subsystems": []
+  },
+  "warnings": [],
+  "criteria_check": {
+    "count": 13,
+    "items": [
+      {
+        "criterion": "An immediate `share_to_social` request without `schedule_for` still publishes to X and returns a concrete success payload with `tweet_url` and `tweet_id`.",
+        "priority": "must"
+      },
+      {
+        "criterion": "A scheduled publication can be created for `post`, `reply`, and `retweet`, and each job ends in a durable terminal state such as `succeeded` or `failed` with timestamps, attempt counts, and error details.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Admin-triggered sharing, summary-triggered sharing, and reaction-consent publishing all execute through the same unified publish service while preserving their existing caller-specific moderation, consent, DM, and announcement behavior.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Per-channel routing resolves in the order channel override, parent channel, guild default, and only runs when the existing `sharing_enabled` gate allows it.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Canonical publication records, not `shared_posts`, drive duplicate and delete decisions so multi-action `post|reply|retweet` publishing for one Discord message does not corrupt state.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Due-job claiming is implemented as a DB-atomic primitive in the checked-in SQL artifact and prevents double execution across restarts or overlapping workers.",
+        "priority": "must"
+      },
+      {
+        "criterion": "The scheduler reuses the repo's `discord.ext.tasks.loop` pattern and starts and stops from the active `SharingCog` lifecycle used by `main.py`, not only from the module `setup()` helper.",
+        "priority": "must"
+      },
+      {
+        "criterion": "First-share notification and delete flows carry a canonical `publication_id`, and delete actions resolve that specific publication record instead of inferring identity only from `discord_message_id` and `tweet_id`.",
+        "priority": "must"
+      },
+      {
+        "criterion": "The admin and operator surface can both create scheduled publications and inspect queued, processing, failed, cancelled, and succeeded publication records without relying only on `shared_posts`.",
+        "priority": "must"
+      },
+      {
+        "criterion": "Caller-specific defaults remain intact, including admin replies defaulting to `text_only=True` unless explicitly overridden and reaction-consent publishes not inheriting unintended duplicate suppression.",
+        "priority": "must"
+      },
+      {
+        "criterion": "The scheduler logs publication id, platform, action, and final provider error for recovery and manual replay.",
+        "priority": "should"
+      },
+      {
+        "criterion": "The platform integration boundary is provider-based so adding a second outbound platform does not require rewriting admin, summary, or reaction caller code.",
+        "priority": "should"
+      },
+      {
+        "criterion": "Manual smoke tests on a real X account pass for immediate post, scheduled post, scheduled reply, scheduled retweet, failed publish visibility, and delete compatibility for a delete-supported X post.",
+        "priority": "info"
+      }
+    ]
+  },
+  "preflight_results": {
+    "project_dir_exists": true,
+    "project_dir_writable": true,
+    "success_criteria_present": true,
+    "claude_available": true,
+    "codex_available": true
+  },
+  "unresolved_flags": [
+    {
+      "id": "correctness",
+      "concern": "Are the proposed changes technically correct?: Checked db_handler.py write patterns: the codebase uses both execute_query (raw SQL via supabase_query_handler) and direct Supabase client fluent calls (e.g., .table().upsert().execute()). The plan proposes RPC for atomic claiming but doesn't clarify whether normal CRUD on social_publications will use the fluent client pattern or raw SQL. Both work, but mixing three access patterns (fluent, raw SQL, RPC) in one subsystem increases maintenance surface.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Checked db_handler.py write patterns: the codebase uses both execute_query (raw SQL via supabase_query_handler) and direct Supabase client fluent calls (e.g., .table().upsert().execute()). The plan proposes RPC for atomic claiming but doesn't clarify whether normal CRUD on social_publications will use the fluent client pattern or raw SQL. Both work, but mixing three access patterns (fluent, raw SQL, RPC) in one subsystem increases maintenance surface.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": true,
+      "addressed_in": "plan_v3.md",
+      "verified_in": "critique_v3.json"
+    },
+    {
+      "id": "all_locations",
+      "concern": "Does the change touch all locations AND supporting infrastructure?: The admin agent system prompt in agent.py line 38 lists queryable tables including shared_posts. The plan Step 6.5-6.6 covers updating tool descriptions and prompt text, but doesn't explicitly mention adding social_publications and social_channel_routes to the query_table whitelist in tools.py (line 70 and 1637). Missing these would make the new tables invisible to the admin agent.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The admin agent system prompt in agent.py line 38 lists queryable tables including shared_posts. The plan Step 6.5-6.6 covers updating tool descriptions and prompt text, but doesn't explicitly mention adding social_publications and social_channel_routes to the query_table whitelist in tools.py (line 70 and 1637). Missing these would make the new tables invisible to the admin agent.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": true,
+      "addressed_in": "plan_v3.md",
+      "verified_in": "critique_v3.json"
+    },
+    {
+      "id": "issue_hints",
+      "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: The plan's assumption that Supabase RPC is available is stated but the codebase has zero existing RPC usage. While the supabase>=1.0.0 client does support `.rpc()`, this is an untested integration pattern in this project and may require additional Supabase dashboard configuration (creating the SQL function). The plan does not call out this operational prerequisite explicitly.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan's assumption that Supabase RPC is available is stated but the codebase has zero existing RPC usage. While the supabase>=1.0.0 client does support `.rpc()`, this is an untested integration pattern in this project and may require additional Supabase dashboard configuration (creating the SQL function). The plan does not call out this operational prerequisite explicitly.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "scope",
+      "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The plan introduces a new social_channel_routes table for per-channel routing configuration, but does not specify how routes are initially populated or managed. There's no admin command or migration step described for creating route entries, which means the routing system will be inert until someone manually inserts rows. The plan should clarify whether guild-default routing is the only first-release path or whether route management tooling is in scope.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan introduces a new social_channel_routes table for per-channel routing configuration, but does not specify how routes are initially populated or managed. There's no admin command or migration step described for creating route entries, which means the routing system will be inert until someone manually inserts rows. The plan should clarify whether guild-default routing is the only first-release path or whether route management tooling is in scope.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    }
+  ]
+}

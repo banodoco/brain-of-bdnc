@@ -1,0 +1,21 @@
+{
+  "checks": [],
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Admin-chat message lifecycle: the plan reuses `receipt_prompt_message_id` for the single status message, but `PaymentUICog` still posts its own \"queued for sending\" channel update and then deletes `receipt_prompt_message_id` on admin approval. That means the status message would be removed before the final reply, and the flow would still emit an extra public message.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "On admin approval, `src/features/payments/payment_ui_cog.py:141-143` always calls `_post_admin_approval_thread_update(payment)` and `_cleanup_admin_intent_messages(payment)`. `_post_admin_approval_thread_update` sends `Payment to <@...> queued for sending.` at `src/features/payments/payment_ui_cog.py:550-559`, while `_cleanup_admin_intent_messages` deletes `prompt_message_id` and `receipt_prompt_message_id` at `src/features/payments/payment_ui_cog.py:567-584`. The plan explicitly says to point `receipt_prompt_message_id` at the edited status message, so this cleanup would delete the shared status message."
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "DB handler error contract: Step 2 says unrelated `update_admin_payment_intent` errors should not be swallowed, but this helper currently returns `None` on all failures and many callers rely on that contract for fail-closed recovery. Turning non-`status_message_id` failures into exceptions would bypass existing recovery paths and change behavior far outside this feature.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/common/db_handler.py:2143-2161` currently catches exceptions, logs, and returns `None`. Callers such as `src/features/admin_chat/admin_chat_cog.py:771-773` and `src/features/admin_chat/admin_chat_cog.py:703-710` branch on a falsey return to notify admin review rather than handling exceptions. The plan's Step 2 says 'Do not swallow unrelated errors', which implies raising from a method whose current callers are written against a `None`-on-failure contract."
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

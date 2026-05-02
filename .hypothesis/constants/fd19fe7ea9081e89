@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/sharing/providers/x_provider.py
+# hypothesis_version: 6.151.11
+
+['DiscordBot', 'action', 'delete_supported', 'id', 'original_content', 'provider_ref', 'provider_url', 'quote', 'reply', 'retweet', 'screen_name', 'tweet_id', 'tweet_url', 'url', 'user', 'user_details']

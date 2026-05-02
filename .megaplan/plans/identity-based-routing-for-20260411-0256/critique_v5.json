@@ -1,0 +1,131 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "guidance": "Cross-check the result against explicit user notes, critique corrections, and watch items. Flag anything the implementation ignored, contradicted, or only partially covered.",
+      "findings": [
+        {
+          "detail": "Checked Revision 5's new `awaiting_admin_init` batch path against the approved verified-wallet fast-path description. The plan restores atomic intent creation by inserting verified batch rows first in `awaiting_admin_init` and only later creating the real payment and moving to `awaiting_admin_approval`, so it no longer literally follows the brief's 'verified wallet goes straight to the real-payment/admin-approval path at intent creation time' approach. That may be a justified tradeoff for batch atomicity, but it is still a concrete divergence from the original requirement and should stay flagged for the gate to judge.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked prior `FLAG-016` against Revision 5 Step 13. The revised plan now uses one `create_admin_payment_intents_batch(...)` call for all batch rows before any per-entry fan-out, so the earlier Revision 4 problem of verified entries bypassing whole-batch atomic intent creation is actually fixed at the intent-insert layer.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked Revision 4 Step 13 against the explicit brief and fail-to-pass expectation for `initiate_batch_payment` to be atomic all-or-none. The revised plan now partitions verified recipients out of the single Supabase batch insert and processes them one-by-one through `_gate_fresh_intent_atomic(...)`, so a mixed or all-verified batch can partially succeed before a later verified entry errors or the process dies. That is still a real divergence from the original batch contract, even though the plan documents it as a tradeoff.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked prior `FLAG-012` against Revision 4 Steps 4 and 18. The plan no longer falls back to `PaymentConfirmView` for new-flow `producer='admin_chat'` real payments after a crash; instead it runs an orphan-payment sweep before view registration and leaves `PaymentConfirmView` only for legacy `awaiting_confirmation` rows. That addresses the earlier regression where crash recovery reintroduced recipient confirmation for the new admin-only approval flow.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "guidance": "Look for logic errors, invalid assumptions, broken invariants, schema mismatches, or behavior that would fail at runtime. When the fix adds a conditional branch, check whether it handles all relevant cases \u2014 not just the one reported in the issue.",
+      "findings": [
+        {
+          "detail": "Checked the new `awaiting_admin_init` cleanup path against actual sweep scheduling in the repo. `PaymentUICog` currently has only `cog_load()` and no `@tasks.loop`, while the only recurring payment loop today is `PaymentWorkerCog.payment_worker` at `src/features/payments/payment_worker_cog.py:92`; Revision 5 also keeps the new 24h timeout loop in `AdminChatCog`, not `PaymentUICog`. Because Revision 5 only wires `_reconcile_admin_chat_orphans()` into `PaymentUICog.cog_load()`, stale `awaiting_admin_init` rows are not automatically cancelled 'within 5 minutes' during normal uptime; they are only handled on startup or if someone manually runs the sweep.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked prior `FLAG-015` against Revision 5 Step 18 and current startup order in `main.py:257-274` plus the existing `PaymentUICog`-only tests in `tests/test_payment_cog_split.py:58-63` and `tests/test_scheduler.py:423-431`. Moving the orphan sweep into `PaymentUICog` itself does remove the broken `AdminChatCog` dependency that Revision 4 introduced, so the earlier load-order flag is actually resolved.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked Step 18's startup-ordering guarantee against current bootstrap and test setup. In `main.py:257-274`, `PaymentUICog` is added before `AdminChatCog`, and `tests/test_payment_cog_split.py:58-63` plus `tests/test_scheduler.py:423-431` call `PaymentUICog.cog_load()` with no admin-chat cog loaded at all. A new `PaymentUICog.cog_load()` dependency on `bot.admin_chat_cog.reconcile_orphan_payments_for_ui_cog()` would therefore fail unless the plan also changes bootstrap order or makes the UI cog tolerant of the admin-chat cog being absent.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked prior `FLAG-014` against Revision 4 Step 20 and the existing linked-payment cleanup path in `src/features/admin_chat/admin_chat_cog.py:616-620` plus `src/common/db_handler.py:2402-2420`. The revised plan now cascade-cancels linked `test_payment_id` and `final_payment_id` before writing the intent row to `cancelled`, which matches the repo's current recipient-decline semantics and closes the earlier orphan-payment gap in `resolve_admin_intent`.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "guidance": "Look at how the changed function is used across the codebase. Does the fix only address one caller's scenario while others remain broken? Flag missing required work or out-of-scope edits. A minimal patch is often right, but check whether the underlying problem is bigger than what the issue describes.",
+      "findings": [
+        {
+          "detail": "Checked the broader effects of leaving `awaiting_admin_init` in the active set. `get_active_intent_for_recipient(...)`, `list_active_intents(...)`, and `has_active_payment_or_intent(...)` all treat any non-terminal intent as active today, so a verified batch entry stranded in `awaiting_admin_init` will block fresh initiations and wallet updates for that recipient until restart or manual resolution. Because the only cleanup described for this state is startup-time, the impact is broader than a one-off batch fan-out hiccup and spills into every caller that relies on the repo's existing 'active intent' concept.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the broader storage/transaction model behind Revision 4's batch design. The repo only has single-table atomicity here (`create_admin_payment_intent(...)` inserts one intent row and the only payment-side atomic helper is the unrelated `claim_due_payment_requests` RPC), so the plan works around that by giving `initiate_batch_payment` two different semantics: unverified entries are atomic as a group, while verified entries are only atomic per entry and rely on later orphan cancellation. That is a broader contract change to the batch feature, not just an internal implementation choice, and it should stay flagged until the plan either restores whole-batch atomicity or explicitly changes the requirement.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked prior `FLAG-013` against Revision 4 Steps 9, 11, and 13 and the current `awaiting_wallet` routing in `src/features/admin_chat/admin_chat_cog.py:546-553` and `src/features/admin_chat/admin_chat_cog.py:585-593`. Revision 4 removes the verified-wallet placeholder in `awaiting_wallet`, so the earlier risk of a verified recipient being re-routed into wallet collection or test-payment startup during reconciliation is actually gone.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "guidance": "Search for all instances of the symbol/pattern being changed. Also ask: does this feature require setup, registration, or integration code beyond the core logic? Missing glue code causes test failures even when the core fix is correct.",
+      "findings": [
+        {
+          "detail": "Checked all supporting infrastructure for the new 5-minute stale-`awaiting_admin_init` promise. The plan adds schema work and a `list_stale_awaiting_admin_init_intents(...)` helper, but unlike the existing recurring infrastructure in `src/features/payments/payment_worker_cog.py:92` and the new 24h timeout loop described for `AdminChatCog`, it does not add any periodic invocation of `PaymentUICog._reconcile_admin_chat_orphans()`. That means the scheduling glue required to make `awaiting_admin_init` self-healing outside startup is still missing.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked all supporting locations touched by the new orphan-sweep dependency. Besides `PaymentUICog.cog_load`, the change also needs bootstrap and harness updates because `main.py:257-274` loads `PaymentUICog` before `AdminChatCog`, `tests/test_payment_cog_split.py:58-63` exercises `PaymentUICog.cog_load()` without any admin-chat cog, and `tests/test_scheduler.py:423-431` does the same. Revision 4 describes the new accessor and ordering guarantee, but it does not explicitly include these supporting locations in the work, so the integration glue is incomplete as written.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "guidance": "Grep for call sites. For each caller, check what values it passes \u2014 especially edge cases like None, zero, empty, or composite inputs. Then ask: should this change be here, or in a caller, callee, or new method?",
+      "findings": [
+        {
+          "detail": "Checked the caller-visible effect of `awaiting_admin_init` on the repo's existing guards. `has_active_payment_or_intent(...)` at `src/common/db_handler.py:1575-1601` and `get_active_intent_for_recipient(...)` at `src/common/db_handler.py:1842-1865` will both treat `awaiting_admin_init` as active, so after a mid-fan-out error the same recipient's future `initiate_payment`, `initiate_batch_payment`, and wallet-upsert flows will keep hitting active-intent blockers until the next startup sweep or manual admin resolution. Revision 5 does not provide a live caller path that clears this state without a restart.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the actual callers of `PaymentUICog.cog_load()` and the bot contract they provide. Current callers instantiate `PaymentUICog(bot, ...)` and await `cog_load()` directly; the `FakeBot` used in `tests/test_payment_cog_split.py:31-45` exposes `get_cog(...)` but no `admin_chat_cog` attribute or reconciliation accessor, and production startup in `main.py` likewise reaches `PaymentUICog` before `AdminChatCog`. If Step 18 is implemented at the caller boundary exactly as written, those callers will break until they are updated or the dependency is inverted.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "id": "FLAG-017",
+      "concern": "Payment UI recovery: Revision 5 treats stale `awaiting_admin_init` cleanup as if it will happen within 5 minutes, but `_reconcile_admin_chat_orphans()` is only scheduled from `PaymentUICog.cog_load()`, so stranded verified-batch intents remain active until restart or manual intervention.",
+      "category": "correctness",
+      "severity_hint": "significant",
+      "evidence": "src/features/payments/payment_ui_cog.py has `cog_load()` but no `@tasks.loop`; src/features/payments/payment_worker_cog.py:92 is the only existing recurring payment loop; src/common/db_handler.py:1575-1601 and :1842-1865 treat non-terminal intents like `awaiting_admin_init` as active blockers."
+    }
+  ],
+  "verified_flag_ids": [
+    "FLAG-015",
+    "FLAG-016"
+  ],
+  "disputed_flag_ids": []
+}

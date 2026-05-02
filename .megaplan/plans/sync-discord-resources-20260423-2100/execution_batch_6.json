@@ -1,0 +1,68 @@
+{
+  "output": "Batch 6 partially completed. T15 is implemented and verified in `banodoco-website`. T6 is blocked on staging because the remote database does not yet have `asset_comments`, `media_import_jobs`, `internal.discord_promote_resources(boolean)`, or `discord_messages_resource_op_idx`, so the approved dry-run milestone cannot run there.",
+  "files_changed": [
+    "/Users/peteromalley/Documents/banodoco-workspace/banodoco-website/src/pages/ResourceDetail/index.tsx",
+    "/Users/peteromalley/Documents/banodoco-workspace/banodoco-website/src/pages/Resources/ResourceModal.tsx",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_6.json"
+  ],
+  "commands_run": [
+    "pwd && git status --short && pytest --tb=no -q --no-header",
+    "sed -n '1,220p' banodoco-website/src/components/resources/AssetDescription.tsx",
+    "sed -n '1,260p' banodoco-website/src/pages/ResourceDetail/index.tsx",
+    "sed -n '1,280p' banodoco-website/src/pages/Resources/ResourceModal.tsx",
+    "set -a; source brain-of-bndc/.env >/dev/null 2>&1; psql \"$SUPABASE_CONNECTION_STRING\" -Atc \"select current_database(), current_user;\"",
+    "set -a; source brain-of-bndc/.env >/dev/null 2>&1; python - <<'PY'\nimport os, subprocess\nregions = ['eu-central-1','eu-west-1','us-east-1','us-west-1','us-west-2','ap-southeast-1']\nref='ujlwuvkrxlvoswwkerdf'\npassword=os.environ['SUPABASE_DB_PASSWORD']\nfor region in regions:\n    url=f\"postgresql://postgres.{ref}:{password}@aws-0-{region}.pooler.supabase.com:6543/postgres?sslmode=require\"\n    out=subprocess.run(['psql', url, '-Atc', 'select current_database(), current_user;'], capture_output=True, text=True, timeout=8)\n    print(region, out.returncode)\nPY",
+    "set -a; source brain-of-bndc/.env >/dev/null 2>&1; export DB_URL=\"postgresql://postgres.ujlwuvkrxlvoswwkerdf:${SUPABASE_DB_PASSWORD}@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?sslmode=require\"; psql \"$DB_URL\" -v ON_ERROR_STOP=1 <<'SQL'\n\\pset tuples_only on\n\\pset format unaligned\nSELECT to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SS.MS OF');\nSELECT 'assets_before|' || count(*) FROM public.assets;\nSELECT 'asset_comments_before|' || count(*) FROM public.asset_comments;\nSELECT 'media_import_jobs_before|' || count(*) FROM public.media_import_jobs;\nSELECT 'run_start|' || extract(epoch from now())::bigint;\nSELECT * FROM internal.discord_promote_resources(dry_run := TRUE);\nSELECT 'assets_after|' || count(*) FROM public.assets;\nSELECT 'asset_comments_after|' || count(*) FROM public.asset_comments;\nSELECT 'media_import_jobs_after|' || count(*) FROM public.media_import_jobs;\nSQL",
+    "set -a; source brain-of-bndc/.env >/dev/null 2>&1; export DB_URL=\"postgresql://postgres.ujlwuvkrxlvoswwkerdf:${SUPABASE_DB_PASSWORD}@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?sslmode=require\"; psql \"$DB_URL\" -At <<'SQL'\nSELECT 'asset_comments|' || COALESCE(to_regclass('public.asset_comments')::text, 'NULL');\nSELECT 'media_import_jobs|' || COALESCE(to_regclass('public.media_import_jobs')::text, 'NULL');\nSELECT 'promoter_fn|' || COALESCE(to_regprocedure('internal.discord_promote_resources(boolean)')::text, 'NULL');\nSELECT 'resource_op_idx|' || COALESCE(to_regclass('public.discord_messages_resource_op_idx')::text, 'NULL');\nSQL",
+    "npm run build",
+    "npm test -- --run",
+    "pytest --tb=no -q --no-header",
+    "pytest --tb=no -q --no-header"
+  ],
+  "deviations": [
+    "T6 could not be completed because staging has not received the Discord-sync schema/function/index migrations yet.",
+    "The repo-wide baseline command was unstable across runs: the first pre-edit run stopped at 2 collection errors, while post-edit reruns completed collection and reported 7 failing tests.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: banodoco-website/src/pages/ResourceDetail/index.tsx, banodoco-website/src/pages/Resources/ResourceModal.tsx, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_6.json",
+    "1/2 batch tasks have no executor update \u2014 tracking is incomplete.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: banodoco-website/src/components/resources/AssetDescription.tsx, banodoco-website/src/hooks/useAssetComments.ts, banodoco-website/src/hooks/useCommunityResource.ts, banodoco-website/src/hooks/useCommunityResources.ts, banodoco-website/src/hooks/useUserProfile.ts, banodoco-website/src/pages/ResourceDetail/index.tsx, banodoco-website/src/pages/Resources/ResourceModal.tsx, banodoco-website/src/pages/Resources/types.ts, banodoco-website/src/pages/Resources/useResources.ts, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_1.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_10.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_11.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_12.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_13.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_14.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_15.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_3.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_7.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_8.json, brain-of-bndc/.megaplan/plans/sync-discord-resources-20260423-2100/execution_batch_9.json",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .claude/, .hypothesis/, .megaplan/, README.md, docs/discord-update-audio-reactivity.md, docs/task-resources-media-showcase.md, docs/videos/, downloads/, equity-review/, hackathon-video/, node_modules/, structure.md, supabase/audits/dry_run_verification_20260405.sql, supabase/functions/_shared/, supabase/functions/admin-switch-session/, supabase/functions/agent-proxy/, supabase/functions/ai-voice-prompt/, supabase/functions/cloudflare-stream-backfill/, supabase/functions/cloudflare-stream-ingest/, supabase/functions/cloudflare-stream-webhook/, supabase/functions/impersonate-user/, supabase/functions/issue-preview-token/, supabase/functions/process-bundle/, supabase/functions/refresh-media-urls/index.ts, supabase/functions/serve-bundle/, supabase/migrations/20260329000000_add_cloudflare_stream_to_submission_details.sql, supabase/migrations/20260330233000_upsert_entry_analytics.sql, supabase/migrations/20260330234000_add_entry_analytics_anonymous_id.sql, supabase/migrations/20260330234100_create_user_analytics_summary_view.sql, supabase/migrations/20260331000000_secure_analytics.sql, supabase/migrations/20260331010000_add_assets_to_submission_details.sql, supabase/migrations/20260331020000_add_admin_hidden.sql, supabase/migrations/20260331030000_sync_admin_users.sql, supabase/migrations/20260331040000_fix_is_admin_source.sql, supabase/migrations/20260331050000_drop_admin_users_table.sql, supabase/migrations/20260331060000_add_cloudflare_ingest_attempts.sql, supabase/migrations/20260331070000_restore_admin_hide_policy.sql, supabase/migrations/20260331080000_prefer_user_thumbnail.sql, supabase/migrations/20260331090000_add_web_friendly_serving.sql, supabase/migrations/20260401090000_add_subtitle_url.sql, supabase/migrations/20260401100000_create_hidden_entries.sql, supabase/migrations/20260402090000_add_thumbnail_placeholder.sql, supabase/migrations/20260403000000_foundation_voters.sql, supabase/migrations/20260403000001_entry_priority_scores.sql, supabase/migrations/20260403000002_force_random_order.sql, supabase/migrations/20260403000003_add_priority_score_to_submission_details.sql, supabase/migrations/20260403000004_compute_priority_scores_function.sql, supabase/migrations/20260403000005_schedule_priority_scores_cron.sql, supabase/migrations/20260403000006_add_ip_address_to_analytics.sql, supabase/migrations/20260403000007_exclude_self_votes_from_priority.sql, supabase/migrations/20260403000008_fix_self_vote_exclusion.sql, supabase/migrations/20260405000000_unify_votes_into_scores.sql, supabase/migrations/20260405100000_scores_fraud_detection.sql, supabase/migrations/20260405200000_final_results_dashboard.sql, supabase/migrations/20260406000000_two_level_confidence_system.sql, supabase/migrations/20260406100000_grant_anon_discord_messages.sql, supabase/migrations/20260411220000_backfill_payments.sql, supabase/migrations/20260411220100_backfill_admin_payment_intents.sql, supabase/migrations/20260411220200_backfill_social_publications.sql, supabase/migrations/20260412180000_retrospective_tables.sql, supabase/migrations/20260419120000_add_featured_in_forge_flag.sql, supabase/migrations/20260419130000_flag_forge_curated_ed2.sql, supabase/migrations/20260420220000_extend_posts_for_authoring.sql, supabase/migrations/20260421000000_bundle_mode_posts.sql, supabase/migrations/20260422000000_vibe_usage.sql, supabase/migrations/20260422100000_vibe_ship_auto_approve.sql, tools/"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T6",
+      "status": "blocked",
+      "executor_notes": "Connected to staging through the Supabase pooler and attempted the dry-run milestone. The remote schema is incomplete: `to_regclass('public.asset_comments')`, `to_regclass('public.media_import_jobs')`, `to_regprocedure('internal.discord_promote_resources(boolean)')`, and `to_regclass('public.discord_messages_resource_op_idx')` all returned `NULL`. A direct before-count probe confirmed `public.assets` exists (`7083` rows) but `public.asset_comments` does not, so `SELECT * FROM internal.discord_promote_resources(dry_run := TRUE);`, the before/after row-count check, the per-channel `system_logs` check, and the `EXPLAIN (ANALYZE, BUFFERS)` index check cannot be executed on staging until those migrations are deployed there.",
+      "files_changed": [],
+      "commands_run": [
+        "set -a; source brain-of-bndc/.env >/dev/null 2>&1; python - <<'PY' ... probe Supabase pooler regions ... PY",
+        "set -a; source brain-of-bndc/.env >/dev/null 2>&1; export DB_URL=\"postgresql://postgres.ujlwuvkrxlvoswwkerdf:${SUPABASE_DB_PASSWORD}@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?sslmode=require\"; psql \"$DB_URL\" -v ON_ERROR_STOP=1 <<'SQL' ... counts + dry-run call attempt ... SQL",
+        "set -a; source brain-of-bndc/.env >/dev/null 2>&1; export DB_URL=\"postgresql://postgres.ujlwuvkrxlvoswwkerdf:${SUPABASE_DB_PASSWORD}@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?sslmode=require\"; psql \"$DB_URL\" -At <<'SQL' ... to_regclass/to_regprocedure checks ... SQL"
+      ]
+    },
+    {
+      "task_id": "T15",
+      "status": "done",
+      "executor_notes": "Updated both render targets to use the shared markdown renderer path. `banodoco-website/src/pages/ResourceDetail/index.tsx` now imports `AssetDescription` and renders `resource.description` through `<AssetDescription markdown={resource.description} />`; `banodoco-website/src/pages/Resources/ResourceModal.tsx` now does the same for `asset.description`. Because `AssetDescription` wraps `MarkdownRenderer`, descriptions for both manual and Discord-imported resources now flow through the existing `react-markdown` + `remarkGfm` pipeline, and null/empty descriptions no-op through the component's existing trim/empty handling. Verification: `npm run build` passed, `npm test -- --run` passed (`17` files / `100` tests), and the required repo-wide `pytest --tb=no -q --no-header` rerun remains red with 7 Python test failures outside the touched frontend files.",
+      "files_changed": [
+        "/Users/peteromalley/Documents/banodoco-workspace/banodoco-website/src/pages/ResourceDetail/index.tsx",
+        "/Users/peteromalley/Documents/banodoco-workspace/banodoco-website/src/pages/Resources/ResourceModal.tsx"
+      ],
+      "commands_run": [
+        "npm run build",
+        "npm test -- --run",
+        "pytest --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC6",
+      "executor_note": "No. Staging does not yet have `public.asset_comments`, `public.media_import_jobs`, `internal.discord_promote_resources(boolean)`, or `public.discord_messages_resource_op_idx`, so the approved dry-run SQL, zero-write verification, per-channel dry-run log verification, and `EXPLAIN ANALYZE` index check could not be executed there."
+    },
+    {
+      "sense_check_id": "SC15",
+      "executor_note": "Yes. `ResourceDetail/index.tsx` and `Resources/ResourceModal.tsx` both now render descriptions through `AssetDescription`, and `AssetDescription` delegates to `MarkdownRenderer`, so markdown content is rendered through the existing `react-markdown` + `remarkGfm` pipeline instead of the old plain-text rendering."
+    }
+  ]
+}

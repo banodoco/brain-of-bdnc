@@ -1,0 +1,39 @@
+{
+  "task_updates": [
+    {
+      "id": "T19",
+      "status": "done",
+      "executor_notes": "Ran the final verification sweep end to end. Phase B validation passed (`30 passed`), Phase C validation passed (`6 passed`), and the full suite passed green (`160 passed, 2 warnings`). The required Phase D command with `--hypothesis-show-statistics` was attempted exactly as specified and failed because this environment's pytest does not recognize that flag; I then reran the same modules without the flag and they passed (`3 passed`). I inspected the verdict comments directly: `tests/test_payment_race.py` cites `FOR UPDATE SKIP LOCKED` plus Postgres read-committed isolation and labels the test a logical-correctness sanity check, and `tests/test_admin_payments.py` clearly states the T13 collision was reproduced and fixed via millisecond `producer_ref`. For the invariants script, an exact local seeded DB run was not available in this environment, so I used a throwaway Python harness that imported `scripts/check_payment_invariants.py`, injected synthetic violating rows into its `main(...)` entrypoint, and confirmed a nonzero exit (`1`). I also wrote a throwaway reconcile-with-chain harness that drove a failed row through `PaymentService.reconcile_with_chain(...)`, verified `reconciled_confirmed`, verified the row status changed to `confirmed`, and verified a `reconcile_confirmed` tx-signature-history append. Both throwaway scripts were deleted and their deletion was verified.",
+      "files_changed": [],
+      "commands_run": [
+        "pytest tests/test_admin_payments.py tests/test_payment_reconcile.py -k 'reconcile or retry or release or resolve or migration' --tb=no -q --no-header",
+        "pytest tests/test_solana_client.py tests/test_admin_payments.py -k 'priority or fallback or rpc_unreachable' --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header",
+        "pytest tests/test_payment_race.py tests/test_payment_state_machine.py --hypothesis-show-statistics",
+        "pytest tests/test_payment_race.py tests/test_payment_state_machine.py --tb=no -q --no-header",
+        "nl -ba tests/test_payment_race.py | sed -n '1,40p'",
+        "rg -n \"VERDICT\" tests/test_admin_payments.py tests/test_payment_race.py",
+        "nl -ba tests/test_admin_payments.py | sed -n '586,606p'",
+        "python /tmp/check_payment_invariants_synthetic.py",
+        "python /tmp/reconcile_with_chain_repro.py",
+        "test ! -e /tmp/check_payment_invariants_synthetic.py && test ! -e /tmp/reconcile_with_chain_repro.py"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T19"
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "id": "SC19",
+      "executor_note": "Verified the full pytest suite passed green (`160 passed, 2 warnings`), the Phase D verdict comments explicitly cite Postgres semantics for T12 and clearly report the T13 collision-fix outcome, the invariants audit path was proven to exit nonzero on synthetic violations via a throwaway harness around `scripts/check_payment_invariants.py`, and the temporary reconcile/audit verification scripts were deleted afterward.",
+      "verdict": "",
+      "sense_check_id": "SC19"
+    }
+  ],
+  "deviations": [
+    "Advisory: done tasks rely on commands_run without files_changed (FLAG-006 softening): T19",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/payments.md, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/docs/runbook-payments.md, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/requirements.txt, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/check_payment_invariants.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/redaction.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/solana_client.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_worker_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/solana_provider.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_check_payment_invariants.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_authorization.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_race.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_reconcile.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_payment_state_machine.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_scheduler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_route_tools.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_solana_client.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, docs/payments.md, docs/runbook-payments.md, main.py, requirements.txt, scripts/check_payment_invariants.py, src/common/db_handler.py, src/common/redaction.py, src/features/admin_chat/tools.py, src/features/payments/payment_service.py, src/features/payments/payment_ui_cog.py, src/features/payments/payment_worker_cog.py, tests/conftest.py, tests/test_admin_payments.py, tests/test_caller_paths.py, tests/test_check_payment_invariants.py, tests/test_notification_delete.py, tests/test_payment_authorization.py, tests/test_payment_race.py, tests/test_payment_reconcile.py, tests/test_payment_state_machine.py, tests/test_scheduler.py, tests/test_social_publications.py, tests/test_social_publish_service.py, tests/test_social_route_tools.py"
+  ]
+}

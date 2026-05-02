@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/../src/features/reacting/reactor.py
+# hypothesis_version: 6.151.11
+
+['*', '/*', '0', 'DEV_', 'REACTION_WATCHLIST', 'action', 'attachment', 'attachment_type', 'channel_id', 'content_type', 'emoji', 'guild', 'guild_id', 'id', 'message', 'reaction', 'reaction_watchlist', 'server_config', 'text', 'text_contains', 'text_pattern', 'trigger_type', 'user_id']

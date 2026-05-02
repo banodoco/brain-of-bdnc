@@ -1,0 +1,156 @@
+{
+  "name": "add-a-direct-post-mode-to-20260412-2125",
+  "idea": "Add a direct post mode to share_to_social that accepts media URLs + tweet text directly, without requiring a Discord message. This is needed so we can post tweets (e.g. reply to a banodoco tweet with a video) using external media URLs (like Supabase video links) rather than needing a Discord message reference. The tool should still support scheduled_at, action (post/reply/retweet), target_post, and route_override. It should download the media from the URL to a temp file, then feed it through the existing upload/publish pipeline. Keep it minimal \u2014 don't restructure the existing message-based flow, just add an alternative entry path.",
+  "current_state": "done",
+  "iteration": 2,
+  "created_at": "2026-04-12T19:25:01Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc",
+    "auto_approve": true,
+    "robustness": "light",
+    "agent": ""
+  },
+  "sessions": {
+    "claude_planner": {
+      "id": "24454267-734e-49eb-854d-041b2d9cbcd7",
+      "mode": "persistent",
+      "created_at": "2026-04-12T19:28:34Z",
+      "last_used_at": "2026-04-12T19:34:32Z",
+      "refreshed": false
+    },
+    "codex_critic": {
+      "id": "019d832a-fb10-7002-a5e6-ebed1b73115b",
+      "mode": "persistent",
+      "created_at": "2026-04-12T19:31:20Z",
+      "last_used_at": "2026-04-12T19:31:20Z",
+      "refreshed": false
+    },
+    "claude_finalizer": {
+      "id": "a7c8650a-859e-4c8a-81fd-030e8757a1ae",
+      "mode": "persistent",
+      "created_at": "2026-04-12T19:37:07Z",
+      "last_used_at": "2026-04-12T19:37:07Z",
+      "refreshed": false
+    },
+    "codex_executor": {
+      "id": "019d8332-cdf8-7b51-b8b6-860ebe3c5319",
+      "mode": "persistent",
+      "created_at": "2026-04-12T19:39:12Z",
+      "last_used_at": "2026-04-12T19:48:24Z",
+      "refreshed": false
+    }
+  },
+  "plan_versions": [
+    {
+      "version": 1,
+      "file": "plan_v1.md",
+      "hash": "sha256:1391a8bae0a76cace59a5a8c5e3fdf1caf8de4b09f2d9b81fa58df78bd33b385",
+      "timestamp": "2026-04-12T19:28:33Z"
+    },
+    {
+      "version": 2,
+      "file": "plan_v2.md",
+      "hash": "sha256:639eb626b5142f185864f6ae0531280c501b096012b2467650c8c5ff51d4f8b1",
+      "timestamp": "2026-04-12T19:34:32Z"
+    }
+  ],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-04-12T19:25:01Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-12T19:28:34Z",
+      "duration_ms": 202220,
+      "cost_usd": 0.7341506999999999,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "24454267-734e-49eb-854d-041b2d9cbcd7",
+      "agent": "claude",
+      "output_file": "plan_v1.md",
+      "artifact_hash": "sha256:1391a8bae0a76cace59a5a8c5e3fdf1caf8de4b09f2d9b81fa58df78bd33b385"
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-12T19:31:20Z",
+      "duration_ms": 157722,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d832a-fb10-7002-a5e6-ebed1b73115b",
+      "agent": "codex",
+      "output_file": "critique_v1.json",
+      "artifact_hash": "sha256:d8dfc1aa565354649b5a91ef9186d9f5144e69bfcf056e2676c4f027ecb7c3fc",
+      "flags_count": 3
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-12T19:34:32Z",
+      "duration_ms": 182013,
+      "cost_usd": 0.6795327500000001,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "24454267-734e-49eb-854d-041b2d9cbcd7",
+      "agent": "claude",
+      "output_file": "plan_v2.md",
+      "artifact_hash": "sha256:639eb626b5142f185864f6ae0531280c501b096012b2467650c8c5ff51d4f8b1",
+      "flags_addressed": [
+        "FLAG-001",
+        "FLAG-002",
+        "FLAG-003"
+      ]
+    },
+    {
+      "step": "finalize",
+      "timestamp": "2026-04-12T19:37:07Z",
+      "duration_ms": 141684,
+      "cost_usd": 0.50399825,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "a7c8650a-859e-4c8a-81fd-030e8757a1ae",
+      "agent": "claude",
+      "output_file": "finalize.json",
+      "artifact_hash": "sha256:f90cef056bfd590e454816e68830fdb17274844bd356224b198aea54a71748a1"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-12T19:48:24Z",
+      "duration_ms": 666751,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d8332-cdf8-7b51-b8b6-860ebe3c5319",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:e8221e4f2d3506529d1bb3c84744faf161dfabe019beb4ac0a86f40f8a628363",
+      "finalize_hash": "sha256:dfd7b52873c81354ec8845ada13e11548664b6f7b1812834553378eb896ac58d",
+      "approval_mode": "auto_approve"
+    }
+  ],
+  "meta": {
+    "significant_counts": [
+      3
+    ],
+    "weighted_scores": [],
+    "plan_deltas": [
+      59.41
+    ],
+    "recurring_critiques": [
+      []
+    ],
+    "total_cost_usd": 1.917682,
+    "overrides": [],
+    "notes": []
+  },
+  "last_gate": {
+    "recommendation": "ITERATE"
+  }
+}

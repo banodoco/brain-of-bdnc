@@ -1,0 +1,161 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-19T09:23:06Z",
+  "hash": "sha256:895d1b2c807bbb4a796935857ab896ea97f00acc40d8dfcd8a114f8041a1a6b8",
+  "changes_summary": "Addressed three significant flags: (1) Added a shared `register_bot_removal` marker mechanism on ReactorCog and inserted 4 call sites in `src/features/curating/curator.py` so curator `\u274c` cleanups are classified as `bot_curator_reject` rather than misclassified as self-removals. (2) Renamed `bot_clear_all`/`bot_clear_emoji` to `moderator_cleared_all`/`moderator_cleared_emoji` \u2014 the clear events lack actor info but the repo has no bot clear calls, so mod attribution is accurate; added enumeration of active reactors via a new `get_active_reactors` DB helper so each cleared reaction produces its own row. (3) Added a `message_deleted_cascade` classification and a new `on_raw_message_delete` listener on ReactorCog that enumerates active reactors and writes one row each, using a new `get_message_snapshot` DB helper to fetch author/content (preserved by LoggerCog's soft-delete). Updated CHECK constraint, expanded test scenarios, and clarified that the marker-consumer (on_raw_reaction_remove) is the sole writer for curator path (the restricted-emoji branch still writes eagerly because it has live objects in hand).",
+  "flags_addressed": [
+    "FLAG-001",
+    "FLAG-002",
+    "FLAG-003"
+  ],
+  "questions": [
+    "Retention policy for `moderation_decisions` \u2014 indefinite or TTL? Assuming indefinite.",
+    "Suspicious emoji set confirmation (currently {\ud83e\udd2e, \ud83d\udc4e, \ud83d\ude2d}).",
+    "Admin DM format \u2014 assuming jump link + reactor mention + emoji + 200-char snippet.",
+    "Workspace-level supabase/migrations filename convention \u2014 assuming the `.migrations_staging/` timestamp prefix format is authoritative."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "A new `moderation_decisions` migration SQL file exists under `.migrations_staging/` with the full column set and a CHECK constraint covering exactly {bot_auto_restricted, bot_curator_reject, user_self_removal, moderator_cleared_all, moderator_cleared_emoji, message_deleted_cascade}.",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`DatabaseHandler.record_moderation_decision`, `get_active_reactors`, and `get_message_snapshot` exist in `src/common/db_handler.py` and are gated via `_gate_check` where they perform writes.",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "ReactorCog exposes `register_bot_removal(message_id, user_id, emoji_str, classification, reason=None)` that stores a marker consumed by `on_raw_reaction_remove`.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "The restricted-emoji branch in `reactor_cog.on_raw_reaction_add` records a `bot_auto_restricted` moderation_decision with reason in {flag, political, religious} and registers a marker before calling `message.remove_reaction`.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "All 4 `message.remove_reaction('\u274c', user)` sites in `src/features/curating/curator.py` (lines 296, 339, 460, 472) are preceded by a `register_bot_removal(..., 'bot_curator_reject', reason='curator_reject')` call.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "parse_diff"
+      ]
+    },
+    {
+      "criterion": "`on_raw_reaction_remove` writes a `user_self_removal` decision when no marker is present; when a marker is present, it writes exactly one decision using the marker's classification/reason and does not also write `user_self_removal`.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Self-removal of \ud83e\udd2e, \ud83d\udc4e, or \ud83d\ude2d sets `is_suspicious=true` and DMs `ADMIN_USER_ID` via the base_bot.py admin-DM pattern with a jump link, reactor mention, emoji, and content snippet.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "`on_raw_reaction_clear` writes one `moderator_cleared_all` row per active reactor enumerated from `discord_reactions`; `on_raw_reaction_clear_emoji` writes one `moderator_cleared_emoji` row per active reactor matching `payload.emoji`.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "`on_raw_message_delete` on ReactorCog writes one `message_deleted_cascade` row per active reactor, populated with author/content from `get_message_snapshot`.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "`tests/test_moderation_decisions.py` passes and covers all scenarios listed in Step 7.2.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Full existing test suite (`pytest -q`) passes with no regressions in reactor/logger/curator tests.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "No new config surfaces, env vars, or feature flags added beyond reusing existing ADMIN_USER_ID.",
+      "priority": "must",
+      "requires": [
+        "parse_diff",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Message content snippet is truncated to 200 characters at call sites.",
+      "priority": "should",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Marker TTL (~60s) pruning happens on each register call to bound memory.",
+      "priority": "should",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "`_is_restricted_emoji` is refactored into `_classify_restricted_emoji` returning {flag, political, religious, None}; boolean callers updated.",
+      "priority": "should",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Manual smoke in dev Discord: flag reaction \u2192 bot_auto_restricted row; admin rejects a message via curator \u2192 bot_curator_reject row; \ud83e\udd2e self-retract \u2192 admin DM + suspicious row; moderator clears all \u2192 N rows; message deletion \u2192 N cascade rows.",
+      "priority": "info",
+      "requires": [
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Migration file manually copied into `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` before deploy.",
+      "priority": "info",
+      "requires": [
+        "run_shell"
+      ]
+    }
+  ],
+  "assumptions": [
+    "`moderation_decisions` is a new net table, not a view \u2014 `discord_reaction_log` lacks classification/reason/message author/content.",
+    "Forward-only; no backfill.",
+    "Single-reaction removals cannot be attributed to a moderator via Discord gateway events. Bot-initiated single removes (restricted-emoji and curator `\u274c`) are tagged via a shared in-memory marker on ReactorCog; all other non-marked single removes are `user_self_removal`.",
+    "`on_raw_reaction_clear` / `on_raw_reaction_clear_emoji` payloads carry no actor. The repo has no bot call to `clear_reactions`/`clear_reaction`, and Discord requires Manage Messages for these actions, so classifying them as `moderator_cleared_all` / `moderator_cleared_emoji` is accurate in this codebase (if a bot clear-call is ever added, it must pre-register a marker).",
+    "`on_raw_message_delete` cascade rows are synthesized by enumerating `discord_reactions` active rows for the deleted message. LoggerCog's existing soft-delete preserves `content`/`author_*` columns, so the snapshot read is safe regardless of listener ordering.",
+    "Suspicious emoji set is exactly {\ud83e\udd2e, \ud83d\udc4e, \ud83d\ude2d}. Cascades and moderator clears are never marked suspicious; only `user_self_removal` of those emojis is.",
+    "Admin DM reuses `src/common/base_bot.py:176-183` pattern (ADMIN_USER_ID env + fetch_user + create_dm); DM body includes jump_url + reactor + emoji + 200-char snippet.",
+    "Migration SQL is staged to `.migrations_staging/` with a timestamp-prefixed filename and manually copied into the workspace-level `supabase/migrations/` repo before deploy.",
+    "Writes are gated by `_gate_check(guild_id)`; if the table doesn't exist yet the insert errors and is swallowed by try/except \u2014 deploy order is migration-first.",
+    "Message content snippet = `message.content[:200]`; no sanitization beyond truncation.",
+    "Marker TTL = 60 seconds; opportunistically pruned on each register call."
+  ],
+  "delta_from_previous_percent": 66.99,
+  "structure_warnings": []
+}

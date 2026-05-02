@@ -1,0 +1,469 @@
+{
+  "review_verdict": "approved",
+  "checks": [],
+  "pre_check_flags": [],
+  "verified_flag_ids": [
+    "FLAG-001",
+    "FLAG-002",
+    "FLAG-003",
+    "issue_hints",
+    "correctness-1",
+    "correctness-2",
+    "scope",
+    "all_locations-1",
+    "all_locations-2",
+    "callers-1",
+    "callers-2",
+    "conventions",
+    "verification-1",
+    "verification-2",
+    "correctness",
+    "all_locations",
+    "callers",
+    "verification"
+  ],
+  "disputed_flag_ids": [],
+  "criteria": [
+    {
+      "name": "All existing tests in tests/test_admin_payments.py, tests/test_scheduler.py, and tests/test_social_publish_service.py pass unchanged (default None caps preserve existing PaymentService construction; amount_usd stays None for uncapped providers).",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Re-ran `PYTHONPATH=. pytest tests/test_admin_payments.py tests/test_scheduler.py tests/test_social_publish_service.py -q` and got `55 passed, 1 warning`. Existing uncapped assertions remain at `tests/test_admin_payments.py:965-990` and `tests/test_social_publish_service.py:528-545` / `844-873`."
+    },
+    {
+      "name": "New test test_confirm_rejects_null_recipient_discord_id passes: confirm_payment with recipient_discord_id=None returns None and logs WARN.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`confirm_payment` now rejects null expected recipients at `src/features/payments/payment_service.py:319-328`. Regression test exists at `tests/test_social_publish_service.py:598-623` and passed in the full suite."
+    },
+    {
+      "name": "New test verifying privileged_override=True still bypasses the null-recipient check passes.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Bypass remains in `src/features/payments/payment_service.py:320-328`; when `privileged_override=True` the rejection branch is skipped. Covered by `tests/test_social_publish_service.py:625-655`."
+    },
+    {
+      "name": "New test test_confirm_rejects_mismatched_user passes: confirm_payment with a non-matching confirmed_by_user_id returns None.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Mismatch rejection is implemented in `src/features/payments/payment_service.py:320-328` and covered by `tests/test_social_publish_service.py:658-682`."
+    },
+    {
+      "name": "New test test_request_payment_per_payment_cap_manual_holds passes: amount_usd over per-payment cap lands the row as manual_hold with cap-breach last_error; grants provider unaffected; on_cap_breach invoked.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Per-payment cap enforcement is implemented in `src/features/payments/payment_service.py:176-205,260-273`. Covered by `tests/test_social_publish_service.py:685-727`."
+    },
+    {
+      "name": "New test test_request_payment_amount_token_path_cap_breach passes: capped provider, amount_token with no amount_usd, derived USD (amount_token * token_price_usd) exceeds cap \u2192 manual_hold.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Capped amount-token derivation and cap check are implemented in `src/features/payments/payment_service.py:176-205`. Covered by `tests/test_social_publish_service.py:729-768`."
+    },
+    {
+      "name": "New test test_request_payment_amount_token_path_stamps_amount_usd passes: capped provider, amount_token within cap, provider returns a valid price \u2192 the created row has `amount_usd == amount_token * price` and `token_price_usd == price` (NOT None). Pins that derived USD is persisted end-to-end.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Derived USD and token price are stamped onto both the row and `request_payload` before insert at `src/features/payments/payment_service.py:251-255`. Covered by `tests/test_social_publish_service.py:771-803`."
+    },
+    {
+      "name": "New test test_request_payment_amount_token_path_missing_price_holds passes: capped provider, amount_token path, provider returns None/0 for price \u2192 manual_hold with last_error='cap check unavailable'.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Missing-price fail-closed behavior is implemented at `src/features/payments/payment_service.py:178-196,267-268`. Covered by `tests/test_social_publish_service.py:806-841`."
+    },
+    {
+      "name": "New test test_request_payment_amount_token_uncapped_provider_preserves_none passes: uncapped provider ('solana'), amount_token path \u2192 result['amount_usd'] is None AND provider price lookup is NOT called. Regression pin against existing amount_token test behavior.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Derived-USD stamping is gated to `if not is_test and provider_key in self.capped_providers` at `src/features/payments/payment_service.py:176,251`. Covered by `tests/test_social_publish_service.py:844-873` and `tests/test_admin_payments.py:965-990`."
+    },
+    {
+      "name": "New test test_request_payment_rolling_daily_cap_manual_holds passes: rolling 24h aggregation across non-test solana_payouts rows in (pending_confirmation, queued, processing, submitted, confirmed) drives the cap; grants unaffected.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Rolling helper is implemented at `src/common/db_handler.py:1950-1987`, and daily-cap enforcement consumes it at `src/features/payments/payment_service.py:202-207`. Covered by `tests/test_social_publish_service.py:876-912`."
+    },
+    {
+      "name": "New test test_request_payment_rolling_daily_cap_sees_derived_usd passes: prior confirmed capped-provider row whose amount_usd was stamped via the derivation path is correctly summed by get_rolling_24h_payout_usd and a follow-up amount_token request counts against the daily cap accordingly. Pins end-to-end rolling-cap flow for admin-chat payouts.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Stored derived USD is what the rolling helper sums, via `src/features/payments/payment_service.py:251-255` plus `src/common/db_handler.py:1967-1978`. Covered by `tests/test_social_publish_service.py:914-945`."
+    },
+    {
+      "name": "New test test_slot_reuse_collision_detected_after_failure passes: only prior rows are failed/cancelled with a different wallet \u2192 fresh manual_hold row is inserted (Branch A) and on_cap_breach fires.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Branch A is implemented at `src/features/payments/payment_service.py:107-121,256-273`. Covered by `tests/test_social_publish_service.py:948-992`."
+    },
+    {
+      "name": "New test test_slot_reuse_collision_blocked_when_prior_active passes: prior row is pending_confirmation/queued/etc with a different wallet \u2192 request_payment returns None without attempting an insert (Branch B), the prior row is NOT replaced, and on_cap_breach fires.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Branch B is implemented at `src/features/payments/payment_service.py:107-118`. Covered by `tests/test_social_publish_service.py:994-1036`."
+    },
+    {
+      "name": "New test test_slot_reuse_same_wallet_creates_fresh_row_after_failure passes: only terminal prior rows with matching wallet \u2192 new pending_confirmation row is created.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Terminal rows no longer short-circuit the idempotent return because only non-terminal same-wallet rows are returned early at `src/features/payments/payment_service.py:102-105,120-121`. Covered by `tests/test_social_publish_service.py:1039-1075`."
+    },
+    {
+      "name": "New test test_idempotent_return_for_nonterminal passes: non-terminal prior row with matching wallet is returned unchanged.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Idempotent same-wallet early return remains at `src/features/payments/payment_service.py:102-105,120-121`. Covered by `tests/test_social_publish_service.py:1078-1114`."
+    },
+    {
+      "name": "New test test_upsert_wallet_raises_during_active_intent passes: upsert_wallet raises WalletUpdateBlockedError while a non-terminal payment_requests OR admin_payment_intents row exists; both admin_chat._handle_wallet_received AND grants_cog._start_payment_flow catch it and surface user-facing messages.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`WalletUpdateBlockedError` is raised in `src/common/db_handler.py:1453-1464`, caught in `src/features/admin_chat/admin_chat_cog.py:196-211`, and caught in `src/features/grants/grants_cog.py:558-573`. Covered by `tests/test_admin_payments.py:578-643`."
+    },
+    {
+      "name": "New test test_upsert_wallet_unblocked_after_terminal passes: upsert proceeds when only terminal rows exist AND when the incoming address matches the stored address even while an active intent exists.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "The guard only fires when `existing` exists, the address changes, and `has_active_payment_or_intent(...)` is true at `src/common/db_handler.py:1453-1464`. Covered by `tests/test_admin_payments.py:646-717`."
+    },
+    {
+      "name": "New test test_admin_success_dm_over_threshold passes: confirmed, non-test, solana_payouts, amount_usd >= threshold triggers _dm_admin_payment_success; under-threshold does not; failure DM path is unchanged.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Success-DM gating is implemented in `src/features/payments/payment_cog.py:274-286`, and the new sibling method is at `src/features/payments/payment_cog.py:288-345`. Covered by `tests/test_admin_payments.py:994-1053`."
+    },
+    {
+      "name": "New test test_admin_success_dm_sees_derived_usd passes: a confirmed payment whose amount_usd came from the Step 8 derivation path (amount_token-only capped caller) reliably triggers _dm_admin_payment_success. Pins end-to-end success-DM wiring for admin-chat payouts.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "The DM method reads `payment.get('amount_usd')` directly at `src/features/payments/payment_cog.py:312-322`, and derived USD is persisted in `src/features/payments/payment_service.py:251-255`. Covered by `tests/test_admin_payments.py:1056-1083`."
+    },
+    {
+      "name": "New test test_execute_payment_uses_stored_wallet passes: execute_payment passes payment['recipient_wallet'] (frozen) to provider.send even when wallet_registry has been updated.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`execute_payment` still uses the stored row value at `src/features/payments/payment_service.py:369-372`. Covered by `tests/test_social_publish_service.py:1157-1191`."
+    },
+    {
+      "name": "New test test_initiate_payment_tool_rejects_wallet_address_arg passes: wallet_address/recipient_wallet keys in params are popped and ignored; wallet is resolved exclusively via db_handler.get_wallet.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Injected wallet fields are popped and warned on at `src/features/admin_chat/tools.py:2444-2452`, and wallet resolution still goes through `db_handler.get_wallet(...)` at `src/features/admin_chat/tools.py:2487-2488`. Covered by `tests/test_admin_payments.py:495-519`."
+    },
+    {
+      "name": "PaymentService constructor accepts per_payment_usd_cap, daily_usd_cap, capped_providers, and on_cap_breach kwargs; all default to None so existing construction sites remain compatible.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Constructor signature and normalization are present at `src/features/payments/payment_service.py:29-51`. Existing direct constructions still pass, including `tests/test_admin_payments.py:968` and `tests/test_social_publish_service.py:521-526`."
+    },
+    {
+      "name": "Cap enforcement in PaymentService runs only in request_payment, never in execute_payment. Scheduler path is untouched.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "All cap logic is inside `request_payment` at `src/features/payments/payment_service.py:173-273`. `execute_payment` at `src/features/payments/payment_service.py:339-380` has no cap checks, and scheduler tests passed."
+    },
+    {
+      "name": "Cap enforcement covers BOTH amount_usd-supplying callers AND amount_token-only callers end-to-end: for capped providers in the amount_token path, the derived USD is PERSISTED into record['amount_usd'] and record['token_price_usd'] (and their request_payload mirrors) BEFORE create_payment_request, so the rolling-24h aggregation and the success-DM threshold both operate on the real value. Missing price \u2192 manual_hold.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "This is implemented exactly in `src/features/payments/payment_service.py:176-205,251-255,267-273` and exercised by `tests/test_social_publish_service.py:729-803,806-945` plus `tests/test_admin_payments.py:1056-1083`."
+    },
+    {
+      "name": "For uncapped providers (or is_test=True), request_payment does NOT stamp amount_usd on token-denominated requests. Existing tests that assert `amount_usd is None` for the uncapped 'solana' and 'solana_native' providers stay green, and provider.get_token_price_usd() is not called in that path.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "The stamping branch is gated by both `not is_test` and `provider_key in self.capped_providers` at `src/features/payments/payment_service.py:176,251`. Existing uncapped assertions passed at `tests/test_admin_payments.py:965-990` and `tests/test_social_publish_service.py:528-545,844-873`."
+    },
+    {
+      "name": "Cap-breach, collision (Branch A insert and Branch B reject), and null-recipient paths trigger an admin DM via on_cap_breach or equivalent path. No silent rejection.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Implemented per settled DEC-014: cap-breach and collision paths notify through `_emit_cap_breach(...)` in `src/features/payments/payment_service.py:117,273,298` and `_bind_cap_breach_dm(...)` in `main.py:65-79`; null-recipient rejection intentionally logs and returns `None` in `src/features/payments/payment_service.py:320-328`, with the existing button UX surfacing the failure in `src/features/payments/payment_cog.py:72-74`."
+    },
+    {
+      "name": "Collision handling is index-aware: Branch A (prior rows all failed/cancelled) inserts a fresh manual_hold row; Branch B (any prior row in a non-excluded status) returns None without attempting an insert.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "The branch split is implemented at `src/features/payments/payment_service.py:83-121,256-273` and pinned by `tests/test_social_publish_service.py:948-1036`."
+    },
+    {
+      "name": "upsert_wallet blocked path raises WalletUpdateBlockedError (not a truthy sentinel). Both admin_chat._handle_wallet_received and grants_cog._start_payment_flow catch the exception.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "The exception class is defined in `src/common/db_handler.py:9-10`, raised in `src/common/db_handler.py:1453-1464`, and caught in `src/features/admin_chat/admin_chat_cog.py:196-211` and `src/features/grants/grants_cog.py:558-573`."
+    },
+    {
+      "name": "upsert_wallet's existing-wallet lookup runs BEFORE the has_active_payment_or_intent guard. Identical-address upserts and upserts with no prior row are never blocked.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`existing = self.get_wallet(...)` happens first at `src/common/db_handler.py:1444`, and the guard only runs within `if existing and existing.get('wallet_address') != address:` at `src/common/db_handler.py:1453-1464`."
+    },
+    {
+      "name": "_dm_admin_payment_success is a new sibling method with a distinct prefix ('\u2705 **Payment Completed**') and no 'requires manual review' line. _dm_admin_payment_failure is unchanged.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "The new sibling method is `src/features/payments/payment_cog.py:288-345` with the required prefix at line 315, and the failure method remains in place starting at line 346. Message content is also pinned by `tests/test_admin_payments.py:1056-1083`."
+    },
+    {
+      "name": "PaymentCog reads success-DM threshold and provider set from env inside __init__ with defaults ($100, 'solana_payouts'), so both construction sites stay in sync without modification.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Env reads are inside `PaymentCog.__init__` at `src/features/payments/payment_cog.py:124-131`. No `setup()` changes were made, so both construction sites keep working."
+    },
+    {
+      "name": "main.py wires per_payment_usd_cap, daily_usd_cap, capped_providers=('solana_payouts',), and on_cap_breach into PaymentService from env vars with defaults $500/$2000 and logs effective caps at startup.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "`main.py:185-215` reads the env vars, passes them into `PaymentService(...)`, binds `_bind_cap_breach_dm(...)`, and logs the effective cap configuration."
+    },
+    {
+      "name": "sql/payments.sql has a top-of-file comment block documenting the RLS posture. No ALTER TABLE changes.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "The required comment block is at `sql/payments.sql:1-6`, and the diff contains no schema-altering RLS changes."
+    },
+    {
+      "name": "Admin success DM is provider-scoped and threshold-gated; solana_grants payouts never trigger admin success DMs.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Provider scoping and threshold gating are enforced in `src/features/payments/payment_cog.py:276-283`, with default providers loaded from `ADMIN_PAYMENT_SUCCESS_DM_PROVIDERS` / `solana_payouts` at `src/features/payments/payment_cog.py:126-131`."
+    },
+    {
+      "name": "Inline fake-db glue in tests/test_admin_payments.py, tests/test_social_publish_service.py, and tests/conftest.py is extended additively with has_active_payment_or_intent, get_rolling_24h_payout_usd, and WalletUpdateBlockedError stubs (no rewrites of existing tests).",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Additive helper methods exist in `tests/test_admin_payments.py:224-228,337-351,384-398`, `tests/test_social_publish_service.py:476-504`, and env reset fixture additions are in `tests/conftest.py:90-98`."
+    },
+    {
+      "name": "pytest tests/ runs green end-to-end.",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Re-ran `PYTHONPATH=. pytest tests/ -q` and got `79 passed, 1 warning`."
+    },
+    {
+      "name": "New cap/collision/DM code paths redact wallets via existing _redact_wallet helpers and never log env values or key material.",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "Wallet redaction is used in `src/common/db_handler.py:1455-1462`, `src/features/admin_chat/tools.py:2448-2451`, `src/features/payments/payment_service.py:108-116,183-188,261-265,289-296`, and `src/features/payments/payment_cog.py:322`. No new logging of env values or secrets was added."
+    },
+    {
+      "name": "has_active_payment_or_intent uses the same non-terminal predicates as existing helpers \u2014 no ad-hoc drift.",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "`admin_payment_intents` uses `NOT IN ('completed','failed','cancelled')` in both `src/common/db_handler.py:1557-1566` and the existing helpers at `src/common/db_handler.py:1811-1821,1841-1848`. `payment_requests` uses the planned non-terminal predicate at `src/common/db_handler.py:1545-1555`."
+    },
+    {
+      "name": "Inline comment at the collision-detection + idempotent-return reorder explains WHY terminal rows must not short-circuit the early return.",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "The explanatory comment is present at `src/features/payments/payment_service.py:102-104`."
+    },
+    {
+      "name": "Rolling-24h cap helper includes a comment documenting the residual burst-race window AND the upstream-persistence dependency for amount_token-only capped callers.",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "The helper comment is present at `src/common/db_handler.py:1961-1964`."
+    },
+    {
+      "name": "Git history secret audit commands from Step 3 are run and findings recorded in the review memo.",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "Executor notes for T3 record every required git-history command and their findings; commands are also present in the recorded execution log."
+    },
+    {
+      "name": "Log audit grep from Step 11 is performed and findings recorded.",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "Executor notes for T11 record the grep-based log audit, and the command log shows the required searches were run."
+    },
+    {
+      "name": "Plan output explicitly states that the P0 prompt-injection premise was already substantially satisfied by prior work.",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "T2 executor notes explicitly state that the `initiate_payment` schema already omitted wallet fields and this step was verification plus a defensive assertion."
+    },
+    {
+      "name": "No unrelated refactors or test rewrites beyond what the new behavior strictly requires.",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "The hardening changes themselves are tightly scoped to payments/admin-chat/grants plus additive test coverage. Execution audit notes pre-existing unrelated workspace edits, but the reviewed security diff stayed focused and test expansions were additive rather than rewrites."
+    }
+  ],
+  "issues": [],
+  "rework_items": [],
+  "summary": "Approved. All must criteria pass, the targeted suites still pass, and the full suite re-ran green at 79 passed. The critique flags are resolved in the final diff: derived USD is now persisted for capped amount-token payouts, wallet updates fail closed with an exception handled by both callers, collision handling is index-aware, and the success-DM / rolling-cap wiring is end to end. The only wording mismatch left is the pre-existing criterion text about null-recipient admin DMs; the implementation correctly follows settled decision DEC-014 by warning and returning `None` while the existing confirmation UX surfaces the failure.",
+  "task_verdicts": [
+    {
+      "task_id": "T1",
+      "reviewer_verdict": "Pass. `confirm_payment` now fails closed on null or mismatched confirmers, and all three call sites were annotated consistently.",
+      "evidence_files": [
+        "src/features/payments/payment_service.py",
+        "src/features/admin_chat/admin_chat_cog.py",
+        "src/features/grants/grants_cog.py",
+        "src/features/payments/payment_cog.py"
+      ]
+    },
+    {
+      "task_id": "T2",
+      "reviewer_verdict": "Pass. The initiate-payment schema still excludes wallet inputs, and the executor added a defensive pop-and-warn path for injected wallet fields.",
+      "evidence_files": [
+        "src/features/admin_chat/tools.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T3",
+      "reviewer_verdict": "Pass. Memo-only task; command evidence shows the requested git-history audit commands were run and no secret exposure was surfaced.",
+      "evidence_files": [
+        ".megaplan/plans/harden-the-solana-payment-20260410-2147/finalize.json"
+      ]
+    },
+    {
+      "task_id": "T4",
+      "reviewer_verdict": "Pass. `has_active_payment_or_intent` exists with the intended predicates for both payment requests and admin intents.",
+      "evidence_files": [
+        "src/common/db_handler.py"
+      ]
+    },
+    {
+      "task_id": "T5",
+      "reviewer_verdict": "Pass. Wallet updates now raise `WalletUpdateBlockedError` only on changed-address active-flow conflicts, and both production callers catch it.",
+      "evidence_files": [
+        "src/common/db_handler.py",
+        "src/features/admin_chat/admin_chat_cog.py",
+        "src/features/grants/grants_cog.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T6",
+      "reviewer_verdict": "Pass. `request_payment` now implements the explicit Branch A / Branch B collision split and only idempotently returns active same-wallet rows.",
+      "evidence_files": [
+        "src/features/payments/payment_service.py",
+        "src/common/db_handler.py",
+        "tests/test_social_publish_service.py"
+      ]
+    },
+    {
+      "task_id": "T7",
+      "reviewer_verdict": "Pass. Rolling 24h USD aggregation is implemented with the intended status filter and explanatory race-window comment.",
+      "evidence_files": [
+        "src/common/db_handler.py"
+      ]
+    },
+    {
+      "task_id": "T8",
+      "reviewer_verdict": "Pass. The capped amount-token path now persists derived USD and token price into both the row and mirrored payload fields before insert, while uncapped and test paths remain untouched.",
+      "evidence_files": [
+        "src/features/payments/payment_service.py",
+        "tests/test_social_publish_service.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T9",
+      "reviewer_verdict": "Pass. `PaymentCog` reads success-DM env settings inside `__init__`, adds the new success DM sibling, and leaves the failure DM path intact.",
+      "evidence_files": [
+        "src/features/payments/payment_cog.py",
+        "tests/test_admin_payments.py"
+      ]
+    },
+    {
+      "task_id": "T10",
+      "reviewer_verdict": "Pass. `main.py` wires the cap thresholds, capped provider set, and cap-breach callback into `PaymentService`, and logs the effective cap config.",
+      "evidence_files": [
+        "main.py"
+      ]
+    },
+    {
+      "task_id": "T11",
+      "reviewer_verdict": "Pass. Memo-only task; execution evidence shows the requested log-audit searches were run and no leak path was found.",
+      "evidence_files": [
+        ".megaplan/plans/harden-the-solana-payment-20260410-2147/finalize.json"
+      ]
+    },
+    {
+      "task_id": "T12",
+      "reviewer_verdict": "Pass. `sql/payments.sql` now starts with the requested RLS posture comment and no schema changes were introduced.",
+      "evidence_files": [
+        "sql/payments.sql"
+      ]
+    },
+    {
+      "task_id": "T13",
+      "reviewer_verdict": "Pass. The fake DB/test scaffolding was extended additively and the new regression tests cover the subtle cap, collision, wallet-block, and success-DM paths.",
+      "evidence_files": [
+        "tests/conftest.py",
+        "tests/test_admin_payments.py",
+        "tests/test_social_publish_service.py"
+      ]
+    },
+    {
+      "task_id": "T14",
+      "reviewer_verdict": "Pass. Re-ran the full suite and confirmed 79 passing tests; the requested end-to-end validation claims are consistent with the repo state.",
+      "evidence_files": [
+        "tests/test_admin_payments.py",
+        "tests/test_scheduler.py",
+        "tests/test_social_publish_service.py"
+      ]
+    }
+  ],
+  "sense_check_verdicts": [
+    {
+      "sense_check_id": "SC1",
+      "verdict": "confirmed"
+    },
+    {
+      "sense_check_id": "SC2",
+      "verdict": "confirmed"
+    },
+    {
+      "sense_check_id": "SC3",
+      "verdict": "confirmed"
+    },
+    {
+      "sense_check_id": "SC4",
+      "verdict": "confirmed"
+    },
+    {
+      "sense_check_id": "SC5",
+      "verdict": "confirmed"
+    },
+    {
+      "sense_check_id": "SC6",
+      "verdict": "confirmed"
+    },
+    {
+      "sense_check_id": "SC7",
+      "verdict": "confirmed"
+    },
+    {
+      "sense_check_id": "SC8",
+      "verdict": "confirmed"
+    },
+    {
+      "sense_check_id": "SC9",
+      "verdict": "confirmed"
+    },
+    {
+      "sense_check_id": "SC10",
+      "verdict": "confirmed"
+    },
+    {
+      "sense_check_id": "SC11",
+      "verdict": "confirmed"
+    },
+    {
+      "sense_check_id": "SC12",
+      "verdict": "confirmed"
+    },
+    {
+      "sense_check_id": "SC13",
+      "verdict": "confirmed"
+    },
+    {
+      "sense_check_id": "SC14",
+      "verdict": "confirmed"
+    }
+  ]
+}

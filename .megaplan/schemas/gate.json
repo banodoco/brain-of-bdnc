@@ -6,7 +6,8 @@
       "enum": [
         "PROCEED",
         "ITERATE",
-        "ESCALATE"
+        "ESCALATE",
+        "TIEBREAKER"
       ]
     },
     "rationale": {
@@ -38,7 +39,8 @@
         },
         "required": [
           "id",
-          "decision"
+          "decision",
+          "rationale"
         ],
         "additionalProperties": false
       }
@@ -67,7 +69,9 @@
         },
         "required": [
           "flag_id",
-          "action"
+          "action",
+          "evidence",
+          "rationale"
         ],
         "additionalProperties": false
       }
@@ -92,10 +96,24 @@
         },
         "required": [
           "flag_id",
-          "concern"
+          "concern",
+          "subsystem",
+          "rationale"
         ],
         "additionalProperties": false
       }
+    },
+    "tiebreaker_question": {
+      "type": "string"
+    },
+    "tiebreaker_flag_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tiebreaker_fuzzy_group_id": {
+      "type": "string"
     }
   },
   "required": [
@@ -103,7 +121,12 @@
     "rationale",
     "signals_assessment",
     "warnings",
-    "settled_decisions"
+    "settled_decisions",
+    "flag_resolutions",
+    "accepted_tradeoffs",
+    "tiebreaker_question",
+    "tiebreaker_flag_ids",
+    "tiebreaker_fuzzy_group_id"
   ],
   "additionalProperties": false
 }

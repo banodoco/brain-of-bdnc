@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-11T16:29:41Z",
+  "hash": "sha256:d3b741b2135ce9a663434f74924fb634fddaba56cdff1de0d816b459c9a8775b",
+  "questions": [
+    "Where exactly should the first status message appear? The plan places it inside `_start_admin_payment_flow` (right when the test payment is queued), but it could instead appear at `_gate_existing_intent`/`_gate_fresh_intent_atomic` (earlier \u2014 at admin approval) or at the moment the admin confirms the DM. Which lifecycle point is the intended anchor?",
+    "Is there a preferred wording for the in-place status progression (e.g., 'Verifying wallet\u2026', 'Test confirmed, awaiting reply', 'Payout sending\u2026', 'Payment sent.')? I will pick concise defaults if not.",
+    "Should the final 'Payment sent' message be a true Discord reply (threaded under the status message with `message.reply(...)`), or a normal `channel.send` that tags the recipient? The brief says 'reply' \u2014 I've assumed Discord's reply feature.",
+    "For the failure / manual-review branches, do you want the status message edited to a terminal failure line in-channel, or should failures stay silent in-channel and surface only in the admin DM? I've assumed edit-in-place.",
+    "Is it acceptable to re-use `receipt_prompt_message_id` to point at the edited status message (so the stale-receipt sweeper keeps working), or would you rather sweep logic read `status_message_id` directly?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "`sql/admin_payment_intents.sql` gains an idempotent `add column if not exists status_message_id bigint;` block, matching the existing migration style.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`db_handler.update_admin_payment_intent` retries once with `status_message_id` removed when Supabase reports the column is unknown, and does not swallow unrelated errors.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`PaymentWorkerCog._handle_terminal_payment` does not call `_notify_payment_result` when `producer == 'admin_chat'`, but still calls it for every other producer.",
+      "priority": "must"
+    },
+    {
+      "criterion": "A full admin_chat payout produces exactly one channel `send` for the status message (subsequently edited in place) plus one final reply tagging the recipient \u2014 no separate 'queued test payment', 'confirmation received', or multi-line 'Payment sent.' card.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The final 'Payment sent' message is a Discord reply to the status message, mentions the recipient with `<@id>`, and is sent with `suppress_embeds=True` so the Solana Explorer link does not render a link card.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`status_message_id` is persisted on `admin_payment_intents` the first time the status message is sent and is reused across later edits within the same payout.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Admin DM notifications (`_notify_intent_admin` test/final branches) remain unchanged in both content and trigger points.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`tests/test_admin_payments.py` includes new coverage for: generic-card suppression (positive and negative producer), column-absent fallback in `update_admin_payment_intent`, single-status-message reuse across the full payout lifecycle, and the final reply's recipient mention + suppress_embeds flag.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`pytest tests/test_admin_payments.py` passes.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Full repository test suite passes (`pytest`).",
+      "priority": "must"
+    },
+    {
+      "criterion": "No new fallback/defensive wrappers beyond the one narrow `status_message_id` retry \u2014 no generic 'ignore unknown column' helper.",
+      "priority": "should"
+    },
+    {
+      "criterion": "The admin_chat message helper stays small (~40 lines) and is the single place that creates/edits the status message.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Status wording is concise (single short line per transition), not multi-bullet blocks.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual end-to-end smoke on staging confirms one edited message + one tagged reply with no Solana embed card.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "The first status message is created inside `_start_admin_payment_flow` at the moment the test payment is queued. Earlier lifecycle points (admin approval DM, fresh-intent atomic gate) are out of scope unless the user picks another anchor.",
+    "`channel.send(..., suppress_embeds=True)` and `message.edit(..., suppress=True)` are supported by the current discord.py version in use \u2014 the codebase already relies on the same flag in `src/features/curating/curator.py:189-193`.",
+    "The status message lives in the same channel as the intent (`intent['channel_id']`). Cross-channel editing is not needed.",
+    "The final 'Payment sent' message is a Discord reply (`message.reply(...)`) to the status message, not a standalone `channel.send`.",
+    "Failure / manual-review branches edit the status message to a short terminal failure line rather than sending additional channel messages.",
+    "`receipt_prompt_message_id` is repointed to the edited status message id so the stale-receipt sweeper (`_sweep_stale_test_receipts`) keeps functioning without schema churn.",
+    "Older deployments that have not re-applied `sql/admin_payment_intents.sql` are transient \u2014 the runtime tolerance is a bridge, not a permanent feature flag. No rollback path beyond reverting the code.",
+    "No other producers currently rely on the generic `_notify_payment_result` card being suppressed. Only `admin_chat` is silenced.",
+    "Exception matching for the column-absent retry uses a simple substring check on the exception text (`'status_message_id' in str(exc)`); this is sufficient because Supabase/PostgREST error messages include the column name. Introducing Supabase-specific error classes is out of scope."
+  ],
+  "structure_warnings": []
+}

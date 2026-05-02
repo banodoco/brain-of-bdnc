@@ -1,0 +1,279 @@
+{
+  "output": "Aggregated execute batches: completed 7/7.\nBatch 1: Staged the `moderation_decisions` migration and updated the staging handoff README. Verified the new SQL file exists with the exact six-value classification CHECK constraint, all three required indexes, and the documented deploy destination. Wrote a batch checkpoint to `.megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_1.json`.\nBatch 2: Added the three `DatabaseHandler` helpers required for moderation-decision logging in `src/common/db_handler.py` and verified the new block directly. `record_moderation_decision` is fail-closed on `_gate_check(guild_id)`, uses the same fluent Supabase insert + try/except pattern as `log_reaction_event`, and the two read helpers return the requested row shapes from `discord_reactions` and `discord_messages`. Ran `python -m py_compile src/common/db_handler.py` as a module-level syntax check and wrote the batch checkpoint to `.megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_2.json`.\nBatch 3: Updated `src/features/reacting/reactor_cog.py` for the restricted-emoji moderation path: the cog now tracks short-lived bot-initiated removal markers, classifies restricted emoji into `flag`/`political`/`religious`, registers the marker before `remove_reaction`, and writes one `bot_auto_restricted` moderation decision after a successful removal with `reason=category` and a 200-character message snippet. Verified `_is_restricted_emoji` no longer exists in `src/`, the new methods are present, the ordering is correct, and `python -m py_compile src/features/reacting/reactor_cog.py` passes. Wrote the batch checkpoint to `.megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_3.json`.\nBatch 4: Implemented the marker-consume path in `src/features/reacting/reactor_cog.py` and the curator marker registrations in `src/features/curating/curator.py`. `on_raw_reaction_remove` now pops and consumes bot-initiated markers before any self-removal write, records `user_self_removal` only when no marker exists, marks suspicion only for `\ud83e\udd2e`/`\ud83d\udc4e`/`\ud83d\ude2d`, and sends the admin DM in a fire-and-forget task with its own try/except. The four curator `\u274c` reaction-removal sites now register `bot_curator_reject` markers immediately before removal, with no direct moderation-decision write added to curator. Verified both modules with `python -m py_compile` and wrote the batch checkpoint to `.megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_4.json`.\nBatch 5: Added the three DB-snapshot listeners to `src/features/reacting/reactor_cog.py`: `on_raw_reaction_clear`, `on_raw_reaction_clear_emoji`, and `on_raw_message_delete`. Each path enumerates `get_active_reactors(...)`, writes one moderation-decision row per active reactor with the correct classification, and keeps `is_suspicious=False`. `on_raw_message_delete` reads `get_message_snapshot(payload.message_id)` at handler entry before any await, so it stays ahead of LoggerCog\u2019s soft-delete path and falls back to null author/content fields when the snapshot is unavailable. Verified the module with `python -m py_compile src/features/reacting/reactor_cog.py` and wrote the batch checkpoint to `.megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_5.json`.\nBatch 6: Created `tests/test_moderation_decisions.py` using `conftest.load_module_from_repo` to load both `reactor_cog.py` and `db_handler.py`, with a mocked Supabase-backed `DatabaseHandler` instance and monkeypatched `record_moderation_decision`, `get_active_reactors`, `get_message_snapshot`, and `bot.fetch_user` surfaces inside the test harness. The module covers the nine requested scenario groups: restricted flag/political/religious add path plus gateway no-op expectation, curator marker path, plain self-removal, suspicious self-removal admin DM, clear-all, clear-emoji filter, message-delete cascade, `_classify_restricted_emoji` branches, and TTL pruning via monkeypatched `time.monotonic`. I syntax-checked the file with `python -m py_compile tests/test_moderation_decisions.py`; the full module run is deferred to T8 per the plan.\nBatch 7: Validation completed. `pytest tests/test_moderation_decisions.py -q` initially exposed one real regression: `on_raw_reaction_remove` was writing a second `bot_auto_restricted` row after the restricted-emoji branch had already logged eagerly. I fixed that by making `bot_auto_restricted` markers suppression-only in the remove handler, then reran the targeted module to green (`20 passed`). After that, `pytest -q` passed cleanly (`241 passed, 3 warnings`). The throwaway `/tmp/smoke_moderation.py` script confirmed the suspicious `\ud83e\udd2e` self-retract path end-to-end (`smoke-ok`) and was deleted. I also updated `.megaplan/plans/design-and-implement-a-20260419-1105/final.md` so the PR-body draft explicitly says `.migrations_staging/20260419110000_create_moderation_decisions.sql` must be copied into `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` before deploy, and it now includes the remaining manual Discord smoke checklist.",
+  "commands_run": [
+    "rg --files .migrations_staging",
+    "sed -n '1,220p' .migrations_staging/README.md",
+    "sed -n '1,240p' .migrations_staging/20260411220000_backfill_payments.sql",
+    "sed -n '1,260p' .migrations_staging/20260411220100_backfill_admin_payment_intents.sql",
+    "sed -n '1,220p' .migrations_staging/20260419110000_create_moderation_decisions.sql",
+    "rg -n \"bot_auto_restricted|bot_curator_reject|user_self_removal|moderator_cleared_all|moderator_cleared_emoji|message_deleted_cascade|idx_moderation_decisions_guild_removed_at|idx_moderation_decisions_message_id|idx_moderation_decisions_reactor_removed_at\" .migrations_staging/20260419110000_create_moderation_decisions.sql",
+    "test -w .megaplan/plans/design-and-implement-a-20260419-1105 && echo writable",
+    "sed -n '1,220p' .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_1.json",
+    "rg -n \"def log_reaction_event|def add_reaction|def remove_reaction|def _gate_check\" src/common/db_handler.py",
+    "sed -n '620,780p' src/common/db_handler.py",
+    "sed -n '548,590p' src/common/db_handler.py",
+    "sed -n '590,626p' src/common/db_handler.py",
+    "sed -n '675,780p' src/common/db_handler.py",
+    "rg -n \"def record_moderation_decision|def get_active_reactors|def get_message_snapshot|_gate_check\\(guild_id\\)|moderation_decisions|discord_reactions'\\)\" src/common/db_handler.py",
+    "python -m py_compile src/common/db_handler.py",
+    "git diff -- src/common/db_handler.py",
+    "git status --short -- src/common/db_handler.py .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_2.json",
+    "rg -n \"class ReactorCog|def __init__|_is_restricted_emoji|restricted|remove_reaction|on_raw_reaction_add|on_raw_reaction_remove\" src/features/reacting/reactor_cog.py",
+    "sed -n '1,220p' src/features/reacting/reactor_cog.py",
+    "sed -n '300,520p' src/features/reacting/reactor_cog.py",
+    "sed -n '332,382p' src/features/reacting/reactor_cog.py",
+    "sed -n '368,392p' src/features/reacting/reactor_cog.py",
+    "rg -n \"_is_restricted_emoji|_classify_restricted_emoji|register_bot_removal|_prune_bot_removals|record_moderation_decision|bot_auto_restricted\" src/features/reacting/reactor_cog.py src",
+    "python -m py_compile src/features/reacting/reactor_cog.py",
+    "git diff -- src/features/reacting/reactor_cog.py",
+    "git status --short -- src/features/reacting/reactor_cog.py .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_3.json",
+    "sed -n '410,540p' src/features/reacting/reactor_cog.py",
+    "sed -n '168,190p' src/common/base_bot.py",
+    "rg -n \"remove_reaction\\('\u274c'|remove_reaction\\(\\\"\u274c\\\"\" src/features/curating/curator.py",
+    "sed -n '270,500p' src/features/curating/curator.py",
+    "sed -n '455,545p' src/features/reacting/reactor_cog.py",
+    "sed -n '540,590p' src/features/reacting/reactor_cog.py",
+    "rg -n \"ADMIN_USER_ID|create_dm\\(|fetch_user\\(\" src | head -n 80",
+    "rg -n \"self\\.bot\\b|bot_ref|get_cog\\(\" src/features/curating/curator.py",
+    "python -m py_compile src/features/reacting/reactor_cog.py src/features/curating/curator.py",
+    "rg -n \"register_bot_removal\\(message\\.id, user\\.id, '\u274c', 'bot_curator_reject', reason='curator_reject'\\)|remove_reaction\\('\u274c', user\\)|record_moderation_decision\\(\" src/features/curating/curator.py src/features/reacting/reactor_cog.py",
+    "git diff -- src/features/reacting/reactor_cog.py src/features/curating/curator.py",
+    "git status --short -- src/features/reacting/reactor_cog.py src/features/curating/curator.py .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_4.json",
+    "rg -n \"on_raw_message_delete|on_raw_reaction_clear|on_raw_reaction_clear_emoji|soft_delete_message|get_message_snapshot|get_active_reactors\" src/features/reacting/reactor_cog.py src/features/logging/logger_cog.py",
+    "sed -n '430,620p' src/features/reacting/reactor_cog.py",
+    "sed -n '132,165p' src/features/logging/logger_cog.py",
+    "sed -n '540,670p' src/features/reacting/reactor_cog.py",
+    "sed -n '666,705p' src/features/reacting/reactor_cog.py",
+    "rg -n \"def on_raw_reaction_clear|def on_raw_reaction_clear_emoji|def on_raw_message_delete|moderator_cleared_all|moderator_cleared_emoji|message_deleted_cascade|is_suspicious=False\" src/features/reacting/reactor_cog.py",
+    "git status --short -- src/features/reacting/reactor_cog.py .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_5.json",
+    "rg -n \"load_module_from_repo|ReactorCog|on_raw_reaction_remove|on_raw_reaction_clear|curator_reject|register_bot_removal|_classify_restricted_emoji\" tests",
+    "sed -n '1,240p' tests/conftest.py",
+    "rg --files tests",
+    "rg -n \"pytest\\.mark\\.asyncio|async def test_|AsyncMock|SimpleNamespace|monkeypatch\" tests/test_*.py",
+    "sed -n '1,220p' tests/test_safe_delete_messages.py",
+    "sed -n '1,220p' tests/test_notification_delete.py",
+    "sed -n '232,340p' src/features/reacting/reactor_cog.py",
+    "python -m py_compile tests/test_moderation_decisions.py",
+    "sed -n '1,320p' tests/test_moderation_decisions.py",
+    "sed -n '320,420p' tests/test_moderation_decisions.py",
+    "git status --short -- tests/test_moderation_decisions.py .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_6.json",
+    "pytest tests/test_moderation_decisions.py -q",
+    "pytest -q",
+    "python /tmp/smoke_moderation.py",
+    "test ! -e /tmp/smoke_moderation.py && echo deleted",
+    "sed -n '1,30p' .megaplan/plans/design-and-implement-a-20260419-1105/final.md",
+    "git status --short -- src/features/reacting/reactor_cog.py tests/test_moderation_decisions.py .megaplan/plans/design-and-implement-a-20260419-1105/final.md .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_7.json"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_1.json, .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Executor claimed changed files not present in git status: .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis/, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/, .megaplan/plans/add-scheduled-twitter-x-20260409-1553/, .megaplan/plans/add-scheduled-twitter-x-20260409-1556/, .megaplan/plans/add-scheduled-twitter-x-20260409-1557/, .megaplan/plans/admin-triggered-payments-let-20260410-1448/, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/, .megaplan/plans/build-a-fail-closed-20260409-2327/, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/, .megaplan/plans/design-a-generalized-solana-20260409-2227/, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241/, .megaplan/plans/design-and-implement-a-20260419-1105/, .megaplan/plans/final-polish-and-gremlin-20260411-0020/, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/, .megaplan/plans/harden-the-solana-payment-20260410-2147/, .megaplan/plans/identity-based-routing-for-20260411-0256/, .megaplan/plans/implement-a-unified-social-20260409-1710/, .megaplan/plans/implement-a-unified-social-20260409-1732/, .megaplan/plans/implement-a-unified-social-20260409-1748/, .megaplan/plans/implement-a-unified-social-20260409-1856/, .megaplan/plans/payment-subsystem-follow-up-20260410-2339/, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/execution_doc.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/schemas/tiebreaker_challenger.json, .megaplan/schemas/tiebreaker_researcher.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_2.json",
+    "Advisory quality: code changes lacked test updates: src/common/db_handler.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis/, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/, .megaplan/plans/add-scheduled-twitter-x-20260409-1553/, .megaplan/plans/add-scheduled-twitter-x-20260409-1556/, .megaplan/plans/add-scheduled-twitter-x-20260409-1557/, .megaplan/plans/admin-triggered-payments-let-20260410-1448/, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/, .megaplan/plans/build-a-fail-closed-20260409-2327/, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/, .megaplan/plans/design-a-generalized-solana-20260409-2227/, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241/, .megaplan/plans/design-and-implement-a-20260419-1105/, .megaplan/plans/final-polish-and-gremlin-20260411-0020/, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/, .megaplan/plans/harden-the-solana-payment-20260410-2147/, .megaplan/plans/identity-based-routing-for-20260411-0256/, .megaplan/plans/implement-a-unified-social-20260409-1710/, .megaplan/plans/implement-a-unified-social-20260409-1732/, .megaplan/plans/implement-a-unified-social-20260409-1748/, .megaplan/plans/implement-a-unified-social-20260409-1856/, .megaplan/plans/payment-subsystem-follow-up-20260410-2339/, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/execution_doc.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/schemas/tiebreaker_challenger.json, .megaplan/schemas/tiebreaker_researcher.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_3.json",
+    "Advisory quality: code changes lacked test updates: src/features/reacting/reactor_cog.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis/, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/, .megaplan/plans/add-scheduled-twitter-x-20260409-1553/, .megaplan/plans/add-scheduled-twitter-x-20260409-1556/, .megaplan/plans/add-scheduled-twitter-x-20260409-1557/, .megaplan/plans/admin-triggered-payments-let-20260410-1448/, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/, .megaplan/plans/build-a-fail-closed-20260409-2327/, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/, .megaplan/plans/design-a-generalized-solana-20260409-2227/, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241/, .megaplan/plans/design-and-implement-a-20260419-1105/, .megaplan/plans/final-polish-and-gremlin-20260411-0020/, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/, .megaplan/plans/harden-the-solana-payment-20260410-2147/, .megaplan/plans/identity-based-routing-for-20260411-0256/, .megaplan/plans/implement-a-unified-social-20260409-1710/, .megaplan/plans/implement-a-unified-social-20260409-1732/, .megaplan/plans/implement-a-unified-social-20260409-1748/, .megaplan/plans/implement-a-unified-social-20260409-1856/, .megaplan/plans/payment-subsystem-follow-up-20260410-2339/, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/execution_doc.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/schemas/tiebreaker_challenger.json, .megaplan/schemas/tiebreaker_researcher.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "`src/features/curating/curator.py` does not have a `self.bot` attribute; `ArtCurator` is itself a bot subclass, so the four marker insertions use `self.get_cog('ReactorCog')` instead of `self.bot.get_cog('ReactorCog')`. No broader refactor was introduced.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_4.json",
+    "Advisory quality: src/features/curating/curator.py has similar functions setup_events and on_message (89% similarity).",
+    "Advisory quality: code changes lacked test updates: src/features/curating/curator.py, src/features/reacting/reactor_cog.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis/, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/, .megaplan/plans/add-scheduled-twitter-x-20260409-1553/, .megaplan/plans/add-scheduled-twitter-x-20260409-1556/, .megaplan/plans/add-scheduled-twitter-x-20260409-1557/, .megaplan/plans/admin-triggered-payments-let-20260410-1448/, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/, .megaplan/plans/build-a-fail-closed-20260409-2327/, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/, .megaplan/plans/design-a-generalized-solana-20260409-2227/, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241/, .megaplan/plans/design-and-implement-a-20260419-1105/, .megaplan/plans/final-polish-and-gremlin-20260411-0020/, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/, .megaplan/plans/harden-the-solana-payment-20260410-2147/, .megaplan/plans/identity-based-routing-for-20260411-0256/, .megaplan/plans/implement-a-unified-social-20260409-1710/, .megaplan/plans/implement-a-unified-social-20260409-1732/, .megaplan/plans/implement-a-unified-social-20260409-1748/, .megaplan/plans/implement-a-unified-social-20260409-1856/, .megaplan/plans/payment-subsystem-follow-up-20260410-2339/, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/execution_doc.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/schemas/tiebreaker_challenger.json, .megaplan/schemas/tiebreaker_researcher.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_5.json",
+    "Advisory quality: code changes lacked test updates: src/features/reacting/reactor_cog.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis/, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/, .megaplan/plans/add-scheduled-twitter-x-20260409-1553/, .megaplan/plans/add-scheduled-twitter-x-20260409-1556/, .megaplan/plans/add-scheduled-twitter-x-20260409-1557/, .megaplan/plans/admin-triggered-payments-let-20260410-1448/, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/, .megaplan/plans/build-a-fail-closed-20260409-2327/, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/, .megaplan/plans/design-a-generalized-solana-20260409-2227/, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241/, .megaplan/plans/design-and-implement-a-20260419-1105/, .megaplan/plans/final-polish-and-gremlin-20260411-0020/, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/, .megaplan/plans/harden-the-solana-payment-20260410-2147/, .megaplan/plans/identity-based-routing-for-20260411-0256/, .megaplan/plans/implement-a-unified-social-20260409-1710/, .megaplan/plans/implement-a-unified-social-20260409-1732/, .megaplan/plans/implement-a-unified-social-20260409-1748/, .megaplan/plans/implement-a-unified-social-20260409-1856/, .megaplan/plans/payment-subsystem-follow-up-20260410-2339/, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/execution_doc.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/schemas/tiebreaker_challenger.json, .megaplan/schemas/tiebreaker_researcher.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_6.json",
+    "Advisory quality: tests/test_moderation_decisions.py grew by 380 lines (threshold 200).",
+    "Advisory quality: tests/test_moderation_decisions.py has similar functions check_reaction and check_message (100% similarity).",
+    "Advisory audit finding: Executor claimed changed files not present in git status: .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis/, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/, .megaplan/plans/add-scheduled-twitter-x-20260409-1553/, .megaplan/plans/add-scheduled-twitter-x-20260409-1556/, .megaplan/plans/add-scheduled-twitter-x-20260409-1557/, .megaplan/plans/admin-triggered-payments-let-20260410-1448/, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/, .megaplan/plans/build-a-fail-closed-20260409-2327/, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/, .megaplan/plans/design-a-generalized-solana-20260409-2227/, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241/, .megaplan/plans/design-and-implement-a-20260419-1105/, .megaplan/plans/final-polish-and-gremlin-20260411-0020/, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/, .megaplan/plans/harden-the-solana-payment-20260410-2147/, .megaplan/plans/identity-based-routing-for-20260411-0256/, .megaplan/plans/implement-a-unified-social-20260409-1710/, .megaplan/plans/implement-a-unified-social-20260409-1732/, .megaplan/plans/implement-a-unified-social-20260409-1748/, .megaplan/plans/implement-a-unified-social-20260409-1856/, .megaplan/plans/payment-subsystem-follow-up-20260410-2339/, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/execution_doc.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/schemas/tiebreaker_challenger.json, .megaplan/schemas/tiebreaker_researcher.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Baseline `pytest -q --tb=no` could not be captured before edits because the implementation was already in progress when batch 7 began. Validation was therefore performed against the edited tree: targeted moderation tests first, then the full suite.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_7.json, .megaplan/plans/design-and-implement-a-20260419-1105/final.md",
+    "Advisory quality: code changes lacked test updates: src/features/reacting/reactor_cog.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis/, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/, .megaplan/plans/add-scheduled-twitter-x-20260409-1553/, .megaplan/plans/add-scheduled-twitter-x-20260409-1556/, .megaplan/plans/add-scheduled-twitter-x-20260409-1557/, .megaplan/plans/admin-triggered-payments-let-20260410-1448/, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/, .megaplan/plans/build-a-fail-closed-20260409-2327/, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/, .megaplan/plans/design-a-generalized-solana-20260409-2227/, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241/, .megaplan/plans/final-polish-and-gremlin-20260411-0020/, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/, .megaplan/plans/harden-the-solana-payment-20260410-2147/, .megaplan/plans/identity-based-routing-for-20260411-0256/, .megaplan/plans/implement-a-unified-social-20260409-1710/, .megaplan/plans/implement-a-unified-social-20260409-1732/, .megaplan/plans/implement-a-unified-social-20260409-1748/, .megaplan/plans/implement-a-unified-social-20260409-1856/, .megaplan/plans/payment-subsystem-follow-up-20260410-2339/, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/execution_doc.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/schemas/tiebreaker_challenger.json, .megaplan/schemas/tiebreaker_researcher.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Executor claimed changed files not present in git status: .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis/, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/, .megaplan/plans/add-scheduled-twitter-x-20260409-1553/, .megaplan/plans/add-scheduled-twitter-x-20260409-1556/, .megaplan/plans/add-scheduled-twitter-x-20260409-1557/, .megaplan/plans/admin-triggered-payments-let-20260410-1448/, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/, .megaplan/plans/build-a-fail-closed-20260409-2327/, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/, .megaplan/plans/design-a-generalized-solana-20260409-2227/, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241/, .megaplan/plans/final-polish-and-gremlin-20260411-0020/, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/, .megaplan/plans/harden-the-solana-payment-20260410-2147/, .megaplan/plans/identity-based-routing-for-20260411-0256/, .megaplan/plans/implement-a-unified-social-20260409-1710/, .megaplan/plans/implement-a-unified-social-20260409-1732/, .megaplan/plans/implement-a-unified-social-20260409-1748/, .megaplan/plans/implement-a-unified-social-20260409-1856/, .megaplan/plans/payment-subsystem-follow-up-20260410-2339/, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/execution_doc.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/schemas/tiebreaker_challenger.json, .megaplan/schemas/tiebreaker_researcher.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/test_notification_delete.py, tests/test_social_publications.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "Created `.migrations_staging/20260419110000_create_moderation_decisions.sql` with the required `moderation_decisions` schema, exact six-value classification CHECK constraint, and the three requested indexes. Updated `.migrations_staging/README.md` to include the new staged migration and the manual handoff destination `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/`.",
+      "files_changed": [
+        ".migrations_staging/20260419110000_create_moderation_decisions.sql",
+        ".migrations_staging/README.md"
+      ],
+      "commands_run": [
+        "rg --files .migrations_staging",
+        "sed -n '1,220p' .migrations_staging/README.md",
+        "sed -n '1,220p' .migrations_staging/20260419110000_create_moderation_decisions.sql",
+        "rg -n \"bot_auto_restricted|bot_curator_reject|user_self_removal|moderator_cleared_all|moderator_cleared_emoji|message_deleted_cascade|idx_moderation_decisions_guild_removed_at|idx_moderation_decisions_message_id|idx_moderation_decisions_reactor_removed_at\" .migrations_staging/20260419110000_create_moderation_decisions.sql"
+      ]
+    },
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Added `record_moderation_decision`, `get_active_reactors`, and `get_message_snapshot` near `log_reaction_event` in `src/common/db_handler.py`. Verified `record_moderation_decision` begins with `_gate_check(guild_id)`, uses the same fluent-client insert + try/except structure as `log_reaction_event`, `get_active_reactors` reads `user_id`/`emoji`/`guild_id` from `discord_reactions` with `removed_at IS NULL` and optional emoji filtering, and `get_message_snapshot` returns `author_id`/`author_name`/`content`/`channel_id`/`guild_id` from `discord_messages`.",
+      "files_changed": [
+        "src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "sed -n '675,780p' src/common/db_handler.py",
+        "rg -n \"def record_moderation_decision|def get_active_reactors|def get_message_snapshot|_gate_check\\(guild_id\\)|moderation_decisions\" src/common/db_handler.py",
+        "python -m py_compile src/common/db_handler.py"
+      ]
+    },
+    {
+      "task_id": "T3",
+      "status": "done",
+      "executor_notes": "Updated `src/features/reacting/reactor_cog.py` to initialize `_bot_initiated_removals`, add `_prune_bot_removals` and `register_bot_removal`, refactor `_is_restricted_emoji` into `_classify_restricted_emoji`, and wire the restricted-emoji branch to register a bot-removal marker before `remove_reaction` and write exactly one `bot_auto_restricted` moderation decision after a successful removal. Verified the moderation row uses `reason=category` and truncates `message_content_snippet` to 200 chars; confirmed no `_is_restricted_emoji` references remain in `src/` and the module passes `py_compile`.",
+      "files_changed": [
+        "src/features/reacting/reactor_cog.py"
+      ],
+      "commands_run": [
+        "sed -n '1,220p' src/features/reacting/reactor_cog.py",
+        "sed -n '300,520p' src/features/reacting/reactor_cog.py",
+        "sed -n '368,392p' src/features/reacting/reactor_cog.py",
+        "rg -n \"_is_restricted_emoji|_classify_restricted_emoji|register_bot_removal|_prune_bot_removals|record_moderation_decision|bot_auto_restricted\" src/features/reacting/reactor_cog.py src",
+        "python -m py_compile src/features/reacting/reactor_cog.py"
+      ]
+    },
+    {
+      "task_id": "T4",
+      "status": "done",
+      "executor_notes": "Updated `on_raw_reaction_remove` in `src/features/reacting/reactor_cog.py` to pop and consume `_bot_initiated_removals[(message.id, user.id, emoji_str)]` before any self-removal write, emitting exactly one moderation-decision row from the marker path and returning immediately so no duplicate `user_self_removal` row is written. Verified the no-marker path writes `classification='user_self_removal'`, sets `is_suspicious` only for `\ud83e\udd2e`/`\ud83d\udc4e`/`\ud83d\ude2d`, and triggers an admin DM via a fire-and-forget task whose try/except is separate from the DB write path; the DM body includes the reactor mention, emoji, `message.jump_url`, and the 200-character snippet.",
+      "files_changed": [
+        "src/features/reacting/reactor_cog.py"
+      ],
+      "commands_run": [
+        "sed -n '410,540p' src/features/reacting/reactor_cog.py",
+        "sed -n '455,545p' src/features/reacting/reactor_cog.py",
+        "sed -n '540,590p' src/features/reacting/reactor_cog.py",
+        "python -m py_compile src/features/reacting/reactor_cog.py src/features/curating/curator.py"
+      ]
+    },
+    {
+      "task_id": "T6",
+      "status": "done",
+      "executor_notes": "Inserted the curator marker-registration block immediately before all four `await message.remove_reaction('\u274c', user)` sites in `src/features/curating/curator.py` and verified there are exactly four such registrations. No direct `record_moderation_decision` call was added to curator; the remove handler in `ReactorCog` remains the sole writer for the curator path. Minor implementation deviation: `ArtCurator` is itself a bot subclass and has no `self.bot`, so the insertion uses `self.get_cog('ReactorCog')` rather than `self.bot.get_cog(...)`.",
+      "files_changed": [
+        "src/features/curating/curator.py"
+      ],
+      "commands_run": [
+        "rg -n \"remove_reaction\\('\u274c'|remove_reaction\\(\\\"\u274c\\\"\" src/features/curating/curator.py",
+        "sed -n '270,500p' src/features/curating/curator.py",
+        "sed -n '288,345p' src/features/curating/curator.py",
+        "sed -n '455,480p' src/features/curating/curator.py",
+        "rg -n \"register_bot_removal\\(message\\.id, user\\.id, '\u274c', 'bot_curator_reject', reason='curator_reject'\\)|remove_reaction\\('\u274c', user\\)|record_moderation_decision\\(\" src/features/curating/curator.py src/features/reacting/reactor_cog.py"
+      ]
+    },
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Added `on_raw_reaction_clear`, `on_raw_reaction_clear_emoji`, and `on_raw_message_delete` listeners to `src/features/reacting/reactor_cog.py`. Verified each path enumerates `db_handler.get_active_reactors(...)`, writes one moderation-decision row per active reactor with the requested classification, and sets `is_suspicious=False`; `on_raw_message_delete` reads `get_message_snapshot(payload.message_id)` at the top of the handler before any await, then uses DB snapshots only with graceful null fallbacks when snapshot data is missing.",
+      "files_changed": [
+        "src/features/reacting/reactor_cog.py"
+      ],
+      "commands_run": [
+        "rg -n \"on_raw_message_delete|on_raw_reaction_clear|on_raw_reaction_clear_emoji|soft_delete_message|get_message_snapshot|get_active_reactors\" src/features/reacting/reactor_cog.py src/features/logging/logger_cog.py",
+        "sed -n '430,620p' src/features/reacting/reactor_cog.py",
+        "sed -n '132,165p' src/features/logging/logger_cog.py",
+        "sed -n '540,670p' src/features/reacting/reactor_cog.py",
+        "sed -n '666,705p' src/features/reacting/reactor_cog.py",
+        "python -m py_compile src/features/reacting/reactor_cog.py"
+      ]
+    },
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "Created `tests/test_moderation_decisions.py` using `conftest.load_module_from_repo` to load both `reactor_cog.py` and `db_handler.py`, with a mocked Supabase-backed `DatabaseHandler` instance and monkeypatched `record_moderation_decision`, `get_active_reactors`, `get_message_snapshot`, and `bot.fetch_user` surfaces inside the test harness. The module covers the nine requested scenario groups: restricted flag/political/religious add path plus gateway no-op expectation, curator marker path, plain self-removal, suspicious self-removal admin DM, clear-all, clear-emoji filter, message-delete cascade, `_classify_restricted_emoji` branches, and TTL pruning via monkeypatched `time.monotonic`; syntax-checked with `python -m py_compile tests/test_moderation_decisions.py`.",
+      "files_changed": [
+        "tests/test_moderation_decisions.py"
+      ],
+      "commands_run": [
+        "rg -n \"load_module_from_repo|ReactorCog|on_raw_reaction_remove|on_raw_reaction_clear|curator_reject|register_bot_removal|_classify_restricted_emoji\" tests",
+        "sed -n '1,240p' tests/conftest.py",
+        "rg --files tests",
+        "rg -n \"pytest\\.mark\\.asyncio|async def test_|AsyncMock|SimpleNamespace|monkeypatch\" tests/test_*.py",
+        "sed -n '1,220p' tests/test_safe_delete_messages.py",
+        "sed -n '1,220p' tests/test_notification_delete.py",
+        "sed -n '232,340p' src/features/reacting/reactor_cog.py",
+        "python -m py_compile tests/test_moderation_decisions.py",
+        "sed -n '1,320p' tests/test_moderation_decisions.py",
+        "sed -n '320,420p' tests/test_moderation_decisions.py"
+      ]
+    },
+    {
+      "task_id": "T8",
+      "status": "done",
+      "executor_notes": "Ran `pytest tests/test_moderation_decisions.py -q` and fixed the one implementation regression it exposed: `on_raw_reaction_remove` was double-writing `bot_auto_restricted` after the restricted-emoji branch had already written eagerly, so marker consumption for `bot_auto_restricted` is now suppression-only. Re-ran the targeted module to green (`20 passed`), then ran the full suite to green (`241 passed`). Wrote and ran the throwaway `/tmp/smoke_moderation.py` script to confirm the suspicious `\ud83e\udd2e` self-retract path emits exactly one `user_self_removal` decision with `is_suspicious=True` and one admin DM send (`smoke-ok`), then deleted the script. Updated `.megaplan/plans/design-and-implement-a-20260419-1105/final.md` with the manual migration handoff note for `.migrations_staging/20260419110000_create_moderation_decisions.sql` and the required manual Discord smoke checklist. Baseline `pytest -q --tb=no` could not be captured before edits because the code changes were already in progress when T8 began.",
+      "files_changed": [
+        "src/features/reacting/reactor_cog.py",
+        ".megaplan/plans/design-and-implement-a-20260419-1105/final.md"
+      ],
+      "commands_run": [
+        "pytest tests/test_moderation_decisions.py -q",
+        "python -m py_compile src/features/reacting/reactor_cog.py",
+        "pytest -q",
+        "python /tmp/smoke_moderation.py",
+        "test ! -e /tmp/smoke_moderation.py && echo deleted",
+        "sed -n '1,30p' .megaplan/plans/design-and-implement-a-20260419-1105/final.md"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "Confirmed the staged SQL exists under `.migrations_staging/` with the `20260419110000_` prefix, the CHECK constraint enumerates exactly `bot_auto_restricted`, `bot_curator_reject`, `user_self_removal`, `moderator_cleared_all`, `moderator_cleared_emoji`, and `message_deleted_cascade`, all three indexes are present, and `.migrations_staging/README.md` was updated."
+    },
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "Confirmed `record_moderation_decision`, `get_active_reactors`, and `get_message_snapshot` now exist in `src/common/db_handler.py`. `record_moderation_decision` calls `_gate_check(guild_id)` as its first statement and follows the same try/except write pattern as `log_reaction_event`; the read helpers use the fluent Supabase client only and return the documented dict shapes."
+    },
+    {
+      "sense_check_id": "SC3",
+      "executor_note": "Confirmed `ReactorCog.__init__` initializes `self._bot_initiated_removals = {}`, `register_bot_removal` and `_prune_bot_removals` exist and pruning runs on every registration, `_classify_restricted_emoji` returns `flag`/`political`/`religious`/`None`, the old `_is_restricted_emoji` reference is gone, and the restricted-emoji branch registers the marker before `await message.remove_reaction(...)` then writes one `bot_auto_restricted` moderation decision with `reason=category` and a 200-character snippet."
+    },
+    {
+      "sense_check_id": "SC4",
+      "executor_note": "Confirmed the marker-present branch in `on_raw_reaction_remove` pops the marker, writes exactly one moderation-decision row with the marker classification/reason, and returns before any `user_self_removal` write. The no-marker branch writes `user_self_removal`, sets `is_suspicious` only for `\ud83e\udd2e`/`\ud83d\udc4e`/`\ud83d\ude2d`, and sends the admin DM in a separate fire-and-forget task wrapped in its own try/except with reactor mention, emoji, jump URL, and the 200-char snippet."
+    },
+    {
+      "sense_check_id": "SC6",
+      "executor_note": "Verified all four curator `await message.remove_reaction('\u274c', user)` sites are immediately preceded by `register_bot_removal(..., 'bot_curator_reject', reason='curator_reject')`, and no direct `record_moderation_decision` call was added in `curator.py`. Because `ArtCurator` has no `self.bot` attribute, the safe local equivalent is `self.get_cog('ReactorCog')`."
+    },
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Confirmed the three new listeners are registered in `src/features/reacting/reactor_cog.py`. Each one uses `get_active_reactors` and writes one row per reactor with `classification` set to `moderator_cleared_all`, `moderator_cleared_emoji`, or `message_deleted_cascade` respectively, with `is_suspicious=False` on all three paths. `on_raw_message_delete` reads the message snapshot synchronously at handler entry before any await, so it stays ahead of LoggerCog's soft-delete race; when `get_active_reactors` returns an empty list, the handlers no-op."
+    },
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "Confirmed `tests/test_moderation_decisions.py` covers the requested scenario set: restricted flag/political/religious add with correct reasons and gateway no-op expectation, curator marker consumption without duplicate `user_self_removal`, plain self-removal with no admin DM, suspicious self-removal for `\ud83e\udd2e`/`\ud83d\udc4e`/`\ud83d\ude2d` with admin DM payload assertions, clear-all enumeration, clear-emoji filtering, message-delete cascade snapshot population, `_classify_restricted_emoji` branch coverage, and TTL pruning via monkeypatched `time.monotonic`. The assertions check exact moderation-decision kwargs such as `classification`, `reason`, and `is_suspicious`, not only call counts."
+    },
+    {
+      "sense_check_id": "SC8",
+      "executor_note": "Confirmed `pytest tests/test_moderation_decisions.py -q` passed after fixing the duplicate `bot_auto_restricted` write on gateway remove, and `pytest -q` passed with no regressions (`241 passed`). The throwaway `/tmp/smoke_moderation.py` script confirmed the `\ud83e\udd2e` self-retract admin-DM path (`smoke-ok`) and was then deleted. `.megaplan/plans/design-and-implement-a-20260419-1105/final.md` now explicitly notes that `.migrations_staging/20260419110000_create_moderation_decisions.sql` must be copied into `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` before deploy."
+    }
+  ],
+  "files_changed": [
+    ".migrations_staging/20260419110000_create_moderation_decisions.sql",
+    ".migrations_staging/README.md",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_1.json",
+    "src/common/db_handler.py",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_2.json",
+    "src/features/reacting/reactor_cog.py",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_3.json",
+    "src/features/curating/curator.py",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_4.json",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_5.json",
+    "tests/test_moderation_decisions.py",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_6.json",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/final.md",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_7.json"
+  ]
+}

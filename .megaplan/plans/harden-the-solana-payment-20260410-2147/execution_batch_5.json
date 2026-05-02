@@ -1,0 +1,44 @@
+{
+  "task_updates": [
+    {
+      "id": "T14",
+      "status": "done",
+      "executor_notes": "Validation completed in the required order with `PYTHONPATH=.`: `pytest tests/test_admin_payments.py` passed (`20 passed, 1 warning`), `pytest tests/test_scheduler.py tests/test_social_publish_service.py` passed (`35 passed, 1 warning`), and `pytest tests/` passed end-to-end (`79 passed, 1 warning`). No unrelated pre-existing failures surfaced; the plan's `baseline_test_failures` field is `null`, and the full suite remained green. A throwaway reproducer script at `/tmp/harden_payment_cap_repro.py` exercised the adversarial capped `amount_token` path with `rolling_usd=1900`, `amount_token=1.0`, provider price `150.0`, and `daily_usd_cap=2000`; it reproduced the hardened behavior end-to-end by returning a `manual_hold` row with `last_error='rolling daily cap exceeded: $2050.00 > $2000.00'` and persisted `amount_usd` / `token_price_usd` in both the row and `request_payload`, then the script was deleted. Manual read-through audit confirmed the fail-closed invariants remain intact: `PaymentService.request_payment` performs collision detection before idempotent return, only returns active same-wallet prior rows idempotently, creates `manual_hold` on failed/cancelled slot reuse with a different wallet, blocks active different-wallet collisions by returning `None` after `_emit_cap_breach(prior_row)`, stamps derived USD only inside the capped non-test `amount_token` branch, fails closed to `manual_hold` when token pricing is unavailable, and `execute_payment` still uses the stored `recipient_wallet` string. Both wallet-update callers remain fail-closed: `admin_chat_cog._handle_wallet_received` catches `WalletUpdateBlockedError`, notifies admin review, and returns before advancing the intent; `grants_cog._start_payment_flow` catches the same exception, posts the thread warning, and returns before requesting payment. Follow-up `rg -n \"amount_usd\" src tests` found the new non-null `amount_usd` usage only in tests, the rolling-24h helper, admin payment serialization, grant USD-originated payment creation, and PaymentCog success-DM formatting/thresholding; no downstream consumer was found that explicitly depends on token-denominated payouts keeping `amount_usd is None`. Git-history audit findings from T3 remain unchanged: historical hits showed env-var lookups / `Keypair.from_bytes(key_bytes)` but no literal secrets, no `.env`/`secrets` history, no `sk-...` tokens, and `gitleaks` was unavailable. Log audit findings from T11 remain unchanged: secret/key-material greps only found env lookups, logger greps found no env/private-key/secret emission path, and no leak was detected.",
+      "files_changed": [],
+      "commands_run": [
+        "python -m megaplan progress --plan harden-the-solana-payment-20260410-2147",
+        "PYTHONPATH=. pytest tests/test_admin_payments.py",
+        "sed -n '1,260p' src/features/payments/payment_service.py",
+        "sed -n '190,230p' src/features/admin_chat/admin_chat_cog.py",
+        "sed -n '551,575p' src/features/grants/grants_cog.py",
+        "rg -n \"amount_usd\" src tests",
+        "PYTHONPATH=. pytest tests/test_scheduler.py tests/test_social_publish_service.py",
+        "PYTHONPATH=. pytest tests/",
+        "python - <<'PY'\nimport json\nfrom pathlib import Path\np = Path('.megaplan/plans/harden-the-solana-payment-20260410-2147/finalize.json')\nobj = json.loads(p.read_text())\nprint(json.dumps({\n    'baseline_test_failures': obj.get('baseline_test_failures'),\n    'baseline_test_command': obj.get('baseline_test_command'),\n    'baseline_test_note': obj.get('baseline_test_note')\n}, indent=2))\nPY",
+        "sed -n '260,360p' src/features/payments/payment_service.py",
+        "sed -n '1,220p' src/features/payments/provider.py",
+        "PYTHONPATH=. python /tmp/harden_payment_cap_repro.py",
+        "test -f /tmp/harden_payment_cap_repro.py && echo exists || echo deleted",
+        "git status --short"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": "",
+      "task_id": "T14"
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "id": "SC14",
+      "acknowledged": true,
+      "verdict": "pass",
+      "note": "Confirmed all required pytest runs passed (`20 passed`, `35 passed`, `79 passed`), the throwaway persisted-USD daily-cap reproducer was created, run successfully, and deleted, and the manual read-through verified the fail-closed invariants in `request_payment` plus both `upsert_wallet` callers.",
+      "sense_check_id": "SC14",
+      "executor_note": "Confirmed all required pytest runs passed (`20 passed`, `35 passed`, `79 passed`), the throwaway persisted-USD daily-cap reproducer was created, run successfully, and deleted, and the manual read-through verified the fail-closed invariants in `request_payment` plus both `upsert_wallet` callers."
+    }
+  ],
+  "deviations": [
+    "Advisory: done tasks rely on commands_run without files_changed (FLAG-006 softening): T14",
+    "Advisory audit finding: Executor claimed changed files not present in git status: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/main.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/sql/payments.sql, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/common/db_handler.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/tools.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/grants_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_cog.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_service.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/conftest.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_admin_payments.py, /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/tests/test_social_publish_service.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, scripts/audit_ghost_confirmed_payments.py, sql/payments.sql, src/common/db_handler.py, src/features/admin_chat/admin_chat_cog.py, src/features/admin_chat/tools.py, src/features/grants/grants_cog.py, src/features/grants/solana_client.py, src/features/payments/payment_cog.py, src/features/payments/payment_service.py, src/features/payments/solana_provider.py, tests/conftest.py, tests/test_admin_payments.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py, tests/test_social_publish_service.py, tests/test_solana_client.py"
+  ]
+}

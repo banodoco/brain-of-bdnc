@@ -1,0 +1,396 @@
+{
+  "version": 4,
+  "timestamp": "2026-04-23T19:51:01Z",
+  "hash": "sha256:0c3be83cd1c5a647fad2b3580f789576f370d320583cbfebef7eddac7ed436cf",
+  "changes_summary": "v4 applies four narrow mechanical corrections to v3 without changing any settled architectural decision. (1) The asset and comment INSERTs now use `WHERE NOT EXISTS (SELECT 1 FROM assets/asset_comments ...)` plus `ON CONFLICT DO NOTHING`, and drift is handled by a separate conditional UPDATE that only touches rows where `description IS DISTINCT FROM m.content` \u2014 so `GET DIAGNOSTICS ROW_COUNT` is genuinely zero on idempotent reruns (fixes FLAG-009/correctness-1). (2) Every `system_logs` INSERT now uses the real column names `logger_name, level, message, extra` per `supabase/migrations/20251210000000_create_system_logs.sql:5-18` (fixes FLAG-008/correctness-2). (3) A new Phase 1 migration adds the partial composite index `CREATE INDEX discord_messages_resource_op_idx ON discord_messages (channel_id, reaction_count DESC) WHERE message_id = thread_id AND is_deleted = FALSE`, matching the all-history scan's predicates exactly (fixes FLAG-010/all_locations). (4) The promoter function gains a `dry_run BOOLEAN DEFAULT FALSE` parameter; when TRUE it computes intended-insert counts via SELECT, writes a `level='info'` summary row with `extra->>'dry_run'='true'`, emits `RAISE NOTICE`, and returns without mutating. Execution Order's new first-working-version milestone is `SELECT internal.discord_promote_resources(dry_run := TRUE)` before any live run (fixes issue_hints-2). The PL/pgSQL pivot + cursor-removal remains as a gate-endorsed settled decision cited once in the Overview (closes issue_hints-1/issue_hints by acknowledgment \u2014 this has been endorsed twice and the plan does not re-open it).",
+  "flags_addressed": [
+    {
+      "id": "correctness-1",
+      "resolution": "addressed",
+      "reason": "Asset INSERT now has `WHERE NOT EXISTS (SELECT 1 FROM assets a WHERE a.discord_thread_id = m.message_id)` plus `ON CONFLICT DO NOTHING`, so ROW_COUNT counts only true inserts. Drifted content is handled by a separate UPDATE that only fires when description or name IS DISTINCT FROM the source, so ROW_COUNT on that statement is also zero on clean reruns. Same pattern for comments. Idempotency criterion now holds exactly as written."
+    },
+    {
+      "id": "FLAG-009",
+      "resolution": "addressed",
+      "reason": "Same fix as correctness-1: split INSERT (anti-join) from UPDATE (conditional on drift). The promoter returns distinct `assets_inserted` and `assets_updated` counts, both zero on idempotent reruns."
+    },
+    {
+      "id": "correctness-2",
+      "resolution": "addressed",
+      "reason": "Every `system_logs` INSERT in the promoter body and the importer error path now uses `logger_name, level, message, extra` columns matching `supabase/migrations/20251210000000_create_system_logs.sql:5-18`. Step 1 explicitly instructs transcribing the column list before any SQL is written. Validation step 7 confirms logs land with the correct logger_name."
+    },
+    {
+      "id": "FLAG-008",
+      "resolution": "addressed",
+      "reason": "Same fix as correctness-2. All SQL examples in Step 8 (promoter) and Step 12 (importer) use the real column names."
+    },
+    {
+      "id": "FLAG-010",
+      "resolution": "addressed",
+      "reason": "New Phase 1 Step 6 adds `CREATE INDEX discord_messages_resource_op_idx ON discord_messages (channel_id, reaction_count DESC) WHERE message_id = thread_id AND is_deleted = FALSE`. All predicates are IMMUTABLE so partial indexing is legal. Validation step 2 uses EXPLAIN ANALYZE to confirm the planner uses it."
+    },
+    {
+      "id": "all_locations",
+      "resolution": "addressed",
+      "reason": "Same fix as FLAG-010: the supporting index is now part of Phase 1 migrations."
+    },
+    {
+      "id": "issue_hints-2",
+      "resolution": "addressed",
+      "reason": "Promoter function now takes `dry_run BOOLEAN DEFAULT FALSE`. When true, it computes counts via SELECT, writes a dry-run marker row to system_logs with level='info' and extra->>'dry_run'='true', emits RAISE NOTICE per channel, and returns without mutating. Execution Order's first live step (Step 10) is the dry-run invocation, before any write-path verification. Matches the brief's stated 'schema + promoter dry-run' first-working-version milestone exactly."
+    },
+    {
+      "id": "issue_hints-1",
+      "resolution": "addressed",
+      "reason": "The PL/pgSQL pivot + cursor-table removal is a gate-endorsed settled design decision (DEC-003, reaffirmed across v1 and v2 gate decisions). The Overview cites it once with explicit rationale and moves on. Per gate guidance: 'Do not revisit; the plan needs to just call this out one more time explicitly and move on.' This flag is structurally unresolvable without overriding a prior gate-endorsed call; v4 does not reopen it."
+    },
+    {
+      "id": "issue_hints",
+      "resolution": "addressed",
+      "reason": "Same fix as issue_hints-1 (PL/pgSQL pivot) + issue_hints-2 (dry-run milestone). Both are addressed; the pivot is settled, and the dry-run path is first-class."
+    }
+  ],
+  "questions": [
+    "Step 1 audit: full column list of `supabase/migrations/20251210000000_create_system_logs.sql` beyond `logger_name`, `level`, `message`, `extra` \u2014 particularly whether there's a `created_at DEFAULT NOW()` or any NOT NULL constraints that require explicit values.",
+    "Step 1 audit: exact literal used by existing manual-upload `media.classification` for OP imports (likely `'post'` or `'primary'`).",
+    "Step 1 / Step 13 audit: the exact column `cloudflare-stream-webhook` uses to look up `media` rows \u2014 Stream UID in which named column?",
+    "Step 5: is `internal` an acceptable schema to introduce, or should it be `discord_sync` / something already present?",
+    "Step 12: is `user-uploads` the right Supabase Storage bucket for Discord image imports, or is there a different bucket convention for imported media?",
+    "Step 21: can the guild ID be hard-coded as one shared frontend constant, or should it come from a table (e.g. `discord_channels.guild_id`)?",
+    "Step 18: does `PostBodyRenderer`'s sanitization config pass through raw HTML or strip it? `AssetDescription` inherits that posture exactly."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "All Phase 1 migrations apply cleanly via `supabase db reset` on a scratch branch, including `internal.secrets` (with no pre-existing value) and the new partial index on `discord_messages`",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "`assets` gains source, discord_thread_id, discord_channel_id, imported_at, last_synced_at, reactions_reached_threshold_at, is_hidden plus unique partial index on discord_thread_id",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`asset_comments`, `asset_comment_media` (with is_deleted), `media_import_jobs` exist with specified columns, indexes, and FKs to `members(member_id)`",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`asset_media` gains is_deleted BOOLEAN DEFAULT FALSE",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "RLS enabled on all new tables; asset_comments / asset_comment_media have public-read SELECT filtered by is_deleted=false; media_import_jobs and internal.secrets have no policies (service-role / postgres only)",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`internal.secrets` is postgres-owned with RLS enabled; `internal.get_service_role_key()` is SECURITY DEFINER with EXECUTE granted only to postgres; migration applies cleanly without a pre-seeded secret",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Partial composite index `discord_messages_resource_op_idx ON discord_messages (channel_id, reaction_count DESC) WHERE message_id = thread_id AND is_deleted = FALSE` exists and is used by the promoter's discovery query (confirmed via EXPLAIN ANALYZE)",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "`internal.discord_promote_resources(dry_run BOOLEAN DEFAULT FALSE)` exists, is SECURITY DEFINER, and is callable via pg_cron without HTTP",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Dry-run invocation `SELECT * FROM internal.discord_promote_resources(dry_run := TRUE)` returns the expected counts, writes a single `system_logs` row per channel with `logger_name='discord_resource_promoter'` and `level='info'` and `extra->>'dry_run'='true'`, and performs zero writes to assets/asset_comments/media_import_jobs",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "All `system_logs` INSERTs in promoter and importer use the real columns `logger_name, level, message, extra` (matching `supabase/migrations/20251210000000_create_system_logs.sql:5-18`); no reference to `component` or `payload`",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Promoter discovery has no `created_at` time window; any qualifying OP of any age imports on the next tick",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Main asset INSERT includes `AND NOT EXISTS (SELECT 1 FROM assets a WHERE a.discord_thread_id = m.message_id)` so that `assets_inserted = 0` on clean reruns; same pattern for the comments INSERT",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Description/name drift is handled by a separate UPDATE statement conditional on `IS DISTINCT FROM`, so `assets_updated = 0` when no content changed",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Running the promoter a second time produces zero net new rows AND zero UPDATEs (`assets_inserted = assets_updated = comments_inserted = comments_updated = jobs_enqueued = 0`)",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "An OP older than 60 days manually updated to `reaction_count=5` is imported by the next promoter tick",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Promoter uses `WHERE EXISTS (SELECT 1 FROM members ...)` prefilter on asset + comment inserts; missing-member rows are logged to `system_logs` with `logger_name='discord_resource_promoter'` and `level='warning'`",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "With a manually-deleted referenced `members` row, the promoter completes successfully, the skipped OP is logged, and all other OPs import",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "Promoter maps channel 1149372684220768367 -> type='workflow' and the other four channels -> type='lora'",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "`regexp_match(url, '/attachments/\\d+/(\\d+)/')` correctly extracts the attachment ID from a Discord CDN URL with `?ex=\u2026&is=\u2026&hm=\u2026` query parameters",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "A Discord edit that removes an attachment marks the corresponding junction row `is_deleted=TRUE` on the next promoter tick",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "A Discord message edit updates `asset_comments.content` and `discord_edited_at`; a deletion sets `asset_comments.is_deleted=true`",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Media importer processes a single seeded job end-to-end: creates a `media` row (Stream UID for video; Storage URL for image), creates the junction row, marks the job `status='done'` with `media_id`",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files",
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "Video importer does NOT poll Cloudflare; existing `cloudflare-stream-webhook` populates `cloudflare_playback_hls_url` + `cloudflare_thumbnail_url` when ready; duration is intentionally not promised",
+      "priority": "must",
+      "requires": [
+        "observe_runtime_logs",
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Rehosted video URLs return a valid HLS playlist (HTTP 200, `#EXTM3U` in body); rehosted image URLs return HTTP 200 with image content-type",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "A simulated failed job increments `attempts`, records `last_error`, is re-queued with growing `locked_until`, and moves to `status='failed'` after 5 attempts",
+      "priority": "must",
+      "requires": [
+        "run_shell",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "pg_cron has two schedules: `discord-resource-promoter` (*/10, direct SQL call to `internal.discord_promote_resources()`, no args so dry_run=FALSE) and `discord-media-importer` (*/2, `net.http_post` with Authorization via `internal.get_service_role_key()`)",
+      "priority": "must",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "`useResources`, `useCommunityResources`, `useCommunityResource`, `useUserProfile` all SELECT source, discord_channel_id, is_hidden and filter is_hidden=false",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Shared `AssetDescription` component renders `asset.description` with react-markdown + remark-gfm mirroring `PostBodyRenderer.tsx`, no custom embed tokens",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "`ResourceDetail/index.tsx:166-169` renders description via `AssetDescription` for both manual and Discord-imported assets",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "`ResourceModal.tsx:186-189` renders description via `AssetDescription`",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "ResourceDetail shows 'Made with this' grid, 'Discussion' thread, and 'From Discord' badge only when `resource.source === 'discord_import'`; manual assets render unchanged",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Comment media and 'Made with this' tiles are anchor tags with `target=\"_blank\" rel=\"noopener noreferrer\"` pointing at the rehosted URL; no in-app lightbox in v1",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Each rendered comment shows author avatar + name, markdown content via `AssetDescription`, reply chip when applicable, attachment tiles, reaction count, and working 'View on Discord' link",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "`useAssetComments` fetches joined data in one Supabase query, filters is_deleted=false on both layers, orders by `discord_created_at` ascending",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Setting `assets.is_hidden=true` on an imported asset makes it disappear from all four hook-backed surfaces and from `ResourceDetail` by URL",
+      "priority": "must",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Existing website tests and Supabase type generation still pass after schema additions",
+      "priority": "must",
+      "requires": [
+        "run_tests",
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Resource cards show a subtle 'From Discord' badge with the channel friendly name for imported assets",
+      "priority": "should",
+      "requires": [
+        "drive_browser",
+        "inspect_runtime_ui"
+      ]
+    },
+    {
+      "criterion": "Media importer wall-clock stays under 400s per invocation; promoter (SQL) finishes in under 10s per run",
+      "priority": "should",
+      "requires": [
+        "observe_runtime_logs"
+      ]
+    },
+    {
+      "criterion": "Health-check SQL returns usable output (stuck jobs, 24h failures, staleness, recent promoter/importer system_logs)",
+      "priority": "should",
+      "requires": [
+        "run_shell"
+      ]
+    },
+    {
+      "criterion": "Rollback + follow-up doc exists and explicitly names deferred items (comment lightbox, Cloudflare duration webhook extension, supabase_vault migration)",
+      "priority": "should",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "No Cloudflare Stream quota / storage cost surprises during backfill",
+      "priority": "info",
+      "requires": [
+        "subjective_judgment"
+      ]
+    }
+  ],
+  "assumptions": [
+    "Channel-to-type mapping: 1149372684220768367 -> `workflow`; the four model-family channels -> `lora`.",
+    "`system_logs` schema is `(id, logger_name TEXT, level TEXT, message TEXT, extra JSONB, created_at TIMESTAMPTZ)` per critique evidence on `supabase/migrations/20251210000000_create_system_logs.sql:5-18`. Step 1 verifies this exact column list before any migration is written.",
+    "Archive pipeline populates `members` before referencing the author in a message. Rare races are caught by the EXISTS prefilter and skipped with a `system_logs` row.",
+    "`internal.secrets` is an acceptable schema to introduce; operator seeds the service-role key post-deploy via a one-line INSERT documented in Step 5.",
+    "`cloudflare-stream-webhook/index.ts:210-240` writes `cloudflare_playback_hls_url`, `cloudflare_thumbnail_url`, `storage_provider`. Duration is not promised.",
+    "Existing pg_cron usage (`20260403000005_schedule_priority_scores_cron.sql`) schedules direct SQL; the promoter follows that pattern. Only the media importer needs HTTP via `net.http_post` with auth from `internal.get_service_role_key()`.",
+    "The PL/pgSQL pivot + cursor-table removal is a gate-endorsed deliberate deviation from the brief's stated shape; the anti-join on `assets.discord_thread_id` fully replaces the cursor's role for late-threshold coverage.",
+    "Discord attachment ID parsed from the CDN URL path; `regexp_match` returns NULL on miss.",
+    "`members.username` is NOT NULL; FKs target `members(member_id)`; no thin-member fallback.",
+    "`react-markdown` + `remark-gfm` are already website dependencies (via `PostBodyRenderer`). `AssetDescription` inherits its sanitization posture minus custom embed tokens.",
+    "`admin_status='Listed'` is a valid value in the existing `assets.admin_status` enum/CHECK.",
+    "OP attachments use the existing manual-upload `media.classification` value (captured in Step 1). Reply attachments use `'discord-comment'`.",
+    "`reaction_count >= 5` against `discord_messages.reaction_count` is the correct threshold signal; `sync_message_reactors` trigger maintains it.",
+    "Partial composite index on `discord_messages(channel_id, reaction_count DESC) WHERE message_id = thread_id AND is_deleted = FALSE` is legal (all predicates IMMUTABLE) and shrinks the working set to forum OPs only.",
+    "Comment media and 'Made with this' tiles use `<a target=\"_blank\">` navigation in v1; real lightbox is tracked as a follow-up."
+  ],
+  "delta_from_previous_percent": 43.93,
+  "structure_warnings": []
+}

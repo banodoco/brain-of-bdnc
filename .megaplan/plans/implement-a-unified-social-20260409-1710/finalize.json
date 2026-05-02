@@ -1,0 +1,263 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Create SQL artifact and DatabaseHandler helpers for canonical publication storage.\n\n**Files to create/modify:**\n- Create `sql/social_publications.sql` \u2014 DDL for `social_publications` table (publication_id UUID PK, guild_id, channel_id, message_id, user_id, source_kind, platform, action [post|reply|retweet], route_key, request_payload JSONB, target_post_ref, scheduled_at timestamptz, status [queued|processing|succeeded|failed|cancelled], attempt_count, retry_after timestamptz, last_error text, provider_ref, provider_url, delete_supported bool, created_at, updated_at, completed_at, deleted_at) and `social_channel_routes` table (id, guild_id, channel_id, platform, route_config JSONB, enabled bool, timestamps). Include the `claim_due_social_publications` Postgres function that atomically selects and updates due rows (status='queued', scheduled_at <= now()) to status='processing' using `FOR UPDATE SKIP LOCKED`, returning claimed rows.\n- Modify `src/common/db_handler.py` \u2014 Add methods using **fluent Supabase client** (NOT raw SQL) for all CRUD: `create_social_publication()`, `get_social_publication_by_id()`, `get_social_publications_for_message()`, `list_social_publications()`, `mark_social_publication_processing()`, `mark_social_publication_succeeded()`, `mark_social_publication_failed()`, `mark_social_publication_cancelled()`. Add one RPC-only method: `claim_due_social_publications()` using `self.supabase.rpc('claim_due_social_publications', {...}).execute()`. Do NOT use raw SQL via execute_query for this subsystem.\n\n**Settled decisions:**\n- Fluent client for CRUD, RPC only for atomic claim (settled decision `db-access-pattern`)\n- `shared_posts` stays for legacy consumers; do not write one legacy row per post|reply|retweet outcome \u2014 only write a legacy row for primary non-reply posts where existing callers depend on it\n- The SQL file is a checked-in artifact; deploying it to Supabase is an ops step (see watch items)\n\n**DB method signatures should mirror existing patterns** \u2014 see `record_shared_post()` at db_handler.py:883 for style reference (guild_id gating via `_gate_check`, try/except with logging, return bool or Optional[Dict]).",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "No code changes were needed on this rework pass. The route wiring fix did not alter the SQL artifact or the fluent-client DB helper pattern, and the full suite still covers the canonical storage and claim flow without introducing raw-SQL CRUD regressions.",
+      "files_changed": [],
+      "commands_run": [
+        "python -m pytest tests/ -v"
+      ],
+      "evidence_files": [
+        "sql/social_publications.sql",
+        "src/common/db_handler.py"
+      ],
+      "reviewer_verdict": "Pass. Canonical table DDL, route table DDL, and the atomic claim function are present, and `DatabaseHandler` uses fluent Supabase CRUD plus RPC-only claiming as required."
+    },
+    {
+      "id": "T2",
+      "description": "Define typed request/result contracts and source context under `src/features/sharing/`.\n\n**Files to create:**\n- Create `src/features/sharing/models.py` \u2014 Define dataclasses or typed dicts for:\n  - `SocialPublishRequest`: message_id, channel_id, guild_id, user_id, platform, action (post|reply|retweet), scheduled_at, target_post_ref, route_override, text, media_hints, source_kind (admin_chat|reaction_bridge|summary|reaction_auto), duplicate_policy, text_only, announce_policy, first_share_notification_policy, legacy_shared_post_policy, and optional moderation/consent metadata\n  - `SocialPublishResult`: publication_id, success, tweet_id, tweet_url, provider_ref, provider_url, delete_supported, already_shared, error\n  - `PublicationSourceContext`: source_kind, caller-specific metadata\n\n**Design notes:**\n- The result MUST return `publication_id` alongside `tweet_id`/`tweet_url` so downstream notification and delete flows can target one record\n- Per-request policy fields let caller-specific behavior survive without leaking into provider code\n- Use Python dataclasses with sensible defaults; keep it simple\n- X is the only live provider but contracts must be platform-neutral",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "done",
+      "executor_notes": "No code changes were needed on this rework pass. The normalized request/result contracts remain intact, including publication_id and the caller-policy fields, and the full suite still exercises those contracts through caller and service tests.",
+      "files_changed": [],
+      "commands_run": [
+        "python -m pytest tests/ -v"
+      ],
+      "evidence_files": [
+        "src/features/sharing/models.py"
+      ],
+      "reviewer_verdict": "Pass. Normalized request/result models include `publication_id`, source context, and the caller policy fields required by the plan."
+    },
+    {
+      "id": "T3",
+      "description": "Introduce SocialPublishService with publish_now/enqueue entrypoints and wrap X behind a provider interface.\n\n**Files to create/modify:**\n- Create `src/features/sharing/social_publish_service.py` \u2014 Central service with:\n  - `publish_now(request: SocialPublishRequest) -> SocialPublishResult`: Immediate execution path. Creates canonical publication record (status='processing'), delegates to provider, updates to succeeded/failed, performs legacy shared_posts compatibility write for primary non-reply posts, returns result with publication_id.\n  - `enqueue(request: SocialPublishRequest) -> SocialPublishResult`: Creates canonical record with status='queued' and scheduled_at, returns result with publication_id (no provider call yet).\n  - `execute_publication(publication_id)`: Internal method used by scheduler to execute a claimed publication.\n  - `delete_publication(publication_id)`: Loads canonical record, validates delete_supported, delegates to provider.\n  - Success path: persist canonical status \u2192 optional legacy shared_posts write \u2192 return result with publication_id + provider refs + delete_supported + announcement data.\n\n- Create `src/features/sharing/providers/__init__.py` and `src/features/sharing/providers/x_provider.py` \u2014 Provider interface and X implementation:\n  - Interface: `publish(request)`, `delete(publication)`, `normalize_target_ref(...)`\n  - X provider wraps existing `social_poster.post_tweet()` and `social_poster.delete_tweet()` \n  - Supports actions: post, reply, retweet. Delete supported for post and reply only; retweet explicitly marked delete_supported=False.\n\n- Modify `src/features/sharing/sharer.py` \u2014 Refactor `Sharer` to be request-building and orchestration code:\n  - Keep media download, title extraction, caption generation in Sharer\n  - `finalize_sharing()` builds a `SocialPublishRequest` and hands it to `SocialPublishService.publish_now()` instead of calling `post_tweet()` directly\n  - Move duplicate detection from in-memory `_successfully_shared` set to canonical DB lookups that are action-aware and caller-aware (primary non-reply posts dedupe, replies don't, reaction bridge doesn't inherit admin duplicate suppression)\n  - `send_tweet()` similarly routes through the service\n\n**Critical behavioral preservation:**\n- Admin replies default to text_only=True (callers-2 flag)\n- Reaction bridge does NOT inherit duplicate suppression (callers-3 flag)\n- First-share notification now receives publication_id from result",
+      "depends_on": [
+        "T2"
+      ],
+      "status": "done",
+      "executor_notes": "No new provider-surface changes were required beyond the route preparation now applied before publication creation. The provider boundary remains unchanged, retweets are still non-deletable, and the full suite passes with the service still handling success and failure transitions correctly.",
+      "files_changed": [],
+      "commands_run": [
+        "python -m pytest tests/ -v"
+      ],
+      "evidence_files": [
+        "src/features/sharing/social_publish_service.py",
+        "src/features/sharing/providers/__init__.py",
+        "src/features/sharing/providers/x_provider.py"
+      ],
+      "reviewer_verdict": "Pass. The unified service/provider boundary is in place, retweets are explicitly non-deletable, and legacy `shared_posts` compatibility is narrowed to post actions."
+    },
+    {
+      "id": "T4",
+      "description": "Rewire all callers to use the unified service while preserving their distinct behavior.\n\n**Files to modify:**\n\n1. `src/features/admin_chat/tools.py` (execute_share_to_social around line 1027):\n   - Build a SocialPublishRequest with source_kind='admin_chat'\n   - Add new parameters: schedule_for (ISO-8601 UTC), action (post|reply|retweet), target_post (tweet ID or URL), platform override\n   - For immediate publishes (no schedule_for): call service.publish_now(), return tweet_url/tweet_id as before\n   - For scheduled publishes: call service.enqueue(), return publication_id and scheduled status\n   - Preserve: text_only=True default when reply_to_tweet is supplied\n   - Update tool schema/description to reflect new parameters\n\n2. `src/features/reacting/subfeatures/tweet_sharer_bridge.py` (around line 97):\n   - Replace final publish call with service.publish_now() using source_kind='reaction_bridge'\n   - Keep ALL moderation, consent persistence, reactor DMs, and admin alerts in the bridge\n   - Only replace the actual tweet posting call, not the surrounding moderation/notification logic\n   - Set bridge-specific policy fields (no duplicate suppression, etc.)\n\n3. `src/features/sharing/sharer.py`:\n   - Summary-triggered sharing (initiate_sharing_process_from_summary around line 236) routes through same service path\n   - finalize_sharing() already rewired in T3, but verify all callers pass correct source_kind\n\n4. `src/features/sharing/subfeatures/notify_user.py` (send_post_share_notification around line 168):\n   - Update to accept and pass publication_id alongside tweet_id/tweet_url\n   - PostShareNotificationView constructor (line 24) accepts publication_id\n   - First-share notification triggered on unified completion path with publication_id\n\n**Do NOT force all callers through the admin-chat parameter surface** \u2014 each caller builds its own SocialPublishRequest from its own context.",
+      "depends_on": [
+        "T3"
+      ],
+      "status": "done",
+      "executor_notes": "No additional caller-behavior changes were required beyond revalidating that admin reply text_only defaults, summary publishing, reaction-bridge side effects, and publication_id propagation still hold after the route fix. The full suite confirms those caller paths remain stable.",
+      "files_changed": [],
+      "commands_run": [
+        "python -m pytest tests/ -v"
+      ],
+      "evidence_files": [
+        "src/features/admin_chat/tools.py",
+        "src/features/sharing/sharer.py",
+        "src/features/reacting/subfeatures/tweet_sharer_bridge.py",
+        "src/features/sharing/subfeatures/notify_user.py"
+      ],
+      "reviewer_verdict": "Pass. Admin chat, summary-triggered sharing, and reaction-consent publishing all reach the shared service while preserving caller-specific behavior."
+    },
+    {
+      "id": "T5",
+      "description": "Add route resolution and scheduled worker lifecycle on the real load path.\n\n**Files to create/modify:**\n\n1. `src/common/server_config.py` \u2014 Add route resolution helper:\n   - `resolve_social_route(guild_id, channel_id, platform)`: Requires sharing_enabled via is_feature_enabled(), then resolves: exact channel route \u2192 parent channel route \u2192 guild default route\n   - For v1, guild-default routing is the only active path (settled decision `v1-routing-scope`); channel-specific routes can be seeded via direct DB inserts\n   - Explicit route/platform override only where admin tool provides one\n\n2. `src/features/sharing/sharing_cog.py` \u2014 Add scheduled worker:\n   - Use `discord.ext.tasks.loop` pattern (consistent with repo conventions)\n   - Worker runs on interval (e.g., 30s), calls db_handler.claim_due_social_publications(), executes each through SocialPublishService.execute_publication()\n   - **Critical: main.py instantiates SharingCog directly** (`SharingCog(bot, bot.db_handler)` then `await bot.add_cog(...)`) \u2014 worker startup MUST use cog_load/cog_unload lifecycle hooks, NOT rely on module-level setup() alone\n   - before_loop: wait_until_ready() gating\n   - cog_load: start the loop\n   - cog_unload: cancel/stop the loop\n   - Keep setup() aligned with direct-instantiation path for compatibility\n   - Bounded retries for transient provider failures; persist terminal states with publication_id, platform, action, and provider error in logs\n   - Normalize scheduled times to UTC before persistence; no natural-language time parsing\n\n3. `main.py` \u2014 Wire SocialPublishService into SharingCog:\n   - SharingCog needs access to SocialPublishService (constructed with db_handler and X provider)\n   - Ensure the service instance is accessible to admin tools and sharer via bot or cog reference",
+      "depends_on": [
+        "T4"
+      ],
+      "status": "done",
+      "executor_notes": "Fixed the returned review issue by resolving routes on the live publish_now/enqueue path before any canonical row is created, enforcing the sharing_enabled gate, failing cleanly when no route exists, and persisting the selected route on the canonical publication via route_key plus normalized route_override payload data. Added explicit admin route override support through share_to_social route_key input, verified the exact bug with a throwaway repro script, and re-ran targeted plus full tests to confirm live path routing now works.",
+      "files_changed": [
+        "src/features/sharing/social_publish_service.py",
+        "src/features/admin_chat/tools.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/sharing/social_publish_service.py src/features/admin_chat/tools.py tests/test_social_publish_service.py tests/test_caller_paths.py",
+        "PYTHONPATH=. python /tmp/social_route_repro.py",
+        "python -m pytest tests/test_social_publish_service.py tests/test_caller_paths.py tests/test_social_publications.py -v",
+        "python -m pytest tests/ -v",
+        "rg -n \"_prepare_request_for_delivery|resolve_social_route|route_key|route_override|route_key\" src/features/sharing/social_publish_service.py src/features/admin_chat/tools.py tests/test_social_publish_service.py tests/test_caller_paths.py",
+        "git diff -- src/features/sharing/social_publish_service.py src/features/admin_chat/tools.py tests/test_social_publish_service.py tests/test_caller_paths.py"
+      ],
+      "evidence_files": [
+        "src/common/server_config.py",
+        "src/features/sharing/social_publish_service.py",
+        "src/features/sharing/sharing_cog.py",
+        "main.py"
+      ],
+      "reviewer_verdict": "Pass. The rework gap was actually fixed: live publish/enqueue now resolve routes before row creation, the scheduler uses `SharingCog` lifecycle hooks, and `main.py` wires a shared `SocialPublishService` onto the active runtime path."
+    },
+    {
+      "id": "T6",
+      "description": "Unify deletion, notification identity, and admin observability.\n\n**Files to modify:**\n\n1. `src/features/sharing/subfeatures/notify_user.py`:\n   - Replace direct `social_poster.delete_tweet()` usage with service/provider deletion starting from canonical social_publications record loaded by publication_id\n   - PostShareNotificationView stores publication_id; keeps tweet_id/tweet_url for display only\n   - Delete button: load canonical record by publication_id \u2192 validate user ownership and delete window \u2192 check delete_supported \u2192 if retweet or unsupported action, return clear error message \u2192 else delete via provider \u2192 update canonical state first \u2192 then optional legacy shared_posts update\n   - On timeout (6 hours): disable button as before\n\n2. `src/features/admin_chat/tools.py`:\n   - **Add `social_publications` and `social_channel_routes` to QUERYABLE_TABLES** (around line 66 and line 1637) \u2014 settled decision `admin-query-whitelist`\n   - Add admin tools or expand existing tool to inspect publication records: queued, processing, failed, cancelled, succeeded states\n   - Update share_to_social tool description to reflect scheduling capability\n\n3. `src/features/admin_chat/agent.py`:\n   - **Update system prompt table list** (around line 38) to include social_publications and social_channel_routes\n   - Update tool descriptions that still describe Twitter-only immediate path\n   - Document that operators can schedule work and inspect failure state\n\n**This task addresses settled decisions:**\n- `admin-query-whitelist`: explicit file paths and line numbers for QUERYABLE_TABLES updates\n- Ensures admin agent can query new tables",
+      "depends_on": [
+        "T5"
+      ],
+      "status": "done",
+      "executor_notes": "No code changes were needed on this rework pass. The publication_id-based delete flow and admin query visibility remain intact, and the full suite still covers canonical delete targeting plus the admin surfaces introduced earlier.",
+      "files_changed": [],
+      "commands_run": [
+        "python -m pytest tests/ -v"
+      ],
+      "evidence_files": [
+        "src/features/sharing/subfeatures/notify_user.py",
+        "src/features/admin_chat/tools.py",
+        "src/features/admin_chat/agent.py"
+      ],
+      "reviewer_verdict": "Pass. Deletion now targets canonical publication rows by `publication_id`, and the admin query/operator surfaces expose the new tables and scheduling language."
+    },
+    {
+      "id": "T7",
+      "description": "Add focused tests and run verification.\n\n**Test location:** Create `tests/` directory and test files. This repo has no existing test infrastructure (no pytest.ini, no tests/ dir except one script at scripts/test_social_picks.py), so:\n\n1. Create `tests/test_social_publications.py`:\n   - DB helper tests: canonical publication creation, action-aware duplicate lookup, narrowed shared_posts compatibility, route fallback, publication_id lookup for delete flows\n   - Mock Supabase client for unit tests\n\n2. Create `tests/test_social_publish_service.py`:\n   - Service tests: publish_now(), enqueue(), success/failure transitions, retry classification, delete support branching (post/reply deletable, retweet not)\n   - Mock X provider\n\n3. Create `tests/test_caller_paths.py`:\n   - Caller-path tests: admin chat, summary-triggered, reaction-consent all reach same service entrypoint\n   - Admin replies default text_only=True\n   - Reaction bridge preserves moderation/consent side effects\n\n4. Create `tests/test_scheduler.py`:\n   - Lifecycle: SharingCog worker starts/stops through cog_load/cog_unload\n   - Claim \u2192 execute \u2192 terminal state flow\n\n5. Create `tests/test_notification_delete.py`:\n   - DM view carries publication_id\n   - Deletes intended canonical publication\n   - Rejects unsupported retweet deletion\n   - Handles multiple publications for same Discord message\n\n6. Write and run a throwaway smoke-check script that verifies:\n   - SocialPublishRequest can be constructed with all required fields\n   - SocialPublishService.publish_now() and .enqueue() paths work with mocked provider\n   - Delete flow correctly branches on delete_supported\n   Then delete the script.\n\n7. Run all tests: `python -m pytest tests/ -v`\n\n**Manual smoke tests** (documented for operator, not automated):\n- Immediate post, scheduled post, scheduled reply, scheduled retweet\n- Failed publish visibility in admin query\n- First-share delete path on delete-supported primary X publication",
+      "depends_on": [
+        "T6"
+      ],
+      "status": "done",
+      "executor_notes": "Extended the tests to cover the returned routing gap directly: route resolution persistence on immediate and queued publications, clean rejection when sharing is disabled or no route is configured, and admin route override propagation into scheduled requests. The repro script passed, the focused test modules passed, and the full suite now passes at 18/18.",
+      "files_changed": [
+        "tests/test_social_publish_service.py",
+        "tests/test_caller_paths.py"
+      ],
+      "commands_run": [
+        "PYTHONPATH=. python /tmp/social_route_repro.py",
+        "python -m pytest tests/test_social_publish_service.py tests/test_caller_paths.py tests/test_social_publications.py -v",
+        "python -m pytest tests/ -v"
+      ],
+      "evidence_files": [
+        "tests/test_social_publications.py",
+        "tests/test_social_publish_service.py",
+        "tests/test_caller_paths.py",
+        "tests/test_scheduler.py",
+        "tests/test_notification_delete.py"
+      ],
+      "reviewer_verdict": "Pass. Focused tests exist for DB helpers, service behavior, caller paths, scheduler lifecycle, and publication-id-based deletion; `python -m pytest tests/ -v` passed 18/18."
+    }
+  ],
+  "watch_items": [
+    "[DEBT] db-access-pattern: Use fluent Supabase client for all CRUD on social_publications. RPC ONLY for claim_due_social_publications. Do NOT introduce raw SQL via execute_query. Settled decision.",
+    "[DEBT] supabase-rpc-prerequisite: The claim_due_social_publications SQL function must be deployed to Supabase dashboard BEFORE the scheduler can run. This is a first-time RPC usage in the codebase. Check sql/social_publications.sql for the function definition and deploy it manually.",
+    "[DEBT] route-management: social_channel_routes table ships empty. V1 uses guild-default routing only. Channel-specific routes require manual DB inserts. No admin CRUD commands for routes in this release.",
+    "[BEHAVIORAL] admin-reply-text-only: execute_share_to_social must preserve text_only=True default when reply_to_tweet is supplied. Regression here means replies reattach parent media.",
+    "[BEHAVIORAL] reaction-bridge-no-duplicate-suppression: The reaction_bridge source_kind must NOT inherit admin-chat duplicate suppression. Duplicate policy must be caller-aware.",
+    "[BEHAVIORAL] first-share-notification: send_post_share_notification must receive publication_id from the service result. Delete button resolves one canonical record, not inferred from discord_message_id + tweet_id.",
+    "[BEHAVIORAL] retweet-delete-guard: Retweet publications must be marked delete_supported=False. Delete flow must return clear unsupported message instead of calling tweet-delete API.",
+    "[INTEGRATION] main.py-load-path: SharingCog is loaded via direct instantiation in main.py (SharingCog(bot, bot.db_handler) + add_cog), NOT via extension setup(). Worker lifecycle must use cog_load/cog_unload hooks that fire on this path.",
+    "[INTEGRATION] admin-query-whitelist: Add social_publications and social_channel_routes to QUERYABLE_TABLES in tools.py (~line 66, ~line 1637) and update agent.py system prompt table list (~line 38). Missing this makes new tables invisible to admin agent.",
+    "[SCOPE] shared_posts-compatibility: Do NOT write one legacy shared_posts row per post|reply|retweet outcome. Only write legacy row for primary non-reply posts where existing callers depend on it. Drive duplicate/delete decisions from social_publications.",
+    "[SCOPE] no-natural-language-time-parsing: Scheduled times are ISO-8601/UTC only. No natural-language parsing unless the repo already has a parser."
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Does the SQL artifact include both the social_publications table DDL and the claim_due_social_publications Postgres function with FOR UPDATE SKIP LOCKED? Are all DatabaseHandler methods using fluent client (not raw SQL) except the single RPC claim method?",
+      "executor_note": "Revalidated unchanged canonical storage behavior through the passing suite; the route fix did not touch the SQL artifact or the fluent-client/RPC split for social_publications.",
+      "verdict": "Confirmed. SQL includes the canonical tables plus `FOR UPDATE SKIP LOCKED` claim function, and `DatabaseHandler` keeps fluent CRUD with RPC-only claiming."
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Does SocialPublishResult include publication_id as a first-class field? Do the per-request policy fields (duplicate_policy, text_only, announce_policy, first_share_notification_policy, legacy_shared_post_policy) exist so caller-specific behavior doesn't leak into provider code?",
+      "executor_note": "Revalidated that publication_id and the caller-policy fields remain first-class on the normalized request/result models; the route fix did not change those contracts.",
+      "verdict": "Confirmed. `SocialPublishResult` exposes `publication_id`, and the request model includes the caller-policy fields called out in the plan."
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Does the X provider explicitly set delete_supported=False for retweet actions? Does duplicate detection use canonical DB lookups (not in-memory _successfully_shared set) and is it both action-aware and caller-aware?",
+      "executor_note": "Revalidated that retweets remain delete_supported=False and duplicate checks still stay canonical, action-aware, and caller-aware; the route fix did not regress that path.",
+      "verdict": "Confirmed. Retweets are returned with `delete_supported=False`, and duplicate lookup is canonical, action-aware, and caller-aware."
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Does the admin tool still default text_only=True for replies? Does the reaction bridge only replace the publish call while keeping ALL moderation, consent, DM, and admin alert logic intact? Does notify_user now accept and store publication_id?",
+      "executor_note": "Revalidated that admin replies still default text_only=True, the reaction bridge still only swaps the publish step, and notification flows still carry publication_id after the routing changes.",
+      "verdict": "Confirmed. Admin replies still default to `text_only=True`, the reaction bridge preserves its side effects, and notification flows carry `publication_id`."
+    },
+    {
+      "id": "SC5",
+      "task_id": "T5",
+      "question": "Does the scheduled worker start/stop from cog_load/cog_unload (not just setup())? Does it use discord.ext.tasks.loop with wait_until_ready gating? Does main.py wire the SocialPublishService instance so it's accessible to both the cog worker and admin tools?",
+      "executor_note": "Confirmed the scheduler lifecycle and shared service wiring remain in place, and the live publish/enqueue path now also resolves routes through server_config before canonical publication creation.",
+      "verdict": "Confirmed. Scheduler lifecycle is tied to `cog_load`/`cog_unload`, and `main.py` wires a shared service instance onto the direct cog-add path."
+    },
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "question": "Are social_publications and social_channel_routes added to QUERYABLE_TABLES at both locations in tools.py AND to the agent.py system prompt? Does the delete button load by publication_id and correctly reject retweet deletion with a clear message?",
+      "executor_note": "Revalidated that social_publications and social_channel_routes remain exposed to the admin query surface and that publication_id-based delete still rejects retweet deletion with the clear unsupported message.",
+      "verdict": "Confirmed. Admin query surfaces include `social_publications` and `social_channel_routes`, and delete flow resolves by `publication_id` with clear retweet rejection."
+    },
+    {
+      "id": "SC7",
+      "task_id": "T7",
+      "question": "Do tests cover: (1) atomic claim semantics, (2) caller-specific defaults (admin text_only, reaction no-dedupe), (3) scheduler lifecycle via cog_load path, (4) publication_id-based delete with retweet rejection, (5) multiple publications per Discord message? Do all tests pass?",
+      "executor_note": "Expanded test coverage for the routing rework and reran the full suite successfully; tests now cover route persistence, disabled/unrouted failure handling, caller defaults, scheduler lifecycle, publication_id-based delete, and multiple-publication cases with 18/18 passing.",
+      "verdict": "Confirmed. The test suite covers the required scheduler, caller-default, publication-id delete, multiple-publication, and route-integration cases, and it currently passes."
+    }
+  ],
+  "meta_commentary": "**Execution guidance:**\n\nThis is a large, multi-phase feature. The dependency chain is strictly linear (T1\u2192T2\u2192T3\u2192T4\u2192T5\u2192T6\u2192T7) because each layer builds on the previous. Do not skip ahead.\n\n**Key gotchas:**\n\n1. **RPC is new to this codebase.** The `claim_due_social_publications` Postgres function must be deployed to Supabase before the scheduler works. The SQL file is a checked-in artifact but deploying it is manual. Flag this to the operator after T1.\n\n2. **main.py loads SharingCog directly** \u2014 not via `bot.load_extension()`. This means `setup()` is NOT the active path. The worker loop MUST attach to `cog_load`/`cog_unload` lifecycle hooks. Verify by reading main.py lines ~137-143.\n\n3. **Three distinct caller paths must be preserved:** admin chat (text_only=True for replies, duplicate suppression), reaction bridge (moderation + consent + DMs, NO duplicate suppression), and summary-triggered (opt-out check). Each builds its own SocialPublishRequest \u2014 do NOT force them through a single parameter surface.\n\n4. **shared_posts compatibility is narrow:** Only write a legacy row for primary non-reply posts. Do NOT write one row per post|reply|retweet. The canonical source of truth is social_publications.\n\n5. **The admin query whitelist has TWO locations** in tools.py (~line 66 definition, ~line 1637 usage) plus the agent.py system prompt (~line 38). Missing any one makes the new tables invisible.\n\n6. **No existing test infrastructure.** You'll need to create the tests/ directory and likely add pytest to requirements. Keep tests focused \u2014 mock Supabase and Discord, test the service logic and caller wiring.\n\n7. **Route management is out of scope for v1.** Create the social_channel_routes table but don't build admin CRUD. Guild-default routing only.",
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Step 1: Add canonical publication storage and atomic claim SQL",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 2: Define source-aware normalized publish and delete contract",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 3: Introduce SocialPublishService and make X the first provider",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 4: Rewire current callers without collapsing their distinct behavior",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 5: Add routing resolution and scheduled worker lifecycle on the real load path",
+        "finalize_task_ids": [
+          "T5"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 6: Unify deletion, notification identity, and admin observability",
+        "finalize_task_ids": [
+          "T6"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 7: Add focused tests and smoke checks",
+        "finalize_task_ids": [
+          "T7"
+        ]
+      }
+    ],
+    "orphan_tasks": [],
+    "completeness_notes": "All 7 plan steps map 1:1 to tasks T1-T7. The linear dependency chain matches the plan's explicit execution order. Settled decisions (db-access-pattern, admin-query-whitelist, v1-routing-scope) are embedded in task descriptions and watch items. Gate warnings about RPC prerequisites and route management scope are captured in watch items. All 4 unresolved flags (correctness, all_locations, issue_hints, scope) are addressed via settled decisions embedded in task instructions.",
+    "coverage_complete": true
+  }
+}

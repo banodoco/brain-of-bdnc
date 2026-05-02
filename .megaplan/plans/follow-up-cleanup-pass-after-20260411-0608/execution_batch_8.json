@@ -1,0 +1,58 @@
+{
+  "output": "Batch 8 complete. Removed the member-only prompt/conversation/tool-selection dead path from `src/features/admin_chat/agent.py`, collapsed the agent onto the admin prompt/tool flow, and updated the `admin_chat_cog.py` call site to match the simplified `chat()` signature. Verification passed for `tests/test_admin_payments.py`, the scoped agent/cog grep, and the full repository suite.",
+  "files_changed": [
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/agent.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/admin_chat_cog.py",
+    "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/.megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/execution_batch_8.json"
+  ],
+  "commands_run": [
+    "sed -n '1,120p' src/features/admin_chat/agent.py",
+    "sed -n '160,330p' src/features/admin_chat/agent.py",
+    "sed -n '330,560p' src/features/admin_chat/agent.py",
+    "rg -n \"MEMBER_SYSTEM_PROMPT|MEMBER_MAX_CONVERSATION_LENGTH|get_tools_for_role|is_admin|requester_id=None if is_admin|_trim_conversation\\(\" src/features/admin_chat tests",
+    "sed -n '1188,1220p' src/features/admin_chat/admin_chat_cog.py",
+    "rg -n \"MEMBER_SYSTEM_PROMPT|MEMBER_MAX_CONVERSATION_LENGTH|get_tools_for_role|is_admin|requester_id=None if is_admin|_trim_conversation\\(\" src/features/admin_chat/agent.py src/features/admin_chat/admin_chat_cog.py",
+    "pytest tests/test_admin_payments.py --tb=no -q --no-header",
+    "pytest --tb=no -q --no-header",
+    "nl -ba src/features/admin_chat/agent.py | sed -n '1,24p;160,290p;340,500p;500,524p'",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '1196,1208p'"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/execution_batch_8.json",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/admin_chat_cog.py, src/features/admin_chat/agent.py.",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .hypothesis, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/final-polish-and-gremlin-20260411-0020, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608, .megaplan/plans/harden-the-solana-payment-20260410-2147, .megaplan/plans/identity-based-routing-for-20260411-0256, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/plans/payment-subsystem-follow-up-20260410-2339, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, tests/conftest.py, tests/test_caller_paths.py, tests/test_notification_delete.py, tests/test_social_publications.py",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC10 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment."
+  ],
+  "task_updates": [
+    {
+      "task_id": "T8",
+      "status": "done",
+      "executor_notes": "Removed `MEMBER_SYSTEM_PROMPT` and `MEMBER_MAX_CONVERSATION_LENGTH` from `src/features/admin_chat/agent.py`, switched the import at `src/features/admin_chat/agent.py:15` from `get_tools_for_role` to `TOOLS`, simplified `_trim_conversation` at `src/features/admin_chat/agent.py:202-227` to always use `ADMIN_MAX_CONVERSATION_LENGTH`, and dropped the `is_admin` parameter from `AdminChatAgent.chat()` at `src/features/admin_chat/agent.py:229-236`. Inside `chat()`, `available_tools` is now always `TOOLS`, the system prompt is always `SYSTEM_PROMPT` with the existing server-config override preserved, `_POM_ADDENDUM` is always appended, `_ADMIN_IDENTITY_INJECTED_TOOLS` injection is preserved without the old `is_admin` guard, and `execute_tool(...)` now always receives `requester_id=None` as required. Updated the single cog call site at `src/features/admin_chat/admin_chat_cog.py:1200-1206` to drop `is_admin=True` while keeping `requester_id=None`. Verification: `rg -n \"MEMBER_SYSTEM_PROMPT|MEMBER_MAX_CONVERSATION_LENGTH|get_tools_for_role|is_admin|requester_id=None if is_admin|_trim_conversation\\(\" src/features/admin_chat/agent.py src/features/admin_chat/admin_chat_cog.py` showed only the expected non-agent `_is_admin` references in `admin_chat_cog.py`; `pytest tests/test_admin_payments.py --tb=no -q --no-header` passed with `50 passed, 1 warning`; `pytest --tb=no -q --no-header` passed with `200 passed, 4 warnings`.",
+      "files_changed": [
+        "src/features/admin_chat/agent.py",
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "sed -n '1,120p' src/features/admin_chat/agent.py",
+        "sed -n '160,330p' src/features/admin_chat/agent.py",
+        "sed -n '330,560p' src/features/admin_chat/agent.py",
+        "rg -n \"MEMBER_SYSTEM_PROMPT|MEMBER_MAX_CONVERSATION_LENGTH|get_tools_for_role|is_admin|requester_id=None if is_admin|_trim_conversation\\(\" src/features/admin_chat tests",
+        "sed -n '1188,1220p' src/features/admin_chat/admin_chat_cog.py",
+        "rg -n \"MEMBER_SYSTEM_PROMPT|MEMBER_MAX_CONVERSATION_LENGTH|get_tools_for_role|is_admin|requester_id=None if is_admin|_trim_conversation\\(\" src/features/admin_chat/agent.py src/features/admin_chat/admin_chat_cog.py",
+        "pytest tests/test_admin_payments.py --tb=no -q --no-header",
+        "pytest --tb=no -q --no-header",
+        "nl -ba src/features/admin_chat/agent.py | sed -n '1,24p;160,290p;340,500p;500,524p'",
+        "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '1196,1208p'"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC8",
+      "executor_note": "Confirmed. In `src/features/admin_chat/agent.py`, `MEMBER_SYSTEM_PROMPT`, `MEMBER_MAX_CONVERSATION_LENGTH`, the `is_admin` parameter on both `chat()` and `_trim_conversation()`, and every `if is_admin` branch were removed. The import switched from `get_tools_for_role` to `TOOLS`, `_ADMIN_IDENTITY_INJECTED_TOOLS` injection was preserved with the guard collapsed, and the cog call site in `src/features/admin_chat/admin_chat_cog.py:1200-1206` now drops `is_admin=True` while keeping `requester_id=None`."
+    }
+  ]
+}

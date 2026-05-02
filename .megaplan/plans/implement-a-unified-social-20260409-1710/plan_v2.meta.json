@@ -1,0 +1,83 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-09T17:37:36Z",
+  "hash": "sha256:06f09281caea481b29c95cb65fa984778119a023f7e5b931134ac885b4afca9c",
+  "changes_summary": "No flag pointed at the wrong subsystem, so the plan still targets the right code. The revision changes the root-cause treatment instead: `social_publications` becomes canonical, `shared_posts` is explicitly reduced to a legacy compatibility surface, queue claiming is moved into a checked-in DB-atomic SQL/RPC primitive, caller/source context is promoted into the normalized request so reaction moderation and admin defaults are preserved, summary and notification/delete paths are pulled into scope, and the admin/operator surface now includes scheduling and publication visibility instead of only the old Twitter-only tool contract.",
+  "flags_addressed": [
+    "FLAG-001",
+    "FLAG-002",
+    "FLAG-003",
+    "issue_hints-1",
+    "issue_hints-2",
+    "correctness-1",
+    "correctness-2",
+    "correctness-3",
+    "scope-1",
+    "scope-2",
+    "all_locations-1",
+    "all_locations-2",
+    "callers-1",
+    "callers-2",
+    "callers-3"
+  ],
+  "questions": [
+    "For the first admin-facing scheduling release, is UTC/ISO-8601 input sufficient, or is there a hard requirement for natural-language time parsing in chat?",
+    "Should X `retweet` jobs be allowed to target any arbitrary status ID, or only IDs supplied by trusted operators and/or previously published records?",
+    "After retries are exhausted, should failed scheduled publications remain in a manual-retry state only, or should the worker apply any additional backoff policy automatically?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "An immediate `share_to_social` request without `schedule_for` still publishes to X and returns a concrete success payload with `tweet_url` and `tweet_id`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "A scheduled publication can be created for `post`, `reply`, and `retweet`, and each job ends in a durable terminal state (`succeeded` or `failed`) with timestamps, attempt counts, and error details.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Admin-triggered sharing, summary-triggered sharing, and reaction-consent publishing all execute through the same unified publish service while preserving their existing caller-specific moderation, consent, DM, and announcement behavior.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Per-channel routing resolves in the order channel override, parent channel, guild default, and only runs when the existing `sharing_enabled` gate allows it.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Canonical publication records, not `shared_posts`, drive duplicate and delete decisions so multi-action `post|reply|retweet` publishing for one Discord message does not corrupt state.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Due-job claiming is implemented as a DB-atomic primitive in the checked-in SQL artifact and prevents double execution across restarts or overlapping workers.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The admin/operator surface can both create scheduled publications and inspect queued, processing, failed, and succeeded publication records without relying only on `shared_posts`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Caller-specific defaults remain intact, including admin replies defaulting to `text_only=True` unless explicitly overridden and reaction-consent publishes not inheriting unintended duplicate suppression.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The scheduler reuses the repo\u2019s `discord.ext.tasks.loop` pattern, starts and stops cleanly with the cog lifecycle, and logs publication id, platform, action, and final provider error for recovery.",
+      "priority": "should"
+    },
+    {
+      "criterion": "The platform integration boundary is provider-based so adding a second outbound platform does not require rewriting admin, summary, or reaction caller code.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke tests on a real X account pass for immediate post, scheduled post, scheduled reply, scheduled retweet, failed publish visibility, and delete compatibility for a delete-supported X post.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "The first release still ships only one live outbound provider, X/Twitter, but the service boundary and DB shape must stay provider-neutral.",
+    "`social_publications` is the canonical source of truth for publish state, retries, duplicate checks, and deletion support; `shared_posts` remains only for legacy consumers that cannot be migrated in the same change.",
+    "Supabase RPC is available for a small, checked-in Postgres claim function even though the repo does not currently use RPC elsewhere.",
+    "Scheduled timestamps will be normalized to UTC before persistence, and the initial admin-facing input can stay ISO-8601-like rather than adding natural-language parsing.",
+    "Retweet execution is in scope for publish scheduling, but retweet-specific end-user deletion UX is not required in this change; unsupported delete attempts should fail explicitly rather than guessing at provider behavior."
+  ],
+  "delta_from_previous_percent": 90.05,
+  "structure_warnings": []
+}

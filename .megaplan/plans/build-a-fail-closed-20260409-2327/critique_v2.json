@@ -1,0 +1,347 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "guidance": "Cross-check the result against explicit user notes, critique corrections, and watch items. Flag anything the implementation ignored, contradicted, or only partially covered.",
+      "findings": [
+        {
+          "detail": "Checked the revised routing story against the locked user note and the concrete grants example, and the plan still stops short of a real route-configured solution: Step 8 now passes routing columns into the ledger, but the only concrete caller example still hardcodes `confirm_channel_id=thread.parent_id`, `confirm_thread_id=thread.id`, `notify_channel_id=thread.parent_id`, and `notify_thread_id=thread.id`, so the promised payments-channel/forum override is still not designed end to end.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked the test-payment amount handling against the locked 'fixed tiny global amount' decision and found the plan internally inconsistent: Step 5 models the test amount as `amount_usd`, and Step 9 proposes `PAYMENT_TEST_AMOUNT_USD`, which would make the on-chain SOL amount vary with price instead of staying fixed if the user's intent was a fixed dust transfer on Solana.",
+          "flagged": true
+        },
+        {
+          "detail": "Compared the revised plan to the first-pass gaps and confirmed that the wallet registry and manual release/status controls are now explicitly in scope, so those earlier omissions were actually addressed in the revision.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Compared the locked user notes to Steps 6-8 of the plan: the plan still assumes confirmations happen in the grant thread and that test payments can auto-confirm, but the user already fixed the confirmation destination as route-configured and required manual release/status controls; Step 7 only adds query/hold/retry/cancel, so that requirement is only partially covered.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked the v1 scope statement against the task brief and found a direct narrowing: the task asks for a generalized payment subsystem with a wallet registry, but Step 1 explicitly defers any wallet registry and keeps recipient wallets as per-payment text only, which leaves the design closer to the current grants-only flow than the brief calls for.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Searched the LLM and admin-chat code paths in `src/common/llm/claude_client.py` and `src/features/admin_chat/agent.py`; the plan does not introduce any Codex-to-Claude fallback path, so it does not contradict the locked note forbidding automatic fallback on backend connection failures.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "guidance": "Look for logic errors, invalid assumptions, broken invariants, schema mismatches, or behavior that would fail at runtime. When the fix adds a conditional branch, check whether it handles all relevant cases \u2014 not just the one reported in the issue.",
+      "findings": [
+        {
+          "detail": "Checked the revised `request_payment(...)` signature in Step 5 and found it is not valid Python as written, because required parameters (`confirm_channel_id`, `notify_channel_id`) appear after defaulted parameters (`recipient_discord_id=None`, `wallet_id=None`); this is a concrete implementation error in the plan text, not just a stylistic issue.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked the revised payment state-machine contracts and found an internal contradiction: Step 2 says `mark_payment_failed(...)` is only callable for `send_phase='pre_submit'`, but Step 5 and recovery logic still call it for chain-definitive failures after submission (`send_phase='submitted'`), so the DB API contract and the service flow cannot both be true.",
+          "flagged": true
+        },
+        {
+          "detail": "Compared the revision to the two major correctness flags from the first pass and confirmed the core fixes are sound: the new `SendResult` split addresses the pre-submit versus ambiguous-send problem, and the separate `confirm_tx()` step avoids the earlier mistake of treating an immediate `check_status()` miss as final.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Compared Step 5 with `src/features/grants/solana_client.py:59-116`: the proposed `provider.send()` plus `except -> mark failed` contract cannot distinguish a definite pre-submit failure from an ambiguous network error after `send_transaction`, so auto-retrying after a raised exception can still violate the fail-closed invariant and double-pay.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Compared the planned post-submit flow with the existing client behavior and found a timing bug: the repo currently waits on `confirm_tx()` after submission, but the plan replaces that with one immediate `check_status()` call and sends `not_found` straight to `manual_hold`; on Solana a freshly submitted signature can be briefly absent from `get_signature_statuses`, so healthy payments could be frozen routinely.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked private-key handling against the current Solana client and found the thin-adapter part of the plan technically sound: `SolanaClient` keeps the decoded keypair only in memory and exposes no persistence hooks, so wrapping it behind a provider does not itself introduce secret-storage regressions.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "guidance": "Look at how the changed function is used across the codebase. Does the fix only address one caller's scenario while others remain broken? Flag missing required work or out-of-scope edits. A minimal patch is often right, but check whether the underlying problem is bigger than what the issue describes.",
+      "findings": [
+        {
+          "detail": "Rechecked the broader grants state machine and confirmed the revision now covers the previously-missed active-grant surfaces: it updates both `get_active_grants_for_applicant()` in `src/common/db_handler.py` and the assessor prompt in `src/features/grants/assessor.py`, which closes the duplicate-application hole that existed in v1 of the plan.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked the wider routing problem across the repo and found the plan still scoped it too narrowly: routed behavior in this codebase normally comes with a resolver plus admin-managed config surface (`ServerConfig.resolve_social_route()` and the `social_channel_routes` CRUD tools), but the payment plan adds only per-request channel IDs and no equivalent payment-route lookup or configuration path.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Searched the rest of the grants subsystem and found that active-grant logic is broader than `_process_payment()`: `DatabaseHandler.get_active_grants_for_applicant()` still treats only `reviewing` and `awaiting_wallet` as active, and `src/features/grants/assessor.py:65` tells Claude the same thing, so introducing `payment_requested` or `manual_hold` without updating those paths would reopen duplicate-application holes.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Looked at the proposed 'generalized' subsystem against the actual producer surface and found the ledger scope too narrow: the schema only stores `producer` and `producer_ref`, but no durable confirmation route, result-notification target, or wallet-verification state, which means future producers would still need producer-specific side channels instead of using the payment ledger end to end.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "guidance": "Search for all instances of the symbol/pattern being changed. Also ask: does this feature require setup, registration, or integration code beyond the core logic? Missing glue code causes test failures even when the core fix is correct.",
+      "findings": [
+        {
+          "detail": "Checked the Discord interaction support code and confirmed the restart-safe view gap was actually addressed at the planning level: the revision now explicitly calls for `PaymentConfirmView(timeout=None)` plus `bot.add_view(...)` re-registration during `cog_load`, which is the missing infrastructure the first plan did not include.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked the admin-chat surfaces and confirmed the earlier prompt/catalog gap was also addressed: the revision now names both `tools.py` and the hand-written tool catalog in `src/features/admin_chat/agent.py`, which is required in this repo for new tools to be discoverable by the agent.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked the remaining supporting infrastructure for route-configured destinations and found it still missing: the plan does not touch `src/common/server_config.py`, add a payment-route table, or define admin tooling comparable to `social_channel_routes`, so there is still no actual configuration source for the route values the ledger is supposed to store.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the supporting Discord glue and found a restart gap: button-based confirmation is not just a ledger change, because restart-safe Discord buttons need persistent views or another re-registration path; the repo has `discord.ui.View` classes in features like social notifications, but there is no `bot.add_view(...)` registration anywhere and the plan does not add one.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked admin-chat integration surfaces and found more wiring than the plan names: adding payment tools requires more than functions in `tools.py` because `src/features/admin_chat/agent.py:35-52` contains a hand-written tool catalog the LLM reads; the plan mentions updating `TOOLS` but not the agent prompt text, so the new controls could be unreachable in practice.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Checked schema placement against repo infrastructure and found the application path underspecified: the social queue pattern does use `sql/social_publications.sql`, but `structure.md:98-101` still documents `supabase/migrations/` as the canonical migration home, so putting payments only in `sql/payments.sql` leaves the actual rollout path ambiguous.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "guidance": "Grep for call sites. For each caller, check what values it passes \u2014 especially edge cases like None, zero, empty, or composite inputs. Then ask: should this change be here, or in a caller, callee, or new method?",
+      "findings": [
+        {
+          "detail": "Traced the live grants caller again at `src/features/grants/grants_cog.py:367-380` and found the revised plan still lacks the crucial caller-side resolution step: the new API accepts confirm and notify targets, but the only concrete grants example still derives those directly from the current thread rather than from any configurable route source, so the caller handling remains incomplete for the user's override requirement.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked the earlier two-payments-per-grant modeling issue and confirmed the revision fixes it cleanly: querying the payment ledger by `(producer='grants', producer_ref=thread_id, is_test)` is a workable caller model and removes the need for the flawed single `payment_ref` column.",
+          "flagged": false
+        },
+        {
+          "detail": "Searched the current code for `_process_payment` callers and it remains localized to `GrantsCog`, so the direct move off inline sends is still confined to one producer path today even though the new subsystem is designed to be reusable later.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Traced the current payment caller in `src/features/grants/grants_cog.py:367-380`: the only live caller hands `_process_payment()` a forum thread, the current grant row, and the applicant-supplied wallet string, but the planned `request_payment()` signature does not take any confirmation-destination metadata even though the locked behavior now depends on route-configured destinations.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Traced the grant DB callers that would consume the new linkage and found a modeling gap: Step 8 adds a single `payment_ref` column on `grant_applications`, but the same plan also requires separate test and final payment attempts, so one pointer is not enough to represent both ledger rows or tell the grant flow which phase is current after restart.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "Searched for `_process_payment` callers and found they are currently localized to `GrantsCog`, so the direct code movement out of that method is confined to one producer today even though the surrounding state-machine fallout is broader.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "conventions",
+      "question": "Does the approach match how the codebase solves similar problems?",
+      "guidance": "Check not just naming/style but how similar PROBLEMS are solved in this codebase. If the codebase adds new methods for similar cases, the plan should too. Do not spend findings on trivial stylistic preferences.",
+      "findings": [
+        {
+          "detail": "Compared the queue and worker shape to the social subsystem and the revision is still aligned there: the `sql/social_publications.sql` plus `SharingCog` claim-and-process pattern remains the best repo-native template for a payment worker.",
+          "flagged": false
+        },
+        {
+          "detail": "Compared the cross-cog handoff language to the rest of the repo and the same maintainability gap remains: the revision still alternates between 'notification handler', 'PaymentCog listens', and callback-style wording for the grants follow-up path instead of choosing one concrete repo-native integration pattern such as direct bot-attached service usage or explicit cog references wired in `main.py`.",
+          "flagged": true
+        },
+        {
+          "detail": "Compared the routing design to existing routed features and found the revision diverges from established practice: this codebase already represents 'route-configured destination' with a resolver plus admin CRUD table (`ServerConfig.resolve_social_route()` and `social_channel_routes` tools), but the payment plan substitutes raw channel IDs on each row without adding an analogous payment-route abstraction.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Compared the queue design to the sharing subsystem and found the core worker direction well aligned: modeling payments on `sql/social_publications.sql`, `DatabaseHandler.claim_due_social_publications()`, and `SharingCog.scheduled_publication_worker()` matches how this repo already handles restart-safe background work.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Compared the cross-cog integration style to the rest of the codebase and found the handoff still underspecified: existing features usually wire shared services through bot attributes or direct cog construction in `main.py`, whereas Step 8 says 'emit a Discord event or call a callback' without choosing one concrete repo pattern for the critical payment-to-grants update.",
+          "flagged": true,
+          "status": "open"
+        },
+        {
+          "detail": "Compared the admin surface design to existing patterns and found the dedicated payment query tool direction consistent: this repo already prefers purpose-built social-route tools beside `query_table`, so a redacted `query_payments` tool fits the established admin-chat approach better than exposing the raw table.",
+          "flagged": false,
+          "status": "n/a"
+        }
+      ]
+    },
+    {
+      "id": "verification",
+      "question": "Is there convincing verification for the change?",
+      "guidance": "Flag missing tests or weak validation. If verification tests exist, trace the test's execution path through your patch \u2014 does every branch it exercises produce the expected result? A patch can look correct but fail because it misses one code path the test covers. If you manually verify an edge case because existing tests don't cover it, also test the cases next to it.",
+      "findings": [
+        {
+          "detail": "Checked the revised test plan against the repo's risk profile and the main gap remains: the plan still centers verification on one new `tests/test_payment_service.py` file, but the riskiest regressions are in grants integration, cog startup wiring in `main.py`, and the producer-specific transition from successful test payment to queued final payment.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked the restart-safe interaction claims against the proposed tests and found they are still not automated: the plan says to smoke-test button re-registration after restart, but it does not add even a lightweight unit test around `PaymentConfirmView`, `get_pending_confirmations()`, or the `bot.add_view(...)` registration path.",
+          "flagged": true
+        },
+        {
+          "detail": "Compared the revised plan to the prior verification gaps and confirmed one part did improve: Step 10 now explicitly includes admin control tests for `release_payment`, `retry_payment`, and `cancel_payment`, so that slice of the old verification concern is no longer missing.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Searched `tests/` and found no grant or payment coverage at all today, so a single new `tests/test_payment_service.py` file is not convincing by itself; the riskiest regressions here are in grants integration, route-configured confirmation delivery, and restart-time recovery inside the Discord cog lifecycle.",
+          "flagged": true,
+          "status": "open"
+        },
+        {
+          "detail": "Compared the proposed unit-test style to existing tests such as `tests/test_social_publications.py` and `tests/test_scheduler.py`; the FakeSupabase and RPC pattern is already established here, so the plan's service-level test strategy is grounded for the pure ledger logic.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Checked the locked behaviors against the proposed validation list and did not see tests for the required release/status admin controls or for confirmation interactions surviving a restart, so two user-facing failure modes would still rely on manual smoke testing alone.",
+          "flagged": true,
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "id": "criteria_quality",
+      "question": "Are the success criteria well-prioritized and verifiable?",
+      "guidance": "Check that each `must` criterion has a clear yes/no answer verifiable from code, tests, or git diff. Subjective goals, numeric guidelines, and aspirational targets should be `should`, not `must`. Criteria requiring manual testing or human judgment should be `info`. Flag any `must` criterion that is ambiguous, subjective, or unverifiable in the review pipeline.",
+      "findings": [
+        {
+          "detail": "Checked the revised criteria set and it is materially better than before: wallet registry, release/status controls, restart-safe views, and active-grant blocking are now all represented as explicit reviewable criteria rather than implied requirements.",
+          "flagged": false
+        },
+        {
+          "detail": "The routing criterion is still too weak for the actual user requirement: a build could satisfy 'Confirmation destinations are route-configured via confirm_channel_id/confirm_thread_id on payment_requests' merely by storing caller-supplied IDs, without implementing any real configuration source or override mechanism, so the gate can pass even if grants still hardcodes the source thread.",
+          "flagged": true
+        },
+        {
+          "detail": "There is still no criterion that pins down the test-payment amount semantics despite that being user-locked; the plan can technically pass all listed checks while using a price-derived USD test amount instead of a fixed tiny global on-chain amount.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Most of the infrastructure criteria are binary and reviewable from code or tests, such as the claim RPC shape, the admin-table redaction rule, and the fail-closed `manual_hold` transition, so those `must` items are appropriately concrete.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "The success criteria omit several locked requirements entirely: there is no `must` criterion for route-configured confirmation destinations, manual `release` and `status` controls, or a wallet registry, so the gate would have no direct yes-or-no check for several user-mandated behaviors.",
+          "flagged": true,
+          "status": "addressed"
+        },
+        {
+          "detail": "The `must` criterion saying the grants cog should produce payment requests and update the grant status flow is still too broad for review because it does not spell out how two payments per grant are represented or which non-terminal statuses must remain blocking for duplicate-grant checks.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "id": "FLAG-002",
+      "concern": "Payment routing: the revision persists routing columns, but it still never defines a configuration source or resolver for those routes, and the concrete grants example hardcodes the source thread again.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Step 8 sets `confirm_channel_id=thread.parent_id`, `confirm_thread_id=thread.id`, `notify_channel_id=thread.parent_id`, and `notify_thread_id=thread.id`, while the repo's existing routed features use `ServerConfig.resolve_social_route()` and `social_channel_routes` admin tools."
+    },
+    {
+      "id": "FLAG-007",
+      "concern": "Payment state machine: the revised DB API says `mark_payment_failed` is only for `pre_submit`, but the service flow still uses it for definitive failures after submission.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Step 2 says `mark_payment_failed(...)` is only callable when `send_phase='pre_submit'`, but Step 5 calls it for `confirm_tx -> 'failed'` with `send_phase='submitted'`, and recovery also marks submitted failures as failed."
+    },
+    {
+      "id": "FLAG-008",
+      "concern": "Test payment amount: the revision says the test payment is a fixed tiny global amount, but it models that amount as USD, which makes the on-chain SOL transfer variable.",
+      "category": "correctness",
+      "severity_hint": "uncertain",
+      "evidence": "Step 5 overrides test payments via `amount_usd`, and Step 9 proposes `PAYMENT_TEST_AMOUNT_USD`, even though the same revision describes the test transfer as fixed tiny dust on Solana."
+    },
+    {
+      "id": "conventions",
+      "concern": "Payments integration: the grants handoff still mixes notification-handler, listener, and callback language without choosing one concrete repo-native integration pattern.",
+      "category": "maintainability",
+      "severity_hint": "minor",
+      "evidence": "The repo usually wires shared services directly through bot attributes or explicit cog construction in `main.py`, but the revised Steps 6-8 still describe the producer follow-up path in three different ways."
+    },
+    {
+      "id": "verification-1",
+      "concern": "Payments tests: the revised plan still lacks automated grants/payment integration coverage for the producer flow and startup wiring.",
+      "category": "other",
+      "severity_hint": "minor",
+      "evidence": "Step 10 adds only `tests/test_payment_service.py`, while the repo currently has no grant tests and the risky logic spans `grants_cog.py`, `payment_cog.py`, and `main.py` wiring."
+    },
+    {
+      "id": "verification-2",
+      "concern": "Payments views: restart-safe confirmation behavior is still validated only by manual smoke testing, not by automated tests around `PaymentConfirmView` or `bot.add_view(...)` re-registration.",
+      "category": "other",
+      "severity_hint": "minor",
+      "evidence": "Step 11 includes manual restart smoke tests, but Step 10 does not add tests for persistent view registration or confirmation callback recovery."
+    }
+  ],
+  "verified_flag_ids": [
+    "FLAG-001",
+    "FLAG-003",
+    "FLAG-004",
+    "FLAG-005",
+    "FLAG-006",
+    "issue_hints-2",
+    "correctness-1",
+    "correctness-2",
+    "scope-1",
+    "scope-2",
+    "all_locations-1",
+    "all_locations-2",
+    "all_locations-3",
+    "callers-1",
+    "callers-2",
+    "criteria_quality-1",
+    "criteria_quality-2"
+  ],
+  "disputed_flag_ids": []
+}

@@ -1,0 +1,116 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-11T20:02:37Z",
+  "hash": "sha256:56e13b05924ba30254dd741ea3584e77c5477544de9f6a9fa8328c95c6ded222",
+  "changes_summary": "Addressed FLAG-001 (cross-repo sandbox gap) by making the two-git-repo topology explicit throughout. Split Step 2 into two variants: Step 2 stages migration files inside `brain-of-bndc/.migrations_staging/` (gitignored, with a handoff README) when the sandbox is bot-repo-only; Step 2b writes directly to the sibling workspace `supabase/migrations/` when executor has expanded writable roots. Reorganized into three phases (Prepare, Bot-repo edits, Validation) and moved deletion (Step 4) to a post-workspace-commit precondition so the source of truth is never destroyed before the replacement is durable. Added Step 6 dedicated to workspace-repo validation with both variants. Updated README/structure.md/.cursorrules edit instructions to explicitly name the two-repo topology. Switched `docs/payments.md` anchor strategy from line numbers to section-name anchors for resilience. Added new success criteria for the staging/direct-write branching and the manual checkpoint.",
+  "flags_addressed": [
+    "FLAG-001"
+  ],
+  "questions": [
+    "Should the executor be granted writable-root access to `/Users/peteromalley/Documents/banodoco-workspace/supabase/` so Step 2b (direct-write) is viable, or should the plan default to Step 2 (stage in `.migrations_staging/` + user handoff)?",
+    "Before adding these backfill migrations, should the workspace-level `supabase/migrations/` directory be audited for pre-existing files that already define any of `wallet_registry`, `payment_channel_routes`, `payment_requests`, `admin_payment_intents`, `social_publications`, or either `claim_due_*` RPC? If a conflict exists, halt-and-escalate vs. merge-into-existing?",
+    "The idea mentions `bot README/CLAUDE.md`, but there is no `CLAUDE.md` in `brain-of-bndc/` today (only a `.claude/` directory). Adding the workflow docs to `README.md` alone \u2014 is that sufficient, or do you want a new root-level `brain-of-bndc/CLAUDE.md` created?",
+    "For `docs/payments.md`, is it acceptable to degrade all ten references from `sql/payments.sql:NNN` (line number) to `../supabase/migrations/20260411220000_backfill_payments.sql` + section-name anchor (e.g., `uq_payment_requests_active_producer_ref`)? This is more resilient to future header-comment edits but loses exact line precision.",
+    "Is the `REVOKE EXECUTE on claim_due_social_publications(...)` statement order in `sql/social_publications.sql:77` intentional, or is reordering it (so it follows the `CREATE OR REPLACE FUNCTION`) acceptable as the single SQL-semantic change across all three migrations?",
+    "If the staging path (Step 2) is used, the workspace-repo commit is a manual user step. Is that acceptable, or does the user want the executor to attempt the commit on the user's behalf once sandbox is expanded?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "Three new migration files exist with timestamp prefixes `20260411220000_backfill_payments.sql`, `20260411220100_backfill_admin_payment_intents.sql`, `20260411220200_backfill_social_publications.sql` \u2014 either committed in `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` (direct-write path) or staged in `brain-of-bndc/.migrations_staging/` with a handoff README (staging path).",
+      "priority": "must"
+    },
+    {
+      "criterion": "Every SQL statement in each new migration is idempotent: every `CREATE TABLE` uses `IF NOT EXISTS`, every `CREATE INDEX` uses `IF NOT EXISTS`, every `ADD COLUMN` uses `IF NOT EXISTS`, every function uses `CREATE OR REPLACE`, every trigger is preceded by a matching `DROP TRIGGER IF EXISTS`, and every backfill `UPDATE` has a guard clause preventing double-application.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The `REVOKE EXECUTE on claim_due_social_publications(...)` statement in the social_publications migration appears **after** the `CREATE OR REPLACE FUNCTION` that defines it (fixing the ordering bug in the current shadow file), so `supabase db reset` on a fresh DB succeeds.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The migration file ordering by filename timestamp places `payments` before `admin_payment_intents`, so that FKs from `admin_payment_intents.wallet_id` \u2192 `wallet_registry.wallet_id` and `admin_payment_intents.test_payment_id` \u2192 `payment_requests.payment_id` resolve cleanly on a fresh `supabase db reset`.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`brain-of-bndc/sql/payments.sql`, `brain-of-bndc/sql/admin_payment_intents.sql`, `brain-of-bndc/sql/social_publications.sql` are removed from the bot repo (tracked deletions in `git -C brain-of-bndc status`), and the `sql/` directory no longer exists.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The deletion of the shadow `sql/` folder happens **only after** the workspace-repo migration commits are confirmed (direct-write path) or the user has confirmed the manual move+commit (staging path). The source of truth is never destroyed before the replacement is durable.",
+      "priority": "must"
+    },
+    {
+      "criterion": "No file in `brain-of-bndc/` (excluding `.megaplan/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `.migrations_staging/`) references `sql/payments.sql`, `sql/admin_payment_intents.sql`, or `sql/social_publications.sql` after the edits.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`brain-of-bndc/README.md` documents the migration workflow: canonical path, the **two-repo topology** (workspace repo vs bot repo), naming convention (`YYYYMMDDHHMMSS_`), idempotency requirement, and the apply command (`supabase db push` / `supabase db reset`).",
+      "priority": "must"
+    },
+    {
+      "criterion": "`brain-of-bndc/docs/payments.md` references to `sql/payments.sql:NNN` are rewritten to point at `../supabase/migrations/20260411220000_backfill_payments.sql`, using section-name anchors where line numbers cannot be recomputed cleanly.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`brain-of-bndc/structure.md:98-103` no longer falsely claims a `brain-of-bndc/supabase/` subdirectory; the tree is corrected to reflect the workspace-level separate git repo.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The targeted pytest subset (`tests/test_social_publications.py`, `tests/test_caller_paths.py`, `tests/test_notification_delete.py`) still passes after the edits.",
+      "priority": "must"
+    },
+    {
+      "criterion": "(Direct-write path only) `git -C /Users/peteromalley/Documents/banodoco-workspace status supabase/migrations/` shows the three new migration files as untracked or staged in the workspace repo after Step 2b.",
+      "priority": "must"
+    },
+    {
+      "criterion": "(Staging path only) `brain-of-bndc/.migrations_staging/README.md` exists and clearly documents the move command, the workspace-repo commit command, and the deletion gate (do not run Step 4 until workspace commits land).",
+      "priority": "must"
+    },
+    {
+      "criterion": "(Staging path only) `/.migrations_staging/` is added to `brain-of-bndc/.gitignore` so the staged files never leak into bot-repo commits.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Each new migration file carries a short header comment stating: its purpose (backfill of hand-applied drift), its idempotency guarantee, and \u2014 for `admin_payment_intents` \u2014 its FK dependency on the prior migration.",
+      "priority": "should"
+    },
+    {
+      "criterion": "The three new migration files remain under ~300 lines each and do not introduce any new schema beyond the exact contents of the three shadow files (plus the social_publications statement reorder).",
+      "priority": "should"
+    },
+    {
+      "criterion": "`.cursorrules:57` is updated to clarify that `supabase/migrations/` is workspace-level and in a separate git root from `brain-of-bndc/`.",
+      "priority": "should"
+    },
+    {
+      "criterion": "(Direct-write path) The new workspace-repo commit is focused and atomic (only the three migration files plus, optionally, a short commit message noting production already matches).",
+      "priority": "should"
+    },
+    {
+      "criterion": "An operator can run `supabase db reset` locally against the new migrations and arrive at a schema that matches production, with no errors from replay.",
+      "priority": "info"
+    },
+    {
+      "criterion": "After this change lands, future schema changes for the bot follow the workspace-level migration path instead of being hand-applied and dropped into a bot-repo `sql/` folder.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "The target `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` lives in a **separate git repo** from `brain-of-bndc/` (confirmed via `git rev-parse --show-toplevel` from both roots). Bot-repo deletions and workspace-repo migration additions are two independent commits in two independent repos and cannot be bundled.",
+    "Production already has the exact schema described by the three `sql/*.sql` files, so the new migrations must be strict no-ops on replay against production. Idempotency = guarded statements only, no data transformations beyond the already-guarded `tx_signature_history` backfill.",
+    "The executor may or may not have writable-root access to `/Users/peteromalley/Documents/banodoco-workspace/supabase/`. The plan covers both cases: Step 2b (direct write) is preferred; Step 2 (stage inside `brain-of-bndc/.migrations_staging/` + user handoff) is the fallback. The plan does not assume one path or the other.",
+    "No existing migration in the workspace `supabase/migrations/` directory conflicts with these backfills. If an audit (Step 2b.1) reveals a conflict, the executor halts and escalates rather than adding duplicate-schema migrations.",
+    "Three separate migration files (one per subsystem) is cleaner than a single combined file: each corresponds to one deleted shadow file and to one logical concern.",
+    "Timestamps `20260411220000`, `20260411220100`, `20260411220200` (today's date + 1-minute offsets) satisfy `YYYYMMDDHHMMSS_` naming and provide strict filename ordering between payments \u2192 admin_payment_intents. If the workspace repo uses a different timestamp granularity, adjust while preserving ordering.",
+    "Documentation updates target only `README.md`, `structure.md`, `docs/payments.md`, and `.cursorrules`. No new `CLAUDE.md` is created (no such file exists in the bot repo today); the workflow docs live in `README.md`.",
+    "The `REVOKE EXECUTE on claim_due_social_publications(...)` ordering in `sql/social_publications.sql:77` is a bug and may be reordered in the new migration so a fresh `supabase db reset` succeeds. This is the only SQL-semantic change across all three files.",
+    "No Python code loads from `sql/...` at runtime (confirmed via grep). Deleting the shadow folder has zero runtime impact and only requires doc updates.",
+    "`.migrations_staging/` is a safe gitignored name for the bot repo (does not collide with any existing path). The executor can use a different name if it does collide, but the concept \u2014 gitignored in-repo staging with a handoff README \u2014 stays the same.",
+    "Step 4 (deletion of the shadow `sql/` folder) is strictly gated on confirmation that the workspace-repo migration commits exist. The executor will halt and ask rather than proceed speculatively."
+  ],
+  "delta_from_previous_percent": 67.71,
+  "structure_warnings": [
+    "Each step section should include at least one numbered substep."
+  ]
+}

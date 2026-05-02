@@ -1,0 +1,58 @@
+{
+  "name": "design-a-generalized-solana-hermes-20260409-2241",
+  "idea": "Design a generalized Solana-first payment ledger and payment service for the Discord bot, reusable by ArcCompute microgrants and future payout flows. Requirements: no double payments under crashes/retries/restarts; strong table and secret security boundaries; provider-based architecture starting with SOL only; variable source wallets selected by stable wallet key; optional test payment flow before final payout; Discord-mediated recipient confirmation by replying yes; safe status machine and recovery logic; grants flow should plug into the new system as a producer instead of sending SOL directly.",
+  "current_state": "prepped",
+  "iteration": 0,
+  "created_at": "2026-04-09T20:41:27Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc",
+    "auto_approve": true,
+    "robustness": "standard",
+    "agent": "hermes"
+  },
+  "sessions": {
+    "claude_prep": {
+      "id": "155588e2-08bd-47ec-b171-a8454eaa2fbd",
+      "mode": "ephemeral",
+      "created_at": "2026-04-09T20:45:02Z",
+      "last_used_at": "2026-04-09T20:45:02Z",
+      "refreshed": true
+    }
+  },
+  "plan_versions": [],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-04-09T20:41:27Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "prep",
+      "timestamp": "2026-04-09T20:45:02Z",
+      "duration_ms": 204909,
+      "cost_usd": 0.9153038499999999,
+      "result": "success",
+      "session_mode": "ephemeral",
+      "session_id": "155588e2-08bd-47ec-b171-a8454eaa2fbd",
+      "agent": "claude",
+      "output_file": "prep.json",
+      "artifact_hash": "sha256:8f367fb56c32cc6eb89476ef634f3df7356b2e97ed2645beaeaaa0dabe3cb09f"
+    }
+  ],
+  "meta": {
+    "significant_counts": [],
+    "weighted_scores": [],
+    "plan_deltas": [],
+    "recurring_critiques": [],
+    "total_cost_usd": 0.915304,
+    "overrides": [],
+    "notes": []
+  },
+  "last_gate": {}
+}

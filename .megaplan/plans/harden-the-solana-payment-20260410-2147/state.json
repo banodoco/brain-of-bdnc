@@ -1,0 +1,365 @@
+{
+  "name": "harden-the-solana-payment-20260410-2147",
+  "idea": "Harden the Solana payment subsystem against the attack vectors found by the adversarial security review. Fix P0: git history secret audit, prompt-injection hardening in admin_chat (remove LLM-sourced wallet addresses from initiate_payment tool; wallets must come from wallet_registry keyed by mentioned Discord user), null recipient_discord_id confirmation bypass (fail-closed). Fix P1: wallet swap window between test and final payment (verify execute_payment uses stored recipient_wallet string; reject or warn on upsert_wallet during active intents), idempotency slot reuse after forced failure (warn/DM on producer_ref collision with prior failed row having different wallet), per-payment and rolling daily USD cap on admin-triggered payouts enforced in PaymentService (default $500/payment, $2000/day/guild, exceeding goes to manual_hold), admin DM on successful admin_chat payouts over threshold (default $100, differentiated from failure DMs). Fix P2: log audit for secret leakage, document RLS posture at top of sql/payments.sql. Already using Helius so RPC attacks out of scope. Two wallets already split into solana_grants and solana_payouts providers. Think carefully about wallet-swap and idempotency \u2014 they are subtle and easy to half-fix. Goal is end-to-end hardening.",
+  "current_state": "done",
+  "iteration": 3,
+  "created_at": "2026-04-10T19:47:51Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc",
+    "auto_approve": true,
+    "robustness": "heavy",
+    "agent": ""
+  },
+  "sessions": {
+    "claude_prep": {
+      "id": "096aa6ad-3902-443c-8f3e-219eec4f7342",
+      "mode": "persistent",
+      "created_at": "2026-04-10T19:57:33Z",
+      "last_used_at": "2026-04-10T19:57:33Z",
+      "refreshed": false
+    },
+    "claude_planner": {
+      "id": "05acfe62-2912-4819-8672-7e719756038e",
+      "mode": "persistent",
+      "created_at": "2026-04-10T20:04:10Z",
+      "last_used_at": "2026-04-10T20:50:46Z",
+      "refreshed": false
+    },
+    "codex_critic": {
+      "id": "019d78fe-c261-7e30-8b28-728b1661b06c",
+      "mode": "persistent",
+      "created_at": "2026-04-10T20:09:47Z",
+      "last_used_at": "2026-04-10T20:53:33Z",
+      "refreshed": false
+    },
+    "claude_gatekeeper": {
+      "id": "ef69375a-0c0d-4648-83e4-52a1e7896162",
+      "mode": "persistent",
+      "created_at": "2026-04-10T20:11:36Z",
+      "last_used_at": "2026-04-10T20:54:51Z",
+      "refreshed": false
+    },
+    "claude_finalizer": {
+      "id": "247f0bc9-f299-495e-a049-6bcc4e8ab5d4",
+      "mode": "persistent",
+      "created_at": "2026-04-10T21:10:20Z",
+      "last_used_at": "2026-04-10T21:10:20Z",
+      "refreshed": false
+    },
+    "codex_executor": {
+      "id": "019d793b-56e5-7f90-a843-6cba7428c5f9",
+      "mode": "persistent",
+      "created_at": "2026-04-10T21:20:13Z",
+      "last_used_at": "2026-04-10T21:43:40Z",
+      "refreshed": false
+    },
+    "codex_reviewer": {
+      "id": "019d795a-5228-7143-95fd-02376a448c3b",
+      "mode": "persistent",
+      "created_at": "2026-04-10T21:48:25Z",
+      "last_used_at": "2026-04-10T21:48:25Z",
+      "refreshed": false
+    }
+  },
+  "plan_versions": [
+    {
+      "version": 1,
+      "file": "plan_v1.md",
+      "hash": "sha256:abe1d19ff09fada593261a833c5fb1b553acfc73cc101006f180453a5a363070",
+      "timestamp": "2026-04-10T20:04:10Z"
+    },
+    {
+      "version": 2,
+      "file": "plan_v2.md",
+      "hash": "sha256:b0ea146ad02a6a83a704a55270292fea94160874a299ed04423c43832eb22527",
+      "timestamp": "2026-04-10T20:39:31Z"
+    },
+    {
+      "version": 3,
+      "file": "plan_v3.md",
+      "hash": "sha256:8ee4a98663a904bc12bc8e7bda5dc12b8200ed7a7554c7902b4367a807f30d79",
+      "timestamp": "2026-04-10T20:50:46Z"
+    }
+  ],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-04-10T19:47:51Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "prep",
+      "timestamp": "2026-04-10T19:57:33Z",
+      "duration_ms": 576929,
+      "cost_usd": 1.8148487,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "096aa6ad-3902-443c-8f3e-219eec4f7342",
+      "agent": "claude",
+      "output_file": "prep.json",
+      "artifact_hash": "sha256:55efe539b188d4ced9f9cbb5606eda7be84c4cec9fb95f2d2dbbee4df1c88ff9"
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-10T20:04:10Z",
+      "duration_ms": 392000,
+      "cost_usd": 1.5205412500000002,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "370f6437-0e4e-48da-9a10-67eb94bab45e",
+      "agent": "claude",
+      "output_file": "plan_v1.md",
+      "artifact_hash": "sha256:abe1d19ff09fada593261a833c5fb1b553acfc73cc101006f180453a5a363070"
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-10T20:09:47Z",
+      "duration_ms": 332346,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d78fe-c261-7e30-8b28-728b1661b06c",
+      "agent": "codex",
+      "output_file": "critique_v1.json",
+      "artifact_hash": "sha256:139fa5bd7e569567a3718c87bd453f3f3d76f959ac87e66300e174503409308e",
+      "flags_count": 15
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-10T20:11:36Z",
+      "duration_ms": 104476,
+      "cost_usd": 0.5480514999999999,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "ef69375a-0c0d-4648-83e4-52a1e7896162",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:4dd2a4fea08c0a2959079f721384cdae5cf9cfec7e46449fb39d7153abb1a582",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-10T20:33:02Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "revise_v2_raw.txt",
+      "message": "Claude step failed: Claude returned an error"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-10T20:39:31Z",
+      "duration_ms": 381206,
+      "cost_usd": 1.29774575,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "05acfe62-2912-4819-8672-7e719756038e",
+      "agent": "claude",
+      "output_file": "plan_v2.md",
+      "artifact_hash": "sha256:b0ea146ad02a6a83a704a55270292fea94160874a299ed04423c43832eb22527",
+      "flags_addressed": [
+        "FLAG-001",
+        "FLAG-002",
+        "FLAG-003",
+        "issue_hints",
+        "correctness-1",
+        "correctness-2",
+        "scope",
+        "all_locations-1",
+        "all_locations-2",
+        "callers-1",
+        "callers-2",
+        "criteria_quality"
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-10T20:43:39Z",
+      "duration_ms": 243409,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d78fe-c261-7e30-8b28-728b1661b06c",
+      "agent": "codex",
+      "output_file": "critique_v2.json",
+      "artifact_hash": "sha256:8a1e3d8003a1b4d1c3597bd18a075c2a4a2e059456d5436fe6e6a4862fd55084",
+      "flags_count": 8
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-10T20:44:54Z",
+      "duration_ms": 68258,
+      "cost_usd": 0.4288535,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "ef69375a-0c0d-4648-83e4-52a1e7896162",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:447e07b47db463b0467b3a446af308f1183d733efd8e630a99e4b4c5f80bf3f7",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-10T20:50:46Z",
+      "duration_ms": 348526,
+      "cost_usd": 1.41642425,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "05acfe62-2912-4819-8672-7e719756038e",
+      "agent": "claude",
+      "output_file": "plan_v3.md",
+      "artifact_hash": "sha256:8ee4a98663a904bc12bc8e7bda5dc12b8200ed7a7554c7902b4367a807f30d79",
+      "flags_addressed": [
+        "FLAG-001",
+        "issue_hints",
+        "scope",
+        "criteria_quality",
+        "correctness",
+        "all_locations",
+        "callers",
+        "callers-1"
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-10T20:53:33Z",
+      "duration_ms": 161757,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d78fe-c261-7e30-8b28-728b1661b06c",
+      "agent": "codex",
+      "output_file": "critique_v3.json",
+      "artifact_hash": "sha256:3c640956d22723f46f5ec9d7dcd557a77b4d496530b29baac2a8e5744d76fbea",
+      "flags_count": 2
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-04-10T20:54:51Z",
+      "duration_ms": 72561,
+      "cost_usd": 0.500119,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "ef69375a-0c0d-4648-83e4-52a1e7896162",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:85369b5fd6acf1f4778e2365060f2237fcf6950a3dc897338949b1be58c3d686",
+      "recommendation": "PROCEED"
+    },
+    {
+      "step": "finalize",
+      "timestamp": "2026-04-10T21:10:20Z",
+      "duration_ms": 924882,
+      "cost_usd": 1.5158545,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "247f0bc9-f299-495e-a049-6bcc4e8ab5d4",
+      "agent": "claude",
+      "output_file": "finalize.json",
+      "artifact_hash": "sha256:b01e9354920adfbb2d6e440970febdc776dc22188fa724a5130852046a30d99e"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-10T21:43:40Z",
+      "duration_ms": 1993940,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d793b-56e5-7f90-a843-6cba7428c5f9",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:3428c6d7911754806ac9d09b47feed362af27b75b5467c2a09c698651ca40bbd",
+      "finalize_hash": "sha256:8af0eee5b31fa275d20973d8ceff10383f2d6409c2b50f18199e85dbc2e876f5",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "review",
+      "timestamp": "2026-04-10T21:48:25Z",
+      "duration_ms": 250125,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d795a-5228-7143-95fd-02376a448c3b",
+      "agent": "codex",
+      "output_file": "review.json",
+      "artifact_hash": "sha256:c0cc4572d759be5aac7ce73e856d7f0e6311a7a370e36cb4697bbe4199f67c56",
+      "finalize_hash": "sha256:b19379c905111fc0aedc008c9e008f8377a4465759a729a0110c7accb323d24a"
+    }
+  ],
+  "meta": {
+    "significant_counts": [
+      12,
+      8,
+      2
+    ],
+    "weighted_scores": [
+      19.0,
+      13.0,
+      3.0
+    ],
+    "plan_deltas": [
+      61.33,
+      36.82
+    ],
+    "recurring_critiques": [
+      [],
+      [],
+      []
+    ],
+    "total_cost_usd": 9.042438,
+    "overrides": [],
+    "notes": []
+  },
+  "last_gate": {
+    "recommendation": "PROCEED",
+    "rationale": "Score trajectory is clean and monotonic: 19.0 \u2192 13.0 \u2192 3.0 across three iterations, 18 flags resolved, no recurring critiques, no scope creep, no debt overlap with escalated subsystems. Plan deltas 61.3% \u2192 36.8% are narrowing as expected. The two remaining flags are actually one issue viewed twice: the success criterion that says \"null-recipient paths trigger an admin DM\" is broader than what Step 1 actually does (log + return `None`). This is a criterion-wording mismatch, not a plan defect \u2014 null-recipient rejection happens in `confirm_payment` (post-insert, button-driven), where the calling view already surfaces UX to the user and the row already exists in the DB. Wiring a separate admin DM for every rejected confirmation would be duplicative and expand scope beyond the brief. The right fix is to narrow the criterion text to \"cap-breach and collision paths trigger an admin DM via on_cap_breach; null-recipient rejections log WARN and return `None` to the caller, which surfaces the error via its existing UX path.\" I'm disputing the FLAG-004 framing (there is no requirement in the original brief for a null-recipient admin DM \u2014 the brief says \"fail-closed,\" which log+return-None satisfies) and accepting criteria_quality as a narrow wording tradeoff to be corrected during execution by the review agent when it reads the criterion against Step 1. Continuing to iterate on this alone would be churn; the plan is execution-ready.",
+    "signals_assessment": "Iteration 3, weighted score 3.0 (down from 19.0 \u2192 13.0 \u2192 3.0, clean monotonic descent), plan delta 36.8%, 18 flags resolved, 2 open \u2014 both are the same criterion-vs-step wording mismatch on null-recipient DM behavior. No recurring critiques, no scope creep flags, no debt overlap, no structure warnings, preflight clean (claude + codex available, project dir writable, success criteria present). All other critique categories (issue_hints, correctness, scope, all_locations, callers, conventions, verification) are clear for the first time in this loop.",
+    "warnings": [
+      "During execution, narrow the criterion 'Cap-breach, collision (Branch A insert and Branch B reject), and null-recipient paths trigger an admin DM via on_cap_breach or equivalent path' to exclude null-recipient: the null-recipient branch intentionally only logs WARN and returns None (the button confirmation view surfaces UX to the user; no admin DM wired). Update the criterion in-place before the review agent runs so the `must` text matches Step 1.",
+      "During execution, confirm no existing caller of `confirm_payment` silently ignores a `None` return. Grep all `confirm_payment(` sites to verify each either propagates a user-facing error or logs at an appropriate level. If any site silently swallows `None`, surface that as in-scope fix or a new debt entry.",
+      "During execution, grep `amount_usd` across the broader repo (Discord notify embeds, admin channel messages, analytics sinks) to catch any site that depends on the current null-for-token-denominated contract. Our change populates amount_usd for admin-chat capped payouts end-to-end; downstream reporting should start seeing real USD there, which is a welcome improvement but worth verifying once."
+    ],
+    "settled_decisions": [
+      {
+        "id": "DEC-013",
+        "decision": "Step 8 persists derived USD into `record['amount_usd']`, `record['token_price_usd']`, and their `request_payload` mirrors BEFORE `create_payment_request` \u2014 but ONLY for capped providers in the `amount_token`-only branch, and never for uncapped providers or `is_test=True` rows.",
+        "rationale": "End-to-end fix for FLAG-001 and the rolling/success-DM wiring; also preserves existing tests that assert `amount_usd is None` on uncapped `'solana'` and `'solana_native'` providers."
+      },
+      {
+        "id": "DEC-014",
+        "decision": "Null-recipient fail-closed behavior is log WARN + return `None`. No admin DM is wired for this branch; the calling button-confirmation view surfaces UX to the user via its existing error path.",
+        "rationale": "Matches the brief's 'fail-closed' requirement without duplicating admin notifications. Cap-breach and collision paths are different because they happen pre-insert where no user-facing flow exists."
+      },
+      {
+        "id": "DEC-015",
+        "decision": "Cap-breach admin DM reuses `_dm_admin_payment_failure` (whose 'requires manual review' wording fits both cap-breach and collision-blocked rows); no new sibling method is added for cap-breach. `_dm_admin_payment_success` IS a new sibling, distinct from both.",
+        "rationale": "Avoids proliferation of near-identical DM methods; cap-breach rows land in the admin manual-review queue the same way other failures do."
+      },
+      {
+        "id": "DEC-016",
+        "decision": "Collision Branch B (prior row still covered by the unique index) passes the PRIOR row to `on_cap_breach` as the DM payload, not a synthesized dict. The prior row is what operators need to inspect.",
+        "rationale": "Matches operator triage workflow; avoids inventing a synthetic status like 'blocked_collision' that would leak into the DM template."
+      },
+      {
+        "id": "DEC-017",
+        "decision": "Token price freshness: the amount_token derivation path uses whatever `provider.get_token_price_usd()` returns, including cached prices. No freshness guarantee is enforced.",
+        "rationale": "The cap check and success-DM threshold are coarse enough that cache staleness is negligible, and the same cache is already what grants uses. Enforcing freshness would expand scope."
+      }
+    ],
+    "passed": true,
+    "preflight_results": {
+      "project_dir_exists": true,
+      "project_dir_writable": true,
+      "success_criteria_present": true,
+      "claude_available": true,
+      "codex_available": true
+    },
+    "orchestrator_guidance": "Plan passed gate and preflight. Proceed to finalize. Verify unresolved flags against the plan and project code before accepting."
+  }
+}

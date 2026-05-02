@@ -1,0 +1,40 @@
+{
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Payment reconciliation: B4/B5 cannot actually reconcile failed/manual_hold rows with the current DB transition guards.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed all three critique flags and both orchestrator concerns. FLAG-001: added two new DB primitives (force_reconcile_payment_to_confirmed / force_reconcile_payment_to_failed) with broader allowed_statuses, because mark_payment_confirmed/mark_payment_failed strict guards would make the reconcile no-op on failed/manual_hold rows. FLAG-002: threaded bot (and thus payment_service) through execute_retry_payment / execute_release_payment and the dispatcher at tools.py:3134. FLAG-003: retargeted D11 reproduction away from execute_initiate_payment's intent-dedupe layer and onto the downstream _start_admin_payment_flow / handle_payment_result call sites where producer_ref actually matters; test now patches time.time and uses distinct source_channel_ids to bypass the upstream dedupe. CONCERN A: dropped the execute_payment_resolve admin_chat LLM tool entirely; /payment-resolve is slash-command-only to preserve the hardening-pass prompt-injection closure. CONCERN B: rewrote Step 12's verdict to formally cite FOR UPDATE SKIP LOCKED + Postgres read-committed isolation as the proof, demoted the fake-DB test to 'logical-correctness sanity check', and forbade the 'proven safe by this test' phrasing. Also folded in the seven orchestrator decisions: C7/F16 target grants/solana_client.py, A3 lives in new src/common/redaction.py, admin_chat redaction helpers left alone, F15 ships no CI file and documents scheduler wire-up in the runbook as an operator decision, D10 fix uses 150s threshold if needed, D11 fix uses millisecond precision (UUID rejected), B4 uses 150s heuristic without getLatestBlockhash. Reordered execution so Phase B runs first (since its new DB primitives are prerequisites) and Phase A follows. Updated success criteria: removed the execute_payment_resolve LLM tool criterion, added criteria for the new force_reconcile primitives and the redaction module location, and added a criterion requiring the Step 12 verdict comment to cite Postgres semantics rather than the test.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Admin chat payment tools: B4/B5 under-specify the plumbing needed for retry/release/resolve to reach PaymentService.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed all three critique flags and both orchestrator concerns. FLAG-001: added two new DB primitives (force_reconcile_payment_to_confirmed / force_reconcile_payment_to_failed) with broader allowed_statuses, because mark_payment_confirmed/mark_payment_failed strict guards would make the reconcile no-op on failed/manual_hold rows. FLAG-002: threaded bot (and thus payment_service) through execute_retry_payment / execute_release_payment and the dispatcher at tools.py:3134. FLAG-003: retargeted D11 reproduction away from execute_initiate_payment's intent-dedupe layer and onto the downstream _start_admin_payment_flow / handle_payment_result call sites where producer_ref actually matters; test now patches time.time and uses distinct source_channel_ids to bypass the upstream dedupe. CONCERN A: dropped the execute_payment_resolve admin_chat LLM tool entirely; /payment-resolve is slash-command-only to preserve the hardening-pass prompt-injection closure. CONCERN B: rewrote Step 12's verdict to formally cite FOR UPDATE SKIP LOCKED + Postgres read-committed isolation as the proof, demoted the fake-DB test to 'logical-correctness sanity check', and forbade the 'proven safe by this test' phrasing. Also folded in the seven orchestrator decisions: C7/F16 target grants/solana_client.py, A3 lives in new src/common/redaction.py, admin_chat redaction helpers left alone, F15 ships no CI file and documents scheduler wire-up in the runbook as an operator decision, D10 fix uses 150s threshold if needed, D11 fix uses millisecond precision (UUID rejected), B4 uses 150s heuristic without getLatestBlockhash. Reordered execution so Phase B runs first (since its new DB primitives are prerequisites) and Phase A follows. Updated success criteria: removed the execute_payment_resolve LLM tool criterion, added criteria for the new force_reconcile primitives and the redaction module location, and added a criterion requiring the Step 12 verdict comment to cite Postgres semantics rather than the test.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Admin-chat idempotency: D11's proposed reproduction path targets the wrong layer and can falsely 'prove safe.'",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "Addressed all three critique flags and both orchestrator concerns. FLAG-001: added two new DB primitives (force_reconcile_payment_to_confirmed / force_reconcile_payment_to_failed) with broader allowed_statuses, because mark_payment_confirmed/mark_payment_failed strict guards would make the reconcile no-op on failed/manual_hold rows. FLAG-002: threaded bot (and thus payment_service) through execute_retry_payment / execute_release_payment and the dispatcher at tools.py:3134. FLAG-003: retargeted D11 reproduction away from execute_initiate_payment's intent-dedupe layer and onto the downstream _start_admin_payment_flow / handle_payment_result call sites where producer_ref actually matters; test now patches time.time and uses distinct source_channel_ids to bypass the upstream dedupe. CONCERN A: dropped the execute_payment_resolve admin_chat LLM tool entirely; /payment-resolve is slash-command-only to preserve the hardening-pass prompt-injection closure. CONCERN B: rewrote Step 12's verdict to formally cite FOR UPDATE SKIP LOCKED + Postgres read-committed isolation as the proof, demoted the fake-DB test to 'logical-correctness sanity check', and forbade the 'proven safe by this test' phrasing. Also folded in the seven orchestrator decisions: C7/F16 target grants/solana_client.py, A3 lives in new src/common/redaction.py, admin_chat redaction helpers left alone, F15 ships no CI file and documents scheduler wire-up in the runbook as an operator decision, D10 fix uses 150s threshold if needed, D11 fix uses millisecond precision (UUID rejected), B4 uses 150s heuristic without getLatestBlockhash. Reordered execution so Phase B runs first (since its new DB primitives are prerequisites) and Phase A follows. Updated success criteria: removed the execute_payment_resolve LLM tool criterion, added criteria for the new force_reconcile primitives and the redaction module location, and added a criterion requiring the Step 12 verdict comment to cite Postgres semantics rather than the test.",
+      "raised_in": "critique_v1.json",
+      "status": "addressed",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v2.md"
+    }
+  ]
+}

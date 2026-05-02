@@ -1,0 +1,116 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "findings": [
+        {
+          "detail": "Checked the admin-facing surface in `src/features/admin_chat/agent.py` and `src/features/admin_chat/tools.py`; the repo still documents and exposes only an immediate Twitter-only `share_to_social` flow plus `shared_posts` queries, so the revised plan's Step 4.2 and Step 6.3/6.4 now cover the operator-facing scheduling and failure-inspection requirements that were missing before.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked `src/features/reacting/subfeatures/tweet_sharer_bridge.py`; the bridge still owns moderation decisions, consent persistence, OP/reactor DM flows, and admin alerts around the final `sharer_instance.send_tweet(...)` call, and the revised plan now preserves those side effects by keeping the bridge in control and only swapping the final publish step.",
+          "flagged": false
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "findings": [
+        {
+          "detail": "Checked `src/common/db_handler.py` and `src/common/supabase_query_handler.py`; the current data layer can read with `execute_raw_sql`, but it explicitly rejects `UPDATE`/`INSERT` there, so the plan's checked-in SQL plus Supabase RPC claim primitive is the right way to make due-job claiming DB-atomic instead of trying to fake it with the existing Python select/update pattern.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked the delete flow in `src/features/sharing/subfeatures/notify_user.py`; `PostShareNotificationView` is instantiated with `discord_message_id`, `tweet_id`, and `tweet_url`, and the delete button currently acts on that legacy identity only. The revised plan correctly moves deletion onto canonical publication records, but it does not explicitly say the DM view or notification payload must carry a canonical publication identifier, which becomes necessary once one Discord message can have multiple `post|reply|retweet` records.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked `src/features/sharing/subfeatures/social_poster.py` and `src/features/sharing/subfeatures/notify_user.py`; deletion still blindly calls the authored-tweet delete API today, so the revised plan's explicit 'retweets are not delete-supported in current UX' handling is a technically correct fix for the existing ambiguity.",
+          "flagged": false
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "findings": [
+        {
+          "detail": "Checked the summary path from `src/features/summarising/subfeatures/top_art_sharing.py` into `src/features/sharing/sharer.py`; top-art sharing still reaches `initiate_sharing_process_from_summary(...)` and then `finalize_sharing(...)`, so the revised plan now correctly treats summary-triggered sharing as part of the same publishing subsystem instead of only handling admin chat and the reaction bridge.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked `src/features/sharing/subfeatures/notify_user.py`; it still imports `delete_tweet` directly and updates legacy `shared_posts` state itself, so the revised plan is right to keep notification/deletion compatibility in scope rather than treating the issue as only a publish-time refactor.",
+          "flagged": false
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "findings": [
+        {
+          "detail": "Checked the real load path in `main.py` and `src/features/sharing/sharing_cog.py`; the app instantiates `SharingCog(bot, bot.db_handler)` directly in `main.py` and then calls `await bot.add_cog(...)`, while the module-level `setup()` helper in `sharing_cog.py` is not the active startup path. The plan's scheduler wiring therefore still needs to be explicit about using `SharingCog` lifecycle hooks such as `cog_load`/`cog_unload` or updating `main.py`, otherwise 'startup wiring in cog setup' could land in dead code.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked admin observability touchpoints in `src/features/admin_chat/agent.py` and `src/features/admin_chat/tools.py`; beyond adding a new table, the repo also needs the query whitelist, guild-scoped table list, tool descriptions, and system prompt text updated, and the revised plan now calls out both the read surface and prompt/tool description changes.",
+          "flagged": false
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "findings": [
+        {
+          "detail": "Checked `execute_share_to_social()` in `src/features/admin_chat/tools.py`; it still parses `reply_to_tweet` from either a status URL or raw ID and defaults `text_only=True` whenever a reply target is present unless the caller overrides it, and the revised plan now preserves that caller-specific default explicitly.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked the reaction caller in `src/features/reacting/subfeatures/tweet_sharer_bridge.py`; it still passes prebuilt reactor text, raw attachment URLs, original-message metadata, and no duplicate-suppression behavior into `sharer_instance.send_tweet(...)`, so the revised plan's normalized request plus source/policy fields is a necessary fit for the actual non-admin caller shape.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked duplicate behavior in `src/features/sharing/sharer.py`; non-reply `finalize_sharing(...)` calls short-circuit on `_successfully_shared` and `shared_posts`, while the bridge path calls `send_tweet(...)` directly and does not dedupe at all, so the revised plan is correct to keep duplicate policy action-aware and caller-aware instead of normalizing everything to the admin path.",
+          "flagged": false
+        }
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "id": "FLAG-005",
+      "concern": "Sharing deletion identity: Post-share delete flows need a canonical publication identifier once one Discord message can map to multiple `post|reply|retweet` records.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`src/features/sharing/subfeatures/notify_user.py` constructs `PostShareNotificationView` with only `discord_message_id`, `tweet_id`, and `tweet_url`, but the revised plan does not explicitly carry a canonical publication id into that flow even though Step 1 makes `social_publications` the canonical multi-action record."
+    },
+    {
+      "id": "all_locations-1",
+      "concern": "Worker lifecycle: Recurring debt: scheduled worker startup is still ambiguous against the repository's real `SharingCog` load path.",
+      "category": "completeness",
+      "severity_hint": "uncertain",
+      "evidence": "`main.py` instantiates `SharingCog` directly at lines 137-139 and bypasses the module-level `setup()` helper in `src/features/sharing/sharing_cog.py`, so a plan that only says 'startup wiring in cog setup' can miss the actual runtime path."
+    }
+  ],
+  "verified_flag_ids": [
+    "FLAG-001",
+    "FLAG-002",
+    "FLAG-003",
+    "FLAG-004",
+    "issue_hints-1",
+    "issue_hints-2",
+    "correctness-1",
+    "correctness-2",
+    "correctness-3",
+    "scope-1",
+    "scope-2",
+    "all_locations-2",
+    "callers-1",
+    "callers-2",
+    "callers-3"
+  ],
+  "disputed_flag_ids": []
+}

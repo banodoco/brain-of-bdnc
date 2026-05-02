@@ -152,3 +152,5 @@ scripts/requirements_download_art.txt
 scripts/download_daily_art.py
 logs.*.json
 results/
+
+.megaplan/plans/*/execution_trace.jsonl

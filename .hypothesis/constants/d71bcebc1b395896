@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/../src/common/health_server.py
+# hypothesis_version: 6.151.11
+
+[200, 404, 503, 8080, '/health', '/ready', '/status', '0.0.0.0', 'Content-type', 'DiscordBot', 'Not Found', 'RAILWAY_SERVICE_ID', 'application/json', 'deployment_id', 'errors_logged', 'healthy', 'last_heartbeat', 'messages_archived', 'messages_logged', 'metrics', 'not_ready', 'ready', 'service_id', 'starting', 'startup_time', 'status', 'timestamp', 'unknown', 'uptime_seconds']

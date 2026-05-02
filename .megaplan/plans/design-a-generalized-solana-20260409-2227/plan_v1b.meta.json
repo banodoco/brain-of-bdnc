@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-09T20:41:57Z",
+  "hash": "sha256:feca7472cf5d9193bc44417709f14fbcfda7946f5415ccb752d42fc8787fc275",
+  "questions": [
+    "Should the wallet registry (mapping wallet_key \u2192 private key env var) live in a DB table (`payment_wallets`) or in server_config JSONB? A DB table is more explicit and auditable; server_config is simpler but mixes payment secrets config with general settings.",
+    "For the Discord confirmation flow: should the service own the 'reply yes to confirm' interaction, or should it remain the producer's responsibility (i.e., GrantsCog collects the wallet and calls confirm_and_send)? The latter is simpler and lets each producer customize the UX.",
+    "What is the desired behavior for the test payment flow? Should it be mandatory for payments above a threshold, optional per-producer, or just available as a utility? This affects whether it's wired into the state machine or is a separate call.",
+    "Should the payment_ledger table live in the same Supabase project as grant_applications, or does it need its own security boundary (separate schema, separate service role)? The brief mentions 'strong table and secret security boundaries'.",
+    "For variable source wallets: is the initial scope just one wallet (grants_main) with the architecture supporting multiple, or are there already multiple wallets that need different keys today?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "payment_ledger SQL migration creates a valid table with idempotency_key unique constraint, status CHECK constraint, and appropriate indexes",
+      "priority": "must"
+    },
+    {
+      "criterion": "PaymentService.request_payment is idempotent \u2014 calling twice with the same idempotency_key returns the same payment_id without creating a duplicate",
+      "priority": "must"
+    },
+    {
+      "criterion": "No double payments: if a payment is in 'sent' status with a tx_signature, confirm_and_send checks on-chain status instead of re-sending",
+      "priority": "must"
+    },
+    {
+      "criterion": "State machine transitions are enforced \u2014 invalid transitions (e.g., completed \u2192 sending) are rejected at the DB layer",
+      "priority": "must"
+    },
+    {
+      "criterion": "GrantsCog no longer imports or directly uses SolanaClient \u2014 all payment operations go through PaymentService",
+      "priority": "must"
+    },
+    {
+      "criterion": "Startup recovery (recover_inflight) correctly handles payments in sending/sent status by checking on-chain and updating accordingly",
+      "priority": "must"
+    },
+    {
+      "criterion": "All existing tests continue to pass after refactor",
+      "priority": "must"
+    },
+    {
+      "criterion": "Unit tests cover: happy path, idempotency, double-send prevention, crash recovery, cancellation, invalid transitions",
+      "priority": "must"
+    },
+    {
+      "criterion": "Provider interface is abstract enough that adding a token provider (e.g., USDC) requires only a new provider class, not service changes",
+      "priority": "should"
+    },
+    {
+      "criterion": "Payment service file is under ~400 lines; provider files under ~150 lines each",
+      "priority": "should"
+    },
+    {
+      "criterion": "wallet_key-based source wallet selection works \u2014 different producers can use different source wallets",
+      "priority": "should"
+    },
+    {
+      "criterion": "SQL migration follows existing patterns: RLS enabled, updated_at trigger, timestamptz columns",
+      "priority": "should"
+    },
+    {
+      "criterion": "Test payment flow (small amount validation send) is available as a utility method",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke test: approve a grant on devnet, confirm wallet, payment completes end-to-end through the new service",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "The wallet registry will initially be env-var-based (wallet_key maps to an env var name containing the private key), not a DB table. This avoids storing private keys in the database and keeps the initial implementation simple. The architecture supports adding DB-backed wallet metadata later.",
+    "Discord confirmation flow remains the producer's responsibility. The payment service provides request_payment (creates pending entry) and confirm_and_send (executes after producer collects wallet). This keeps the service focused on payments and lets each producer own its UX.",
+    "The payment_ledger table lives in the same Supabase project and schema (public) as grant_applications. Security boundary is enforced via RLS and revoking anon/authenticated access, matching the social_publications pattern.",
+    "Only one source wallet exists today (grants_main \u2192 SOLANA_PRIVATE_KEY). The variable wallet_key architecture is built from day one but only one key is configured initially.",
+    "The test payment flow is an optional utility method, not a mandatory step in the state machine. Producers call it explicitly if they want pre-validation.",
+    "grant_applications table already exists in Supabase (created outside of checked-in migrations). We add a payment_id column to it but do not retroactively create a migration for the whole table.",
+    "The exchange rate is fetched at send time (not at request time) to minimize stale pricing, matching the current grants behavior."
+  ],
+  "structure_warnings": []
+}

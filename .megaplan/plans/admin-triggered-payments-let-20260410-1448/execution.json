@@ -1,0 +1,404 @@
+{
+  "output": "Aggregated execute batches: completed 8/8.\nBatch 1: Batch 1 executed for T1, T3, T4, T5, and T10. Verification passed for `python -c \"from src.features.admin_chat import tools\"`, `python -m py_compile ...`, and the batch checkpoint was written to `.megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_1.json`.\nBatch 2: Batch 2 executed for T2 and T11. `python -m py_compile src/common/db_handler.py tests/test_social_route_tools.py` passed, `python -m pytest tests/test_social_route_tools.py -x` passed with 5 tests, and the batch checkpoint was written to `.megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_2.json`.\nBatch 3: Batch 3 executed for T6. `python -c \"from src.features.admin_chat import tools\"`, `python -m py_compile src/features/admin_chat/tools.py`, and `python -m pytest tests/test_social_route_tools.py -x` all passed, and two inline Python harnesses verified the fail-closed validation, duplicate-intent handling, verified-wallet handoff, and no-wallet prompt persistence paths. The batch checkpoint was written to `.megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_3.json`.\nBatch 4: Batch 4 executed for T7. `python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py`, `python -c \"from src.features.admin_chat.admin_chat_cog import AdminChatCog\"`, and `python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x` all passed, and a focused inline harness verified the new interceptor order, classifier independence from `self.agent`, fail-closed ambiguous handling, admin tagging, and `_processing_intents` cleanup. The batch checkpoint was written to `.megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_4.json`.\nBatch 5: Batch 5 executed for T8. `python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py`, `python -c \"from src.features.admin_chat.admin_chat_cog import AdminChatCog\"`, and `python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x` all passed, and a focused inline harness verified test-confirmed final-payment creation, test-failed abort behavior, and final-confirmed completion. The batch checkpoint was written to `.megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_5.json`.\nBatch 6: Batch 6 executed for T9. `python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py`, `python -c \"from src.features.admin_chat.admin_chat_cog import AdminChatCog\"`, and `python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x` all passed, and a restart-style inline harness verified `cog_load()` waits for readiness, replay is capped at 200 messages, `last_scanned_message_id` is persisted, missing channels are skipped safely, and terminal test/final payments are replayed through `handle_payment_result()`. The batch checkpoint was written to `.megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_6.json`.\nBatch 7: Batch 7 executed for T12. `python -m py_compile tests/test_admin_payments.py`, `python -m pytest tests/test_admin_payments.py -x`, and `python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x` all passed. The new `tests/test_admin_payments.py` module contains the full 13-case coverage requested for admin-triggered payments, and the batch checkpoint was written to `.megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_7.json`.\nBatch 8: Batch 8 executed for T13. All four required validation commands passed in order: tool import, `tests/test_admin_payments.py`, `tests/test_social_route_tools.py tests/test_scheduler.py`, and the full `tests/` suite. Final suite result: 49 passed, 0 failures, 1 warning (`audioop` deprecation from `discord.player`). A throwaway repro script also passed for restart-safe free-text confirmation recovery via `cog_load()`, and was deleted afterward. The batch checkpoint was written to `.megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_8.json`.",
+  "files_changed": [
+    "sql/admin_payment_intents.sql",
+    "src/features/payments/payment_service.py",
+    "src/features/admin_chat/tools.py",
+    "src/features/admin_chat/agent.py",
+    ".megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_1.json",
+    "src/common/db_handler.py",
+    "tests/test_social_route_tools.py",
+    ".megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_2.json",
+    ".megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_3.json",
+    "src/features/admin_chat/admin_chat_cog.py",
+    ".megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_4.json",
+    ".megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_5.json",
+    ".megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_6.json",
+    "tests/test_admin_payments.py",
+    ".megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_7.json",
+    ".megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_8.json"
+  ],
+  "commands_run": [
+    "git status --short",
+    "rg -n \"CREATE TABLE IF NOT EXISTS|updated_at|ENABLE ROW LEVEL SECURITY|REVOKE ALL|payment_requests|initiate_payment|guild_id|Doing things|cancel_payment|ADMIN_ONLY_TOOLS|MEMBER_TOOLS\" sql/payments.sql src/features/payments/payment_service.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py",
+    "sed -n '1,240p' sql/payments.sql",
+    "sed -n '1,220p' src/features/payments/payment_service.py",
+    "sed -n '520,980p' src/features/admin_chat/tools.py",
+    "sed -n '1,520p' src/features/admin_chat/agent.py",
+    "nl -ba src/features/admin_chat/tools.py | sed -n '548,930p'",
+    "nl -ba src/features/admin_chat/agent.py | sed -n '35,95p'",
+    "nl -ba src/features/admin_chat/agent.py | sed -n '398,420p'",
+    "ls -l sql",
+    "nl -ba sql/admin_payment_intents.sql",
+    "nl -ba src/features/payments/payment_service.py | sed -n '28,125p'",
+    "nl -ba src/features/admin_chat/tools.py | sed -n '558,925p'",
+    "nl -ba src/features/admin_chat/agent.py | sed -n '54,68p'",
+    "nl -ba src/features/admin_chat/agent.py | sed -n '405,417p'",
+    "python -c \"from src.features.admin_chat import tools\"",
+    "python -m compileall src/features/admin_chat src/features/payments",
+    "python -m py_compile src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/payments/payment_service.py",
+    "git diff -- sql/admin_payment_intents.sql src/features/payments/payment_service.py src/features/admin_chat/tools.py src/features/admin_chat/agent.py",
+    "test -w .megaplan/plans/admin-triggered-payments-let-20260410-1448 && echo writable || echo not_writable",
+    "cat .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_1.json",
+    "rg -n \"create_payment_request|get_payment_request|get_payment_requests_by_producer|list_payment_requests|update_payment_route|create_payment_route|mark_payment_confirmed_by_user|_gate_check\\(|supabase\" src/common/db_handler.py",
+    "sed -n '1650,1915p' src/common/db_handler.py",
+    "sed -n '1,520p' tests/test_social_route_tools.py",
+    "git status --short src/common/db_handler.py tests/test_social_route_tools.py src/features/admin_chat/agent.py src/features/admin_chat/tools.py",
+    "sed -n '1320,1695p' src/common/db_handler.py",
+    "nl -ba tests/test_social_route_tools.py | sed -n '230,440p'",
+    "python -m py_compile src/common/db_handler.py tests/test_social_route_tools.py",
+    "nl -ba src/common/db_handler.py | sed -n '1690,1815p'",
+    "nl -ba tests/test_social_route_tools.py | sed -n '260,420p'",
+    "python -m pytest tests/test_social_route_tools.py -x",
+    "git diff -- src/common/db_handler.py tests/test_social_route_tools.py",
+    "cat .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_2.json",
+    "rg -n \"execute_initiate_payment|execute_tool\\(|_start_admin_payment_flow|get_wallet\\(|payment_service|producer_ref|AdminChatCog|send\\(\" src/features/admin_chat/tools.py src/features/grants/grants_cog.py src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '2280,3035p' src/features/admin_chat/tools.py",
+    "sed -n '520,760p' src/features/grants/grants_cog.py",
+    "sed -n '1,260p' src/features/admin_chat/admin_chat_cog.py",
+    "git status --short src/features/admin_chat/tools.py src/features/admin_chat/admin_chat_cog.py src/features/grants/grants_cog.py",
+    "rg -n \"def _redact_payment_row|def _resolve_db_handler_guild_id|def _redact_wallet_row|_get_payment_cog|get_cog\\('AdminChatCog'\\)|provider='solana'|provider='solana_native'\" src/features/admin_chat/tools.py src/features/grants/grants_cog.py src/features/payments src/features/admin_chat",
+    "sed -n '1000,1125p' src/features/admin_chat/tools.py",
+    "rg -n \"provider='solana'|provider='solana_native'|solana_native|solana'\" src/features | head -n 80",
+    "python -m py_compile src/features/admin_chat/tools.py",
+    "python - <<'PY'\nimport asyncio\nfrom src.features.admin_chat.tools import execute_initiate_payment\n\nclass FakeMessage:\n    def __init__(self, mid):\n        self.id = mid\n\nclass FakeChannel:\n    def __init__(self):\n        self.sent = []\n    async def send(self, content):\n        self.sent.append(content)\n        return FakeMessage(321)\n\nclass FakeDB:\n    def __init__(self):\n        self.active = None\n        self.wallet = None\n        self.created = []\n        self.updated = []\n    def get_active_intent_for_recipient(self, guild_id, channel_id, recipient_user_id):\n        return self.active\n    def get_wallet(self, guild_id, recipient_user_id, chain):\n        return self.wallet\n    def create_admin_payment_intent(self, record, guild_id):\n        row = dict(record)\n        row['intent_id'] = 'intent-1'\n        self.created.append((guild_id, row))\n        return row\n    def update_admin_payment_intent(self, intent_id, payload, guild_id):\n        self.updated.append((intent_id, dict(payload), guild_id))\n        row = {'intent_id': intent_id}\n        row.update(payload)\n        return row\n\nclass FakeBot:\n    def __init__(self, channel, payment_service=True, cog=None):\n        self._channel = channel\n        self.payment_service = object() if payment_service else None\n        self._cog = cog\n    def get_channel(self, cid):\n        return self._channel if cid == 123 else None\n    async def fetch_channel(self, cid):\n        return self._channel\n    def get_cog(self, name):\n        return self._cog if name == 'AdminChatCog' else None\n\nasync def main():\n    db = FakeDB()\n    channel = FakeChannel()\n    bot = FakeBot(channel)\n\n    missing = await execute_initiate_payment(bot, db, {'recipient_user_id': '5', 'amount_sol': 1})\n    assert missing['success'] is False\n\n    bad_amount = await execute_initiate_payment(bot, db, {'guild_id': 1, 'source_channel_id': 123, 'recipient_user_id': '5', 'amount_sol': 0})\n    assert bad_amount['success'] is False\n\n    no_payment_service = await execute_initiate_payment(FakeBot(channel, payment_service=False), db, {'guild_id': 1, 'source_channel_id': 123, 'recipient_user_id': '5', 'amount_sol': 1})\n    assert no_payment_service['success'] is False\n\n    db.active = {'intent_id': 'existing-intent', 'status': 'awaiting_wallet'}\n    duplicate = await execute_initiate_payment(bot, db, {'guild_id': 1, 'source_channel_id': 123, 'recipient_user_id': '5', 'amount_sol': 1})\n    assert duplicate['success'] is True and duplicate['duplicate'] is True\n\n    db.active = None\n    created = await execute_initiate_payment(bot, db, {'guild_id': 1, 'source_channel_id': 123, 'recipient_user_id': '5', 'amount_sol': 1.5, 'reason': 'thanks'})\n    assert created['success'] is True and created['wallet_on_file'] is False\n    assert db.created[-1][1]['status'] == 'awaiting_wallet'\n    assert db.updated[-1][1]['prompt_message_id'] == 321\n    assert channel.sent[-1] == '<@5> \u2014 a payment of 1.5 SOL has been initiated for you. Please reply with your Solana wallet address.'\n\nasyncio.run(main())\nPY",
+    "python - <<'PY'\nimport asyncio\nfrom src.features.admin_chat.tools import execute_initiate_payment\n\nclass FakeCog:\n    def __init__(self):\n        self.calls = []\n    async def _start_admin_payment_flow(self, channel, intent):\n        self.calls.append((channel, intent))\n\nclass FakeChannel:\n    async def send(self, content):\n        raise AssertionError('wallet-on-file path should not prompt')\n\nclass FakeDB:\n    def __init__(self):\n        self.wallet = {'wallet_id': 'wallet-1', 'verified_at': '2026-04-10T00:00:00Z'}\n        self.created = []\n        self.updated = []\n    def get_active_intent_for_recipient(self, guild_id, channel_id, recipient_user_id):\n        return None\n    def get_wallet(self, guild_id, recipient_user_id, chain):\n        return self.wallet\n    def create_admin_payment_intent(self, record, guild_id):\n        row = dict(record)\n        row['intent_id'] = 'intent-verified'\n        self.created.append((guild_id, row))\n        return row\n    def update_admin_payment_intent(self, intent_id, payload, guild_id):\n        self.updated.append((intent_id, dict(payload), guild_id))\n        row = {'intent_id': intent_id}\n        row.update(payload)\n        return row\n\nclass FakeBot:\n    def __init__(self, channel, cog):\n        self.payment_service = object()\n        self._channel = channel\n        self._cog = cog\n    def get_channel(self, cid):\n        return self._channel\n    async def fetch_channel(self, cid):\n        return self._channel\n    def get_cog(self, name):\n        return self._cog if name == 'AdminChatCog' else None\n\nasync def main():\n    db = FakeDB()\n    cog = FakeCog()\n    bot = FakeBot(FakeChannel(), cog)\n    result = await execute_initiate_payment(bot, db, {'guild_id': 1, 'source_channel_id': 123, 'recipient_user_id': '7', 'amount_sol': 2})\n    assert result['success'] is True and result['wallet_on_file'] is True\n    assert db.created[-1][1]['status'] == 'awaiting_test'\n    assert db.created[-1][1]['wallet_id'] == 'wallet-1'\n    assert len(cog.calls) == 1\n\nasyncio.run(main())\nPY",
+    "nl -ba src/features/admin_chat/tools.py | sed -n '2360,2465p'",
+    "nl -ba src/features/admin_chat/tools.py | sed -n '2460,2488p'",
+    "nl -ba src/features/admin_chat/tools.py | sed -n '2488,2498p'",
+    "nl -ba src/features/admin_chat/tools.py | sed -n '3045,3095p'",
+    "cat .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_3.json",
+    "sed -n '1,460p' src/features/admin_chat/admin_chat_cog.py",
+    "rg -n \"is_valid_solana_address|AsyncAnthropic|claude-opus|handle_payment_result|send_confirmation_request|resolve_payment_destinations|_handoff_terminal_result|confirm_payment\\(\" src/features src/common tests",
+    "sed -n '230,330p' src/features/payments/payment_cog.py",
+    "git status --short src/features/admin_chat/admin_chat_cog.py src/features/payments/payment_cog.py src/features/grants/grants_cog.py",
+    "sed -n '1,220p' src/features/grants/solana_client.py",
+    "sed -n '120,260p' tests/test_scheduler.py",
+    "sed -n '180,240p' src/features/payments/payment_cog.py",
+    "sed -n '300,360p' src/common/server_config.py",
+    "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py",
+    "python -c \"from src.features.admin_chat.admin_chat_cog import AdminChatCog\"",
+    "python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x",
+    "python - <<'PY'\nimport asyncio\nfrom types import SimpleNamespace\nfrom src.features.admin_chat.admin_chat_cog import AdminChatCog\n\nclass FakeClassifierResponse:\n    def __init__(self, text):\n        self.content = [SimpleNamespace(type='text', text=text)]\n\nclass FakeClassifierMessages:\n    def __init__(self, text):\n        self.text = text\n        self.calls = []\n    async def create(self, **kwargs):\n        self.calls.append(kwargs)\n        return FakeClassifierResponse(self.text)\n\nclass FakeClassifierClient:\n    def __init__(self, text):\n        self.messages = FakeClassifierMessages(text)\n\nclass FakeChannel:\n    def __init__(self):\n        self.id = 55\n        self.sent = []\n    async def send(self, content, **kwargs):\n        self.sent.append(content)\n        return SimpleNamespace(id=999)\n\nclass FakeDB:\n    def __init__(self):\n        self.intent = {\n            'intent_id': 'intent-1',\n            'guild_id': 1,\n            'channel_id': 55,\n            'recipient_user_id': 42,\n            'status': 'awaiting_wallet',\n        }\n        self.updated = []\n    def get_active_intent_for_recipient(self, guild_id, channel_id, recipient_user_id):\n        return dict(self.intent) if (guild_id, channel_id, recipient_user_id) == (1, 55, 42) else None\n    def update_admin_payment_intent(self, intent_id, payload, guild_id):\n        self.updated.append((intent_id, dict(payload), guild_id))\n        row = dict(self.intent)\n        row.update(payload)\n        return row\n\nclass FakeBot:\n    def __init__(self):\n        self.payment_service = object()\n        self.user = SimpleNamespace(id=7)\n    def get_guild(self, guild_id):\n        return None\n\nasync def main():\n    bot = FakeBot()\n    db = FakeDB()\n    cog = AdminChatCog(bot, db, sharer=object())\n    cog.agent = None\n    cog._classifier_client = FakeClassifierClient('{\"category\": \"ambiguous\", \"extracted_address\": null}')\n\n    order = []\n    async def fake_check(message):\n        order.append('check')\n        return True\n    def fake_directed(message):\n        order.append('directed')\n        return False\n    probe_message = SimpleNamespace(author=SimpleNamespace(bot=False), guild=SimpleNamespace(id=1), channel=FakeChannel(), content='hello')\n    cog._check_pending_payment_reply = fake_check\n    cog._is_directed_at_bot = fake_directed\n    await cog.on_message(probe_message)\n    assert order == ['check']\n\n    cog = AdminChatCog(bot, db, sharer=object())\n    cog.agent = None\n    cog._classifier_client = FakeClassifierClient('{\"category\": \"ambiguous\", \"extracted_address\": null}')\n    msg = SimpleNamespace(\n        author=SimpleNamespace(bot=False, id=42),\n        guild=SimpleNamespace(id=1),\n        channel=FakeChannel(),\n        content='not a wallet',\n        id=1234,\n    )\n    handled = await cog._check_pending_payment_reply(msg)\n    assert handled is True\n    assert db.updated[-1][1]['status'] == 'failed'\n    assert '<@' in msg.channel.sent[-1]\n    assert cog._processing_intents == set()\n    assert cog.agent is None\n    assert cog._classifier_client.messages.calls, 'classifier client was not used'\n\nasyncio.run(main())\nPY",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '1,230p'",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '230,360p'",
+    "git status --short src/features/admin_chat/admin_chat_cog.py",
+    "cat .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_4.json",
+    "sed -n '1,420p' src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '620,760p' src/features/grants/grants_cog.py",
+    "sed -n '220,330p' src/features/payments/payment_cog.py",
+    "rg -n \"def get_payment_request|def confirm_payment|def cancel_payment|def get_admin_payment_intent|send_confirmation_request|pending_confirmation|amount_token|tx_signature|get_wallet_by_id\" src/common src/features/payments src/features/admin_chat",
+    "sed -n '1680,1835p' src/common/db_handler.py",
+    "sed -n '188,225p' src/features/payments/payment_cog.py",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '120,330p'",
+    "git diff -- src/features/admin_chat/admin_chat_cog.py",
+    "python - <<'PY'\nimport asyncio\nfrom types import SimpleNamespace\nfrom src.features.admin_chat.admin_chat_cog import AdminChatCog\n\nclass FakeChannel:\n    def __init__(self, channel_id=77):\n        self.id = channel_id\n        self.sent = []\n    async def send(self, content, **kwargs):\n        self.sent.append(content)\n        return SimpleNamespace(id=900 + len(self.sent))\n\nclass FakePaymentCog:\n    def __init__(self):\n        self.sent_confirmation_ids = []\n    async def send_confirmation_request(self, payment_id):\n        self.sent_confirmation_ids.append(payment_id)\n        return SimpleNamespace(id=555)\n\nclass FakePaymentService:\n    def __init__(self):\n        self.request_calls = []\n    async def request_payment(self, **kwargs):\n        self.request_calls.append(dict(kwargs))\n        return {\n            'payment_id': 'final-pay-1',\n            'status': 'pending_confirmation',\n            'confirm_channel_id': kwargs['confirm_channel_id'],\n            'confirm_thread_id': kwargs.get('confirm_thread_id'),\n            'notify_channel_id': kwargs['notify_channel_id'],\n            'notify_thread_id': kwargs.get('notify_thread_id'),\n            'amount_token': kwargs.get('amount_token'),\n        }\n\nclass FakeDB:\n    def __init__(self, intent):\n        self.intent = dict(intent)\n        self.updates = []\n    def get_admin_payment_intent(self, intent_id, guild_id):\n        if intent_id != self.intent['intent_id'] or guild_id != self.intent['guild_id']:\n            return None\n        return dict(self.intent)\n    def update_admin_payment_intent(self, intent_id, payload, guild_id):\n        assert intent_id == self.intent['intent_id']\n        assert guild_id == self.intent['guild_id']\n        self.updates.append(dict(payload))\n        self.intent.update(payload)\n        return dict(self.intent)\n\nclass FakeBot:\n    def __init__(self, channel, payment_service, payment_cog):\n        self.payment_service = payment_service\n        self._channel = channel\n        self._payment_cog = payment_cog\n    def get_channel(self, channel_id):\n        return self._channel if channel_id == self._channel.id else None\n    async def fetch_channel(self, channel_id):\n        return self._channel if channel_id == self._channel.id else None\n    def get_cog(self, name):\n        return self._payment_cog if name == 'PaymentCog' else None\n\nasync def main():\n    base_intent = {\n        'intent_id': 'intent-1',\n        'guild_id': 1,\n        'channel_id': 77,\n        'recipient_user_id': 42,\n        'requested_amount_sol': '1.75',\n        'producer_ref': '1_42_123456',\n        'wallet_id': 'wallet-1',\n        'status': 'awaiting_test',\n    }\n\n    channel = FakeChannel()\n    payment_cog = FakePaymentCog()\n    payment_service = FakePaymentService()\n    db = FakeDB(base_intent)\n    cog = AdminChatCog(FakeBot(channel, payment_service, payment_cog), db, sharer=object())\n    cog.payment_service = payment_service\n\n    await cog.handle_payment_result({\n        'payment_id': 'test-pay-1',\n        'producer': 'admin_chat',\n        'guild_id': 1,\n        'is_test': True,\n        'status': 'confirmed',\n        'recipient_wallet': 'WalletABC',\n        'chain': 'solana',\n        'provider': 'solana',\n        'confirm_channel_id': 77,\n        'confirm_thread_id': None,\n        'notify_channel_id': 77,\n        'notify_thread_id': None,\n        'route_key': 'admin_chat',\n        'wallet_id': 'wallet-1',\n        'metadata': {'intent_id': 'intent-1'},\n    })\n\n    assert len(payment_service.request_calls) == 1\n    request_call = payment_service.request_calls[0]\n    assert request_call['amount_token'] == 1.75\n    assert 'amount_usd' not in request_call or request_call['amount_usd'] is None\n    assert payment_cog.sent_confirmation_ids == ['final-pay-1']\n    assert db.updates[-1]['status'] == 'awaiting_confirmation'\n    assert db.updates[-1]['final_payment_id'] == 'final-pay-1'\n    assert db.updates[-1]['prompt_message_id'] == 901\n    assert db.updates[-1]['last_scanned_message_id'] is None\n    assert 'Please confirm the full payout' in channel.sent[-1]\n\n    failed_channel = FakeChannel()\n    failed_payment_service = FakePaymentService()\n    failed_db = FakeDB(base_intent)\n    failed_cog = AdminChatCog(FakeBot(failed_channel, failed_payment_service, FakePaymentCog()), failed_db, sharer=object())\n    failed_cog.payment_service = failed_payment_service\n    await failed_cog.handle_payment_result({\n        'payment_id': 'test-pay-2',\n        'producer': 'admin_chat',\n        'guild_id': 1,\n        'is_test': True,\n        'status': 'failed',\n        'metadata': {'intent_id': 'intent-1'},\n    })\n    assert failed_payment_service.request_calls == []\n    assert failed_db.updates[-1]['status'] == 'failed'\n    assert 'review needed' in failed_channel.sent[-1]\n\n    completed_channel = FakeChannel()\n    completed_db = FakeDB({**base_intent, 'status': 'confirmed', 'final_payment_id': 'final-pay-1'})\n    completed_cog = AdminChatCog(FakeBot(completed_channel, payment_service, payment_cog), completed_db, sharer=object())\n    completed_cog.payment_service = payment_service\n    await completed_cog.handle_payment_result({\n        'payment_id': 'final-pay-1',\n        'producer': 'admin_chat',\n        'guild_id': 1,\n        'is_test': False,\n        'status': 'confirmed',\n        'amount_token': 1.75,\n        'tx_signature': 'sig-123',\n        'metadata': {'intent_id': 'intent-1'},\n    })\n    assert completed_db.updates[-1]['status'] == 'completed'\n    assert 'View on Explorer' in completed_channel.sent[-1]\n\nasyncio.run(main())\nPY",
+    "cat .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_5.json",
+    "git status --short src/features/admin_chat/admin_chat_cog.py .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_5.json",
+    "rg -n \"server_config|is_guild_enabled|enabled guild|list_active_intents|cog_load|history\\(|last_scanned_message_id|prompt_message_id|get_payment_request\" src/features/admin_chat/admin_chat_cog.py src/common/server_config.py src/common/db_handler.py src/features/payments/payment_cog.py",
+    "sed -n '1,260p' src/common/server_config.py",
+    "sed -n '380,760p' src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '120,150p' src/features/payments/payment_cog.py",
+    "rg -n \"def _is_terminal|terminal\" src/features/payments/payment_cog.py",
+    "sed -n '404,420p' src/features/payments/payment_cog.py",
+    "python - <<'PY'\nimport asyncio\nfrom types import SimpleNamespace\nfrom src.features.admin_chat.admin_chat_cog import AdminChatCog\n\nclass FakeServerConfig:\n    def get_enabled_servers(self, require_write=False):\n        return [{'guild_id': 1, 'enabled': True, 'write_enabled': True}]\n\nclass FakeAuthor:\n    def __init__(self, user_id):\n        self.id = user_id\n        self.bot = False\n\nclass FakeMessage:\n    def __init__(self, message_id, author_id, channel, guild):\n        self.id = message_id\n        self.author = FakeAuthor(author_id)\n        self.channel = channel\n        self.guild = guild\n        self.content = 'message'\n\nclass FakeChannel:\n    def __init__(self, channel_id, guild, messages):\n        self.id = channel_id\n        self.guild = guild\n        self._messages = list(messages)\n    def history(self, limit=100, after=None, oldest_first=False):\n        after_id = getattr(after, 'id', None)\n        items = [m for m in self._messages if after_id is None or m.id > after_id]\n        items.sort(key=lambda m: m.id, reverse=not oldest_first)\n        items = items[:limit]\n        async def iterator():\n            for item in items:\n                yield item\n        return iterator()\n\nclass FakeDB:\n    def __init__(self):\n        self.server_config = FakeServerConfig()\n        self.intents = {\n            'intent-history': {\n                'intent_id': 'intent-history',\n                'guild_id': 1,\n                'channel_id': 77,\n                'recipient_user_id': 42,\n                'status': 'awaiting_confirmation',\n                'prompt_message_id': 1000,\n                'last_scanned_message_id': None,\n                'final_payment_id': 'pay-pending',\n            },\n            'intent-missing': {\n                'intent_id': 'intent-missing',\n                'guild_id': 1,\n                'channel_id': 99,\n                'recipient_user_id': 88,\n                'status': 'awaiting_wallet',\n                'prompt_message_id': 2000,\n                'last_scanned_message_id': None,\n            },\n            'intent-test': {\n                'intent_id': 'intent-test',\n                'guild_id': 1,\n                'channel_id': 77,\n                'recipient_user_id': 42,\n                'status': 'awaiting_test',\n                'test_payment_id': 'pay-test',\n            },\n            'intent-final': {\n                'intent_id': 'intent-final',\n                'guild_id': 1,\n                'channel_id': 77,\n                'recipient_user_id': 42,\n                'status': 'confirmed',\n                'final_payment_id': 'pay-final',\n            },\n        }\n        self.updates = []\n    def list_active_intents(self, guild_id):\n        return [dict(intent) for intent in self.intents.values() if intent['guild_id'] == guild_id]\n    def get_admin_payment_intent(self, intent_id, guild_id):\n        intent = self.intents.get(intent_id)\n        if not intent or intent['guild_id'] != guild_id:\n            return None\n        return dict(intent)\n    def update_admin_payment_intent(self, intent_id, payload, guild_id):\n        intent = self.intents[intent_id]\n        assert intent['guild_id'] == guild_id\n        intent.update(payload)\n        self.updates.append((intent_id, dict(payload), guild_id))\n        return dict(intent)\n    def get_payment_request(self, payment_id, guild_id=None):\n        payments = {\n            'pay-pending': {'payment_id': 'pay-pending', 'producer': 'admin_chat', 'guild_id': 1, 'status': 'queued'},\n            'pay-test': {'payment_id': 'pay-test', 'producer': 'admin_chat', 'guild_id': 1, 'status': 'confirmed', 'is_test': True, 'metadata': {'intent_id': 'intent-test'}},\n            'pay-final': {'payment_id': 'pay-final', 'producer': 'admin_chat', 'guild_id': 1, 'status': 'confirmed', 'is_test': False, 'metadata': {'intent_id': 'intent-final'}},\n        }\n        return payments.get(payment_id)\n\nclass FakeBot:\n    def __init__(self, channel):\n        self._channel = channel\n        self.wait_calls = 0\n        self.guilds = [channel.guild]\n        self.payment_service = object()\n    async def wait_until_ready(self):\n        self.wait_calls += 1\n    def get_channel(self, channel_id):\n        return self._channel if channel_id == self._channel.id else None\n    async def fetch_channel(self, channel_id):\n        return self._channel if channel_id == self._channel.id else None\n\nasync def main():\n    guild = SimpleNamespace(id=1)\n    channel = FakeChannel(77, guild, [])\n    messages = [FakeMessage(message_id, 42, channel, guild) for message_id in range(1001, 1206)]\n    channel._messages = messages\n\n    db = FakeDB()\n    bot = FakeBot(channel)\n    cog = AdminChatCog(bot, db, sharer=object())\n\n    replayed = []\n    terminal_handoffs = []\n\n    async def fake_check(message):\n        replayed.append(message.id)\n        return True\n    async def fake_handle(payment):\n        terminal_handoffs.append(payment['payment_id'])\n\n    cog._check_pending_payment_reply = fake_check\n    cog.handle_payment_result = fake_handle\n\n    await cog.cog_load()\n\n    assert bot.wait_calls == 1\n    assert replayed == list(range(1001, 1201))\n    assert db.intents['intent-history']['last_scanned_message_id'] == 1200\n    assert terminal_handoffs == ['pay-test', 'pay-final']\n\nasyncio.run(main())\nPY",
+    "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '390,500p'",
+    "cat .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_6.json",
+    "git status --short src/features/admin_chat/admin_chat_cog.py .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_6.json",
+    "sed -n '1,320p' tests/test_scheduler.py",
+    "sed -n '1,520p' src/features/admin_chat/admin_chat_cog.py",
+    "sed -n '2320,3125p' src/features/admin_chat/tools.py",
+    "sed -n '1,120p' src/features/grants/solana_client.py",
+    "python -m py_compile tests/test_admin_payments.py",
+    "python -m pytest tests/test_admin_payments.py -x",
+    "nl -ba tests/test_admin_payments.py | sed -n '1,320p'",
+    "cat .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_7.json",
+    "git status --short tests/test_admin_payments.py .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_7.json",
+    "python -m pytest tests/ -x",
+    "PYTHONPATH=/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc python /tmp/admin_payment_repro.py",
+    "rm /tmp/admin_payment_repro.py",
+    "cat .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_8.json",
+    "git status --short .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_8.json",
+    "test -e /tmp/admin_payment_repro.py && echo exists || echo deleted"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_1.json, sql/admin_payment_intents.sql, src/features/payments/payment_service.py",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/agent.py, src/features/admin_chat/tools.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: sql/admin_payment_intents.sql, src/features/admin_chat/admin_chat_cog.py, src/features/payments/payment_service.py, tests/test_admin_payments.py, tests/test_social_route_tools.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, sql, src/common/server_config.py, src/features/grants/assessor.py, src/features/grants/grants_cog.py, src/features/payments, src/features/reacting/subfeatures/tweet_sharer_bridge.py, src/features/sharing/models.py, src/features/sharing/providers, src/features/sharing/sharer.py, src/features/sharing/sharing_cog.py, src/features/sharing/social_publish_service.py, src/features/sharing/subfeatures/notify_user.py, src/features/summarising/summariser.py, tests",
+    "Advisory audit finding: Sense check SC2 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC11 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC13 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_2.json, tests/test_social_route_tools.py",
+    "Advisory quality: code changes lacked test updates: src/common/db_handler.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: sql/admin_payment_intents.sql, src/features/admin_chat/admin_chat_cog.py, src/features/payments/payment_service.py, tests/test_admin_payments.py, tests/test_social_route_tools.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, sql, src/common/server_config.py, src/features/grants/assessor.py, src/features/grants/grants_cog.py, src/features/payments, src/features/reacting/subfeatures/tweet_sharer_bridge.py, src/features/sharing/models.py, src/features/sharing/providers, src/features/sharing/sharer.py, src/features/sharing/sharing_cog.py, src/features/sharing/social_publish_service.py, src/features/sharing/subfeatures/notify_user.py, src/features/summarising/summariser.py, tests",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC13 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_3.json",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/tools.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: sql/admin_payment_intents.sql, src/features/admin_chat/admin_chat_cog.py, src/features/payments/payment_service.py, tests/test_admin_payments.py, tests/test_social_route_tools.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, sql, src/common/server_config.py, src/features/grants/assessor.py, src/features/grants/grants_cog.py, src/features/payments, src/features/reacting/subfeatures/tweet_sharer_bridge.py, src/features/sharing/models.py, src/features/sharing/providers, src/features/sharing/sharer.py, src/features/sharing/sharing_cog.py, src/features/sharing/social_publish_service.py, src/features/sharing/subfeatures/notify_user.py, src/features/summarising/summariser.py, tests",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC13 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_4.json",
+    "Advisory quality: src/features/admin_chat/admin_chat_cog.py grew by 285 lines (threshold 200).",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/admin_chat_cog.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: sql/admin_payment_intents.sql, src/features/payments/payment_service.py, tests/test_admin_payments.py, tests/test_social_route_tools.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, sql, src/common/server_config.py, src/features/grants/assessor.py, src/features/grants/grants_cog.py, src/features/payments, src/features/reacting/subfeatures/tweet_sharer_bridge.py, src/features/sharing/models.py, src/features/sharing/providers, src/features/sharing/sharer.py, src/features/sharing/sharing_cog.py, src/features/sharing/social_publish_service.py, src/features/sharing/subfeatures/notify_user.py, src/features/summarising/summariser.py, tests",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC13 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_5.json",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/admin_chat_cog.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: sql/admin_payment_intents.sql, src/features/payments/payment_service.py, tests/test_admin_payments.py, tests/test_social_route_tools.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, sql, src/common/server_config.py, src/features/grants/assessor.py, src/features/grants/grants_cog.py, src/features/payments, src/features/reacting/subfeatures/tweet_sharer_bridge.py, src/features/sharing/models.py, src/features/sharing/providers, src/features/sharing/sharer.py, src/features/sharing/sharing_cog.py, src/features/sharing/social_publish_service.py, src/features/sharing/subfeatures/notify_user.py, src/features/summarising/summariser.py, tests",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC13 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_6.json",
+    "Advisory quality: code changes lacked test updates: src/features/admin_chat/admin_chat_cog.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: sql/admin_payment_intents.sql, src/features/payments/payment_service.py, tests/test_admin_payments.py, tests/test_social_route_tools.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, sql, src/common/server_config.py, src/features/grants/assessor.py, src/features/grants/grants_cog.py, src/features/payments, src/features/reacting/subfeatures/tweet_sharer_bridge.py, src/features/sharing/models.py, src/features/sharing/providers, src/features/sharing/sharer.py, src/features/sharing/sharing_cog.py, src/features/sharing/social_publish_service.py, src/features/sharing/subfeatures/notify_user.py, src/features/summarising/summariser.py, tests",
+    "Advisory audit finding: Sense check SC12 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC13 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_7.json, tests/test_admin_payments.py",
+    "Advisory audit finding: Executor claimed changed files not present in git status: sql/admin_payment_intents.sql, src/features/payments/payment_service.py, tests/test_admin_payments.py, tests/test_social_route_tools.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, sql, src/common/server_config.py, src/features/grants/assessor.py, src/features/grants/grants_cog.py, src/features/payments, src/features/reacting/subfeatures/tweet_sharer_bridge.py, src/features/sharing/models.py, src/features/sharing/providers, src/features/sharing/sharer.py, src/features/sharing/sharing_cog.py, src/features/sharing/social_publish_service.py, src/features/sharing/subfeatures/notify_user.py, src/features/summarising/summariser.py, tests",
+    "Advisory audit finding: Sense check SC13 is missing an executor acknowledgment.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/admin-triggered-payments-let-20260410-1448/execution_batch_8.json",
+    "Advisory: done tasks rely on commands_run without files_changed (FLAG-006 softening): T13",
+    "Advisory audit finding: Executor claimed changed files not present in git status: sql/admin_payment_intents.sql, src/features/payments/payment_service.py, tests/test_admin_payments.py, tests/test_social_route_tools.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .gitignore, .megaplan/debt.json, .megaplan/plans/add-scheduled-twitter-x-20260409-1553, .megaplan/plans/add-scheduled-twitter-x-20260409-1556, .megaplan/plans/add-scheduled-twitter-x-20260409-1557, .megaplan/plans/admin-triggered-payments-let-20260410-1448, .megaplan/plans/build-a-fail-closed-20260409-2327, .megaplan/plans/design-a-generalized-solana-20260409-2227, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241, .megaplan/plans/implement-a-unified-social-20260409-1710, .megaplan/plans/implement-a-unified-social-20260409-1732, .megaplan/plans/implement-a-unified-social-20260409-1748, .megaplan/plans/implement-a-unified-social-20260409-1856, .megaplan/schemas/gate.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/tmp_plan_prompt.txt, main.py, sql, src/common/server_config.py, src/features/grants/assessor.py, src/features/grants/grants_cog.py, src/features/payments, src/features/reacting/subfeatures/tweet_sharer_bridge.py, src/features/sharing/models.py, src/features/sharing/providers, src/features/sharing/sharer.py, src/features/sharing/sharing_cog.py, src/features/sharing/social_publish_service.py, src/features/sharing/subfeatures/notify_user.py, src/features/summarising/summariser.py, tests"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "Created an idempotent `admin_payment_intents` SQL file with the requested state machine, message cursor fields, wallet/payment foreign keys, updated_at trigger reuse, RLS, revoke, and all three required indexes.",
+      "files_changed": [
+        "sql/admin_payment_intents.sql"
+      ],
+      "commands_run": []
+    },
+    {
+      "task_id": "T3",
+      "status": "done",
+      "executor_notes": "Extended `PaymentService.request_payment` with an `amount_token` branch between the existing test and USD paths. The new branch validates `> 0`, sets `amount_usd` and `token_price_usd` to null, and leaves the existing test/USD behavior intact.",
+      "files_changed": [
+        "src/features/payments/payment_service.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/payments/payment_service.py"
+      ]
+    },
+    {
+      "task_id": "T4",
+      "status": "done",
+      "executor_notes": "Added the `initiate_payment` admin tool schema with exactly `recipient_user_id`, `amount_sol`, and optional `reason`, and classified it as admin-only. Verified the tool registry import/assertion succeeds.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py"
+      ],
+      "commands_run": [
+        "python -c \"from src.features.admin_chat import tools\"",
+        "python -m py_compile src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/payments/payment_service.py"
+      ]
+    },
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Injected `source_channel_id` from `channel_context['channel_id']` using the same guarded pattern as `guild_id`, without overwriting caller-supplied input.",
+      "files_changed": [
+        "src/features/admin_chat/agent.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/payments/payment_service.py"
+      ]
+    },
+    {
+      "task_id": "T10",
+      "status": "done",
+      "executor_notes": "Updated the admin system prompt to document `initiate_payment(recipient_user_id, amount_sol, reason?)`, that the amount is in SOL, that missing wallets are requested in-channel, and that the tool must be used from a guild channel.",
+      "files_changed": [
+        "src/features/admin_chat/agent.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/tools.py src/features/admin_chat/agent.py src/features/payments/payment_service.py"
+      ]
+    },
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Added the five admin-payment-intent CRUD methods to `DatabaseHandler` using the existing Supabase CRUD style. Verified each method checks `_gate_check(guild_id)`, guards on `self.supabase`, and that the active-intent lookup/list methods filter out terminal statuses.",
+      "files_changed": [
+        "src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/common/db_handler.py tests/test_social_route_tools.py"
+      ]
+    },
+    {
+      "task_id": "T11",
+      "status": "done",
+      "executor_notes": "Updated the existing admin-chat tool test to expect `initiate_payment` in the admin-only tool set and to assert it is documented in the admin system prompt. Verified the full `tests/test_social_route_tools.py` module passes.",
+      "files_changed": [
+        "tests/test_social_route_tools.py"
+      ],
+      "commands_run": [
+        "python -m pytest tests/test_social_route_tools.py -x",
+        "python -m py_compile src/common/db_handler.py tests/test_social_route_tools.py"
+      ]
+    },
+    {
+      "task_id": "T6",
+      "status": "done",
+      "executor_notes": "Implemented `execute_initiate_payment` and wired it into the admin-chat dispatcher. Verified fail-closed validation for missing/invalid guild/channel/user/amount and missing payment service, duplicate intent short-circuiting, verified-wallet handoff, and the no-wallet prompt path with `prompt_message_id` persistence.",
+      "files_changed": [
+        "src/features/admin_chat/tools.py"
+      ],
+      "commands_run": [
+        "python -c \"from src.features.admin_chat import tools\"",
+        "python -m py_compile src/features/admin_chat/tools.py",
+        "python -m pytest tests/test_social_route_tools.py -x",
+        "python - <<'PY' ... no-wallet / duplicate / missing-service harness ... PY",
+        "python - <<'PY' ... verified-wallet handoff harness ... PY"
+      ]
+    },
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "Added the admin-payment reply interceptor at the top of `on_message`, plus the standalone classifier client, wallet/confirmation handlers, and test-payment starter flow. Verified the module compiles/imports, existing scheduler/admin-chat tests still pass, and a focused runtime harness confirmed interception order, classifier independence from `self.agent`, fail-closed ambiguous handling, admin tagging, and `_processing_intents` cleanup.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py",
+        "python -c \"from src.features.admin_chat.admin_chat_cog import AdminChatCog\"",
+        "python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x",
+        "python - <<'PY' ... AdminChatCog interception-order / ambiguous-reply harness ... PY"
+      ]
+    },
+    {
+      "task_id": "T8",
+      "status": "done",
+      "executor_notes": "Added `handle_payment_result` to `AdminChatCog` for admin-chat producer handoff. Verified test-payment failure aborts without creating a final payment, test-payment confirmation creates the final payment with `amount_token`, sends the shared confirmation prompt plus the in-channel free-text prompt, and final confirmed terminal results mark the intent completed and send a success message.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py",
+        "python -c \"from src.features.admin_chat.admin_chat_cog import AdminChatCog\"",
+        "python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x",
+        "python - <<'PY' ... handle_payment_result test-confirmed / test-failed / final-confirmed harness ... PY"
+      ]
+    },
+    {
+      "task_id": "T9",
+      "status": "done",
+      "executor_notes": "Added startup reconciliation to `AdminChatCog` via `cog_load()` and a one-pass active-intent reconciler. Verified `wait_until_ready()` runs before reconciliation, history replay is capped at 200 messages with `last_scanned_message_id` updates, missing channels are skipped without crashing, and terminal test/final payments are handed back through `handle_payment_result()` on startup.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py src/features/admin_chat/tools.py",
+        "python -c \"from src.features.admin_chat.admin_chat_cog import AdminChatCog\"",
+        "python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x",
+        "python - <<'PY' ... cog_load / reconciliation restart harness ... PY"
+      ]
+    },
+    {
+      "task_id": "T12",
+      "status": "done",
+      "executor_notes": "Created `tests/test_admin_payments.py` with all 13 requested cases covering tool initiation, wallet collection, free-text confirmation, terminal payment handoff, concurrent recipient gating, `amount_token`, and startup reconciliation. Verified the full new module passes and that the existing related test modules still pass unchanged.",
+      "files_changed": [
+        "tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "python -m py_compile tests/test_admin_payments.py",
+        "python -m pytest tests/test_admin_payments.py -x",
+        "python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x"
+      ]
+    },
+    {
+      "task_id": "T13",
+      "status": "done",
+      "executor_notes": "Ran the required validation commands in order: tool import, new admin-payment tests, existing related modules, and the full `tests/` suite. All passed. Also ran a throwaway repro script for restart-safe free-text confirmation recovery and deleted it after confirming the fixed behavior.",
+      "files_changed": [],
+      "commands_run": [
+        "python -c \"from src.features.admin_chat import tools\"",
+        "python -m pytest tests/test_admin_payments.py -x",
+        "python -m pytest tests/test_social_route_tools.py tests/test_scheduler.py -x",
+        "python -m pytest tests/ -x",
+        "PYTHONPATH=/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc python /tmp/admin_payment_repro.py",
+        "rm /tmp/admin_payment_repro.py"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "Confirmed the new SQL uses `create table if not exists`, reuses the shared updated_at trigger function, enables RLS, revokes anon/authenticated access, and includes the active-intent unique index plus the two guild/channel status lookup indexes."
+    },
+    {
+      "sense_check_id": "SC3",
+      "executor_note": "Confirmed the new non-test `amount_token` branch sets `normalized_amount_usd=None` and `token_price_usd=None`, sits between the unchanged `is_test` and `amount_usd` branches, and the existing `payment_requests` check constraint already permits null `amount_usd` for non-test rows."
+    },
+    {
+      "sense_check_id": "SC4",
+      "executor_note": "Verified `python -c \"from src.features.admin_chat import tools\"` exits cleanly, `initiate_payment` is only in `ADMIN_ONLY_TOOLS`, and the schema exposes only `recipient_user_id`, `amount_sol`, and optional `reason`."
+    },
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Confirmed `source_channel_id` is injected as `int(channel_context['channel_id'])`, uses an existence guard to avoid overwriting, and mirrors the adjacent `guild_id` injection pattern."
+    },
+    {
+      "sense_check_id": "SC10",
+      "executor_note": "Confirmed the system prompt now names `amount_sol`, says the tool pings the user for a wallet when none is on file, and says the action starts from a guild channel."
+    },
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "Confirmed all five new intent methods gate on `_gate_check(guild_id)` and return `None` or `[]` if `self.supabase` is unavailable. `get_active_intent_for_recipient` applies `NOT IN ('completed', 'failed', 'cancelled')` and `.limit(1)`."
+    },
+    {
+      "sense_check_id": "SC11",
+      "executor_note": "Confirmed `initiate_payment` is in the expected admin-only subset and the existing prompt test now asserts that `initiate_payment` appears in `admin_agent.SYSTEM_PROMPT`."
+    },
+    {
+      "sense_check_id": "SC6",
+      "executor_note": "Confirmed the executor fails closed for missing or invalid `guild_id`, `source_channel_id`, `recipient_user_id`, non-positive `amount_sol`, and missing `payment_service`; returns existing intent info on duplicate; and in the no-wallet path sends the channel prompt and persists `prompt_message_id`."
+    },
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "Confirmed `_check_pending_payment_reply` now runs before `_is_directed_at_bot`, the classifier uses its own `AsyncAnthropic` client stored on `self._classifier_client`, ambiguous or suspicious replies fail closed with an admin tag, and `_processing_intents` is managed with `try/finally` so it always clears."
+    },
+    {
+      "sense_check_id": "SC8",
+      "executor_note": "Confirmed the test-payment terminal handler creates the final payment with `amount_token=float(intent['requested_amount_sol'])`, leaves `amount_usd` unused, updates the intent to `awaiting_confirmation` with `final_payment_id`, and test-payment failures stop the flow without creating a final payment. Confirmed final-payment terminal success updates the intent to `completed`; the earlier free-text confirmation path still sets `status='confirmed'` before terminal settlement."
+    },
+    {
+      "sense_check_id": "SC9",
+      "executor_note": "Confirmed `cog_load()` calls `wait_until_ready()` before `_reconcile_active_intents()`, history scans use a hard `limit=200`, `last_scanned_message_id` is persisted after replay, and missing channels are logged and skipped without crashing reconciliation."
+    },
+    {
+      "sense_check_id": "SC12",
+      "executor_note": "Confirmed the new module contains all 13 requested test cases, uses isolated fake DB/payment/Discord/classifier objects, and includes a same-channel multi-recipient test that verifies identity-gated intent matching by recipient user ID before any semantic handling."
+    },
+    {
+      "sense_check_id": "SC13",
+      "executor_note": "Confirmed all four validation commands passed: tool import, new tests, existing related tests, and the full `tests/` suite. The additional restart-recovery repro script also passed, and there were zero test failures."
+    }
+  ]
+}

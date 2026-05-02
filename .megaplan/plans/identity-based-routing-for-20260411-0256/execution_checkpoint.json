@@ -1,0 +1,262 @@
+{
+  "output": "Implemented the approved plan and captured execution evidence.",
+  "files_changed": [
+    "src/features/admin_chat/admin_chat_cog.py",
+    "tests/test_admin_payments.py"
+  ],
+  "commands_run": [
+    "python -m py_compile src/features/admin_chat/admin_chat_cog.py tests/test_admin_payments.py",
+    "python tmp_confirmation_overlap_repro.py",
+    "pytest tests/test_admin_payments.py -x",
+    "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_scheduler.py -x",
+    "pytest tests/test_payment_state_machine.py tests/test_solana_client.py tests/test_payment_race.py tests/test_payment_reconcile.py tests/test_payment_authorization.py tests/test_safe_delete_messages.py tests/test_check_payment_invariants.py tests/test_tx_signature_history.py -x",
+    "pytest"
+  ],
+  "deviations": [],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "No additional schema work was needed in this rework pass. The existing migration remained consistent with the approved state and column expansion and was unaffected by the confirmation-overlap fix.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "No DB-helper changes were needed in this rework pass. The overlap fix stayed within confirmation parsing and regression coverage, and the existing helper behavior remained valid.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T3",
+      "status": "done",
+      "executor_notes": "No producer-flow changes were needed in this rework pass. ADMIN_DM authorization for admin-chat real payments remained intact while the classifier fix stayed isolated to recipient reply parsing.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T4",
+      "status": "done",
+      "executor_notes": "No restart-filter changes were needed in this rework pass. The state-aware confirmation-view registration remained intact.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Made negative-phrase precedence explicit in `_classify_confirmation()` so embedded positive keywords do not override listed negative phrases. Verified with a throwaway repro that `not received` and `not received yet` now classify as negative on the first reply, while mixed text like `confirmed but not received` remains ambiguous.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py tests/test_admin_payments.py",
+        "python tmp_confirmation_overlap_repro.py",
+        "pytest tests/test_admin_payments.py -x",
+        "pytest"
+      ]
+    },
+    {
+      "task_id": "T6",
+      "status": "done",
+      "executor_notes": "No identity-router changes were needed in this rework pass. The admin path remains a strict author-identity branch with no `_is_directed_at_bot` or approved-member gate.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "No pending-recipient dispatch changes were needed in this rework pass. `awaiting_admin_init` and the other non-routable states remain silent no-ops.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T8",
+      "status": "done",
+      "executor_notes": "No test-success rewiring changes were needed in this rework pass. Test-payment success still parks the intent in `awaiting_test_receipt_confirmation` without creating the real payment inline.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T9",
+      "status": "done",
+      "executor_notes": "No gate-helper changes were needed in this rework pass. The parser fix now feeds the existing negative escalation path correctly on the first `not received` reply.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T10",
+      "status": "done",
+      "executor_notes": "No admin-approval UI changes were needed in this rework pass. `AdminApprovalView` and admin-DM fail-closed behavior remained intact.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T11",
+      "status": "done",
+      "executor_notes": "No verified-wallet fast-path changes were needed in this rework pass. Single initiate still routes through `_gate_fresh_intent_atomic()` with no test payment.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T12",
+      "status": "done",
+      "executor_notes": "No query-tool changes were needed in this rework pass. The overlap fix did not touch read-only admin tools.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T13",
+      "status": "done",
+      "executor_notes": "No batch-initiate changes were needed in this rework pass. The single atomic intent insert contract remained intact.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T14",
+      "status": "done",
+      "executor_notes": "No wallet-upsert changes were needed in this rework pass. Admin-only validation, verified_at preservation, and admin DM behavior remained intact.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T15",
+      "status": "done",
+      "executor_notes": "No agent/tool-registration changes were needed in this rework pass. The existing admin-only tool wiring remained intact.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T16",
+      "status": "done",
+      "executor_notes": "No orphan-sweep changes were needed in this rework pass. The periodic UI-cog reconciliation loop remained in place and the touched regression suite stayed green.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T17",
+      "status": "done",
+      "executor_notes": "No stale-receipt sweep changes were needed in this rework pass. The 15-minute timeout escalation remained intact.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T18",
+      "status": "done",
+      "executor_notes": "No `resolve_admin_intent` changes were needed in this rework pass. Cancel-only cascade behavior remained intact and unrelated to the classifier overlap fix.",
+      "files_changed": [],
+      "commands_run": []
+    },
+    {
+      "task_id": "T19",
+      "status": "done",
+      "executor_notes": "Updated the regression coverage so it now enforces the intended overlap behavior instead of blessing it. The parser test asserts `not received` and a nearby negative variant are `negative`, and the state-machine test still proves the first such reply escalates immediately to `manual_review` with no ambiguous-count increment.",
+      "files_changed": [
+        "tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py tests/test_admin_payments.py",
+        "pytest tests/test_admin_payments.py -x",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_scheduler.py -x",
+        "pytest"
+      ]
+    },
+    {
+      "task_id": "T20",
+      "status": "done",
+      "executor_notes": "Revalidated after the overlap fix: the exact repro script passed, `tests/test_admin_payments.py -x` passed with 47 tests, the required focused trio passed with 72 tests, the listed invariant modules passed with 55 tests, and full `pytest` passed with 191 tests. The throwaway repro script was deleted after the successful run.",
+      "files_changed": [
+        "tmp_confirmation_overlap_repro.py"
+      ],
+      "commands_run": [
+        "python tmp_confirmation_overlap_repro.py",
+        "pytest tests/test_admin_payments.py -x",
+        "pytest tests/test_admin_payments.py tests/test_payment_cog_split.py tests/test_scheduler.py -x",
+        "pytest tests/test_payment_state_machine.py tests/test_solana_client.py tests/test_payment_race.py tests/test_payment_reconcile.py tests/test_payment_authorization.py tests/test_safe_delete_messages.py tests/test_check_payment_invariants.py tests/test_tx_signature_history.py -x",
+        "pytest"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "Confirmed unchanged schema evidence remains intact; this pass did not alter the migration or the unique partial index."
+    },
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "Confirmed unchanged DB-helper behavior remains intact; this pass did not alter batch insert or stale-awaiting-admin-init helpers."
+    },
+    {
+      "sense_check_id": "SC3",
+      "executor_note": "Confirmed unchanged producer-flow authorization remains intact; this pass did not alter admin_chat real-payment confirmation actors."
+    },
+    {
+      "sense_check_id": "SC4",
+      "executor_note": "Confirmed unchanged state-aware restart filtering remains intact after the classifier/test fix."
+    },
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Confirmed `_classify_confirmation()` still uses whole-word matching plus the \ud83d\udc4d substring fallback, and now gives matched negative phrases precedence so `not received` and `not received yet` classify as negative instead of ambiguous."
+    },
+    {
+      "sense_check_id": "SC6",
+      "executor_note": "Confirmed unchanged identity-router behavior remains intact; this pass did not alter `on_message` routing."
+    },
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "Confirmed unchanged pending-recipient dispatch still silently ignores `awaiting_admin_init`, and that coverage remains in the test module."
+    },
+    {
+      "sense_check_id": "SC8",
+      "executor_note": "Confirmed unchanged test-success rewiring remains intact; this pass did not alter `handle_payment_result`."
+    },
+    {
+      "sense_check_id": "SC9",
+      "executor_note": "Confirmed unchanged gate-helper ordering remains intact; this pass did not alter `_gate_existing_intent` or `_gate_fresh_intent_atomic`."
+    },
+    {
+      "sense_check_id": "SC10",
+      "executor_note": "Confirmed unchanged AdminApprovalView/admin-DM behavior remains intact; this pass did not alter payment UI code."
+    },
+    {
+      "sense_check_id": "SC11",
+      "executor_note": "Confirmed unchanged verified-wallet single-initiate fast path remains intact; this pass did not alter `execute_initiate_payment`."
+    },
+    {
+      "sense_check_id": "SC12",
+      "executor_note": "Confirmed unchanged read-only query tool behavior remains intact; this pass did not alter tool executors, wallet redaction, or injection guards."
+    },
+    {
+      "sense_check_id": "SC13",
+      "executor_note": "Confirmed unchanged batch atomicity and fan-out behavior remain intact; this pass did not alter `initiate_batch_payment`."
+    },
+    {
+      "sense_check_id": "SC14",
+      "executor_note": "Confirmed unchanged wallet-upsert admin and validation behavior remains intact; this pass did not alter `upsert_wallet_for_user`."
+    },
+    {
+      "sense_check_id": "SC15",
+      "executor_note": "Confirmed unchanged admin-only tool registration and identity injection remain intact; this pass did not alter agent/tool registration."
+    },
+    {
+      "sense_check_id": "SC16",
+      "executor_note": "Confirmed unchanged PaymentUICog orphan-sweep ownership and 5-minute loop remain intact; this pass did not alter split-cog recovery code."
+    },
+    {
+      "sense_check_id": "SC17",
+      "executor_note": "Confirmed unchanged 15-minute stale receipt sweep remains intact; this pass did not alter the timeout loop."
+    },
+    {
+      "sense_check_id": "SC18",
+      "executor_note": "Confirmed unchanged `resolve_admin_intent` cancel-only cascade behavior remains intact; this pass did not alter the tool."
+    },
+    {
+      "sense_check_id": "SC19",
+      "executor_note": "Confirmed the regression coverage now enforces the intended negative behavior for `not received` instead of blessing ambiguity, while the broader T19 refactor coverage remains intact."
+    },
+    {
+      "sense_check_id": "SC20",
+      "executor_note": "Confirmed the focused trio passed with `-x`, the listed invariant modules stayed green, the throwaway overlap repro script passed and was deleted, and full `pytest` passed with no skipped or xfailed tests."
+    }
+  ]
+}

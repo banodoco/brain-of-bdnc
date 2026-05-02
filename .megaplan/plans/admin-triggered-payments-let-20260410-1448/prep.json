@@ -1,0 +1,142 @@
+{
+  "skip": false,
+  "task_summary": "Add an admin-triggered payment flow: a new `initiate_payment` admin chat tool that lets the admin mention the bot in any channel to pay a Banodoco user. The tool must: (1) look up/collect the recipient's Solana wallet (DM the user privately if no wallet is on file), (2) register the wallet via `upsert_wallet`, (3) send a test payment through the existing PaymentService, (4) on test confirmation, create the final payment as `pending_confirmation` and post a Discord confirmation button, (5) only queue the real payout after the recipient clicks confirm. All checks must be fail-closed \u2014 missing wallet, failed test, missing confirmation each abort the flow.",
+  "key_evidence": [
+    {
+      "point": "The full payment state machine already exists: PaymentService.request_payment \u2192 confirm_payment \u2192 execute_payment, with PaymentCog handling the worker loop, confirmation views, and terminal handoffs.",
+      "source": "src/features/payments/payment_service.py, src/features/payments/payment_cog.py",
+      "relevance": "high"
+    },
+    {
+      "point": "GrantsCog is the only existing payment producer and provides an exact blueprint: upsert_wallet \u2192 request_payment(is_test=True) \u2192 auto-confirm test \u2192 on test confirmed callback, request_payment(is_test=False) \u2192 send_confirmation_request for user button.",
+      "source": "src/features/grants/grants_cog.py:550-710",
+      "relevance": "high"
+    },
+    {
+      "point": "Admin chat tools are defined as dicts in TOOLS list, classified in ADMIN_ONLY_TOOLS set, dispatched in execute_tool(). The dispatcher receives bot, db_handler, sharer, trusted_guild_id. PaymentService is accessed via bot.payment_service and PaymentCog via bot.get_cog('PaymentCog').",
+      "source": "src/features/admin_chat/tools.py:886-916, 2901-2911",
+      "relevance": "high"
+    },
+    {
+      "point": "Wallet registry supports upsert_wallet(guild_id, discord_user_id, chain, address) and get_wallet(guild_id, discord_user_id, chain). Changing the address resets verified_at. One wallet per user+guild+chain.",
+      "source": "src/common/db_handler.py:1417-1466, sql/payments.sql:12-34",
+      "relevance": "high"
+    },
+    {
+      "point": "payment_requests has a unique index on (producer, producer_ref, is_test) WHERE status NOT IN ('failed','cancelled'). The producer_ref must be unique per active payment \u2014 grants uses thread_id. Admin payments need a distinct producer name (e.g. 'admin') and a unique ref strategy.",
+      "source": "sql/payments.sql:126-128",
+      "relevance": "high"
+    },
+    {
+      "point": "PaymentService.confirm_payment supports privileged_override=True to bypass the recipient_discord_id check, and confirmed_by can be any string. Test payments in grants use confirmed_by='auto' with privileged override effectively bypassed by passing the recipient's own ID.",
+      "source": "src/features/payments/payment_service.py:168-203",
+      "relevance": "medium"
+    },
+    {
+      "point": "ServerConfig.resolve_payment_destinations(guild_id, channel_id, producer) returns confirm/notify channel/thread IDs from payment_channel_routes table. Falls back to source channel if no route configured. The admin tool should resolve destinations the same way grants does.",
+      "source": "src/common/server_config.py:253-368",
+      "relevance": "medium"
+    },
+    {
+      "point": "PaymentCog._handoff_terminal_result dispatches to producer cogs via handle_payment_result(payment). A new producer 'admin' would need a cog with that method, or the flow can be self-contained by using metadata and the existing notify mechanism.",
+      "source": "src/features/payments/payment_cog.py:269-300",
+      "relevance": "medium"
+    },
+    {
+      "point": "The bot can DM users: execute_send_message already sends to arbitrary channel IDs. To collect a wallet privately, the tool can open a DM channel with the recipient user and send a message asking for their wallet address.",
+      "source": "src/features/admin_chat/tools.py:2548",
+      "relevance": "medium"
+    },
+    {
+      "point": "No existing admin tool creates payments \u2014 current admin tools only list/inspect/retry/hold/release/cancel. This is a net-new tool.",
+      "source": "src/features/admin_chat/tools.py:429-578",
+      "relevance": "high"
+    }
+  ],
+  "relevant_code": [
+    {
+      "file_path": "src/features/admin_chat/tools.py",
+      "why": "Add new initiate_payment tool definition, ADMIN_ONLY_TOOLS entry, execute function, and dispatcher case",
+      "functions": [
+        "TOOLS list (~line 429-578)",
+        "ADMIN_ONLY_TOOLS set (line 886)",
+        "execute_tool dispatcher (line 2901)"
+      ]
+    },
+    {
+      "file_path": "src/features/admin_chat/agent.py",
+      "why": "System prompt needs to document the new tool; may need to add payment_service to the execute_tool call if not accessible via bot",
+      "functions": [
+        "SYSTEM_PROMPT (line 25)",
+        "chat() tool execution loop (line 418)"
+      ]
+    },
+    {
+      "file_path": "src/features/payments/payment_service.py",
+      "why": "Core service used to create and confirm payments \u2014 no changes needed, just consumed",
+      "functions": [
+        "request_payment()",
+        "confirm_payment()"
+      ]
+    },
+    {
+      "file_path": "src/features/payments/payment_cog.py",
+      "why": "send_confirmation_request posts the Discord button; handle_payment_result dispatches terminal results to producer cogs",
+      "functions": [
+        "send_confirmation_request()",
+        "_handoff_terminal_result()",
+        "_handle_terminal_payment()"
+      ]
+    },
+    {
+      "file_path": "src/common/db_handler.py",
+      "why": "Wallet CRUD and payment state transitions \u2014 used by the new tool",
+      "functions": [
+        "upsert_wallet()",
+        "get_wallet()",
+        "get_wallet_by_id()",
+        "create_payment_request()",
+        "mark_wallet_verified()"
+      ]
+    },
+    {
+      "file_path": "src/common/server_config.py",
+      "why": "Payment route resolution for confirm/notify destinations",
+      "functions": [
+        "resolve_payment_destinations()"
+      ]
+    },
+    {
+      "file_path": "src/features/grants/grants_cog.py",
+      "why": "Reference implementation of the full payment flow \u2014 pattern to replicate",
+      "functions": [
+        "_start_payment_flow()",
+        "handle_payment_result()",
+        "_handle_test_payment_result()",
+        "_resolve_payment_destinations()"
+      ]
+    }
+  ],
+  "test_expectations": [
+    {
+      "test_id": "tests/test_scheduler.py",
+      "what_it_checks": "Mock PaymentService.request_payment and send_confirmation_request for scheduled payments \u2014 must continue to pass",
+      "status": "pass_to_pass"
+    },
+    {
+      "test_id": "tests/test_social_route_tools.py",
+      "what_it_checks": "Admin chat tool dispatch for social/payment route tools \u2014 assert on tool classification sets, must still pass after adding new tool",
+      "status": "pass_to_pass"
+    }
+  ],
+  "constraints": [
+    "Fail-closed: every step (wallet lookup, test payment, user confirmation) must abort on failure rather than proceeding",
+    "The unique index on (producer, producer_ref, is_test) WHERE status NOT IN ('failed','cancelled') means producer_ref must be unique per active payment \u2014 use a deterministic ref like '{admin_user_id}_{recipient_user_id}_{timestamp}' or a UUID",
+    "ADMIN_ONLY_TOOLS | MEMBER_TOOLS must equal ALL_TOOL_NAMES \u2014 the assertion at line 916 will fail if the new tool isn't classified",
+    "Test payment must auto-confirm (like grants) so the recipient doesn't have to click twice \u2014 only the final payout gets a confirmation button",
+    "Wallet collection via DM must handle: user already has a verified wallet, user has an unverified wallet, user has no wallet at all",
+    "The tool runs inside the admin chat agent's tool execution loop \u2014 it must be async but should not block indefinitely waiting for user DM responses",
+    "PaymentCog.send_confirmation_request requires payment status to be pending_confirmation"
+  ],
+  "suggested_approach": "Split into two phases \u2014 an immediate tool and an async callback:\n\n**Phase 1: `initiate_payment` admin tool** (in tools.py)\n- Params: `recipient_user_id` (or `recipient_username`), `amount_usd`, `reason` (optional memo)\n- Resolve the user via Discord API if username given\n- Check `db_handler.get_wallet(guild_id, recipient_user_id, 'solana')`:\n  - If wallet exists and is verified \u2192 skip to test payment\n  - If wallet exists but unverified \u2192 use it, proceed to test payment\n  - If no wallet \u2192 DM the user asking for their Solana wallet address, return a status message to the admin saying \"Waiting for wallet from user \u2014 I'll DM them.\" The wallet collection must be a separate interaction (the tool can't block).\n- For the \"no wallet\" case, add a lightweight listener or a second tool (`submit_wallet`) that the user can invoke from DM, or have the admin provide the wallet address directly in the initiate_payment call.\n- Once wallet is available: `upsert_wallet` \u2192 `payment_service.request_payment(producer='admin', is_test=True, ...)` \u2192 `payment_service.confirm_payment(privileged_override or auto)` to queue the test immediately\n- Resolve payment destinations via `server_config.resolve_payment_destinations(guild_id, source_channel_id, 'admin')`\n\n**Phase 2: Terminal callback** (handle test\u2192final escalation)\n- Option A: Add `handle_payment_result` to AdminChatCog so PaymentCog can hand off terminal results for producer='admin'. On test confirmed \u2192 create final payment \u2192 post confirmation button via PaymentCog.send_confirmation_request. On test failed \u2192 notify admin channel.\n- Option B: Skip the producer handoff pattern entirely and have the initiate_payment tool create both the test and final payments upfront (test auto-confirmed, final pending_confirmation), relying on the existing PaymentCog worker + confirmation view. This is simpler but means the final payment is created before the test succeeds.\n\n**Recommendation:** Option A (callback pattern) mirrors grants exactly and keeps the fail-closed guarantee that the final payment is only created after the test succeeds. Add a minimal `handle_payment_result` method to `AdminChatCog` (or a new small `AdminPaymentCog`) that handles producer='admin' terminal results.\n\n**Wallet collection approach:** The simplest fail-closed design is to require the admin to provide the wallet address in the tool call (`wallet_address` param). If not provided and no wallet on file, the tool returns an error telling the admin to collect the wallet first. A DM-based wallet collection flow can be a follow-up enhancement. This avoids the async blocking problem entirely."
+}

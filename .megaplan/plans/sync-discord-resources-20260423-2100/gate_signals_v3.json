@@ -1,0 +1,572 @@
+{
+  "robustness": "standard",
+  "signals": {
+    "iteration": 3,
+    "idea": "Sync Discord `_resources` channel posts into banodoco-website as auto-published resources, with a \"Made with this\" section containing reply media and a Discord-style comments thread.\n\n# Context\n\nSingle shared Supabase project (`ujlwuvkrxlvoswwkerdf`) backs both brain-of-bndc (Discord archive bot, Python, Railway) and banodoco-website (React/Vite). Discord resource posts live in 5 forum channels: `resources` (1149372684220768367), `flux_resources` (1275200992136400967), `wan_resources` (1373291419434877078), `ltx_resources` (1457981813120176138), `acestep_resources` (1472633200491626526). Each is a forum, so every message has a `thread_id`; an OP is where `message_id == thread_id`. Archive pipeline already writes every message + reaction into `discord_messages`. Current volume: ~15 qualifying OPs in the last 30 days.\n\n# Trigger + scope\n\n- Thread OP in any of the 5 `_resources` channels with `reaction_count >= 5` (any emoji counts) becomes an `assets` row.\n- Backfill: last 60 days on first run, chronological oldest\u2192newest, resumable via per-channel cursor.\n- Ongoing: polled every 10 min.\n- No un-listing if reactions later drop.\n- Auto-publish `admin_status='Listed'`; admin kill switch via `assets.is_hidden`.\n- Each reply in the thread becomes an `asset_comments` row. Reply attachments become `media` rows linked via `asset_comment_media`. OP attachments go via existing `asset_media`.\n\n# Schema deltas\n\nExtend `assets`:\n- `source` TEXT ('manual' | 'discord_import')\n- `discord_thread_id` BIGINT UNIQUE NULL\n- `discord_channel_id` BIGINT NULL\n- `imported_at` TIMESTAMPTZ\n- `last_synced_at` TIMESTAMPTZ\n- `reactions_reached_threshold_at` TIMESTAMPTZ\n- `is_hidden` BOOLEAN DEFAULT FALSE\n\nNew `asset_comments`:\n- `id` UUID PK\n- `asset_id` UUID FK \u2192 assets(id) ON DELETE CASCADE\n- `discord_message_id` BIGINT UNIQUE NOT NULL\n- `discord_thread_id` BIGINT NOT NULL\n- `author_member_id` BIGINT FK \u2192 discord_members(member_id)\n- `content` TEXT\n- `reply_to_comment_id` UUID FK \u2192 asset_comments(id) NULL (resolves from Discord `reference_id`)\n- `reply_to_discord_message_id` BIGINT NULL (denormalized for resolvability even when the parent isn't imported)\n- `reaction_count` INT DEFAULT 0\n- `discord_created_at` TIMESTAMPTZ\n- `discord_edited_at` TIMESTAMPTZ\n- `is_deleted` BOOLEAN DEFAULT FALSE\n- `created_at`, `updated_at` TIMESTAMPTZ\n\nNew `asset_comment_media`:\n- `comment_id` UUID FK \u2192 asset_comments(id) ON DELETE CASCADE\n- `media_id` UUID FK \u2192 media(id) ON DELETE CASCADE\n- `sort_order` INT DEFAULT 0\n- PK (comment_id, media_id)\n\n`media` changes:\n- Add `'discord-comment'` as a valid `classification` value\n- Provenance stored in `media.metadata` JSONB: `{discord_message_id, discord_channel_id, discord_attachment_id, original_cdn_url, imported_at}`\n- Dedup by `discord_attachment_id` (query `metadata->>'discord_attachment_id'`)\n\nNew `media_import_jobs` queue:\n- `id` UUID PK\n- `discord_attachment_id` BIGINT UNIQUE\n- `discord_message_id` BIGINT\n- `target_kind` TEXT ('asset_media' | 'asset_comment_media')\n- `target_id` UUID (asset_id or comment_id depending on target_kind)\n- `original_cdn_url` TEXT\n- `filename` TEXT, `content_type` TEXT, `size_bytes` BIGINT\n- `status` TEXT ('pending' | 'in_progress' | 'done' | 'failed' | 'skipped')\n- `attempts` INT DEFAULT 0\n- `last_error` TEXT\n- `media_id` UUID FK \u2192 media(id) NULL (set on done)\n- `created_at`, `updated_at`, `locked_until` TIMESTAMPTZ\n\nAdd indexes for: `assets.discord_thread_id`, `asset_comments(asset_id, discord_created_at)`, `asset_comments.discord_message_id`, `media_import_jobs(status, locked_until)`.\n\nRLS on new tables: public read for `asset_comments` / `asset_comment_media` (matches `asset_media`); service-role only for `media_import_jobs`.\n\n# Runtime\n\nTwo Supabase Edge Functions + pg_cron:\n\n**`discord-resource-promoter`** (cron: every 10 min; ~30s wall clock):\n1. For each of the 5 channels, advance the per-channel cursor (`discord_resource_sync_cursors` table: `channel_id`, `last_processed_created_at`, `last_backfill_cursor_at`, `backfill_complete` BOOL).\n2. Discover qualifying thread OPs: `discord_messages` where `channel_id IN (...)`, `message_id = thread_id`, `reaction_count >= 5`, `created_at > cursor`.\n3. Upsert `assets` rows keyed on `discord_thread_id`. Populate: `name` (first line of content, truncated), `description` (full content), `type` (infer via channel \u2192 'lora' | 'tool'; default 'tool'), `member_id` (from author), `admin_status='Listed'`, `source='discord_import'`, `reactions_reached_threshold_at=NOW()`.\n4. For each imported thread, fetch all replies: `discord_messages WHERE thread_id = X AND message_id != thread_id`. Upsert `asset_comments` keyed on `discord_message_id`. Resolve `reply_to_comment_id` from Discord `reference_id` where possible.\n5. For every attachment (OP and replies), upsert a `media_import_jobs` row if not already present. Use Discord `attachment.id` as dedup key.\n6. Update `assets.last_synced_at`.\n7. Paginate/time-slice to stay under 30s budget; advance cursor even on partial progress.\n\n**`discord-media-importer`** (cron: every 2 min; up to 400s):\n1. Claim up to N pending jobs via `UPDATE ... SET status='in_progress', locked_until=NOW()+interval '10m' WHERE status='pending' AND (locked_until IS NULL OR locked_until < NOW()) ... RETURNING *`. Re-claim stuck `in_progress` past `locked_until`.\n2. For each job:\n   - Refresh Discord CDN URL (use bot token via Discord API `GET /channels/{channel_id}/messages/{message_id}` to get current signed URL \u2014 mirror logic from existing `refresh-media-urls` edge function).\n   - Stream download from Discord CDN.\n   - If video/gif: stream upload to Cloudflare Stream via tus; poll until `readyToStream`; capture `playback.hls`, `thumbnail`, `duration`.\n   - If image: stream upload to Supabase Storage `user-uploads/discord-imports/{discord_message_id}/{attachment_id}-{filename}`; generate thumbnail via image transform if available.\n   - Other (zip/json): upload to same bucket, no thumbnail.\n   - Insert `media` row: `classification='discord-comment'` (or `'post'` for OP attachments \u2014 decide convention in plan), `member_id` from message author, Cloudflare/storage URLs populated, `metadata` with Discord provenance.\n   - Insert junction row (`asset_media` or `asset_comment_media` based on `target_kind`).\n   - Mark job `done`, set `media_id`.\n3. On failure: increment `attempts`, write `last_error`, status back to `pending` with exponential backoff via `locked_until`. Skip permanently after 5 attempts (`status='failed'`).\n\nSecrets required on Supabase Edge Function config:\n- `DISCORD_BOT_TOKEN`\n- `CLOUDFLARE_STREAM_ACCOUNT_ID`\n- `CLOUDFLARE_STREAM_API_TOKEN`\n- Existing `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` implicit\n\n# Frontend\n\nUpdate `banodoco-website/src/pages/Resources/ResourceModal.tsx`:\n1. Keep existing gallery strip (primary media + `asset_media`).\n2. Add **\"Made with this\"** section below gallery \u2014 grid of all `asset_comment_media` thumbnails for the asset, newest first, click opens lightbox anchored to the parent comment.\n3. Add **Discussion** section below \u2014 flat chronological list of `asset_comments`. Each row:\n   - Author chip (avatar + global_name from `discord_members`) + timestamp\n   - \"Replying to @name\" chip with quoted excerpt if `reply_to_comment_id` set\n   - Markdown-rendered `content`\n   - Attached media grid (inline video/image thumbs, click \u2192 lightbox)\n   - Reaction count chip\n   - \"View on Discord\" link (build URL from channel_id + message_id)\n4. New hook `useAssetComments(assetId)` \u2014 single query joining `asset_comments` + `asset_comment_media` + `media` + `discord_members`, ordered by `discord_created_at`.\n5. Resource card: small \"From Discord\" badge (channel name) on imported assets \u2014 subtle, not a big label.\n\n# Observability + ops\n\n- `media_import_jobs` table is the operational dashboard (count by status, oldest pending, failures with `last_error`).\n- Errors logged to `system_logs` (existing infrastructure).\n- Health check query: failed jobs in last 24h, stuck `in_progress` past lock, per-channel cursor age.\n- Dry-run mode: env var `DRY_RUN=true` on promoter \u2192 logs would-be inserts without writing.\n\n# Idempotency + edge cases to handle in plan\n\n- Discord message edits: re-sync updates `asset_comments.content`, `discord_edited_at`.\n- Discord message deletions: `discord_messages.is_deleted=true` \u2192 set `asset_comments.is_deleted=true` (UI hides).\n- Attachment removal on edit: don't delete `media` (preserves history); could mark `is_deleted` on junction.\n- Race: promoter tries to insert comment before OP asset exists \u2014 only process replies for threads whose asset row already exists.\n- Rate limits: Discord API 50 req/s; space attachment URL refreshes.\n- Cloudflare Stream failures: retry; skip after N attempts.\n- `discord_members` might not yet have the author when a comment arrives \u2014 promoter should upsert a thin member row if missing (or the existing archive sync covers this \u2014 verify).\n- Already-imported content: must be fully idempotent \u2014 reruns should produce zero new rows.\n\n# Out of scope (do NOT include)\n\n- Live-update (websocket) \u2014 polling is fine.\n- Moderation UI beyond the `is_hidden` flag (no approval queue, no review surface).\n- Cross-posting from website back to Discord.\n- User-initiated imports (\"turn this Discord post into a resource\" button).\n- Migrating existing manually-created `assets` rows \u2014 they stay `source='manual'`.\n- Changing the archive pipeline on brain-of-bndc (the existing archive covers everything the promoter needs).\n\n# Deliverables megaplan should produce\n\n1. Ordered implementation phases with a clear first-working-version milestone (schema + promoter dry-run) before media rehosting is wired up.\n2. Migration SQL file list (timestamped, in `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/`).\n3. Edge function directory structure under `supabase/functions/` (promoter, importer, shared helpers \u2014 there's already a `supabase/functions/_shared/` in the workspace).\n4. Hook + component additions in `banodoco-website/src/` with concrete file paths.\n5. pg_cron SQL snippets to register the two scheduled invocations.\n6. Test/verification steps per phase (e.g. one-channel dry run, then rehost a single attachment, then full backfill).\n7. Rollback plan per phase.\n8. Explicit risk register (Cloudflare quota, Discord rate limits, edge function timeout, storage cost on 60-day backfill).",
+    "significant_flags": 9,
+    "unresolved_flags": [
+      {
+        "id": "issue_hints-1",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: The plan still intentionally diverges from the approved runtime shape, and that remains a flag. The brief asked for two Supabase Edge Functions, a promoter directory under `supabase/functions/`, and a resumable cursor table; v3 still replaces the promoter with PL/pgSQL and removes the cursor table entirely. Documenting the deviation is useful, but it does not make it cease to be a deviation from the approved deliverables.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "issue_hints-2",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: The revision also drops the requested first-working-version milestone of 'schema + promoter dry-run' before media rehosting. The brief explicitly calls for promoter dry-run behavior, and the repo has multiple existing dry-run patterns in scripts, but v3 has no promoter preview mode at all and jumps straight to live `SELECT internal.discord_promote_resources()` validation.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "correctness-1",
+        "concern": "Are the proposed changes technically correct?: The main promoter insert still does not implement the anti-join behavior the overview claims. In Step 7, the valid asset insert selects every qualifying OP with an existing member and relies on `ON CONFLICT (discord_thread_id) DO UPDATE`; because there is no `NOT EXISTS` filter on the insert path, every rerun will re-update already imported assets and `GET DIAGNOSTICS v_a = ROW_COUNT` will not stay at zero, which conflicts with the plan\u2019s own idempotency/counting claims.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "correctness-2",
+        "concern": "Are the proposed changes technically correct?: The observability SQL in the plan is still mismatched to the actual schema. `supabase/migrations/20251210000000_create_system_logs.sql:5-18` defines `system_logs` with `logger_name` and `extra` columns, not `component` and `payload`, yet v3 still proposes inserts like `INSERT INTO public.system_logs (component, level, message, payload) ...`. As written, those logging statements would fail until the column names are corrected.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "issue_hints",
+        "concern": "Discord resource sync planning: v3 still diverges from the approved deliverable shape and drops the requested promoter dry-run / first-working-version milestone.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-008",
+        "concern": "Discord sync logging: the revised plan still targets nonexistent `system_logs` columns, so the proposed promoter/importer logging SQL would fail against the actual schema.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-009",
+        "concern": "Discord promoter idempotency: the revised main insert path still lacks the claimed anti-join, so reruns will update every already-imported qualifying OP and its row-count/idempotency claims will not hold as written.",
+        "category": "correctness",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "FLAG-010",
+        "concern": "Discord promoter performance: the new all-history OP scan is not backed by a matching composite or partial index in `discord_messages`.",
+        "category": "performance",
+        "severity": "significant",
+        "status": "open"
+      },
+      {
+        "id": "all_locations",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The new all-history promoter strategy is still missing supporting index work. `supabase/migrations/20251101000000_create_discord_tables.sql:29-36` gives `discord_messages` only single-column indexes on `channel_id`, `created_at`, `author_id`, `reference_id`, `synced_at`, `thread_id`, and `is_deleted`; there is no composite or partial index backing the new every-10-min scan of `channel_id` plus `message_id = thread_id` plus `reaction_count >= 5` plus `is_deleted = FALSE`. v3 calls that scan 'cheap' and 'trivially small', but the repository does not currently provide the index support for that claim.",
+        "category": "completeness",
+        "severity": "significant",
+        "status": "open"
+      }
+    ],
+    "resolved_flags": [
+      {
+        "id": "FLAG-001",
+        "concern": "Discord resource promotion: late-threshold coverage is still incomplete because the revised rolling 60-day scan misses threads older than 60 days that reach the reaction threshold later.",
+        "resolution": "v3 commits to concrete single-option decisions for every v2 flag. Discovery drops the 60-day window (anti-join + reaction threshold are sufficient; any qualifying OP imports regardless of age, fixing FLAG-001/correctness-1). Promoter uses `WHERE EXISTS` prefilter on member existence plus a parallel `system_logs` insert naming skipped rows, so a single FK violation no longer aborts the sync (fixes FLAG-006/correctness-2). The Cloudflare duration promise is dropped \u2014 the existing `cloudflare-stream-webhook` only writes HLS URL + thumbnail + storage_provider per lines 210-240, and v3's contract matches that exactly (fixes FLAG-005/all_locations-1). The vault bootstrap is replaced with a self-contained `internal.secrets` table + SECURITY DEFINER accessor migration that applies cleanly on `supabase db reset` without any pre-existing secret; the operator seeds the key via a documented one-line INSERT at provisioning time (fixes all_locations-2). The \"existing lightbox\" promise for comment media is downgraded to `<a href={media.url} target=\"_blank\">` tiles; a real lightbox is explicitly flagged as follow-up (fixes FLAG-007/scope/callers). The PL/pgSQL pivot from the brief's two-edge-function shape is promoted to an explicit settled decision in the Overview with rationale (addresses issue_hints). Adds a concrete regexp validation step and a missing-member regression test to the Validation Order."
+      },
+      {
+        "id": "FLAG-002",
+        "concern": "Discord member fallback: the proposed thin upsert is incompatible with the current members schema because username is still required.",
+        "resolution": "Reworked v1 to address all 17 gate-identified defects. Largest structural changes: (1) promoter becomes a PL/pgSQL stored function invoked by pg_cron directly, matching the repo's existing `schedule_priority_scores_cron.sql` pattern and eliminating the edge-function auth problem; (2) discovery uses an anti-join on `assets.discord_thread_id` within a rolling 60-day window instead of a `created_at > cursor` scan, so late-threshold crossings are imported; (3) media importer reuses the existing `cloudflare-stream-webhook` + `cloudflare-stream-backfill` functions (no Cloudflare polling); (4) frontend work moves to `ResourceDetail/index.tsx` (the live surface) with matching changes at `ResourceModal.tsx` to honor the user's scope note; (5) asset `type` mapping fixed to `workflow`/`lora` matching `SubmitResource/index.tsx:10-13`; (6) member fallback removed \u2014 trust archive pipeline; (7) `useResources`, `useCommunityResources`, `useCommunityResource`, `useUserProfile` all updated to SELECT + filter on `is_hidden`; (8) `asset_comment_media` + `asset_media` gain `is_deleted` columns for attachment-removal-on-edit; (9) vault bootstrap for service-role key is a first-class migration step; (10) shared `AssetDescription` component applies markdown rendering to both manual and Discord-imported asset descriptions with an explicit success criterion, no custom embed tokens."
+      },
+      {
+        "id": "FLAG-003",
+        "concern": "Resource typing: importing assets as `tool` conflicts with the website\u2019s existing `lora`/`workflow` assumptions.",
+        "resolution": "Reworked v1 to address all 17 gate-identified defects. Largest structural changes: (1) promoter becomes a PL/pgSQL stored function invoked by pg_cron directly, matching the repo's existing `schedule_priority_scores_cron.sql` pattern and eliminating the edge-function auth problem; (2) discovery uses an anti-join on `assets.discord_thread_id` within a rolling 60-day window instead of a `created_at > cursor` scan, so late-threshold crossings are imported; (3) media importer reuses the existing `cloudflare-stream-webhook` + `cloudflare-stream-backfill` functions (no Cloudflare polling); (4) frontend work moves to `ResourceDetail/index.tsx` (the live surface) with matching changes at `ResourceModal.tsx` to honor the user's scope note; (5) asset `type` mapping fixed to `workflow`/`lora` matching `SubmitResource/index.tsx:10-13`; (6) member fallback removed \u2014 trust archive pipeline; (7) `useResources`, `useCommunityResources`, `useCommunityResource`, `useUserProfile` all updated to SELECT + filter on `is_hidden`; (8) `asset_comment_media` + `asset_media` gain `is_deleted` columns for attachment-removal-on-edit; (9) vault bootstrap for service-role key is a first-class migration step; (10) shared `AssetDescription` component applies markdown rendering to both manual and Discord-imported asset descriptions with an explicit success criterion, no custom embed tokens."
+      },
+      {
+        "id": "FLAG-004",
+        "concern": "Resource frontend surface: the plan targets an effectively unused modal and does not cover the route-driven ResourceDetail page that users actually hit.",
+        "resolution": "Reworked v1 to address all 17 gate-identified defects. Largest structural changes: (1) promoter becomes a PL/pgSQL stored function invoked by pg_cron directly, matching the repo's existing `schedule_priority_scores_cron.sql` pattern and eliminating the edge-function auth problem; (2) discovery uses an anti-join on `assets.discord_thread_id` within a rolling 60-day window instead of a `created_at > cursor` scan, so late-threshold crossings are imported; (3) media importer reuses the existing `cloudflare-stream-webhook` + `cloudflare-stream-backfill` functions (no Cloudflare polling); (4) frontend work moves to `ResourceDetail/index.tsx` (the live surface) with matching changes at `ResourceModal.tsx` to honor the user's scope note; (5) asset `type` mapping fixed to `workflow`/`lora` matching `SubmitResource/index.tsx:10-13`; (6) member fallback removed \u2014 trust archive pipeline; (7) `useResources`, `useCommunityResources`, `useCommunityResource`, `useUserProfile` all updated to SELECT + filter on `is_hidden`; (8) `asset_comment_media` + `asset_media` gain `is_deleted` columns for attachment-removal-on-edit; (9) vault bootstrap for service-role key is a first-class migration step; (10) shared `AssetDescription` component applies markdown rendering to both manual and Discord-imported asset descriptions with an explicit success criterion, no custom embed tokens."
+      },
+      {
+        "id": "FLAG-005",
+        "concern": "Discord media sync infrastructure: the revised Cloudflare/vault reuse story is still incomplete against the actual repository contracts.",
+        "resolution": "v3 commits to concrete single-option decisions for every v2 flag. Discovery drops the 60-day window (anti-join + reaction threshold are sufficient; any qualifying OP imports regardless of age, fixing FLAG-001/correctness-1). Promoter uses `WHERE EXISTS` prefilter on member existence plus a parallel `system_logs` insert naming skipped rows, so a single FK violation no longer aborts the sync (fixes FLAG-006/correctness-2). The Cloudflare duration promise is dropped \u2014 the existing `cloudflare-stream-webhook` only writes HLS URL + thumbnail + storage_provider per lines 210-240, and v3's contract matches that exactly (fixes FLAG-005/all_locations-1). The vault bootstrap is replaced with a self-contained `internal.secrets` table + SECURITY DEFINER accessor migration that applies cleanly on `supabase db reset` without any pre-existing secret; the operator seeds the key via a documented one-line INSERT at provisioning time (fixes all_locations-2). The \"existing lightbox\" promise for comment media is downgraded to `<a href={media.url} target=\"_blank\">` tiles; a real lightbox is explicitly flagged as follow-up (fixes FLAG-007/scope/callers). The PL/pgSQL pivot from the brief's two-edge-function shape is promoted to an explicit settled decision in the Overview with rationale (addresses issue_hints). Adds a concrete regexp validation step and a missing-member regression test to the Validation Order."
+      },
+      {
+        "id": "correctness-3",
+        "concern": "Are the proposed changes technically correct?: The proposed asset type mapping (`lora` or `tool`) does not match the website\u2019s current resource model. Manual resource creation only offers `lora` and `workflow` (`banodoco-website/src/pages/SubmitResource/index.tsx:10-13`), and the cards/filters branch on `asset.type === 'workflow'` (`ResourceModal.tsx:151-156`, `ResourceCard.tsx:151-154`, `useResourceFilters.ts:159-160`). Importing Discord rows with `type='tool'` would render them as LoRAs in some places and make them unfilterable in others.",
+        "resolution": "v3 commits to concrete single-option decisions for every v2 flag. Discovery drops the 60-day window (anti-join + reaction threshold are sufficient; any qualifying OP imports regardless of age, fixing FLAG-001/correctness-1). Promoter uses `WHERE EXISTS` prefilter on member existence plus a parallel `system_logs` insert naming skipped rows, so a single FK violation no longer aborts the sync (fixes FLAG-006/correctness-2). The Cloudflare duration promise is dropped \u2014 the existing `cloudflare-stream-webhook` only writes HLS URL + thumbnail + storage_provider per lines 210-240, and v3's contract matches that exactly (fixes FLAG-005/all_locations-1). The vault bootstrap is replaced with a self-contained `internal.secrets` table + SECURITY DEFINER accessor migration that applies cleanly on `supabase db reset` without any pre-existing secret; the operator seeds the key via a documented one-line INSERT at provisioning time (fixes all_locations-2). The \"existing lightbox\" promise for comment media is downgraded to `<a href={media.url} target=\"_blank\">` tiles; a real lightbox is explicitly flagged as follow-up (fixes FLAG-007/scope/callers). The PL/pgSQL pivot from the brief's two-edge-function shape is promoted to an explicit settled decision in the Overview with rationale (addresses issue_hints). Adds a concrete regexp validation step and a missing-member regression test to the Validation Order."
+      },
+      {
+        "id": "scope-1",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The plan scopes the frontend work around `ResourceModal`, but `rg -n \"ResourceModal\" banodoco-website/src` only finds the component definition and no callers. The live resource surface is `banodoco-website/src/pages/ResourceDetail/index.tsx`, which still renders `resource.description` as plain text at lines 166-169 and already owns the visible 'Made with this' gallery. Limiting the change to the dead modal leaves the actual resource page behavior unchanged.",
+        "resolution": "Reworked v1 to address all 17 gate-identified defects. Largest structural changes: (1) promoter becomes a PL/pgSQL stored function invoked by pg_cron directly, matching the repo's existing `schedule_priority_scores_cron.sql` pattern and eliminating the edge-function auth problem; (2) discovery uses an anti-join on `assets.discord_thread_id` within a rolling 60-day window instead of a `created_at > cursor` scan, so late-threshold crossings are imported; (3) media importer reuses the existing `cloudflare-stream-webhook` + `cloudflare-stream-backfill` functions (no Cloudflare polling); (4) frontend work moves to `ResourceDetail/index.tsx` (the live surface) with matching changes at `ResourceModal.tsx` to honor the user's scope note; (5) asset `type` mapping fixed to `workflow`/`lora` matching `SubmitResource/index.tsx:10-13`; (6) member fallback removed \u2014 trust archive pipeline; (7) `useResources`, `useCommunityResources`, `useCommunityResource`, `useUserProfile` all updated to SELECT + filter on `is_hidden`; (8) `asset_comment_media` + `asset_media` gain `is_deleted` columns for attachment-removal-on-edit; (9) vault bootstrap for service-role key is a first-class migration step; (10) shared `AssetDescription` component applies markdown rendering to both manual and Discord-imported asset descriptions with an explicit success criterion, no custom embed tokens."
+      },
+      {
+        "id": "scope-2",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The broader 'resource visibility' surface is larger than the plan accounts for. Resource lists and profile counts currently come from `useResources.ts`, `useCommunityResources.ts`, `useCommunityResource.ts`, and `useUserProfile.ts`, all of which filter only on `admin_status` and never consider a future `assets.is_hidden` kill switch (`useResources.ts:51-74`, `useCommunityResources.ts:118-127`, `useCommunityResource.ts:103-113`, `useUserProfile.ts:125-133`). If `is_hidden` is meant to hide imported assets globally, the change needs to reach those callers too, not just one modal/card.",
+        "resolution": "Reworked v1 to address all 17 gate-identified defects. Largest structural changes: (1) promoter becomes a PL/pgSQL stored function invoked by pg_cron directly, matching the repo's existing `schedule_priority_scores_cron.sql` pattern and eliminating the edge-function auth problem; (2) discovery uses an anti-join on `assets.discord_thread_id` within a rolling 60-day window instead of a `created_at > cursor` scan, so late-threshold crossings are imported; (3) media importer reuses the existing `cloudflare-stream-webhook` + `cloudflare-stream-backfill` functions (no Cloudflare polling); (4) frontend work moves to `ResourceDetail/index.tsx` (the live surface) with matching changes at `ResourceModal.tsx` to honor the user's scope note; (5) asset `type` mapping fixed to `workflow`/`lora` matching `SubmitResource/index.tsx:10-13`; (6) member fallback removed \u2014 trust archive pipeline; (7) `useResources`, `useCommunityResources`, `useCommunityResource`, `useUserProfile` all updated to SELECT + filter on `is_hidden`; (8) `asset_comment_media` + `asset_media` gain `is_deleted` columns for attachment-removal-on-edit; (9) vault bootstrap for service-role key is a first-class migration step; (10) shared `AssetDescription` component applies markdown rendering to both manual and Discord-imported asset descriptions with an explicit success criterion, no custom embed tokens."
+      },
+      {
+        "id": "all_locations-1",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The Cloudflare reuse story is still incomplete against the actual repository code. `supabase/functions/cloudflare-stream-webhook/index.ts:210-240` only writes `cloudflare_playback_hls_url`, `cloudflare_thumbnail_url`, and `storage_provider`; it does not persist duration, even though the revised plan and success criteria say the existing webhook will populate HLS, thumbnail, and duration for imported videos. That supporting-infrastructure contract is still inaccurate unless the plan adds a webhook change or drops duration from the promise.",
+        "resolution": "v3 commits to concrete single-option decisions for every v2 flag. Discovery drops the 60-day window (anti-join + reaction threshold are sufficient; any qualifying OP imports regardless of age, fixing FLAG-001/correctness-1). Promoter uses `WHERE EXISTS` prefilter on member existence plus a parallel `system_logs` insert naming skipped rows, so a single FK violation no longer aborts the sync (fixes FLAG-006/correctness-2). The Cloudflare duration promise is dropped \u2014 the existing `cloudflare-stream-webhook` only writes HLS URL + thumbnail + storage_provider per lines 210-240, and v3's contract matches that exactly (fixes FLAG-005/all_locations-1). The vault bootstrap is replaced with a self-contained `internal.secrets` table + SECURITY DEFINER accessor migration that applies cleanly on `supabase db reset` without any pre-existing secret; the operator seeds the key via a documented one-line INSERT at provisioning time (fixes all_locations-2). The \"existing lightbox\" promise for comment media is downgraded to `<a href={media.url} target=\"_blank\">` tiles; a real lightbox is explicitly flagged as follow-up (fixes FLAG-007/scope/callers). The PL/pgSQL pivot from the brief's two-edge-function shape is promoted to an explicit settled decision in the Overview with rationale (addresses issue_hints). Adds a concrete regexp validation step and a missing-member regression test to the Validation Order."
+      },
+      {
+        "id": "all_locations-2",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The new vault bootstrap step is not yet self-contained enough to satisfy the plan\u2019s own `supabase db reset` criterion. There is no existing `vault.create_secret`, `internal.get_service_role_key`, or secret-seeding pattern anywhere under `supabase/`, and the proposed migration depends on an out-of-band `current_setting('app.settings.service_role_key_value', true)` value that the repo never sets. As written, the bootstrap is still an infrastructure gap rather than a ready migration recipe.",
+        "resolution": "v3 commits to concrete single-option decisions for every v2 flag. Discovery drops the 60-day window (anti-join + reaction threshold are sufficient; any qualifying OP imports regardless of age, fixing FLAG-001/correctness-1). Promoter uses `WHERE EXISTS` prefilter on member existence plus a parallel `system_logs` insert naming skipped rows, so a single FK violation no longer aborts the sync (fixes FLAG-006/correctness-2). The Cloudflare duration promise is dropped \u2014 the existing `cloudflare-stream-webhook` only writes HLS URL + thumbnail + storage_provider per lines 210-240, and v3's contract matches that exactly (fixes FLAG-005/all_locations-1). The vault bootstrap is replaced with a self-contained `internal.secrets` table + SECURITY DEFINER accessor migration that applies cleanly on `supabase db reset` without any pre-existing secret; the operator seeds the key via a documented one-line INSERT at provisioning time (fixes all_locations-2). The \"existing lightbox\" promise for comment media is downgraded to `<a href={media.url} target=\"_blank\">` tiles; a real lightbox is explicitly flagged as follow-up (fixes FLAG-007/scope/callers). The PL/pgSQL pivot from the brief's two-edge-function shape is promoted to an explicit settled decision in the Overview with rationale (addresses issue_hints). Adds a concrete regexp validation step and a missing-member regression test to the Validation Order."
+      },
+      {
+        "id": "all_locations-3",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The cron registration snippet assumes a secret-delivery pattern that is not present elsewhere in the repo. Existing pg_cron usage schedules local SQL directly (`supabase/migrations/20260403000005_schedule_priority_scores_cron.sql:4-23`), and `supabase/config.toml:45-46` only contains a commented `db.vault` stub. A migration that references `current_setting('app.settings.service_role_key')` without first establishing that setting will not be self-contained.",
+        "resolution": "v3 commits to concrete single-option decisions for every v2 flag. Discovery drops the 60-day window (anti-join + reaction threshold are sufficient; any qualifying OP imports regardless of age, fixing FLAG-001/correctness-1). Promoter uses `WHERE EXISTS` prefilter on member existence plus a parallel `system_logs` insert naming skipped rows, so a single FK violation no longer aborts the sync (fixes FLAG-006/correctness-2). The Cloudflare duration promise is dropped \u2014 the existing `cloudflare-stream-webhook` only writes HLS URL + thumbnail + storage_provider per lines 210-240, and v3's contract matches that exactly (fixes FLAG-005/all_locations-1). The vault bootstrap is replaced with a self-contained `internal.secrets` table + SECURITY DEFINER accessor migration that applies cleanly on `supabase db reset` without any pre-existing secret; the operator seeds the key via a documented one-line INSERT at provisioning time (fixes all_locations-2). The \"existing lightbox\" promise for comment media is downgraded to `<a href={media.url} target=\"_blank\">` tiles; a real lightbox is explicitly flagged as follow-up (fixes FLAG-007/scope/callers). The PL/pgSQL pivot from the brief's two-edge-function shape is promoted to an explicit settled decision in the Overview with rationale (addresses issue_hints). Adds a concrete regexp validation step and a missing-member regression test to the Validation Order."
+      },
+      {
+        "id": "callers-1",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: I traced the current callers that consume resource rows, and they all pass through the existing hooks with narrow assumptions about the payload: `useResources.ts` reads `id, type, name, description, admin_status, ...`, `useCommunityResources.ts` reads `id, name, description, type, lora_link, ...`, and `useCommunityResource.ts` reads `id, name, description, type, ...` (`useResources.ts:51-65`, `useCommunityResources.ts:118-124`, `useCommunityResource.ts:103-109`). None of those callers request `source`, `discord_channel_id`, or `is_hidden`, so the downstream badge, jump-link, and hide logic proposed in the plan would have no inputs unless the callers themselves are revised.",
+        "resolution": "Reworked v1 to address all 17 gate-identified defects. Largest structural changes: (1) promoter becomes a PL/pgSQL stored function invoked by pg_cron directly, matching the repo's existing `schedule_priority_scores_cron.sql` pattern and eliminating the edge-function auth problem; (2) discovery uses an anti-join on `assets.discord_thread_id` within a rolling 60-day window instead of a `created_at > cursor` scan, so late-threshold crossings are imported; (3) media importer reuses the existing `cloudflare-stream-webhook` + `cloudflare-stream-backfill` functions (no Cloudflare polling); (4) frontend work moves to `ResourceDetail/index.tsx` (the live surface) with matching changes at `ResourceModal.tsx` to honor the user's scope note; (5) asset `type` mapping fixed to `workflow`/`lora` matching `SubmitResource/index.tsx:10-13`; (6) member fallback removed \u2014 trust archive pipeline; (7) `useResources`, `useCommunityResources`, `useCommunityResource`, `useUserProfile` all updated to SELECT + filter on `is_hidden`; (8) `asset_comment_media` + `asset_media` gain `is_deleted` columns for attachment-removal-on-edit; (9) vault bootstrap for service-role key is a first-class migration step; (10) shared `AssetDescription` component applies markdown rendering to both manual and Discord-imported asset descriptions with an explicit success criterion, no custom embed tokens."
+      },
+      {
+        "id": "callers-2",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: I also checked the direct callers of the UI surface the plan wants to edit. `rg -n \"ResourceModal\" banodoco-website/src` returns only the component definition and no imports/usages, which means there are currently no callers passing assets into that modal at all. The meaningful caller path today is the route-driven `ResourceDetail` page, so the proposed fix is landing at the wrong boundary unless the plan also restores or introduces actual `ResourceModal` usage.",
+        "resolution": "Reworked v1 to address all 17 gate-identified defects. Largest structural changes: (1) promoter becomes a PL/pgSQL stored function invoked by pg_cron directly, matching the repo's existing `schedule_priority_scores_cron.sql` pattern and eliminating the edge-function auth problem; (2) discovery uses an anti-join on `assets.discord_thread_id` within a rolling 60-day window instead of a `created_at > cursor` scan, so late-threshold crossings are imported; (3) media importer reuses the existing `cloudflare-stream-webhook` + `cloudflare-stream-backfill` functions (no Cloudflare polling); (4) frontend work moves to `ResourceDetail/index.tsx` (the live surface) with matching changes at `ResourceModal.tsx` to honor the user's scope note; (5) asset `type` mapping fixed to `workflow`/`lora` matching `SubmitResource/index.tsx:10-13`; (6) member fallback removed \u2014 trust archive pipeline; (7) `useResources`, `useCommunityResources`, `useCommunityResource`, `useUserProfile` all updated to SELECT + filter on `is_hidden`; (8) `asset_comment_media` + `asset_media` gain `is_deleted` columns for attachment-removal-on-edit; (9) vault bootstrap for service-role key is a first-class migration step; (10) shared `AssetDescription` component applies markdown rendering to both manual and Discord-imported asset descriptions with an explicit success criterion, no custom embed tokens."
+      },
+      {
+        "id": "FLAG-006",
+        "concern": "Discord promoter execution: the revised SQL-native promoter still lacks row-level error isolation, so one missing-member FK or other bad row can abort the whole sync instead of being logged and skipped.",
+        "resolution": "v3 commits to concrete single-option decisions for every v2 flag. Discovery drops the 60-day window (anti-join + reaction threshold are sufficient; any qualifying OP imports regardless of age, fixing FLAG-001/correctness-1). Promoter uses `WHERE EXISTS` prefilter on member existence plus a parallel `system_logs` insert naming skipped rows, so a single FK violation no longer aborts the sync (fixes FLAG-006/correctness-2). The Cloudflare duration promise is dropped \u2014 the existing `cloudflare-stream-webhook` only writes HLS URL + thumbnail + storage_provider per lines 210-240, and v3's contract matches that exactly (fixes FLAG-005/all_locations-1). The vault bootstrap is replaced with a self-contained `internal.secrets` table + SECURITY DEFINER accessor migration that applies cleanly on `supabase db reset` without any pre-existing secret; the operator seeds the key via a documented one-line INSERT at provisioning time (fixes all_locations-2). The \"existing lightbox\" promise for comment media is downgraded to `<a href={media.url} target=\"_blank\">` tiles; a real lightbox is explicitly flagged as follow-up (fixes FLAG-007/scope/callers). The PL/pgSQL pivot from the brief's two-edge-function shape is promoted to an explicit settled decision in the Overview with rationale (addresses issue_hints). Adds a concrete regexp validation step and a missing-member regression test to the Validation Order."
+      },
+      {
+        "id": "FLAG-007",
+        "concern": "Discord resource discussion UI: the revised frontend plan still assumes an existing comment lightbox/navigation surface that does not exist in the current caller path.",
+        "resolution": "v3 commits to concrete single-option decisions for every v2 flag. Discovery drops the 60-day window (anti-join + reaction threshold are sufficient; any qualifying OP imports regardless of age, fixing FLAG-001/correctness-1). Promoter uses `WHERE EXISTS` prefilter on member existence plus a parallel `system_logs` insert naming skipped rows, so a single FK violation no longer aborts the sync (fixes FLAG-006/correctness-2). The Cloudflare duration promise is dropped \u2014 the existing `cloudflare-stream-webhook` only writes HLS URL + thumbnail + storage_provider per lines 210-240, and v3's contract matches that exactly (fixes FLAG-005/all_locations-1). The vault bootstrap is replaced with a self-contained `internal.secrets` table + SECURITY DEFINER accessor migration that applies cleanly on `supabase db reset` without any pre-existing secret; the operator seeds the key via a documented one-line INSERT at provisioning time (fixes all_locations-2). The \"existing lightbox\" promise for comment media is downgraded to `<a href={media.url} target=\"_blank\">` tiles; a real lightbox is explicitly flagged as follow-up (fixes FLAG-007/scope/callers). The PL/pgSQL pivot from the brief's two-edge-function shape is promoted to an explicit settled decision in the Overview with rationale (addresses issue_hints). Adds a concrete regexp validation step and a missing-member regression test to the Validation Order."
+      },
+      {
+        "id": "scope",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The discussion/media interaction work is still broader than the plan acknowledges. `ResourceDetail` currently only swaps `activeMedia` inline (`banodoco-website/src/pages/ResourceDetail/index.tsx:59-74, 228-245`) and the resource area has no existing comment lightbox component to reuse; the plan nevertheless says comment thumbnails will open an 'existing lightbox' anchored to the parent comment. That means a non-trivial new modal/state/navigation surface is still missing from the scoped implementation steps.",
+        "resolution": "v3 commits to concrete single-option decisions for every v2 flag. Discovery drops the 60-day window (anti-join + reaction threshold are sufficient; any qualifying OP imports regardless of age, fixing FLAG-001/correctness-1). Promoter uses `WHERE EXISTS` prefilter on member existence plus a parallel `system_logs` insert naming skipped rows, so a single FK violation no longer aborts the sync (fixes FLAG-006/correctness-2). The Cloudflare duration promise is dropped \u2014 the existing `cloudflare-stream-webhook` only writes HLS URL + thumbnail + storage_provider per lines 210-240, and v3's contract matches that exactly (fixes FLAG-005/all_locations-1). The vault bootstrap is replaced with a self-contained `internal.secrets` table + SECURITY DEFINER accessor migration that applies cleanly on `supabase db reset` without any pre-existing secret; the operator seeds the key via a documented one-line INSERT at provisioning time (fixes all_locations-2). The \"existing lightbox\" promise for comment media is downgraded to `<a href={media.url} target=\"_blank\">` tiles; a real lightbox is explicitly flagged as follow-up (fixes FLAG-007/scope/callers). The PL/pgSQL pivot from the brief's two-edge-function shape is promoted to an explicit settled decision in the Overview with rationale (addresses issue_hints). Adds a concrete regexp validation step and a missing-member regression test to the Validation Order."
+      },
+      {
+        "id": "callers",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: I also checked the concrete caller that would need to host the new interaction model. `ResourceDetail` currently has only `activeMedia`/`setActiveMedia` state and no comment-modal or lightbox caller boundary (`banodoco-website/src/pages/ResourceDetail/index.tsx:59-74`), while `rg -n \"ResourceModal\" banodoco-website/src` still shows no imports/usages for the modal. The plan\u2019s promise of an 'existing lightbox' anchored to a parent comment therefore still lacks a real caller path in the current codebase.",
+        "resolution": "v3 commits to concrete single-option decisions for every v2 flag. Discovery drops the 60-day window (anti-join + reaction threshold are sufficient; any qualifying OP imports regardless of age, fixing FLAG-001/correctness-1). Promoter uses `WHERE EXISTS` prefilter on member existence plus a parallel `system_logs` insert naming skipped rows, so a single FK violation no longer aborts the sync (fixes FLAG-006/correctness-2). The Cloudflare duration promise is dropped \u2014 the existing `cloudflare-stream-webhook` only writes HLS URL + thumbnail + storage_provider per lines 210-240, and v3's contract matches that exactly (fixes FLAG-005/all_locations-1). The vault bootstrap is replaced with a self-contained `internal.secrets` table + SECURITY DEFINER accessor migration that applies cleanly on `supabase db reset` without any pre-existing secret; the operator seeds the key via a documented one-line INSERT at provisioning time (fixes all_locations-2). The \"existing lightbox\" promise for comment media is downgraded to `<a href={media.url} target=\"_blank\">` tiles; a real lightbox is explicitly flagged as follow-up (fixes FLAG-007/scope/callers). The PL/pgSQL pivot from the brief's two-edge-function shape is promoted to an explicit settled decision in the Overview with rationale (addresses issue_hints). Adds a concrete regexp validation step and a missing-member regression test to the Validation Order."
+      }
+    ],
+    "weighted_score": 8.5,
+    "weighted_history": [
+      23.25,
+      20.75
+    ],
+    "plan_delta_from_previous": 55.97,
+    "recurring_critiques": [
+      "criterion 0: requires human verification (observe_runtime_logs).",
+      "criterion 26: requires human verification (drive_browser, inspect_runtime_ui)."
+    ],
+    "scope_creep_flags": [],
+    "loop_summary": "Iteration 3. Weighted score trajectory: 23.25 -> 20.75 -> 8.5. Plan deltas: 91.5%, 56.0%. Recurring critiques: 2. Resolved flags: 17. Open significant flags: 9.",
+    "debt_overlaps": [],
+    "escalated_debt_subsystems": []
+  },
+  "warnings": [],
+  "criteria_check": {
+    "count": 36,
+    "items": [
+      {
+        "criterion": "All Phase 1 migrations apply cleanly via `supabase db reset` on a scratch branch, including `internal.secrets` with no pre-existing value",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "observe_runtime_logs"
+        ]
+      },
+      {
+        "criterion": "`assets` gains source, discord_thread_id, discord_channel_id, imported_at, last_synced_at, reactions_reached_threshold_at, is_hidden plus unique partial index on discord_thread_id",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "`asset_comments`, `asset_comment_media` (with is_deleted), `media_import_jobs` exist with specified columns, indexes, and FKs to `members(member_id)`",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "`asset_media` gains is_deleted BOOLEAN DEFAULT FALSE",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "RLS enabled on all new tables; asset_comments / asset_comment_media have public-read SELECT filtered by is_deleted=false; media_import_jobs and internal.secrets have no policies (service-role / postgres only)",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "`internal.secrets` is postgres-owned with RLS enabled; `internal.get_service_role_key()` is SECURITY DEFINER with EXECUTE granted only to postgres; migration applies cleanly without a pre-seeded secret",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "`internal.discord_promote_resources()` PL/pgSQL function exists, is SECURITY DEFINER, and is callable via pg_cron without HTTP",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "Promoter discovery scans `discord_messages` WITHOUT any `created_at` time window; any qualifying OP of any age imports on the next tick (regression test for FLAG-001)",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "A previously-unreactable OP older than 60 days that is manually updated to `reaction_count=5` is imported by the next promoter tick",
+        "priority": "must",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "Promoter uses `WHERE EXISTS (SELECT 1 FROM members ...)` prefilter on both asset insertion and comment insertion, so a row with a missing `author_id` FK is skipped (logged to system_logs) without aborting the function",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "With a manually-deleted referenced `members` row, the promoter completes successfully, logs the skipped OP to `system_logs` with component='discord_resource_promoter', and imports all other OPs",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "observe_runtime_logs"
+        ]
+      },
+      {
+        "criterion": "Promoter maps channel 1149372684220768367 -> type='workflow' and the other four channels -> type='lora'",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "Running the promoter a second time produces zero net new rows in assets, asset_comments, or media_import_jobs",
+        "priority": "must",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "`regexp_match(url, '/attachments/\\d+/(\\d+)/')` correctly extracts the attachment ID from a real Discord CDN URL containing `?ex=\u2026&is=\u2026&hm=\u2026` query parameters",
+        "priority": "must",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "A Discord edit that removes an attachment results in the corresponding `asset_comment_media`/`asset_media` row being marked `is_deleted=TRUE` on the next promoter tick",
+        "priority": "must",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "A Discord message edit updates `asset_comments.content` and `discord_edited_at`; a Discord deletion sets `asset_comments.is_deleted=true`",
+        "priority": "must",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "Media importer, given one seeded job, creates a `media` row (with Stream UID for video; with public Storage URL for image), creates the matching junction row, and marks the job `status='done'` with `media_id` set",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files",
+          "observe_runtime_logs"
+        ]
+      },
+      {
+        "criterion": "For a video attachment: the importer does NOT poll Cloudflare; the existing `cloudflare-stream-webhook` populates `cloudflare_playback_hls_url` and `cloudflare_thumbnail_url` when Cloudflare signals ready (duration is intentionally not promised)",
+        "priority": "must",
+        "requires": [
+          "observe_runtime_logs",
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "Rehosted video URLs return a valid HLS playlist (HTTP 200 with `#EXTM3U` in body); rehosted image URLs return HTTP 200 with an image content-type",
+        "priority": "must",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "A simulated failed job increments attempts, records last_error, is re-queued with growing locked_until, and moves to status='failed' after 5 attempts",
+        "priority": "must",
+        "requires": [
+          "run_shell",
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "pg_cron has two schedules: `discord-resource-promoter` (*/10, direct SQL call to `internal.discord_promote_resources()`) and `discord-media-importer` (*/2, `net.http_post` with Authorization via `internal.get_service_role_key()`)",
+        "priority": "must",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "`useResources.ts`, `useCommunityResources.ts`, `useCommunityResource.ts`, `useUserProfile.ts` all SELECT source, discord_channel_id, is_hidden and filter is_hidden=false",
+        "priority": "must",
+        "requires": [
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "A shared `AssetDescription` component (`banodoco-website/src/components/resources/AssetDescription.tsx`) renders asset.description using react-markdown + remark-gfm mirroring `PostBodyRenderer.tsx`, with NO custom embed tokens (::art[uuid], etc.)",
+        "priority": "must",
+        "requires": [
+          "read_files",
+          "inspect_runtime_ui"
+        ]
+      },
+      {
+        "criterion": "`ResourceDetail/index.tsx:166-169` renders `asset.description` via `AssetDescription` for both manual and Discord-imported assets",
+        "priority": "must",
+        "requires": [
+          "read_files",
+          "inspect_runtime_ui"
+        ]
+      },
+      {
+        "criterion": "`ResourceModal.tsx:186-189` renders `asset.description` via `AssetDescription`",
+        "priority": "must",
+        "requires": [
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "ResourceDetail shows 'Made with this' grid, 'Discussion' thread, and 'From Discord' badge only when `resource.source === 'discord_import'`; manual assets render unchanged",
+        "priority": "must",
+        "requires": [
+          "drive_browser",
+          "inspect_runtime_ui"
+        ]
+      },
+      {
+        "criterion": "Comment media tiles and 'Made with this' tiles are anchor tags with `target=\"_blank\" rel=\"noopener noreferrer\"` pointing at the rehosted media URL; clicking opens the asset in a new tab (no in-app lightbox in v1)",
+        "priority": "must",
+        "requires": [
+          "drive_browser",
+          "inspect_runtime_ui"
+        ]
+      },
+      {
+        "criterion": "Each rendered comment shows author avatar + name from `members`, markdown-rendered content via `AssetDescription`, reply chip when applicable, attachment tiles, reaction count chip, and a working 'View on Discord' link",
+        "priority": "must",
+        "requires": [
+          "drive_browser",
+          "inspect_runtime_ui"
+        ]
+      },
+      {
+        "criterion": "`useAssetComments` fetches the joined data in a single Supabase query, filters is_deleted=false on both `asset_comments` and `asset_comment_media`, and orders by `discord_created_at` ascending",
+        "priority": "must",
+        "requires": [
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "Setting `assets.is_hidden=true` on an imported asset makes it disappear from all four hook-backed surfaces and from `ResourceDetail` accessed by URL",
+        "priority": "must",
+        "requires": [
+          "drive_browser",
+          "inspect_runtime_ui"
+        ]
+      },
+      {
+        "criterion": "Existing website tests and Supabase type generation still pass after schema additions",
+        "priority": "must",
+        "requires": [
+          "run_tests",
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "Resource cards show a subtle 'From Discord' badge with the channel friendly name for imported assets",
+        "priority": "should",
+        "requires": [
+          "drive_browser",
+          "inspect_runtime_ui"
+        ]
+      },
+      {
+        "criterion": "Media importer wall-clock stays under 400s per invocation; promoter (SQL) finishes in under 10s per run",
+        "priority": "should",
+        "requires": [
+          "observe_runtime_logs"
+        ]
+      },
+      {
+        "criterion": "Health-check SQL snippets return usable output (stuck jobs, 24h failures, staleness) against live tables",
+        "priority": "should",
+        "requires": [
+          "run_shell"
+        ]
+      },
+      {
+        "criterion": "Rollback + follow-up doc exists and explicitly names the deferred items (comment lightbox, Cloudflare duration, supabase_vault migration)",
+        "priority": "should",
+        "requires": [
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "No Cloudflare Stream quota / storage cost surprises during backfill",
+        "priority": "info",
+        "requires": [
+          "subjective_judgment"
+        ]
+      }
+    ]
+  },
+  "preflight_results": {
+    "project_dir_exists": true,
+    "project_dir_writable": true,
+    "success_criteria_present": true,
+    "claude_available": true,
+    "codex_available": true
+  },
+  "unresolved_flags": [
+    {
+      "id": "issue_hints-1",
+      "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: The plan still intentionally diverges from the approved runtime shape, and that remains a flag. The brief asked for two Supabase Edge Functions, a promoter directory under `supabase/functions/`, and a resumable cursor table; v3 still replaces the promoter with PL/pgSQL and removes the cursor table entirely. Documenting the deviation is useful, but it does not make it cease to be a deviation from the approved deliverables.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan still intentionally diverges from the approved runtime shape, and that remains a flag. The brief asked for two Supabase Edge Functions, a promoter directory under `supabase/functions/`, and a resumable cursor table; v3 still replaces the promoter with PL/pgSQL and removes the cursor table entirely. Documenting the deviation is useful, but it does not make it cease to be a deviation from the approved deliverables.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": true,
+      "addressed_in": "plan_v2.md",
+      "verified_in": "critique_v2.json"
+    },
+    {
+      "id": "issue_hints-2",
+      "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: The revision also drops the requested first-working-version milestone of 'schema + promoter dry-run' before media rehosting. The brief explicitly calls for promoter dry-run behavior, and the repo has multiple existing dry-run patterns in scripts, but v3 has no promoter preview mode at all and jumps straight to live `SELECT internal.discord_promote_resources()` validation.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The revision also drops the requested first-working-version milestone of 'schema + promoter dry-run' before media rehosting. The brief explicitly calls for promoter dry-run behavior, and the repo has multiple existing dry-run patterns in scripts, but v3 has no promoter preview mode at all and jumps straight to live `SELECT internal.discord_promote_resources()` validation.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": true,
+      "addressed_in": "plan_v2.md",
+      "verified_in": "critique_v2.json"
+    },
+    {
+      "id": "correctness-1",
+      "concern": "Are the proposed changes technically correct?: The main promoter insert still does not implement the anti-join behavior the overview claims. In Step 7, the valid asset insert selects every qualifying OP with an existing member and relies on `ON CONFLICT (discord_thread_id) DO UPDATE`; because there is no `NOT EXISTS` filter on the insert path, every rerun will re-update already imported assets and `GET DIAGNOSTICS v_a = ROW_COUNT` will not stay at zero, which conflicts with the plan\u2019s own idempotency/counting claims.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The main promoter insert still does not implement the anti-join behavior the overview claims. In Step 7, the valid asset insert selects every qualifying OP with an existing member and relies on `ON CONFLICT (discord_thread_id) DO UPDATE`; because there is no `NOT EXISTS` filter on the insert path, every rerun will re-update already imported assets and `GET DIAGNOSTICS v_a = ROW_COUNT` will not stay at zero, which conflicts with the plan\u2019s own idempotency/counting claims.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": true,
+      "addressed_in": "plan_v3.md",
+      "verified_in": "critique_v3.json"
+    },
+    {
+      "id": "correctness-2",
+      "concern": "Are the proposed changes technically correct?: The observability SQL in the plan is still mismatched to the actual schema. `supabase/migrations/20251210000000_create_system_logs.sql:5-18` defines `system_logs` with `logger_name` and `extra` columns, not `component` and `payload`, yet v3 still proposes inserts like `INSERT INTO public.system_logs (component, level, message, payload) ...`. As written, those logging statements would fail until the column names are corrected.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The observability SQL in the plan is still mismatched to the actual schema. `supabase/migrations/20251210000000_create_system_logs.sql:5-18` defines `system_logs` with `logger_name` and `extra` columns, not `component` and `payload`, yet v3 still proposes inserts like `INSERT INTO public.system_logs (component, level, message, payload) ...`. As written, those logging statements would fail until the column names are corrected.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": true,
+      "addressed_in": "plan_v3.md",
+      "verified_in": "critique_v3.json"
+    },
+    {
+      "id": "issue_hints",
+      "concern": "Discord resource sync planning: v3 still diverges from the approved deliverable shape and drops the requested promoter dry-run / first-working-version milestone.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The brief explicitly asks for two Supabase Edge Functions, a promoter directory under `supabase/functions/`, a resumable cursor table, and a first milestone of `schema + promoter dry-run`; v3 keeps the PL/pgSQL promoter/no-cursor pivot and has no promoter dry-run path.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false,
+      "addressed_in": "plan_v3.md"
+    },
+    {
+      "id": "FLAG-008",
+      "concern": "Discord sync logging: the revised plan still targets nonexistent `system_logs` columns, so the proposed promoter/importer logging SQL would fail against the actual schema.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "`supabase/migrations/20251210000000_create_system_logs.sql:5-18` defines `logger_name` and `extra`, not `component` and `payload`, while v3 Step 7 and Step 23 still use `component`/`payload` in example inserts.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "FLAG-009",
+      "concern": "Discord promoter idempotency: the revised main insert path still lacks the claimed anti-join, so reruns will update every already-imported qualifying OP and its row-count/idempotency claims will not hold as written.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "In v3 Step 7, the valid asset insert filters only on channel, OP/thread identity, reaction threshold, deletion state, and member existence, then uses `ON CONFLICT (discord_thread_id) DO UPDATE`; it does not include `NOT EXISTS` on `assets.discord_thread_id` for the main insert path.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "FLAG-010",
+      "concern": "Discord promoter performance: the new all-history OP scan is not backed by a matching composite or partial index in `discord_messages`.",
+      "category": "performance",
+      "severity_hint": "uncertain",
+      "evidence": "`supabase/migrations/20251101000000_create_discord_tables.sql:29-36` only creates single-column indexes on `discord_messages`; there is no index tailored to `channel_id` + OP rows + `reaction_count >= 5` + `is_deleted = FALSE`, even though v3 removes the time window and runs every 10 minutes.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    },
+    {
+      "id": "all_locations",
+      "concern": "Does the change touch all locations AND supporting infrastructure?: The new all-history promoter strategy is still missing supporting index work. `supabase/migrations/20251101000000_create_discord_tables.sql:29-36` gives `discord_messages` only single-column indexes on `channel_id`, `created_at`, `author_id`, `reference_id`, `synced_at`, `thread_id`, and `is_deleted`; there is no composite or partial index backing the new every-10-min scan of `channel_id` plus `message_id = thread_id` plus `reaction_count >= 5` plus `is_deleted = FALSE`. v3 calls that scan 'cheap' and 'trivially small', but the repository does not currently provide the index support for that claim.",
+      "category": "completeness",
+      "severity_hint": "likely-significant",
+      "evidence": "The new all-history promoter strategy is still missing supporting index work. `supabase/migrations/20251101000000_create_discord_tables.sql:29-36` gives `discord_messages` only single-column indexes on `channel_id`, `created_at`, `author_id`, `reference_id`, `synced_at`, `thread_id`, and `is_deleted`; there is no composite or partial index backing the new every-10-min scan of `channel_id` plus `message_id = thread_id` plus `reaction_count >= 5` plus `is_deleted = FALSE`. v3 calls that scan 'cheap' and 'trivially small', but the repository does not currently provide the index support for that claim.",
+      "raised_in": "critique_v3.json",
+      "status": "open",
+      "severity": "significant",
+      "verified": false
+    }
+  ]
+}

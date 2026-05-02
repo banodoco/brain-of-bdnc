@@ -1,0 +1,48 @@
+{
+  "output": "Added the three DB-snapshot listeners to `src/features/reacting/reactor_cog.py`: `on_raw_reaction_clear`, `on_raw_reaction_clear_emoji`, and `on_raw_message_delete`. Each path enumerates `get_active_reactors(...)`, writes one moderation-decision row per active reactor with the correct classification, and keeps `is_suspicious=False`. `on_raw_message_delete` reads `get_message_snapshot(payload.message_id)` at handler entry before any await, so it stays ahead of LoggerCog\u2019s soft-delete path and falls back to null author/content fields when the snapshot is unavailable. Verified the module with `python -m py_compile src/features/reacting/reactor_cog.py` and wrote the batch checkpoint to `.megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_5.json`.",
+  "files_changed": [
+    "src/features/reacting/reactor_cog.py",
+    ".megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_5.json"
+  ],
+  "commands_run": [
+    "rg -n \"on_raw_message_delete|on_raw_reaction_clear|on_raw_reaction_clear_emoji|soft_delete_message|get_message_snapshot|get_active_reactors\" src/features/reacting/reactor_cog.py src/features/logging/logger_cog.py",
+    "sed -n '430,620p' src/features/reacting/reactor_cog.py",
+    "sed -n '132,165p' src/features/logging/logger_cog.py",
+    "sed -n '540,670p' src/features/reacting/reactor_cog.py",
+    "sed -n '666,705p' src/features/reacting/reactor_cog.py",
+    "rg -n \"def on_raw_reaction_clear|def on_raw_reaction_clear_emoji|def on_raw_message_delete|moderator_cleared_all|moderator_cleared_emoji|message_deleted_cascade|is_suspicious=False\" src/features/reacting/reactor_cog.py",
+    "python -m py_compile src/features/reacting/reactor_cog.py",
+    "git diff -- src/features/reacting/reactor_cog.py",
+    "git status --short -- src/features/reacting/reactor_cog.py .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_5.json"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/design-and-implement-a-20260419-1105/execution_batch_5.json",
+    "Advisory quality: code changes lacked test updates: src/features/reacting/reactor_cog.py.",
+    "Advisory audit finding: Executor claimed changed files not present in git status: .migrations_staging/20260419110000_create_moderation_decisions.sql, .migrations_staging/README.md",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .hypothesis/, .megaplan/debt.json, .megaplan/plans/add-a-direct-post-mode-to-20260412-2125/, .megaplan/plans/add-scheduled-twitter-x-20260409-1553/, .megaplan/plans/add-scheduled-twitter-x-20260409-1556/, .megaplan/plans/add-scheduled-twitter-x-20260409-1557/, .megaplan/plans/admin-triggered-payments-let-20260410-1448/, .megaplan/plans/backfill-bot-schema-drift-as-20260411-2152/, .megaplan/plans/build-a-fail-closed-20260409-2327/, .megaplan/plans/clean-up-admin-chat-payment-20260411-1823/, .megaplan/plans/design-a-generalized-solana-20260409-2227/, .megaplan/plans/design-a-generalized-solana-hermes-20260409-2241/, .megaplan/plans/design-and-implement-a-20260419-1105/, .megaplan/plans/final-polish-and-gremlin-20260411-0020/, .megaplan/plans/follow-up-cleanup-pass-after-20260411-0608/, .megaplan/plans/harden-the-solana-payment-20260410-2147/, .megaplan/plans/identity-based-routing-for-20260411-0256/, .megaplan/plans/implement-a-unified-social-20260409-1710/, .megaplan/plans/implement-a-unified-social-20260409-1732/, .megaplan/plans/implement-a-unified-social-20260409-1748/, .megaplan/plans/implement-a-unified-social-20260409-1856/, .megaplan/plans/payment-subsystem-follow-up-20260410-2339/, .megaplan/schemas/critique.json, .megaplan/schemas/execution.json, .megaplan/schemas/execution_doc.json, .megaplan/schemas/finalize.json, .megaplan/schemas/gate.json, .megaplan/schemas/plan.json, .megaplan/schemas/prep.json, .megaplan/schemas/review.json, .megaplan/schemas/revise.json, .megaplan/schemas/tiebreaker_challenger.json, .megaplan/schemas/tiebreaker_researcher.json, .megaplan/tmp_plan_prompt.txt, a.md, tests/test_notification_delete.py, tests/test_social_publications.py"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Added `on_raw_reaction_clear`, `on_raw_reaction_clear_emoji`, and `on_raw_message_delete` listeners to `src/features/reacting/reactor_cog.py`. Verified each path enumerates `db_handler.get_active_reactors(...)`, writes one moderation-decision row per active reactor with the requested classification, and sets `is_suspicious=False`; `on_raw_message_delete` reads `get_message_snapshot(payload.message_id)` at the top of the handler before any await, then uses DB snapshots only with graceful null fallbacks when snapshot data is missing.",
+      "files_changed": [
+        "src/features/reacting/reactor_cog.py"
+      ],
+      "commands_run": [
+        "rg -n \"on_raw_message_delete|on_raw_reaction_clear|on_raw_reaction_clear_emoji|soft_delete_message|get_message_snapshot|get_active_reactors\" src/features/reacting/reactor_cog.py src/features/logging/logger_cog.py",
+        "sed -n '430,620p' src/features/reacting/reactor_cog.py",
+        "sed -n '132,165p' src/features/logging/logger_cog.py",
+        "sed -n '540,670p' src/features/reacting/reactor_cog.py",
+        "sed -n '666,705p' src/features/reacting/reactor_cog.py",
+        "python -m py_compile src/features/reacting/reactor_cog.py"
+      ]
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "Confirmed the three new listeners are registered in `src/features/reacting/reactor_cog.py`. Each one uses `get_active_reactors` and writes one row per reactor with `classification` set to `moderator_cleared_all`, `moderator_cleared_emoji`, or `message_deleted_cascade` respectively, with `is_suspicious=False` on all three paths. `on_raw_message_delete` reads the message snapshot synchronously at handler entry before any await, so it stays ahead of LoggerCog's soft-delete race; when `get_active_reactors` returns an empty list, the handlers no-op."
+    }
+  ]
+}

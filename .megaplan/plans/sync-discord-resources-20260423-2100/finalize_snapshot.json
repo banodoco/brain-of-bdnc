@@ -1,0 +1,619 @@
+{
+  "baseline_test_command": "pytest --tb=no -q --no-header",
+  "baseline_test_failures": [],
+  "baseline_test_note": "Baseline tests were not run during planning (sandbox restricted to brain-of-bndc/). Executor should run baseline BEFORE any changes so pre-existing failures are not attributed to this work.",
+  "meta_commentary": "Execution-ready briefing for the Discord `_resources` \u2192 banodoco-website sync. Key judgment calls:\n\n1. **PL/pgSQL pivot is intentional (DEC-003, accept_tradeoff).** The brief asked for two Supabase Edge Functions + a cursor table; the plan replaces the promoter with a PL/pgSQL stored function invoked directly by pg_cron. This was reaffirmed across five plan iterations and matches `supabase/migrations/20260403000005_schedule_priority_scores_cron.sql`. DO NOT revert to the edge-function shape without new direction.\n\n2. **Null-guild_id contingency (FLAG-012 / correctness, accept_tradeoff).** The plan declares `asset_comments.discord_guild_id BIGINT NOT NULL`, but `discord_messages.guild_id` is not enforced NOT NULL in the repo (only backfilled by `20260320160000_enforce_guild_constraints.sql:12-17`). **Before writing migration SQL in T2, run `SELECT COUNT(*) FROM discord_messages WHERE channel_id IN (1149372684220768367, 1275200992136400967, 1373291419434877078, 1457981813120176138, 1472633200491626526) AND guild_id IS NULL;` on staging.** If the count is > 0, make a ONE-LINE choice: (a) drop NOT NULL on `asset_comments.discord_guild_id` (matches the already-nullable `assets.discord_guild_id`) \u2014 preferred; or (b) add `AND m.guild_id IS NOT NULL` to the promoter's EXISTS prefilter plus a `system_logs` skip entry. Do not loop back to planning.\n\n3. **Step 1 audit is load-bearing.** Before any migration SQL is written, the executor MUST transcribe the exact `system_logs` column list, the `media.classification` enum/CHECK shape + the manual-upload literal used for OP attachments, and the `cloudflare-stream-webhook` lookup column (which `media` column holds the Stream UID). If these differ from the plan's assumptions, fix the INSERTs and the importer's `media` insert shape before moving on. Every `system_logs` INSERT uses `logger_name, level, message, extra` \u2014 never `component, payload`.\n\n4. **MarkdownRenderer reuse.** Plan Step 18 prefers importing `banodoco-website/src/components/posts/MarkdownRenderer.tsx` directly into `AssetDescription`. If the component has posts-context assumptions that make external import awkward, inline the minimal `<ReactMarkdown remarkPlugins={[remarkGfm]}>` config instead of fighting the abstraction. No sanitize/rehype layer exists in this path and none should be added. No custom embed tokens (`::art[uuid]` etc.) \u2014 GFM only.\n\n5. **Idempotency test (T7) is the design's load-bearing gate.** Rerun the live promoter and confirm `assets_inserted = assets_updated = comments_inserted = comments_updated = jobs_enqueued = 0`. If UPDATE spuriously flips rows due to `IS DISTINCT FROM` edge cases (Unicode normalization of `content`), re-examine the drift-UPDATE predicate before proceeding.\n\n6. **internal.secrets seed.** After the migration applies, the operator must run `INSERT INTO internal.secrets (name, value) VALUES ('service_role_key', '<key>') ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();` \u2014 otherwise the `discord-media-importer` cron will 401. Document the seed command in the migration header and in T11.\n\n7. **Cloudflare duration is NOT promised.** The existing webhook writes only `cloudflare_playback_hls_url`, `cloudflare_thumbnail_url`, `storage_provider`. Don't add duration-extraction work.\n\n8. **Tiles in v1 use `<a target=\"_blank\" rel=\"noopener noreferrer\">`** \u2014 no lightbox surface. Lightbox is an explicit follow-up per DEC-011.\n\n9. **Final task runs tests AND writes a throwaway reproduction script** that seeds a fake qualifying OP in `discord_messages` (on a scratch branch) and confirms the promoter + importer produce the expected rows idempotently. Delete the script after.\n\n10. **Recurring human-verification critiques (criteria 30/31/32/34/36 etc.) require `drive_browser`/`inspect_runtime_ui`.** The executor may not have a browser automation harness; if so, state so explicitly in executor_notes and rely on component-level render checks rather than claiming browser verification.\n\n11. **Sandbox caveat:** planning was restricted to `brain-of-bndc/`. All `banodoco-website/` and `supabase/` file/line references come from gate evidence \u2014 verify paths exist before editing.",
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Step 1 audit \u2014 read and transcribe facts from: (a) `supabase/migrations/20251210000000_create_system_logs.sql:5-18` full column list (especially any NOT NULL columns beyond logger_name/level/message/extra); (b) the most-recent migration defining `media.classification` (capture exact enum/CHECK shape and the manual-upload literal for OP imports \u2014 likely 'post' or 'primary'); (c) `supabase/functions/cloudflare-stream-webhook/index.ts:210-240` \u2014 identify the exact `media` column the webhook uses to look up rows by Stream UID, and confirm it writes only cloudflare_playback_hls_url / cloudflare_thumbnail_url / storage_provider; (d) `supabase/functions/cloudflare-stream-backfill/index.ts:35-114` direct-upload initiation pattern; (e) `supabase/migrations/20251101000000_create_discord_tables.sql` FK target + reactions trigger; (f) `supabase/migrations/20260320000000_multi_server.sql:140-145` guild_id columns and indexes; (g) `supabase/migrations/20260403000005_schedule_priority_scores_cron.sql` cron pattern; (h) `banodoco-website/src/pages/SubmitResource/index.tsx:10-13` type enum; (i) `banodoco-website/src/pages/ResourceDetail/index.tsx:59-74, 166-169, 228-245`; (j) `banodoco-website/src/components/posts/MarkdownRenderer.tsx:122-126` (real markdown pipeline). Also run on staging: `SELECT COUNT(*) FROM discord_messages WHERE channel_id IN (1149372684220768367, 1275200992136400967, 1373291419434877078, 1457981813120176138, 1472633200491626526) AND guild_id IS NULL;` \u2014 if > 0, decide the one-line NOT NULL contingency (see meta_commentary #2). Record all findings in executor_notes \u2014 they dictate the migration SQL in T2.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T2",
+      "description": "Write Phase 1 migration SQL files under `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/` using today's timestamp prefix for each: (a) `<ts>_assets_discord_import_cols.sql` \u2014 ALTER TABLE assets ADD COLUMN source/discord_guild_id/discord_channel_id/discord_thread_id/imported_at/last_synced_at/reactions_reached_threshold_at/is_hidden + unique partial index on discord_thread_id + `assets_source_idx` + `assets_is_hidden_idx` (partial). (b) `<ts>_asset_comments.sql` \u2014 CREATE TABLE asset_comments (discord_guild_id BIGINT \u2014 NOT NULL unless T1 contingency flipped it, FK author_member_id \u2192 members(member_id), UNIQUE discord_message_id, indexes on (asset_id, discord_created_at) + discord_thread_id) + CREATE TABLE asset_comment_media with is_deleted + ALTER TABLE asset_media ADD COLUMN is_deleted + public-read RLS on new tables filtered is_deleted=false. (c) `<ts>_media_import_jobs.sql` \u2014 extend media.classification with 'discord-comment' (CHECK rewrite or ALTER TYPE ADD VALUE based on T1 finding) + CREATE TABLE media_import_jobs with UNIQUE(discord_attachment_id) WHERE NOT NULL + index (status, locked_until) WHERE status IN ('pending','in_progress') + RLS enabled, no policies. (d) `<ts>_internal_secrets_bootstrap.sql` \u2014 CREATE SCHEMA internal AUTHORIZATION postgres; CREATE TABLE internal.secrets (postgres-owned, RLS enabled, no policies); CREATE OR REPLACE FUNCTION internal.get_service_role_key() LANGUAGE sql SECURITY DEFINER SET search_path = '' with EXECUTE only to postgres. Header comment documents the operator-seed command. (e) `<ts>_discord_messages_resource_op_idx.sql` \u2014 CREATE INDEX discord_messages_resource_op_idx ON public.discord_messages (channel_id, reaction_count DESC) WHERE message_id = thread_id AND is_deleted = FALSE. All files match the SQL in plan Steps 2-6 exactly.",
+      "depends_on": [
+        "T1"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T3",
+      "description": "Step 7 \u2014 apply all five migrations cleanly. On a scratch branch, run `supabase db reset`; confirm every migration applies without error. Verify new columns, tables, indexes, and RLS policies via `\\d+ assets`, `\\d+ asset_comments`, `\\d+ asset_comment_media`, `\\d+ media_import_jobs`, `\\dt internal.*`. Regenerate Supabase TypeScript types and confirm the website still type-checks. Confirm existing website tests still pass.",
+      "depends_on": [
+        "T2"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T4",
+      "description": "Step 8 \u2014 Implement promoter as migration `<ts>_discord_promoter_fn.sql` defining `internal.discord_promote_resources(dry_run BOOLEAN DEFAULT FALSE) RETURNS TABLE(channel_id, assets_inserted, assets_updated, comments_inserted, comments_updated, jobs_enqueued, members_missing, comment_media_marked_deleted, comments_marked_deleted, dry_run)` LANGUAGE plpgsql SECURITY DEFINER SET search_path = ''. Implement exactly as plan Step 8: (1) FOREACH over the 5 hard-coded channel IDs; (2) missing-member logging with both write and dry-run count paths; (3) assets INSERT with `WHERE NOT EXISTS` + `ON CONFLICT (discord_thread_id) DO NOTHING` + `EXISTS (members)` prefilter + `discord_guild_id` from m.guild_id + `type` CASE (1149372684220768367 \u2192 'workflow' else 'lora') + `admin_status='Listed'` + `source='discord_import'`; (4) conditional UPDATE drift only when `description IS DISTINCT FROM m.content` (v_au must be zero on reruns); (5) comments INSERT with WHERE NOT EXISTS + EXISTS(members) + populating discord_guild_id from m.guild_id + only for threads whose asset row exists + conditional UPDATE for content drift + follow-up reply_to_comment_id resolver; (6) media-jobs enqueue via CTE using `regexp_match(url, '/attachments/\\d+/(\\d+)/')` to extract discord_attachment_id with ON CONFLICT (discord_attachment_id) DO NOTHING; (7) reconcile removed attachments \u2014 flip is_deleted=TRUE on junction rows when attachment no longer appears in discord_messages.attachments; (8) propagate deletions \u2014 UPDATE asset_comments SET is_deleted=TRUE where source discord_messages.is_deleted=TRUE; (9) per-channel system_logs summary (uses columns logger_name/level/message/extra ONLY) + UPDATE assets.last_synced_at on live path; (10) EXCEPTION handler logs SQLERRM+SQLSTATE. RETURN NEXT at end of loop. All system_logs INSERTs use (logger_name, level, message, extra) \u2014 NEVER (component, payload).",
+      "depends_on": [
+        "T3"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T5",
+      "description": "Step 9 \u2014 Write migration `<ts>_schedule_discord_promoter.sql` scheduling `SELECT cron.schedule('discord-resource-promoter', '*/10 * * * *', $$ SELECT internal.discord_promote_resources(); $$);`. Direct SQL, no HTTP. Dry_run defaults to FALSE in production.",
+      "depends_on": [
+        "T4"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T6",
+      "description": "Step 10 \u2014 First-working-version milestone: on staging, execute `SELECT * FROM internal.discord_promote_resources(dry_run := TRUE);`. Verify: (a) zero rows added to assets / asset_comments / media_import_jobs (row counts before=after); (b) exactly one `system_logs` row per channel with `logger_name='discord_resource_promoter'`, `level='info'`, `extra->>'dry_run'='true'`; (c) `EXPLAIN (ANALYZE, BUFFERS)` on the promoter's main discovery subquery shows the index `discord_messages_resource_op_idx` is used (no full table scan on discord_messages).",
+      "depends_on": [
+        "T5"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T7",
+      "description": "Step 11 \u2014 Live promoter verification on staging. Run `SELECT internal.discord_promote_resources();` and verify: (a) every new assets row has non-NULL discord_guild_id matching discord_messages.guild_id for the source message; (b) every new asset_comments row has non-NULL discord_guild_id; (c) workflow/lora type mapping correct per channel. Rerun immediately \u2014 confirm all insert/update counts are zero (v_ai=v_au=v_ci=v_cu=0); if not, inspect whether `IS DISTINCT FROM` is spuriously flipping drift-UPDATE rows and tighten the predicate. Regression tests: (i) manually UPDATE an old OP's reaction_count to 5 \u2014 confirm next tick imports it; (ii) delete a referenced members row \u2014 confirm promoter completes, logs one warning-level row with logger_name='discord_resource_promoter', and still imports other OPs; (iii) edit a discord_messages row's content \u2014 confirm asset_comments.content + discord_edited_at update on next tick; (iv) set discord_messages.is_deleted=TRUE \u2014 confirm asset_comments.is_deleted flips; (v) remove an attachment from a message (simulate edit) \u2014 confirm the junction row's is_deleted flips to TRUE.",
+      "depends_on": [
+        "T6"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T8",
+      "description": "Step 12 \u2014 Implement `supabase/functions/discord-media-importer/index.ts`. Claim up to 10 pending jobs via `UPDATE media_import_jobs SET status='in_progress', locked_until=NOW()+interval '10m' WHERE id IN (SELECT id FROM media_import_jobs WHERE status='pending' AND (locked_until IS NULL OR locked_until < NOW()) ORDER BY created_at LIMIT 10 FOR UPDATE SKIP LOCKED) RETURNING *;` and re-claim stuck in_progress past locked_until. For each job: (a) refresh Discord CDN URL by calling existing `refresh-media-urls` edge function (mirror its logic); skip when `?ex=` param still in future; (b) dispatch by content-type \u2014 VIDEO/ANIMATED GIF: initiate Cloudflare Stream direct-upload (mirroring `cloudflare-stream-backfill/index.ts:35-114`), capture Stream UID, insert `media` with the UID in the column identified in T1 \u2014 DO NOT POLL (webhook will backfill HLS URL + thumbnail); IMAGE: stream to Supabase Storage `user-uploads/discord-imports/{discord_message_id}/{attachment_id}-{filename}` and insert `media` with public URL; OTHER: Storage upload, no thumbnail; (c) insert junction row (asset_media or asset_comment_media based on target_kind) with sort_order = attachment index on the source message; (d) media.classification = 'discord-comment' for target_kind='asset_comment_media' else the manual-upload literal captured in T1; metadata JSONB = {discord_message_id, discord_channel_id, discord_attachment_id, original_cdn_url, imported_at}; (e) UPDATE media_import_jobs SET status='done', media_id=$id; (f) on failure: increment attempts, write last_error, set locked_until with exponential backoff (e.g. 2^attempts * 1 min), after 5 attempts \u2192 status='failed'. All system_logs INSERTs use (logger_name='discord_media_importer', level, message, extra). Wall-clock budget 400s; claim-loop honors that.",
+      "depends_on": [
+        "T7"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T9",
+      "description": "Step 13 \u2014 Confirm `cloudflare-stream-webhook` contract. Re-read `supabase/functions/cloudflare-stream-webhook/index.ts:210-240` and verify the column name the webhook uses to look up `media` rows by Stream UID matches the column the T8 importer populates on video-media inserts. If mismatch, fix the importer's insert shape. NO WEBHOOK CHANGES. Duration is intentionally not promised.",
+      "depends_on": [
+        "T8"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T10",
+      "description": "Step 14 \u2014 Smoke test single attachment. On staging: (a) INSERT one media_import_jobs row for a known video attachment from a promoted asset's OP; invoke `discord-media-importer` once; wait for the webhook to fire; confirm HLS URL populates in the `media` row and the junction row exists; (b) repeat for an image attachment \u2014 confirm Storage URL + junction row; (c) re-invoke the importer immediately \u2014 confirm no new claims (FOR UPDATE SKIP LOCKED + status='done' prevents re-work); (d) simulate a failing job by pointing original_cdn_url at a bogus URL \u2014 confirm attempts increments, last_error records, locked_until grows per backoff, and status flips to 'failed' after 5 attempts; (e) curl the rehosted video URL \u2014 confirm HTTP 200 and #EXTM3U in body; curl the image URL \u2014 confirm HTTP 200 with image content-type.",
+      "depends_on": [
+        "T9"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T11",
+      "description": "Step 15 \u2014 Write migration `<ts>_schedule_discord_media_importer.sql` scheduling `cron.schedule('discord-media-importer', '*/2 * * * *', $$ SELECT net.http_post(url := 'https://ujlwuvkrxlvoswwkerdf.supabase.co/functions/v1/discord-media-importer', headers := jsonb_build_object('Authorization', 'Bearer ' || COALESCE(internal.get_service_role_key(), ''), 'Content-Type', 'application/json'), body := '{}'::jsonb); $$);`. After migration applies, operator seeds the secret: `INSERT INTO internal.secrets (name, value) VALUES ('service_role_key', '<SERVICE_ROLE_KEY>') ON CONFLICT (name) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW();` \u2014 document this in the migration header. Confirm via pg_cron that both schedules exist (discord-resource-promoter every 10 min direct SQL, discord-media-importer every 2 min via net.http_post).",
+      "depends_on": [
+        "T10"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T12",
+      "description": "Step 16 \u2014 Full backfill observation. Observe 1-2 cron cycles (10+ minutes) on staging; watch `media_import_jobs` drain (count by status over time); sanity-check one imported asset per channel end-to-end (OP row exists in assets, comments exist in asset_comments, OP media in asset_media with real HLS/Storage URL, comment media in asset_comment_media). Record any failures and their last_error values. Verify no Cloudflare Stream quota warnings and no unreasonable storage growth.",
+      "depends_on": [
+        "T11"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T13",
+      "description": "Step 17 \u2014 Update resource data hooks. Modify `banodoco-website/src/hooks/useResources.ts:51-74`, `banodoco-website/src/hooks/useCommunityResources.ts:118-127`, `banodoco-website/src/hooks/useCommunityResource.ts:103-113`, `banodoco-website/src/hooks/useUserProfile.ts:125-133`: add `source, discord_guild_id, discord_channel_id, discord_thread_id, is_hidden` to every SELECT; add `.eq('is_hidden', false)` to every filter. Update TypeScript resource/asset shapes \u2014 four new fields optional (BIGINT \u2192 string | number, matching existing discord_channel_id convention in the types, or number if that's how discord IDs are represented). Regenerate Supabase types and confirm the site type-checks.",
+      "depends_on": [
+        "T3"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T14",
+      "description": "Step 18 \u2014 Create `banodoco-website/src/components/resources/AssetDescription.tsx`. Preferred implementation: import `MarkdownRenderer` from `banodoco-website/src/components/posts/MarkdownRenderer.tsx` and wrap/forward a single `markdown` prop (signature `<AssetDescription markdown={asset.description} />`). Fallback if reuse is awkward due to posts-context assumptions: inline the same minimal `<ReactMarkdown remarkPlugins={[remarkGfm]}>` config \u2014 react-markdown + remarkGfm ONLY, no sanitize/rehype layer, no custom embed tokens.",
+      "depends_on": [
+        "T13"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T15",
+      "description": "Steps 19-20 \u2014 Swap plain-text description rendering. In `banodoco-website/src/pages/ResourceDetail/index.tsx` at lines 166-169, replace the plain-text `<p>` with `<AssetDescription markdown={resource.description} />`. In `banodoco-website/src/pages/Resources/ResourceModal.tsx` at lines 186-189, replace the `whitespace-pre-line` `<p>` with `<AssetDescription markdown={asset.description} />`. Applies universally \u2014 manual AND Discord-imported assets. Handle `description` possibly being null/empty \u2014 component should no-op gracefully.",
+      "depends_on": [
+        "T14"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T16",
+      "description": "Step 22 \u2014 Create `banodoco-website/src/hooks/useAssetComments.ts`. Single Supabase query joining `asset_comments` \u2192 `members` (author avatar_url, global_name, username) \u2192 `asset_comment_media` \u2192 `media`, filtered `is_deleted=false` on both asset_comments AND asset_comment_media, ordered by `discord_created_at` ASC. Every comment row's SELECT must include `discord_guild_id, discord_thread_id, discord_message_id` so the consumer can build jump links without extra joins. Also include `reply_to_comment_id`, `reply_to_discord_message_id`, `reaction_count`, `content`, `discord_edited_at`.",
+      "depends_on": [
+        "T13"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T17",
+      "description": "Step 21 \u2014 In `banodoco-website/src/pages/ResourceDetail/index.tsx`, when `resource.source === 'discord_import'`, render below the existing gallery: (a) **'Made with this'** grid \u2014 all `asset_comment_media` thumbnails for the asset (via useAssetComments flattened or a direct derived list), newest first; each tile is `<a href={media.url} target=\"_blank\" rel=\"noopener noreferrer\">` wrapping the thumbnail; NO lightbox in v1. (b) **'Discussion'** \u2014 flat chronological list via `useAssetComments`. Each comment row: author chip (avatar_url + (global_name ?? username) from members), relative timestamp, 'Replying to @name' chip derived from reply_to_comment_id, `<AssetDescription markdown={comment.content} />`, attachment tiles (`<a target=\"_blank\">`), reaction-count chip, 'View on Discord' link built as `` `https://discord.com/channels/${comment.discord_guild_id}/${comment.discord_thread_id}/${comment.discord_message_id}` ``. (c) Subtle 'From Discord' pill near the top of the asset detail, labeled with the channel's friendly name (derive map: 1149372684220768367\u2192'resources', 1275200992136400967\u2192'flux_resources', 1373291419434877078\u2192'wan_resources', 1457981813120176138\u2192'ltx_resources', 1472633200491626526\u2192'acestep_resources'). ZERO hard-coded `GUILD_ID` constants anywhere \u2014 all Discord URLs read from row data.",
+      "depends_on": [
+        "T15",
+        "T16"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T18",
+      "description": "Step 23 \u2014 In `banodoco-website/src/pages/Resources/ResourceCard.tsx`, render the subtle 'From Discord' badge (same channel-friendly-name logic as T17) when `resource.source === 'discord_import'`. Match existing card chip styling.",
+      "depends_on": [
+        "T17"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T19",
+      "description": "Step 24 \u2014 Write `/Users/peteromalley/Documents/banodoco-workspace/supabase/sql/discord_sync_health.sql` containing reusable health queries: (a) stuck in_progress jobs (status='in_progress' AND locked_until < NOW()); (b) failed jobs in last 24h grouped by last_error; (c) per-asset last_synced_at staleness (source='discord_import' ordered by last_synced_at ASC); (d) recent system_logs rows WHERE logger_name IN ('discord_resource_promoter','discord_media_importer') ORDER BY created_at DESC LIMIT 100. Confirm each query returns usable output on staging.",
+      "depends_on": [
+        "T12"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T20",
+      "description": "Step 25 \u2014 Write `/Users/peteromalley/Documents/banodoco-workspace/supabase/migrations/ROLLBACK_discord_sync.md` covering: (a) Rollback \u2014 drop tables + columns in reverse dependency order (asset_comment_media \u2192 asset_comments \u2192 media_import_jobs \u2192 asset_media.is_deleted, assets Discord columns including discord_guild_id, asset_comments.discord_guild_id); `cron.unschedule('discord-resource-promoter')`, `cron.unschedule('discord-media-importer')`; `DROP FUNCTION internal.discord_promote_resources(BOOLEAN)`; `DROP INDEX discord_messages_resource_op_idx`; drop `internal.get_service_role_key()` then `internal.secrets` table; revert frontend PR. (b) Risks \u2014 Cloudflare Stream quota (negligible at current volume ~15 OPs/30d), Discord rate limits (paced by 10-job claim per 2 min), edge-function timeout (400s budget with 10-job claim is comfortable), Storage cost (monitor via Supabase dashboard), unseeded internal.secrets \u2192 401s (surfaces as failed importer jobs). (c) Follow-ups \u2014 comment media lightbox (deferred per DEC-011), Cloudflare duration webhook extension, `supabase_vault` migration from `internal.secrets`.",
+      "depends_on": [
+        "T19"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T21",
+      "description": "Run the full test suite and verify end-to-end. Steps: (1) On the scratch branch, `supabase db reset` \u2014 confirm all migrations apply cleanly including the Phase 1 + promoter + cron migrations. (2) Regenerate Supabase types and run `cd banodoco-website && npm test -- --run` (or the project's real command if different) \u2014 confirm no new failures vs baseline captured at conversation start. If any fail, read the error, fix, re-run. Do NOT create new test files \u2014 use the project's existing suite. (3) Write a throwaway script `/tmp/repro_discord_sync.sh` that: (a) seeds a fake qualifying OP and a reply with an attachment directly in `discord_messages` on a scratch branch (reaction_count=5, message_id=thread_id, channel_id one of the 5); (b) runs `SELECT internal.discord_promote_resources();`; (c) asserts one new assets row exists with discord_guild_id populated, one asset_comments row exists with discord_guild_id populated, and two media_import_jobs rows exist (OP attachment + reply attachment); (d) reruns the promoter and asserts ZERO new rows (idempotency gate); (e) prints PASS or FAIL. Run the script, confirm PASS, then DELETE the script. (4) Confirm human-verification criteria (recurring critiques 30/31/32/34/36 etc. requiring drive_browser/inspect_runtime_ui) \u2014 if no browser automation available, state so explicitly in executor_notes and rely on component-level smoke checks.",
+      "depends_on": [
+        "T5",
+        "T7",
+        "T10",
+        "T11",
+        "T12",
+        "T18",
+        "T20"
+      ],
+      "status": "pending",
+      "executor_notes": "",
+      "files_changed": [],
+      "commands_run": [],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    }
+  ],
+  "watch_items": [
+    "ACCEPT_TRADEOFF FLAG-012/correctness: discord_messages.guild_id is NOT enforced NOT NULL. T1 must run the null-check query on the 5 target channels. If any nulls, apply ONE-LINE fix: (a) drop NOT NULL on asset_comments.discord_guild_id (preferred), or (b) add `AND m.guild_id IS NOT NULL` + system_logs skip entry. Do not loop back to planning.",
+    "ACCEPT_TRADEOFF issue_hints-1 (DEC-003): PL/pgSQL promoter + no cursor table is a deliberate deviation from brief's two-edge-function + cursor-table shape. Do NOT revert. Anti-join on assets.discord_thread_id fully replaces cursor.",
+    "All system_logs INSERTs use columns (logger_name, level, message, extra) \u2014 NEVER (component, payload). Every promoter log call and importer log call must conform.",
+    "T1 audit is load-bearing for T2 and T8. If system_logs has additional NOT NULL columns, or media.classification literal for OP attachments differs from assumption, or the webhook lookup column name differs \u2014 these must be captured before writing SQL and before the importer's media-insert shape is finalized.",
+    "T7 idempotency regression (rerun produces all-zero counts) is the load-bearing gate for the entire promoter design. If it fails, inspect whether IS DISTINCT FROM spuriously flips drift-UPDATE rows due to Unicode edge cases before proceeding.",
+    "internal.secrets requires a one-time operator INSERT after T11's migration applies. Until seeded, discord-media-importer cron calls will 401. Document seed command in migration header.",
+    "Cloudflare duration is intentionally NOT promised \u2014 the existing webhook writes only cloudflare_playback_hls_url, cloudflare_thumbnail_url, storage_provider. Do not add duration-extraction work.",
+    "Media tiles in v1 are `<a href={url} target=\"_blank\" rel=\"noopener noreferrer\">` \u2014 NO lightbox surface. Lightbox is an explicit follow-up per DEC-011.",
+    "Comment-level AND asset-level 'View on Discord' links must be built from row data (comment.discord_guild_id, resource.discord_guild_id). ZERO hard-coded GUILD_ID constants anywhere in frontend code.",
+    "AssetDescription should prefer importing MarkdownRenderer. If the component has posts-context assumptions that make external import awkward, fall back to inlining `<ReactMarkdown remarkPlugins={[remarkGfm]}>` \u2014 no sanitize/rehype, no custom embed tokens.",
+    "Channel \u2192 type mapping: 1149372684220768367 \u2192 'workflow'; four model-family channels \u2192 'lora'. This matches SubmitResource/index.tsx:10-13 enum.",
+    "Resource visibility kill switch: T13 updates all 4 hooks (useResources, useCommunityResources, useCommunityResource, useUserProfile) \u2014 every one must filter `is_hidden=false` AND SELECT the 5 new fields.",
+    "High iteration count warning on plan (5 iterations, weighted score 2.5 from 23.25). Treat plan as ready \u2014 don't re-iterate design decisions; flag any surprise during T1 and choose a one-line execution fix.",
+    "Debt watch: discord-resource-sync-schema null-guild_id (already addressed by accept_tradeoff); discord-resource-sync-promoter PL/pgSQL deviation (already settled DEC-003). Don't make these worse.",
+    "Sandbox caveat: planning restricted to brain-of-bndc/. Before editing any banodoco-website/ or supabase/ file, verify the path exists \u2014 gate evidence file/line references may have drifted.",
+    "pg_cron secret delivery: discord-resource-promoter cron is direct SQL (no HTTP, no auth). Only discord-media-importer cron needs net.http_post with Authorization via internal.get_service_role_key().",
+    "Attachment ID parse: `regexp_match(url, '/attachments/\\d+/(\\d+)/')` must correctly handle URLs with `?ex=\u2026&is=\u2026&hm=\u2026` query params. T7 regression test (v) confirms.",
+    "Human-verification criteria (30/31/32/34/36/40 etc.) require drive_browser/inspect_runtime_ui. If executor has no browser harness, state so explicitly rather than claiming browser verification.",
+    "Final task T21 runs the project's existing test suite \u2014 do NOT create new test files. Write a throwaway reproduction script, run it, confirm idempotency, DELETE the script."
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Did T1 capture the exact system_logs column list (especially any NOT NULL columns beyond logger_name/level/message/extra), the manual-upload media.classification literal, and the cloudflare-stream-webhook lookup column? Did T1 run the null-guild_id check against the 5 resource channels, and if any nulls exist, did it record the chosen one-line contingency (drop NOT NULL vs EXISTS prefilter)?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Are all 5 migration files present in supabase/migrations/ with correct timestamps, and do they match the plan's SQL exactly? Do the assets migration add discord_guild_id (nullable), the asset_comments migration include discord_guild_id with the correct NOT NULL status per T1's contingency, asset_comment_media gain is_deleted, asset_media gain is_deleted, media_import_jobs have its two indexes, internal.secrets schema + accessor SECURITY DEFINER, and discord_messages_resource_op_idx partial composite index be created?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Did `supabase db reset` apply all migrations on the scratch branch with zero errors? Are new columns/tables/indexes visible via `\\d+` inspection? Did regenerated Supabase types compile? Do existing website tests still pass?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Does internal.discord_promote_resources match plan Step 8 exactly \u2014 SECURITY DEFINER, dry_run parameter with separate SELECT-count path, WHERE NOT EXISTS + ON CONFLICT DO NOTHING on assets and comments INSERTs, EXISTS(members) prefilter, conditional drift UPDATE only on IS DISTINCT FROM, guild_id copied from m.guild_id into both tables, channel\u2192type CASE expression correct, media-jobs enqueue via regexp_match, attachment-removal reconciliation, deletion propagation, EXCEPTION handler using logger_name/level/message/extra columns? Any INSERT into system_logs using (component, payload) is a regression.",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC5",
+      "task_id": "T5",
+      "question": "Does the cron migration schedule discord-resource-promoter every 10 minutes as direct SQL (no net.http_post, no Authorization)?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "question": "Did dry_run := TRUE produce zero writes (before/after row counts identical on assets, asset_comments, media_import_jobs)? Is there exactly one system_logs row per channel with logger_name='discord_resource_promoter', level='info', extra->>'dry_run'='true'? Does EXPLAIN ANALYZE confirm discord_messages_resource_op_idx is used?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC7",
+      "task_id": "T7",
+      "question": "On the live run, does every new assets row have non-NULL discord_guild_id matching discord_messages.guild_id? Every new asset_comments row too? Does an immediate rerun produce v_ai=v_au=v_ci=v_cu=0? Do the five regressions (late-threshold, missing-member, edit, delete, attachment-removal) all behave as specified?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC8",
+      "task_id": "T8",
+      "question": "Does the importer claim up to 10 jobs via FOR UPDATE SKIP LOCKED, dispatch by content-type (video\u2192Stream direct upload, NO polling; image\u2192Storage; other\u2192Storage no thumbnail), insert media with correct classification ('discord-comment' for comment media; manual-upload literal for OP media) and metadata JSONB, insert correct junction row, update job to status='done' with media_id on success, exponential backoff with locked_until on failure, and status='failed' after 5 attempts? Do all log calls use logger_name='discord_media_importer' + (logger_name, level, message, extra) columns?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC9",
+      "task_id": "T9",
+      "question": "Does the column name that cloudflare-stream-webhook uses to look up media rows (identified in T1) match the column the T8 importer populates on video-media inserts? If not, was the importer corrected?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC10",
+      "task_id": "T10",
+      "question": "Did the smoke test succeed end-to-end? Video: HLS URL populated via webhook, image: Storage URL returned HTTP 200, junction rows created, re-invocation produced no new claims, failure path incremented attempts and flipped to 'failed' after 5 attempts, curl of rehosted URLs returned valid content (#EXTM3U for HLS, image content-type for images)?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC11",
+      "task_id": "T11",
+      "question": "Is the importer cron scheduled every 2 min via net.http_post with Authorization from internal.get_service_role_key()? Is the operator-seed INSERT documented in the migration header? Has the secret actually been seeded (otherwise cron will 401)?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC12",
+      "task_id": "T12",
+      "question": "Did the backfill drain media_import_jobs without Cloudflare quota warnings or runaway storage growth? Was one imported asset per channel sanity-checked end-to-end (assets row \u2192 asset_comments \u2192 asset_media/asset_comment_media \u2192 real HLS/Storage URLs)?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC13",
+      "task_id": "T13",
+      "question": "Do all four hooks (useResources, useCommunityResources, useCommunityResource, useUserProfile) now SELECT source, discord_guild_id, discord_channel_id, discord_thread_id, is_hidden AND filter .eq('is_hidden', false)? Did TypeScript types regenerate and compile?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC14",
+      "task_id": "T14",
+      "question": "Does AssetDescription use react-markdown + remarkGfm ONLY? No sanitize/rehype plugin, no custom embed tokens, no parallel reimplementation \u2014 either imports MarkdownRenderer or inlines the same minimal config per plan Step 18?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC15",
+      "task_id": "T15",
+      "question": "Are both ResourceDetail:166-169 and ResourceModal:186-189 now rendering through AssetDescription (universal \u2014 applies to manual AND Discord-imported assets)? Does a description with markdown characters render as markdown rather than plain text?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC16",
+      "task_id": "T16",
+      "question": "Does useAssetComments execute as a single Supabase query joining asset_comments \u2192 members \u2192 asset_comment_media \u2192 media, filter is_deleted=false on both layers, order by discord_created_at ASC, and SELECT discord_guild_id/discord_thread_id/discord_message_id on every row? Are reply_to fields included?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC17",
+      "task_id": "T17",
+      "question": "Does ResourceDetail render the 'Made with this' grid, 'Discussion' thread, and 'From Discord' badge ONLY when resource.source === 'discord_import'? Are all media tiles `<a target=\"_blank\" rel=\"noopener noreferrer\">`? Is every 'View on Discord' link built from comment.discord_guild_id/discord_thread_id/discord_message_id with ZERO hard-coded GUILD_ID constants? Do manual assets render unchanged (no Discord sections)?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC18",
+      "task_id": "T18",
+      "question": "Does ResourceCard render the subtle 'From Discord' badge with the channel friendly name when resource.source === 'discord_import'? Does the styling match existing card chips without looking like a large label?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC19",
+      "task_id": "T19",
+      "question": "Does supabase/sql/discord_sync_health.sql contain all four queries (stuck in_progress, 24h failures grouped by last_error, per-asset staleness, recent system_logs for the two logger_names)? Do they return usable output on staging?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC20",
+      "task_id": "T20",
+      "question": "Does ROLLBACK_discord_sync.md cover: drop order for every new column/table/function/index/schema (including discord_guild_id on both tables); cron.unschedule for both schedules; risk register naming Cloudflare quota, Discord rate limits, edge-function timeout, storage cost, and unseeded internal.secrets; follow-ups naming comment lightbox, duration webhook, supabase_vault migration?",
+      "executor_note": "",
+      "verdict": ""
+    },
+    {
+      "id": "SC21",
+      "task_id": "T21",
+      "question": "Did the project's existing test suite pass with no new failures vs baseline? Did the throwaway reproduction script confirm: fake-OP seeding produces assets/asset_comments rows with non-null discord_guild_id plus 2 media_import_jobs; rerun produces zero net new rows (idempotency gate)? Was the script deleted after running? If browser automation is unavailable, did executor_notes explicitly state so and fall back to component smoke checks for the human-verification criteria?",
+      "executor_note": "",
+      "verdict": ""
+    }
+  ],
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Step 1: Audit existing schemas, migrations, edge functions, frontend surfaces, and markdown pipeline before writing any SQL; include null-guild_id check on 5 resource channels.",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 2: Migration \u2014 extend assets with Discord columns including discord_guild_id + unique partial index on discord_thread_id.",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 3: Migration \u2014 create asset_comments (with discord_guild_id), asset_comment_media (with is_deleted), and add asset_media.is_deleted; public-read RLS.",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 4: Migration \u2014 extend media.classification with 'discord-comment' + create media_import_jobs with unique and claimable indexes.",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 5: Migration \u2014 create internal.secrets + SECURITY DEFINER accessor.",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 6: Migration \u2014 partial composite index on discord_messages supporting the all-history scan.",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 7: Apply and verify Phase 1 migrations via supabase db reset; confirm existing tests pass.",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 8: Implement internal.discord_promote_resources PL/pgSQL function with dry_run, anti-join INSERTs, conditional drift UPDATEs, guild_id copy, media-jobs CTE, attachment/deletion reconciliation, and EXCEPTION handler.",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 9: Schedule promoter via pg_cron direct SQL every 10 minutes.",
+        "finalize_task_ids": [
+          "T5"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 10: First-working-version milestone \u2014 dry-run verification (zero writes, per-channel info log, EXPLAIN ANALYZE confirms index).",
+        "finalize_task_ids": [
+          "T6"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 11: Live promoter verification \u2014 guild_id population, idempotency rerun, late-threshold regression, missing-member regression, edit/delete propagation, attachment-removal reconciliation.",
+        "finalize_task_ids": [
+          "T7"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 12: Implement discord-media-importer edge function (claim/dispatch/insert media + junction/mark done/backoff).",
+        "finalize_task_ids": [
+          "T8"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 13: Confirm cloudflare-stream-webhook contract \u2014 lookup column matches importer's media insert.",
+        "finalize_task_ids": [
+          "T9"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 14: Smoke test one video attachment + one image attachment + failure path; verify rehosted URLs resolve.",
+        "finalize_task_ids": [
+          "T10"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 15: Schedule media importer via pg_cron net.http_post using internal.get_service_role_key().",
+        "finalize_task_ids": [
+          "T11"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 16: Observe full backfill drain; sanity-check one asset per channel.",
+        "finalize_task_ids": [
+          "T12"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 17: Update four resource hooks (useResources, useCommunityResources, useCommunityResource, useUserProfile) to SELECT new fields and filter is_hidden=false.",
+        "finalize_task_ids": [
+          "T13"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 18: Create shared AssetDescription markdown component reusing or mirroring MarkdownRenderer.",
+        "finalize_task_ids": [
+          "T14"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 19: Swap plain-text description for AssetDescription in ResourceDetail.",
+        "finalize_task_ids": [
+          "T15"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 20: Swap plain-text description for AssetDescription in ResourceModal.",
+        "finalize_task_ids": [
+          "T15"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 21: Add 'Made with this' grid, 'Discussion' thread, and 'From Discord' badge to ResourceDetail, with jump URLs built from row data.",
+        "finalize_task_ids": [
+          "T17"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 22: Create useAssetComments hook joining asset_comments \u2192 members \u2192 asset_comment_media \u2192 media with guild_id/thread_id/message_id per row.",
+        "finalize_task_ids": [
+          "T16"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 23: Add 'From Discord' badge to ResourceCard for imported assets.",
+        "finalize_task_ids": [
+          "T18"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 24: Write health-check SQL for ops dashboards.",
+        "finalize_task_ids": [
+          "T19"
+        ]
+      },
+      {
+        "plan_step_summary": "Step 25: Write rollback + risk register + follow-ups doc.",
+        "finalize_task_ids": [
+          "T20"
+        ]
+      },
+      {
+        "plan_step_summary": "Final verification: run project test suite + throwaway reproduction script confirming idempotency; delete script after.",
+        "finalize_task_ids": [
+          "T21"
+        ]
+      }
+    ],
+    "orphan_tasks": [],
+    "completeness_notes": "Every plan step (1-25) plus the required final test task is mapped to at least one task. Steps 19 and 20 are consolidated into T15 because they are the same change (replace plain-text <p> with <AssetDescription>) applied at two adjacent call sites and are tightly coupled; splitting them would not give the executor independent work. Steps 2-6 are consolidated into T2 because they produce five sibling migration files based on shared T1 audit findings; the executor writes them as one coordinated unit. Step 13 (webhook contract verification) is kept as a distinct task T9 per the plan's ordering, even though the relevant file is also read during T1's audit, because it is a load-bearing contract-check that must block T10's smoke test. T21 is the mandatory final verification task combining baseline tests + a throwaway idempotency reproduction script per the task-list rules. The two accept_tradeoff decisions (issue_hints-1 DEC-003 PL/pgSQL pivot; FLAG-012/correctness null-guild_id contingency) are flagged prominently in watch_items and meta_commentary so the executor knows not to revert or re-plan them.",
+    "coverage_complete": true
+  }
+}

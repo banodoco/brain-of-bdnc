@@ -1,0 +1,106 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-11T04:47:10Z",
+  "hash": "sha256:d3d97dd510d173e24420756a55349ab74567eb456a8e0c4268d5f9bab7fb543a",
+  "changes_summary": "Addressed FLAG-001 by narrowing every grep verification for `_can_user_message_bot` to `src/features/admin_chat/` plus `tests/` (instead of the full `src/` tree) and explicitly documenting that the same-name method in `src/features/admin/admin_cog.py` is a live, unrelated sibling that must remain untouched. Added a Sibling-file caveat in the Overview, refined Step 1's audit wording, qualified Step 7's grep scope, Step 10's cross-directory grep expectation, Step 11's hasattr assertion comment, Step 12's final grep instructions, and the corresponding success criterion. No scope, test-set, or implementation changes beyond what the flag required.",
+  "flags_addressed": [
+    "FLAG-001"
+  ],
+  "questions": [
+    "The brief allows either `claude-haiku-4-5` or the currently configured `self._classifier_model` (today `claude-opus-4-6`). I'm keeping the existing model string since swapping models is extra surface area; confirm that's acceptable, or tell me to flip it to Haiku in Step 3.",
+    "The brief says the classifier must be stateless and see only the single recipient reply and the bot's prompt. I'm baking the bot's prompt into a static `_CLASSIFIER_SYSTEM_PROMPT` constant rather than fetching the exact prior bot message from the channel. OK, or do you want the real prior bot message pulled from the thread?",
+    "`test_approved_member_no_longer_routed_to_agent` at `tests/test_admin_payments.py:697` is fully redundant with the fall-through test at line 654 once `_can_user_message_bot` is gone. I'm planning to delete it outright. Confirm that's preferred over rewriting it.",
+    "`tools.py` currently exposes `ALL_TOOL_NAMES` as a module-level constant derived from the MEMBER/ADMIN union. If nothing outside the assertions references it, I'll delete it too; otherwise I'll keep a direct `ALL_TOOL_NAMES = {t['name'] for t in TOOLS}` form. A grep during Step 9 will decide. Flag if you want it kept unconditionally."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "`admin_chat_cog.py` contains an async instance method `_classify_confirmation` that calls `self._classifier_client.messages.create` with `tools=[...]` and `tool_choice={\"type\": \"tool\", \"name\": \"classify_payment_reply\"}` when `self._classifier_client` is not None.",
+      "priority": "must"
+    },
+    {
+      "criterion": "When `ANTHROPIC_API_KEY` is unset (so `self._classifier_client is None`), `_classify_confirmation` returns the result of the keyword classifier without making any network calls.",
+      "priority": "must"
+    },
+    {
+      "criterion": "When `self._classifier_client.messages.create` raises an exception, `_classify_confirmation` catches it, logs a warning, and returns the keyword classifier result \u2014 fail-closed to keyword, not to auto-positive.",
+      "priority": "must"
+    },
+    {
+      "criterion": "The LLM `confirmed` / `not_received` / `unclear` outputs map to `positive` / `negative` / `ambiguous` respectively, and an `unclear` reply with a non-empty `reply` field propagates that string to `_handle_test_receipt_ambiguous` via the new `clarification_reply` kwarg.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`_handle_test_receipt_ambiguous` posts a recipient-directed clarification message (default template OR the LLM-provided `reply`) to the channel on the first ambiguous reply (post-increment count `< 2`), and the existing 2-strike escalation to `_handle_test_receipt_negative` still fires on the second ambiguous reply.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`_handle_test_receipt_negative` sends two channel messages: one recipient-directed (`Hey <@recipient> \u2014 I've flagged this for admin review. Please wait for <@admin> to follow up.`) and the existing admin-tagged `detail` message. The admin DM via `_notify_intent_admin` is still sent.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`MEMBER_SYSTEM_PROMPT`, `MEMBER_MAX_CONVERSATION_LENGTH`, `MEMBER_TOOLS`, `ADMIN_ONLY_TOOLS`, `get_tools_for_role`, and the admin_chat-local `_can_user_message_bot` and `_is_directed_at_bot` methods are removed from the source tree. Grep verification: `_is_directed_at_bot` and the other symbols return zero hits across `src/` and `tests/`; `_can_user_message_bot` returns zero hits across `src/features/admin_chat/` and `tests/` (the unrelated `src/features/admin/admin_cog.py` retains its own implementation and is out of scope).",
+      "priority": "must"
+    },
+    {
+      "criterion": "`AdminChatAgent.chat()` no longer accepts an `is_admin` parameter; `agent.py` uses `SYSTEM_PROMPT` and `TOOLS` unconditionally, and the cog call site at `admin_chat_cog.py:1144-1151` is updated accordingly.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`tests/test_admin_payments.py` includes new tests covering: LLM happy path (confirmed/not_received/unclear+reply), keyword fallback when API key missing, keyword fallback when API raises, first-ambiguous clarification (default + LLM-provided reply), negative-path recipient-facing message, and dead-code removal.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`tests/test_social_route_tools.py` is updated so that `test_route_tools_are_admin_only` and `test_admin_tool_registration_and_identity_injection_sets` no longer reference `get_tools_for_role` or `ADMIN_ONLY_TOOLS`, and both pass against the post-cleanup `TOOLS` list.",
+      "priority": "must"
+    },
+    {
+      "criterion": "`pytest -x -q` passes end-to-end (all previously passing tests still pass; new tests pass; the single intentionally deleted `test_approved_member_no_longer_routed_to_agent` is removed rather than skipped).",
+      "priority": "must"
+    },
+    {
+      "criterion": "No files outside `src/features/admin_chat/` and `tests/` are modified. Specifically, no changes to `src/features/admin/admin_cog.py`, `src/features/grants/solana_client.py`, `src/features/payments/*`, `src/common/db_handler.py`, `producer_flows.py`, the state-machine transitions themselves, the orphan sweep, `AdminApprovalView`, or the identity-routing query/batch tools.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Fail-closed posture is preserved: classifier exceptions, missing API key, malformed tool_use blocks, and unknown `classification` values all route to the keyword classifier (not to an auto-confirm path).",
+      "priority": "must"
+    },
+    {
+      "criterion": "The new `_classify_confirmation` is stateless \u2014 no channel history, no cross-call memory; the only inputs passed to the Anthropic API are the static `_CLASSIFIER_SYSTEM_PROMPT` and a single user message containing the raw recipient reply.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Classifier prompt is strict about 'ok'/'thanks' alone not counting as confirmed and 'wait let me check' counting as unclear, per the brief.",
+      "priority": "should"
+    },
+    {
+      "criterion": "`admin_chat_cog.py` stays roughly the same size after cleanup \u2014 net line count delta is small (new classifier method + small handler edits \u2212 ~60 lines of dead methods), not a sprawling rewrite.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Recipient-directed messages use the existing `<@id>` mention convention consistent with the rest of the cog and avoid introducing a new mention-formatting helper.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke test: admin triggers a real test payment, recipient replies 'ok thanks', bot classifies as unclear and posts the LLM-provided clarification; recipient then replies 'confirmed', bot moves to admin approval. Out-of-scope for automated validation.",
+      "priority": "info"
+    },
+    {
+      "criterion": "Manual smoke test: classifier exception path (e.g. temporarily revoke API key in staging) still routes an ambiguous-looking reply through keyword fallback and escalates correctly. Out-of-scope for automated validation.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "The `requester_id` plumbing inside `tools.py` (lines 3737-3767) and the `_ADMIN_IDENTITY_INJECTED_TOOLS` injection in `agent.py` are part of the identity-routing megaplan and stay untouched, even though `requester_id` will always be `None` post-cleanup.",
+    "The classifier's `reply` field is used only by the ambiguous path \u2014 the negative path uses its own hardcoded recipient notice regardless of classifier output, consistent with the brief's description of fix #3.",
+    "Keyword classifier tests at `tests/test_admin_payments.py:587-607` can be re-pointed at the renamed `_classify_confirmation_keyword` helper without losing coverage, because the keyword logic is byte-for-byte identical.",
+    "`_classifier_model` stays at the current string; the brief explicitly permits using the existing value.",
+    "The autouse `admin_chat_env` fixture that deletes `ANTHROPIC_API_KEY` is the intended default \u2014 new LLM-path tests will override it with `monkeypatch.setenv` and stub `cog._classifier_client` directly, so no real Anthropic client is ever constructed during tests.",
+    "The baseline of 189 tests is approximate; the success criterion is 'no existing test regresses', not 'exactly 189 pass after the change', since this plan adds ~7 new tests and deletes one redundant test.",
+    "`_handle_test_receipt_ambiguous` receiving the LLM's clarification reply as a kwarg is a strict addition \u2014 the recursive call from inside itself on the `>= 2` branch is replaced by a direct call to `_handle_test_receipt_negative`, and clarification text is never forwarded into the negative path.",
+    "Messages sent via the newly added `message.channel.send` calls do not need Discord mention-ping suppression beyond what the existing surrounding code already does; the existing handler freely uses raw `<@id>` mentions, so the new messages follow the same convention.",
+    "`src/features/admin/admin_cog.py` is a separate feature (the admin DM-routing cog) that coincidentally defines a same-named `_can_user_message_bot` helper for its own purposes. It is not part of admin_chat, not referenced by admin_chat, and explicitly out of scope for this cleanup \u2014 grep targets are scoped accordingly."
+  ],
+  "delta_from_previous_percent": 6.44,
+  "structure_warnings": []
+}

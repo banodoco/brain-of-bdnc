@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/../src/features/health/health_check_cog.py
+# hypothesis_version: 6.151.11
+
+[429, 1900, '%Y-%m-%d', '*', '...', 'ADMIN_USER_ID', 'DiscordBot', 'created_at', 'daily_summaries', 'date', 'db_handler', 'discord_messages', 'exact', 'healthcheck', 'indexed_at', 'message_id', 'reaction_count']

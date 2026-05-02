@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-09T20:41:12Z",
+  "hash": "sha256:bb3ad60245d2f8a112342b3dfae68c622fdf6c49ebb797688900eab6677916f2",
+  "questions": [
+    "Should the test payment amount (0.001 SOL) be configurable per guild/server, or is a hardcoded small amount acceptable for now?",
+    "For wallet-key registry: should multiple source wallets be supported at launch (e.g. separate wallets for grants vs future bounties), or is a single wallet with a stable key sufficient for v1?",
+    "Should the payment worker run as a periodic poll (like the social publication scheduler) or should it attempt execution immediately upon enqueue with the poll as a fallback/recovery mechanism?",
+    "When a grant payment is confirmed on-chain, should the bot DM the recipient in addition to posting in the thread, or is the thread notification sufficient?",
+    "Is there an existing retry budget / max attempts preference for payments? The social publisher uses 3 attempts \u2014 should payments use the same or a different budget given the financial stakes?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "No payment is sent twice: a submitted tx_signature is never re-sent unless on-chain status returns 'failed' or 'not_found' AND the attempt budget allows retry",
+      "priority": "must"
+    },
+    {
+      "criterion": "test_submitted_tx_is_never_resent_until_chain_state_or_explicit_failure_allows_it passes",
+      "priority": "must"
+    },
+    {
+      "criterion": "test_grants_flow_requires_wallet_then_yes_confirmation_before_final_payout passes",
+      "priority": "must"
+    },
+    {
+      "criterion": "All existing tests (test_social_publications, test_scheduler) continue to pass",
+      "priority": "must"
+    },
+    {
+      "criterion": "Payment tables (payments, payment_attempts) are NOT in QUERYABLE_TABLES for admin chat",
+      "priority": "must"
+    },
+    {
+      "criterion": "Write gating is checked (is_write_allowed) before any payment record is created",
+      "priority": "must"
+    },
+    {
+      "criterion": "Grants flow requires explicit 'yes' reply in Discord before payment is enqueued",
+      "priority": "must"
+    },
+    {
+      "criterion": "Payment status transitions follow the defined state machine \u2014 no illegal transitions",
+      "priority": "must"
+    },
+    {
+      "criterion": "Recovery on startup correctly handles: submitted+confirmed\u2192mark confirmed, submitted+failed\u2192mark failed, processing+no tx\u2192requeue",
+      "priority": "must"
+    },
+    {
+      "criterion": "Provider interface is abstract \u2014 SolanaProvider implements it, but PaymentService only depends on PaymentProvider ABC",
+      "priority": "must"
+    },
+    {
+      "criterion": "Wallet keys are stable strings in payment records, not raw secrets",
+      "priority": "must"
+    },
+    {
+      "criterion": "Each payment service file stays under ~300 lines",
+      "priority": "should"
+    },
+    {
+      "criterion": "Payment attempt history is append-only and captures every send/check action",
+      "priority": "should"
+    },
+    {
+      "criterion": "Test payment flow (small amount before full) works end-to-end",
+      "priority": "should"
+    },
+    {
+      "criterion": "Payment worker cog follows the same lifecycle pattern as the social publication scheduler",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke test: approve a grant in Discord, provide wallet, confirm with 'yes', verify SOL arrives",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "The Supabase instance supports creating new RPC functions (claim_due_payments) \u2014 same capability used for social publications.",
+    "A single source wallet (one env var) is sufficient for v1; the wallet registry maps 'grants_main' \u2192 SOLANA_PRIVATE_KEY. Multi-wallet is a config change, not a code change.",
+    "Test payment amount of 0.001 SOL is acceptable as a hardcoded constant for v1.",
+    "The payment worker poll interval of 30 seconds is acceptable \u2014 payments are not latency-critical once enqueued.",
+    "Grant status field 'payment_status' can be removed from grant_applications since payment lifecycle moves to the payments table; existing paid grants are already terminal and won't be affected.",
+    "The two fail_to_pass test names from the brief are the exact test names to implement.",
+    "retry budget of 3 attempts (matching social publications) is the default unless the user specifies otherwise."
+  ],
+  "structure_warnings": []
+}

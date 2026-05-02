@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-09T14:00:50Z",
+  "hash": "sha256:fc9be1c36b1388e11c915013c4ae9335a70d163f74f1de4c9d24f4b883b55e87",
+  "questions": [
+    "Should scheduling be exposed only through the existing admin chat tool flow, or do you also want slash commands / another admin-facing UI in the first version?",
+    "For media-bearing scheduled posts, is it acceptable to require a source Discord message link/ID so the existing sharing pipeline can reuse attachments, or do you need direct asset uploads that are not tied to a Discord message?",
+    "When you say \"publish daily,\" do you want explicit per-item `scheduled_for` timestamps, or an ordered drip queue that automatically publishes one item per day at a fixed time?",
+    "Should queued replies be allowed to target other queued items in the same future thread, or only already-live tweet URLs/IDs?",
+    "For failures, do you want manual retry/cancel only, or should the scheduler automatically retry transient X API errors a limited number of times?"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "Admin can create, list, and cancel scheduled X queue items for `post`, `reply`, and `retweet` through the chosen admin interface without editing the database manually.",
+      "priority": "must"
+    },
+    {
+      "criterion": "A due queued `post` or `reply` with a Discord source message publishes through the existing sharing pipeline and stores the resulting tweet URL/ID in both the queue record and `shared_posts` when applicable.",
+      "priority": "must"
+    },
+    {
+      "criterion": "A due queued `retweet` publishes through the X API without requiring a Discord source message and its queue record is marked `published` with a stored target/result reference.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Queue claiming is idempotent across concurrent bot instances: one queued row is published at most once even if duplicate deployments are running.",
+      "priority": "must"
+    },
+    {
+      "criterion": "If publish execution fails, the queue item is not falsely marked `published`, the failure is visible in stored status/error fields, and a retry/cancel path remains available.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Existing immediate `share_to_social` behavior still works for unscheduled posts after the scheduled queue feature lands.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Focused automated tests for queue validation, claim semantics, and publish dispatch pass in CI/local verification.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Most new logic stays concentrated in queue/storage and publish-dispatch modules rather than spreading X-specific branching across unrelated cogs.",
+      "priority": "should"
+    },
+    {
+      "criterion": "The scheduler loop remains simple and bounded: no unbounded fan-out, and no hidden background retries that make publish behavior hard to reason about.",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke test on a sandbox X account covers one scheduled post, one scheduled reply, and one scheduled retweet.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "Initial scope uses the existing admin chat tooling as the queue-management surface unless told otherwise.",
+    "Media-backed scheduled posts will preferably reference existing Discord messages so the current sharing pipeline can be reused instead of building a separate asset-storage path.",
+    "A new `scheduled_social_posts` table is acceptable because `shared_posts` is a publication log, not a queue.",
+    "The first version targets the single authenticated X account already configured by the existing Twitter/X environment variables.",
+    "Failed scheduled posts should surface as explicit failed queue rows and require an intentional retry/cancel path rather than silently retrying forever."
+  ],
+  "structure_warnings": []
+}

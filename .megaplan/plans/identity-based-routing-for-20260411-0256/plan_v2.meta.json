@@ -1,0 +1,189 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-11T01:24:56Z",
+  "hash": "sha256:f6d0cfc39790a10b1fa8cac09be0fe73654f03638fd3c22b2d6e17e23e3c065e",
+  "changes_summary": "Addressed all 19 gate flags in a focused revision (no re-scope). Key fixes: (1) New Step 3 updates `producer_flows.py` to add `ADMIN_DM` to `admin_chat.real_confirmed_by` \u2014 reuses the **existing** `PaymentActorKind.ADMIN_DM` (not a new `ADMIN_CLICK`). (2) New Step 4 filters the `PaymentConfirmView` restart-recovery pass to skip admin_chat real payments via a new db_handler helper. (3) Step 6 drops `_is_directed_at_bot` gating for ADMIN_USER_ID \u2014 admin messages reach the agent unconditionally (plain channel messages included). (4) Step 5 replaces the whitespace-only wallet parser with a tolerant regex that strips markdown/punctuation delimiters before validating candidates. (5) Step 10 click handler posts \"queued for sending\" (not \"Payment sent\") and defers the sent-confirmation to the existing `handle_payment_result` worker-completion path. (6) Step 1.3 adds a second `receipt_prompt_message_id` column so safe-delete can clear BOTH the wallet prompt AND the receipt prompt. (7) Step 13 verified-wallet batch entries now skip `awaiting_test` entirely \u2014 they land directly in `awaiting_admin_approval` at intent-creation time. (8) Step 15 adds the five new tool names to `ADMIN_ONLY_TOOLS` so the module-level exhaustiveness assert doesn't fire; Step 16 extends `agent.py`'s `admin_user_id` injection to cover `initiate_batch_payment` and `upsert_wallet_for_user`. (9) Step 2.5 excludes `manual_review` from active-intent lookups AND new Step 20 adds a `resolve_admin_intent` tool as the operator resolution surface \u2014 `manual_review` intents no longer block future initiations and admin can cancel/complete them explicitly. (10) Step 1.4 updates the unique partial index to exclude `manual_review`. Rewrote Execution Order note to call out the Phase 2 triple as a single interlocked change. Added new tests for every flag: producer_flows authorization, restart-recovery filter, tolerant wallet parser, \"queued not sent\" click handler, both-prompt safe-delete, batch verified-skip, ADMIN_ONLY_TOOLS exhaustiveness, admin_user_id injection for new tools, manual_review non-blocking, resolve_admin_intent.",
+  "flags_addressed": [
+    "FLAG-001",
+    "FLAG-002",
+    "FLAG-003",
+    "FLAG-004",
+    "FLAG-005",
+    "FLAG-006",
+    "issue_hints-1",
+    "issue_hints-2",
+    "issue_hints-3",
+    "correctness-1",
+    "correctness-2",
+    "correctness-3",
+    "scope-1",
+    "scope-2",
+    "all_locations-1",
+    "all_locations-2",
+    "callers-1",
+    "callers-2",
+    "callers-3"
+  ],
+  "questions": [
+    "For `resolve_admin_intent`: should completing a `manual_review` intent create a synthetic `payment_requests` row for audit (e.g., if the admin paid the recipient out-of-band), or is updating only the `admin_payment_intents` status sufficient? I'm assuming the latter for minimum scope \u2014 confirm.",
+    "For the `PaymentConfirmView` restart-recovery filter: should grants test payments (is_test=True with producer='grants') also be excluded, or only admin_chat real payments? Grants' test payments are auto-confirmed by the bot via `PaymentActorKind.AUTO` and never actually see `PaymentConfirmView`, so they likely never enter `pending_confirmation` \u2014 but I'm filtering narrowly (admin_chat + is_test=False only) for minimum scope. Confirm.",
+    "Is `_authorize_actor`'s safety-belt rejection of `RECIPIENT_CLICK` / `RECIPIENT_MESSAGE` OK for a production admin_chat real payment if it somehow slips through? I'm keeping those kinds in the set for belt-and-braces during deployment. If the preference is strict (ADMIN_DM only), I can narrow the set to `{ADMIN_DM}` and accept that any lingering in-flight admin_chat real rows would need manual cleanup at deploy time.",
+    "The admin identity injection in `agent.py` currently special-cases `initiate_payment` at `:438`. Is it OK to generalize this to a frozenset of tools, or does the injection need per-tool parameter-name variation (e.g., `admin_user_id` vs `requester_id`)? I'm assuming consistent `admin_user_id` key across all injected tools."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "Identity router in on_message has exactly three branches keyed on author.id: admin \u2192 agent path (with NO _is_directed_at_bot content gate), active-intent recipient \u2192 state machine, else \u2192 return. Admin plain channel messages (without mention/reply/DM) reach the agent.",
+      "priority": "must"
+    },
+    {
+      "criterion": "SQL migration extends admin_payment_intents CHECK to include awaiting_test_receipt_confirmation, awaiting_admin_approval, and manual_review; adds ambiguous_reply_count column; adds receipt_prompt_message_id column; updates the unique partial index to exclude manual_review; is idempotent.",
+      "priority": "must"
+    },
+    {
+      "criterion": "db_handler.get_active_intent_for_recipient and list_active_intents exclude manual_review from their active set, so manual_review intents do not block new initiations for the same recipient.",
+      "priority": "must"
+    },
+    {
+      "criterion": "producer_flows.py adds PaymentActorKind.ADMIN_DM to admin_chat.real_confirmed_by. _authorize_actor accepts an ADMIN_DM actor for a producer='admin_chat' is_test=False payment when the actor_id matches ADMIN_USER_ID.",
+      "priority": "must"
+    },
+    {
+      "criterion": "No new PaymentActorKind enum value is added. The plan reuses existing PaymentActorKind.ADMIN_DM at payment_service.py:30.",
+      "priority": "must"
+    },
+    {
+      "criterion": "PaymentUICog._register_pending_confirmation_views excludes producer='admin_chat' real payments from the restart re-registration pass. Grants real payments are still re-registered.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Pending-recipient state machine makes zero Anthropic API calls on any path \u2014 verifiable by patching self._classifier_client to a Mock that raises on invocation in tests.",
+      "priority": "must"
+    },
+    {
+      "criterion": "wallet_registry.verified_at is set only via mark_wallet_verified and only after both on-chain test confirmation AND recipient text-ack (positive classification) \u2014 no code path sets verified_at based on on-chain confirmation alone.",
+      "priority": "must"
+    },
+    {
+      "criterion": "_parse_wallet_from_text extracts wallets wrapped in backticks, quotes, parentheses, square brackets, markdown formatting, or trailing punctuation. Rejects non-addresses.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Admin DM approval gate (AdminApprovalView) fires exactly once per real admin_chat payment, never for is_test=True, never for producer='grants'. A batch of N produces exactly N admin DMs.",
+      "priority": "must"
+    },
+    {
+      "criterion": "AdminApprovalView click handler posts 'queued for sending' messaging (NOT 'Payment sent'). The 'Payment sent.' channel post is emitted by the existing handle_payment_result worker-completion path after confirmed status.",
+      "priority": "must"
+    },
+    {
+      "criterion": "AdminApprovalView click handler calls payment_service.confirm_payment with actor=PaymentActor(PaymentActorKind.ADMIN_DM, interaction.user.id) and safe_delete_messages with BOTH prompt_message_id AND receipt_prompt_message_id.",
+      "priority": "must"
+    },
+    {
+      "criterion": "AdminApprovalView is persistent (timeout=None) and re-registered on PaymentUICog.cog_load for every admin_payment_intent with status=awaiting_admin_approval \u2014 restart recovery works.",
+      "priority": "must"
+    },
+    {
+      "criterion": "send_confirmation_request is NOT invoked for producer='admin_chat' real payments (call at admin_chat_cog.py:393 deleted); IS still invoked for producer='grants' at grants_cog.py:719 (grants flow regression-free).",
+      "priority": "must"
+    },
+    {
+      "criterion": "Auto-skip path: verified-wallet initiate_payment AND verified-wallet entries in initiate_batch_payment create the intent directly in awaiting_admin_approval and the real payment directly \u2014 NO is_test=True row is ever created. No intermediate awaiting_test state.",
+      "priority": "must"
+    },
+    {
+      "criterion": "initiate_batch_payment is all-or-none: if any element fails validation, zero intents are persisted; on success, all N intents are created in a single Supabase insert. Verified entries skip awaiting_test, unverified entries start in awaiting_wallet.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Negative recipient ack and second-ambiguous recipient ack both tag the admin in the source thread with full context (intent_id, test tx signature, recipient wallet) and transition the intent to manual_review.",
+      "priority": "must"
+    },
+    {
+      "criterion": "24h timeout sweep is a background task running at \u22655-minute intervals that correctly transitions stale awaiting_test_receipt_confirmation intents to manual_review and DMs admin.",
+      "priority": "must"
+    },
+    {
+      "criterion": "upsert_wallet_for_user is admin-only (cog-level identity routing + executor-level ADMIN_USER_ID check via injected admin_user_id), validates wallet_address via is_valid_solana_address, never sets verified_at, and surfaces WalletUpdateBlockedError to the admin.",
+      "priority": "must"
+    },
+    {
+      "criterion": "resolve_admin_intent tool exists and lets the admin cancel or complete a manual_review intent, providing an explicit operator resolution surface.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Three new query tools (query_payment_state, query_wallet_state, list_recent_payments) are read-only, apply existing wallet redaction, and reject LLM-injected wallet_address/recipient_wallet params via the pop-and-warn pattern.",
+      "priority": "must"
+    },
+    {
+      "criterion": "All five new tools (query_payment_state, query_wallet_state, list_recent_payments, initiate_batch_payment, upsert_wallet_for_user) are added to ADMIN_ONLY_TOOLS; module-level MEMBER_TOOLS | ADMIN_ONLY_TOOLS == ALL_TOOL_NAMES assert still holds. Add resolve_admin_intent to ADMIN_ONLY_TOOLS as well.",
+      "priority": "must"
+    },
+    {
+      "criterion": "agent.py admin_user_id injection at :438-441 covers initiate_payment, initiate_batch_payment, and upsert_wallet_for_user (and resolve_admin_intent). Injection happens before execute_tool is invoked.",
+      "priority": "must"
+    },
+    {
+      "criterion": "All pass_to_pass test suites remain green: test_payment_state_machine, test_payment_cog_split, test_solana_client, test_payment_race, test_payment_reconcile, test_payment_authorization, test_safe_delete_messages, test_check_payment_invariants, test_tx_signature_history.",
+      "priority": "must"
+    },
+    {
+      "criterion": "All fail_to_pass tests pass after implementation (identity router branches including plain-channel admin, state machine keywords, auto-skip, batch atomicity + verified-skip, upsert admin check, AdminApprovalView persistence + click + queued messaging, admin DM fail-closed, PaymentConfirmView gating + restart filter, 24h sweep, query tool safety, approved-member no-route, manual_review non-blocking, resolve_admin_intent).",
+      "priority": "must"
+    },
+    {
+      "criterion": "Hardening invariants preserved: per-user-per-day caps, canonical wallet swap defense, idempotency collision detection, WalletUpdateBlockedError, RLS, prompt-injection hardening (wallet lookups only from wallet_registry), null-recipient fail-closed in PaymentService.confirm_payment.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Cleanup + polish invariants preserved: PaymentActor/PRODUCER_FLOWS registry, tx_signature_history column, PaymentWorkerCog/PaymentUICog split, safe_delete_messages primitive, reconcile_with_chain, dynamic priority fees, /payment-resolve, docs/payments.md, docs/runbook-payments.md, scripts/check_payment_invariants.py, structured tx_confirm_decision logging.",
+      "priority": "must"
+    },
+    {
+      "criterion": "solana_client.py and solana_provider.py are not modified by this change.",
+      "priority": "must"
+    },
+    {
+      "criterion": "grants_cog.py is not modified by this change; grants flow still uses PaymentConfirmView end-to-end.",
+      "priority": "must"
+    },
+    {
+      "criterion": "Confirmation keyword parser uses hardcoded positive/negative keyword sets with case-insensitive whole-word matching (and emoji substring for \ud83d\udc4d). No LLM fallback.",
+      "priority": "must"
+    },
+    {
+      "criterion": "AdminApprovalView custom_id f'payment_admin_approve:{payment_id}' does not collide with the existing f'payment_confirm:{payment_id}' (grep-verified).",
+      "priority": "must"
+    },
+    {
+      "criterion": "_classify_payment_reply and _check_pending_payment_reply are fully removed once the reconciler stops calling them (Step 18), or left as documented dead code if grep finds another caller.",
+      "priority": "should"
+    },
+    {
+      "criterion": "MEMBER_SYSTEM_PROMPT, _can_user_message_bot, and _is_directed_at_bot remain defined as documented dead code under identity routing.",
+      "priority": "should"
+    },
+    {
+      "criterion": "14 manual smoke-test scenarios pass in dev guild: (a) first-time unverified recipient flow; (b) verified recipient auto-skip flow; (c) batch of 3 mixed verified/unverified; (d) negative ack \u2192 manual_review + tag; (e) ambiguous ack 2x \u2192 manual_review; (f) admin DM click \u2192 queued message (not 'sent'); (g) bot restart mid awaiting_admin_approval \u2192 AdminApprovalView re-registered AND PaymentConfirmView NOT re-registered for admin_chat real; (h) 24h timeout sweep with forged updated_at; (i) upsert_wallet_for_user success + DM; (j) upsert_wallet_for_user during active intent (blocked); (k) grants flow unchanged; (l) query_* tools return correct redacted data; (m) approved non-admin member mention is ignored; (n) resolve_admin_intent clears a manual_review row and allows a new initiation for that recipient.",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "Supabase `.insert([list])` provides atomic per-request semantics for `create_admin_payment_intents_batch`. If production PostgREST behavior differs, fall back to a SQL RPC function wrapping N inserts in a transaction.",
+    "`receipt_prompt_message_id` is added as a NEW bigint column on `admin_payment_intents` (alongside the existing `prompt_message_id`), so safe-delete can clear both prompts. Supersedes the prior assumption of reusing `prompt_message_id`.",
+    "`ambiguous_reply_count integer default 0` column is added to `admin_payment_intents`. No JSONB metadata column exists today.",
+    "`manual_review` is a new non-blocking status: it is added to the EXCLUDED set of the unique partial index AND to the exclusion lists in `get_active_intent_for_recipient` / `list_active_intents`. It does not block new intents for the same recipient but requires explicit admin resolution via the new `resolve_admin_intent` tool.",
+    "`PaymentActorKind.ADMIN_DM` already exists at `payment_service.py:30` and `_authorize_actor` enforces `actor_id == ADMIN_USER_ID` at `:539-546`. Reuse it; do NOT add `ADMIN_CLICK`. Supersedes the prior assumption of adding a new enum value.",
+    "`PRODUCER_FLOWS['admin_chat'].real_confirmed_by` is extended to `{RECIPIENT_CLICK, RECIPIENT_MESSAGE, ADMIN_DM}`. `RECIPIENT_CLICK` / `RECIPIENT_MESSAGE` are kept in the set as a safety-belt for any in-flight rows during deployment; in practice only `ADMIN_DM` will fire post-deploy because `send_confirmation_request` is no longer called for admin_chat real payments and the restart recovery path excludes them.",
+    "`send_confirmation_request` itself is NOT modified; the producer-gating happens at two call-site locations: (a) the removed `admin_chat_cog.py:393` call, and (b) the restart-recovery filter in `_register_pending_confirmation_views`. Grants `send_confirmation_request` call remains untouched.",
+    "`MEMBER_SYSTEM_PROMPT`, `_can_user_message_bot`, and the `_is_directed_at_bot` helper stay defined in the codebase as dead code under identity routing. No cleanup commit in this plan (except the already-planned `_classify_payment_reply` / `_check_pending_payment_reply` deletion in Step 18 once the reconciler no longer calls them).",
+    "Batch tool accepts 1..20 payments per call. Larger batches split by the agent.",
+    "24h timeout sweep runs at 15-minute intervals inside `AdminChatCog` \u2014 above the \u22655 min constraint.",
+    "The `AdminApprovalView` click handler posts 'queued for sending' messaging; the existing `handle_payment_result` at `admin_chat_cog.py:416-440` is the sole authoritative source for the 'Payment sent.' channel post after the worker transitions the payment to `confirmed`.",
+    "Query tools (`query_payment_state`, `query_wallet_state`, `list_recent_payments`) apply existing `_redact_payment_row` / `_redact_wallet_row` helpers \u2014 no new redaction logic.",
+    "Admin identity injection for `initiate_batch_payment` and `upsert_wallet_for_user` happens at `agent.py:438-441` via a frozenset of tool names. The executor then verifies `int(admin_user_id) == int(os.getenv('ADMIN_USER_ID'))` as defense-in-depth.",
+    "The wallet-prompt delimiter regex `[\\s`<>\"'(),\\[\\]{}*_~|]+` covers common Discord markdown/punctuation; if a user wraps a wallet in unusual delimiters (e.g., emoji brackets) the parser returns None and the state machine silently ignores \u2014 matching the 'no spam' requirement."
+  ],
+  "delta_from_previous_percent": 90.35,
+  "structure_warnings": []
+}

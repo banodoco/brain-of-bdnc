@@ -1,0 +1,176 @@
+{
+  "name": "final-polish-and-gremlin-20260411-0020",
+  "idea": "Final polish and gremlin-investigation pass for the Solana payout subsystem. Runs AFTER the cleanup megaplan (payment-subsystem-follow-up-20260410-2339) finishes. Goal: close the remaining gremlin hiding spots, add operator documentation, harden edge cases, and establish ongoing safety monitoring. This is the pass that turns 'meaningfully safer' into 'well-structured and close to gremlin-free'.\n\nCONTEXT: Prior work completed or in flight:\n- Two-wallet split landed (commit 2bed983)\n- P0 correctness hotfixes landed (commit 6147f97): confirm_tx status.err check, rent-exempt test amount, priority fees in send_sol, solana_provider timeout fallback, audit script\n- Hardening pass landed (commit 9e706e6): caps, prompt injection defense, null-recipient fail-closed, WalletUpdateBlockedError, idempotency collision detection with two branches, derived USD persistence, admin success DM threshold, RLS doc\n- Cleanup megaplan CURRENTLY IN FLIGHT: centralizes confirmation auth into PaymentService via PaymentActor enum, introduces PRODUCER_FLOWS registry, adds tx_signature_history column, splits PaymentCog into worker and UI cogs, adds safe_delete_messages primitive\n- Admin-DM approval feature megaplan PENDING (separate): flips admin_chat flow to admin-DM confirmation, wires AdminApprovalView in DMs\n\nIN SCOPE for this polish pass (fourteen items grouped into phases):\n\nPHASE A \u2014 Code refactor (depends on cleanup megaplan landing):\nA1. Decompose PaymentService.request_payment into 4-5 named helper methods: _normalize_inputs, _detect_collision_and_idempotent_row, _enforce_caps, _derive_usd_amount, _persist_row. The ~300-line monster method becomes a thin orchestrator. Behavior unchanged. Tests unchanged.\nA2. Move the PAYMENT_TEST_AMOUNT_SOL rent-exempt assertion from main.py startup into PaymentService.__init__ itself so it fires on any construction path, not just bot boot.\nA3. Consolidate _redact_wallet helper (currently duplicated in payment_service.py, payment_cog.py (or new worker cog), and db_handler.py) into src/common/discord_utils.py or similar. Cleanup megaplan leaves this duplicated; this item consolidates.\n\nPHASE B \u2014 Correctness fixes:\nB4. Gate execute_retry_payment and execute_release_payment in src/features/admin_chat/tools.py on an on-chain getSignatureStatuses recheck of the stored tx_signature BEFORE clearing it and requeuing. Algorithm: if prior sig is confirmed on chain, refuse requeue and reconcile to confirmed; if failed, refuse requeue and reconcile to failed; if not_found AND blockhash is expired, allow requeue; otherwise keep in manual_hold. Closes a double-send hole flagged in the adversarial review.\nB5. New !payment-resolve <payment_id> admin-only slash command that reconciles a stuck payment against on-chain truth automatically. Queries getSignatureStatuses, decides the right action (confirmed / failed / allow_requeue / keep_in_hold), writes the audit entry, and notifies the operator with the decision.\nB6. Provider name migration path: detect legacy provider='solana' rows in payment_requests on worker startup, map to the correct split provider (solana_grants for producer='grants', solana_payouts for producer='admin_chat'), log a migration notice per row. If a row can't be mapped (unknown producer), mark it manual_hold with a clear reason.\n\nPHASE C \u2014 Robustness edge cases:\nC7. Dynamic priority fees via getRecentPrioritizationFees in solana_client.py. Use the 75th percentile of recent fees with a floor of SOLANA_PRIORITY_FEE_MICRO_LAMPORTS (currently the static value) and a ceiling to prevent runaway costs. Falls back to static floor on RPC error. This item is parallel-safe with cleanup because solana_client.py is not touched by cleanup.\nC8. DM delivery fallback: if admin DM fails with discord.Forbidden or rate limit, post the same message to a configurable fallback channel via new env var ADMIN_FALLBACK_CHANNEL_ID. If neither path works, log at ERROR level so at least the ops monitoring catches it. Apply to both failure DMs and success DMs in the new PaymentWorkerCog.\nC9. RPC-down vs timeout distinction: when both confirm_transaction and check_status fail with connection errors (not status.err), route to a more specific manual_hold with error type 'rpc_unreachable' so the operator runbook can tell this apart from legitimate confirmation timeouts. The current 'timeout' lumps them together.\n\nPHASE D \u2014 Gremlin investigation (read-only verification, produces proof OR fix):\nD10. Verify the recover_inflight-vs-worker-loop race is safe. Read claim_due_payment_requests' FOR UPDATE SKIP LOCKED semantics in sql/payments.sql:158-190. Write a test that simulates simultaneous recovery and worker claim on the same payment row. Either prove safety with the test or identify the race and fix it.\nD11. Verify concurrent admin operations for the same recipient don't mis-collide. producer_ref format for admin_chat is f'{guild_id}_{recipient_user_id}_{int(time.time())}' at second granularity. Two admins issuing payments to the same user in the same second = collision. Check interaction with idempotency detection. Write a test that reproduces the race or prove it's handled. Fix if broken.\nD12. Property-based tests over the post-cleanup PaymentService state machine using hypothesis library. Generate random sequences of (create payment, confirm, execute, recover, release, requeue) and assert invariants: every 'confirmed' row has a non-null tx_signature with on-chain err=null; no payment can transition from a terminal state backward; caps are never exceeded; fail-closed semantics hold under all sequences.\n\nPHASE E \u2014 Documentation:\nE13. docs/payments.md (new): architecture doc covering the payment state machine (with an ASCII diagram), the authorization model (PaymentActor kinds and who can confirm what per producer), the cap enforcement model, the fail-closed contract, where each invariant lives in code with file:line references, and the list of known non-obvious constraints (rent-exempt test amount, priority fees, etc.).\nE14. docs/runbook-payments.md (new): operator runbook covering every non-happy-path scenario: payment in manual_hold (how to use !payment-resolve, when to escalate), payment in failed (when to retry, when to write off), wallet ghost-verified (how to clear and re-verify), admin DM not received (fallback channel, escalation), RPC down (degraded mode, what gets queued), budget cap hit (when to raise the cap, how to audit). Include the SQL audit queries from scripts/audit_ghost_confirmed_payments.py.\n\nPHASE F \u2014 Observability / safety monitoring:\nF15. scripts/check_payment_invariants.py (new): productionized version of the audit script designed to run daily via CI or cron. Checks: (a) every status=confirmed Solana row has tx_signature with err=null on-chain; (b) no row has been in pending_confirmation or processing for more than 24 hours; (c) every wallet with verified_at has a corresponding confirmed test payment with amount >= 0.001 SOL; (d) no wallet_registry row has wallet_address matching another user's address (detect address reuse); (e) daily cap aggregates match between recent payment_requests rows and cache state if any. Exit nonzero on any violation so CI fails and alerts.\nF16. Structured logging of the full RPC status object at the 'payment confirmed' decision point (solana_client.py confirm_tx success path) so future regressions are visible in logs instead of silently lying to the worker. Use logger.info with a 'tx_confirm_decision' event key so log aggregation can alert.\n\nOUT OF SCOPE:\n- Anything the cleanup megaplan already handles (wait for it to land)\n- The admin-DM approval feature (separate megaplan)\n- New chains, providers, or wallets\n- UI changes to existing views\n- Rewriting solana_client.py / solana_provider.py beyond the specific items above\n\nDEPENDENCIES:\n- Phase A items depend on the cleanup megaplan landing (because they operate on the post-cleanup shape of payment_service.py and the new worker/UI cogs)\n- Phase B, C, D, E, F items can be implemented in any order after cleanup lands, but should be grouped for commit cohesion\n- This plan should run AFTER the admin-DM feature megaplan too, so that gremlin investigation (D12) sees the final state machine including admin_dm authorization\n\nSUCCESS CRITERIA:\n- All fourteen items either land or are explicitly deferred with a written justification\n- No regression in existing grants or admin_chat payment flows; tests pass\n- Phase D produces a written verdict per gremlin item: 'proven safe via test' or 'fixed with commit'\n- docs/payments.md and docs/runbook-payments.md are committed and readable by a new engineer in under 15 minutes\n- scripts/check_payment_invariants.py runs successfully against prod DB and fails on synthetic violations\n- After this pass, the payment subsystem is close enough to gremlin-free that an operator can sleep at night with real money in the wallets\n\nThink carefully about items D10, D11, D12 \u2014 they are investigation tasks, not implementation tasks. The output might be 'this is proven safe by the attached test' or 'this was broken; here is the fix.' Both outcomes are acceptable deliverables.",
+  "current_state": "done",
+  "iteration": 2,
+  "created_at": "2026-04-10T22:20:05Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc",
+    "auto_approve": true,
+    "robustness": "light",
+    "agent": ""
+  },
+  "sessions": {
+    "claude_planner": {
+      "id": "29564d30-2779-486d-b821-bf076fe689a7",
+      "mode": "persistent",
+      "created_at": "2026-04-10T22:25:28Z",
+      "last_used_at": "2026-04-10T22:46:46Z",
+      "refreshed": false
+    },
+    "codex_critic": {
+      "id": "019d7986-6a57-7380-a177-f6725ffbb213",
+      "mode": "persistent",
+      "created_at": "2026-04-10T22:36:46Z",
+      "last_used_at": "2026-04-10T22:36:46Z",
+      "refreshed": false
+    },
+    "claude_finalizer": {
+      "id": "35f6b679-64f2-4734-b2d0-75461df93e69",
+      "mode": "persistent",
+      "created_at": "2026-04-10T22:58:45Z",
+      "last_used_at": "2026-04-10T22:58:45Z",
+      "refreshed": false
+    },
+    "codex_executor": {
+      "id": "019d799f-2634-75c0-9a95-be49e45784e4",
+      "mode": "persistent",
+      "created_at": "2026-04-10T23:11:32Z",
+      "last_used_at": "2026-04-11T00:01:55Z",
+      "refreshed": false
+    }
+  },
+  "plan_versions": [
+    {
+      "version": 1,
+      "file": "plan_v1.md",
+      "hash": "sha256:7a067b48c7d266fe107f7c19889692110594f1f0a153ffdf9bde0fe8801c5fb4",
+      "timestamp": "2026-04-10T22:25:28Z"
+    },
+    {
+      "version": 2,
+      "file": "plan_v2.md",
+      "hash": "sha256:7eb0b695ccd050bb44f2561dcbbfe1978c68719fcb715783ddb3d52a8e97b2c6",
+      "timestamp": "2026-04-10T22:46:46Z"
+    }
+  ],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-04-10T22:20:05Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-10T22:25:28Z",
+      "duration_ms": 317197,
+      "cost_usd": 1.7492172499999996,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "29564d30-2779-486d-b821-bf076fe689a7",
+      "agent": "claude",
+      "output_file": "plan_v1.md",
+      "artifact_hash": "sha256:7a067b48c7d266fe107f7c19889692110594f1f0a153ffdf9bde0fe8801c5fb4"
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-04-10T22:36:46Z",
+      "duration_ms": 260572,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7986-6a57-7380-a177-f6725ffbb213",
+      "agent": "codex",
+      "output_file": "critique_v1.json",
+      "artifact_hash": "sha256:ce1236841d9ff5d543b91140aecee96f8e223aba2fd316b9b2569bb24f480d26",
+      "flags_count": 3
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-04-10T22:46:46Z",
+      "duration_ms": 364051,
+      "cost_usd": 1.46564975,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "29564d30-2779-486d-b821-bf076fe689a7",
+      "agent": "claude",
+      "output_file": "plan_v2.md",
+      "artifact_hash": "sha256:7eb0b695ccd050bb44f2561dcbbfe1978c68719fcb715783ddb3d52a8e97b2c6",
+      "flags_addressed": [
+        "FLAG-001",
+        "FLAG-002",
+        "FLAG-003"
+      ]
+    },
+    {
+      "step": "finalize",
+      "timestamp": "2026-04-10T22:58:45Z",
+      "duration_ms": 573698,
+      "cost_usd": 1.34473625,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "35f6b679-64f2-4734-b2d0-75461df93e69",
+      "agent": "claude",
+      "output_file": "finalize.json",
+      "artifact_hash": "sha256:73036004127d6279b6647139f5183df496e0389dbd69d1d1a5c78299727225c6"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-04-11T00:01:55Z",
+      "duration_ms": 3747717,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d799f-2634-75c0-9a95-be49e45784e4",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:c232fdfe3725d92ec96610809c8e2ad4a70cd12d967b72724ca5505c7ec6544d",
+      "finalize_hash": "sha256:5423d72b2cdddbb949490e2bd03cae0c998a4684f4caa7f527c4e1b67b783e01",
+      "approval_mode": "auto_approve"
+    }
+  ],
+  "meta": {
+    "significant_counts": [
+      3
+    ],
+    "weighted_scores": [],
+    "plan_deltas": [
+      69.76
+    ],
+    "recurring_critiques": [
+      []
+    ],
+    "total_cost_usd": 4.559603,
+    "overrides": [
+      {
+        "action": "add-note",
+        "timestamp": "2026-04-10T22:27:20Z",
+        "note": "Operator answered all 7 open questions with 'no strong opinion, you decide'. Orchestrator decisions: (1) C7/F16 target src/features/grants/solana_client.py \u2014 the existing shared SolanaClient class used by both providers. Do NOT create a new file. (2) A3 shared _redact_wallet helper lives in a NEW src/common/redaction.py module, not discord_utils.py \u2014 the helper is chain-agnostic so a dedicated module is honest about scope. (3) A3 does NOT unify admin_chat/tools.py's _redact_wallet_address / _redact_wallet_row / _redact_payment_row helpers \u2014 different signatures and behaviors, separate follow-up. (4) F15 ships the script plus a scheduler-wire-up section in docs/runbook-payments.md flagged as an operator decision (Railway cron vs GitHub Actions vs external scheduler). Do NOT add a CI workflow or Railway config file as part of this pass. (5) D10 fix direction IF the recover-vs-worker race turns out to be real: conditional update gated on submitted_at/updated_at older than 150 seconds (5x the 30s worker tick interval). The investigation must first prove the race is real \u2014 if FOR UPDATE SKIP LOCKED already handles it, no fix is required. Report the proof-or-fix outcome clearly. (6) D11 fix direction IF same-second admin collision is real: millisecond precision in producer_ref (Option A from the question). Full UUID suffix (Option B) is REJECTED because it would permanently break idempotency on legitimate replay paths, which is a worse outcome. (7) B4 blockhash-expired heuristic: submitted_at older than 150 seconds. Do NOT add a getLatestBlockhash round-trip \u2014 the 150s heuristic is 2x the max blockhash lifetime, conservative enough. Plan should remain at state 'planned' after incorporating these decisions \u2014 do not auto-advance to critique or execute without an explicit user nudge."
+      },
+      {
+        "action": "add-note",
+        "timestamp": "2026-04-10T22:40:37Z",
+        "note": "Two additional concerns from the orchestrator on top of the critic's three flags. Please fold these into revise: (CONCERN A) Step 5 plans to expose payment reconciliation as an admin_chat LLM tool 'execute_payment_resolve' in addition to a slash command. This re-opens the prompt-injection attack surface that the hardening megaplan just closed. An attacker who injects into admin_chat could trick the LLM into calling execute_payment_resolve with arbitrary payment_ids and potentially flip payments to favorable states. Fix options: (i) drop the LLM tool entirely and keep only the /payment-resolve slash command (simplest, most secure), (ii) keep the LLM tool but require it to validate the calling author's Discord user_id against os.getenv('ADMIN_USER_ID') at execution time AND add a rate limit of N calls per hour per user. Prefer option (i) unless there is a clear operator reason to keep the LLM path. (CONCERN B) Step 10's proposed concurrency test uses a fake DatabaseHandler that merely tracks call order. That proves logical correctness but NOT actual DB-level concurrency safety \u2014 real concurrency bugs come from Postgres row-level locking, transaction isolation, and network reorderings which a fake does not simulate. Revise should either: (i) demote the test's claim from 'proven safe' to 'logical-correctness sanity check', with the real safety argument made explicitly by citing the FOR UPDATE SKIP LOCKED semantics of claim_due_payment_requests and the documented Postgres read-committed isolation contract, OR (ii) add an integration test using testcontainers-python or pytest-postgresql with two actual concurrent transactions against a real Postgres instance. Prefer option (i) \u2014 add a formal argument in the verdict comment at the top of tests/test_payment_race.py explaining WHY FOR UPDATE SKIP LOCKED plus the processing/submitted status filter in recover_inflight makes this race structurally impossible, not just empirically absent in the fake. The verdict must NOT say 'proven safe by this test' if the test is only logical; it must say 'proven safe by the documented Postgres semantics; this test is a sanity check'."
+      }
+    ],
+    "notes": [
+      {
+        "timestamp": "2026-04-10T22:27:20Z",
+        "note": "Operator answered all 7 open questions with 'no strong opinion, you decide'. Orchestrator decisions: (1) C7/F16 target src/features/grants/solana_client.py \u2014 the existing shared SolanaClient class used by both providers. Do NOT create a new file. (2) A3 shared _redact_wallet helper lives in a NEW src/common/redaction.py module, not discord_utils.py \u2014 the helper is chain-agnostic so a dedicated module is honest about scope. (3) A3 does NOT unify admin_chat/tools.py's _redact_wallet_address / _redact_wallet_row / _redact_payment_row helpers \u2014 different signatures and behaviors, separate follow-up. (4) F15 ships the script plus a scheduler-wire-up section in docs/runbook-payments.md flagged as an operator decision (Railway cron vs GitHub Actions vs external scheduler). Do NOT add a CI workflow or Railway config file as part of this pass. (5) D10 fix direction IF the recover-vs-worker race turns out to be real: conditional update gated on submitted_at/updated_at older than 150 seconds (5x the 30s worker tick interval). The investigation must first prove the race is real \u2014 if FOR UPDATE SKIP LOCKED already handles it, no fix is required. Report the proof-or-fix outcome clearly. (6) D11 fix direction IF same-second admin collision is real: millisecond precision in producer_ref (Option A from the question). Full UUID suffix (Option B) is REJECTED because it would permanently break idempotency on legitimate replay paths, which is a worse outcome. (7) B4 blockhash-expired heuristic: submitted_at older than 150 seconds. Do NOT add a getLatestBlockhash round-trip \u2014 the 150s heuristic is 2x the max blockhash lifetime, conservative enough. Plan should remain at state 'planned' after incorporating these decisions \u2014 do not auto-advance to critique or execute without an explicit user nudge."
+      },
+      {
+        "timestamp": "2026-04-10T22:40:37Z",
+        "note": "Two additional concerns from the orchestrator on top of the critic's three flags. Please fold these into revise: (CONCERN A) Step 5 plans to expose payment reconciliation as an admin_chat LLM tool 'execute_payment_resolve' in addition to a slash command. This re-opens the prompt-injection attack surface that the hardening megaplan just closed. An attacker who injects into admin_chat could trick the LLM into calling execute_payment_resolve with arbitrary payment_ids and potentially flip payments to favorable states. Fix options: (i) drop the LLM tool entirely and keep only the /payment-resolve slash command (simplest, most secure), (ii) keep the LLM tool but require it to validate the calling author's Discord user_id against os.getenv('ADMIN_USER_ID') at execution time AND add a rate limit of N calls per hour per user. Prefer option (i) unless there is a clear operator reason to keep the LLM path. (CONCERN B) Step 10's proposed concurrency test uses a fake DatabaseHandler that merely tracks call order. That proves logical correctness but NOT actual DB-level concurrency safety \u2014 real concurrency bugs come from Postgres row-level locking, transaction isolation, and network reorderings which a fake does not simulate. Revise should either: (i) demote the test's claim from 'proven safe' to 'logical-correctness sanity check', with the real safety argument made explicitly by citing the FOR UPDATE SKIP LOCKED semantics of claim_due_payment_requests and the documented Postgres read-committed isolation contract, OR (ii) add an integration test using testcontainers-python or pytest-postgresql with two actual concurrent transactions against a real Postgres instance. Prefer option (i) \u2014 add a formal argument in the verdict comment at the top of tests/test_payment_race.py explaining WHY FOR UPDATE SKIP LOCKED plus the processing/submitted status filter in recover_inflight makes this race structurally impossible, not just empirically absent in the fake. The verdict must NOT say 'proven safe by this test' if the test is only logical; it must say 'proven safe by the documented Postgres semantics; this test is a sanity check'."
+      }
+    ]
+  },
+  "last_gate": {
+    "recommendation": "ITERATE"
+  }
+}

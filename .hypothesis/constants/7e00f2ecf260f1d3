@@ -1,0 +1,4 @@
+# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/sharing/subfeatures/social_poster.py
+# hypothesis_version: 6.151.11
+
+[0.5, 280, '"\'', '#', '*.jpg', '...', '.avi', '.gif', '.mkv', '.mov', '.mp4', '.png', '.webm', '.webp', '/', '://', '?', '@', 'Creating tweet...', 'DiscordBot', 'Featured Artwork', 'TWITTER_ACCESS_TOKEN', 'TWITTER_CONSUMER_KEY', 'base64', 'claude', 'content', 'content_type', 'data', 'deleted', 'duplicate content', 'filename', 'global_name', 'id', 'image', 'image/', 'image/gif', 'image/jpeg', 'image/png', 'image/webp', 'in_reply_to_tweet_id', 'local_path', 'media_ids', 'media_type', 'quote_tweet_id', 'rb', 'role', 'screen_name', 'source', 'text', 'the artist', 'tweet_gif', 'twitter.com/', 'twitter_url', 'type', 'url', 'user', 'username', 'utf-8', 'video', 'x.com/']

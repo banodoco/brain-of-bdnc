@@ -1,0 +1,119 @@
+{
+  "version": 2,
+  "timestamp": "2026-04-10T13:49:10Z",
+  "hash": "sha256:56bc8d9a01dde9c13bb8c030f824ea0e58d3640c6e38e9bca3370aee946e3ac8",
+  "questions": [
+    "Should pending payment intents have a TTL/expiry? If the recipient never replies, should the intent auto-expire after N hours? If so, what timeout?",
+    "If the admin initiates a second payment for the same recipient in the same channel while one is already pending, should it overwrite the existing intent or reject as a duplicate?",
+    "For the LLM classification of confirmation replies (awaiting_confirmation state): is a lightweight Anthropic API call acceptable here, or should confirmation strictly use the existing PaymentConfirmView button only? The button approach is simpler and already identity-verified \u2014 the LLM classification would only be needed if we want to accept free-text confirmations instead of button clicks."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "initiate_payment tool appears in TOOLS list and ADMIN_ONLY_TOOLS set; the assertion at tools.py:916 passes",
+      "priority": "must"
+    },
+    {
+      "criterion": "initiate_payment does NOT accept a wallet_address parameter",
+      "priority": "must"
+    },
+    {
+      "criterion": "When recipient has a wallet on file: initiate_payment creates a test payment with producer='admin_chat', is_test=True and auto-confirms it",
+      "priority": "must"
+    },
+    {
+      "criterion": "When no wallet on file: initiate_payment creates a pending intent, sends a channel message pinging the recipient, and returns status='awaiting_wallet'",
+      "priority": "must"
+    },
+    {
+      "criterion": "initiate_payment fails closed when called without guild_id or source_channel_id (DM context)",
+      "priority": "must"
+    },
+    {
+      "criterion": "initiate_payment fails closed on invalid recipient_user_id or amount_usd <= 0",
+      "priority": "must"
+    },
+    {
+      "criterion": "Recipient wallet reply in originating channel is intercepted by _check_pending_payment_reply BEFORE _is_directed_at_bot and _can_user_message_bot gates",
+      "priority": "must"
+    },
+    {
+      "criterion": "Invalid wallet reply rejects with error message and does NOT consume the intent",
+      "priority": "must"
+    },
+    {
+      "criterion": "Valid wallet reply triggers upsert_wallet, request_payment(is_test=True), and auto-confirm",
+      "priority": "must"
+    },
+    {
+      "criterion": "handle_payment_result for producer='admin_chat' test-confirmed creates final payment (is_test=False) and calls send_confirmation_request",
+      "priority": "must"
+    },
+    {
+      "criterion": "handle_payment_result for test-failed does NOT create a final payment (fail-closed) and notifies admin",
+      "priority": "must"
+    },
+    {
+      "criterion": "producer_ref includes timestamp or UUID to satisfy unique index on (producer, producer_ref, is_test)",
+      "priority": "must"
+    },
+    {
+      "criterion": "Intent matching uses deterministic key (guild_id, channel_id, recipient_user_id) \u2014 identity-gated before any semantic classification",
+      "priority": "must"
+    },
+    {
+      "criterion": "Ambiguous, suspicious, or out-of-ordinary reply patterns fail closed and tag the admin for review",
+      "priority": "must"
+    },
+    {
+      "criterion": "Multiple concurrent intents in the same channel for different recipients are handled correctly (only the correct recipient's intent is matched)",
+      "priority": "must"
+    },
+    {
+      "criterion": "source_channel_id is injected in agent.py using a key that does not conflict with existing tools",
+      "priority": "must"
+    },
+    {
+      "criterion": "All existing tests pass: test_scheduler.py, test_social_route_tools.py, full suite",
+      "priority": "must"
+    },
+    {
+      "criterion": "System prompt in agent.py documents initiate_payment including guild-channel requirement",
+      "priority": "must"
+    },
+    {
+      "criterion": "New test file tests/test_admin_payments.py covers: both wallet paths, validation failures, wallet reply handling, terminal callbacks, and concurrent intents",
+      "priority": "must"
+    },
+    {
+      "criterion": "execute_initiate_payment and _start_admin_payment_flow are each under ~80 lines with clear early-return error paths",
+      "priority": "should"
+    },
+    {
+      "criterion": "handle_payment_result follows GrantsCog structure: guard \u2192 branch is_test \u2192 branch status",
+      "priority": "should"
+    },
+    {
+      "criterion": "_check_pending_payment_reply has minimal overhead for non-matching messages (single dict lookup)",
+      "priority": "should"
+    },
+    {
+      "criterion": "Race-condition guard (_processing_intents set) prevents double-processing of the same wallet reply",
+      "priority": "should"
+    },
+    {
+      "criterion": "Manual smoke test: admin says 'pay @user $50' \u2192 bot pings user \u2192 user replies wallet \u2192 test queues \u2192 confirmation button appears \u2192 user clicks \u2192 payout executes",
+      "priority": "info"
+    }
+  ],
+  "assumptions": [
+    "Producer name is 'admin_chat' \u2014 PaymentCog._candidate_producer_cog_names('admin_chat') produces ['AdminChatCog', ...] matching the cog class name with zero PaymentCog changes.",
+    "Pending intents are in-memory (dict on AdminChatCog). Lost on bot restart; admin can re-initiate. No DB migration needed for v1.",
+    "Admin must initiate from a guild channel, not DM. Admin DMs have guild_id=None (AdminChatCog skips guild resolution for admins at line 212) and no channel to ping the recipient in.",
+    "The wallet-reply interceptor fires before _is_directed_at_bot() and _can_user_message_bot(). The recipient does NOT need can_message_bot permission or to @mention the bot.",
+    "Final-payment confirmation uses the existing PaymentConfirmView button (posted in-channel by send_confirmation_request). The button already enforces recipient_discord_id identity check. No free-text confirmation needed for v1 \u2014 the LLM classification in awaiting_confirmation state is only used if we move to text-based confirmation later.",
+    "For v1 the awaiting_confirmation LLM classification can be omitted \u2014 the PaymentConfirmView button handles confirmation. The intent transitions directly from test_in_progress to removed (button handles the rest). The LLM classification is documented as a future path for text-based confirmations per the revision lock.",
+    "No payment amount guardrail \u2014 admin is trusted.",
+    "handle_payment_result posts producer-specific messages with payment details to the notify channel. PaymentCog already posts its own generic terminal notification separately (same pattern as GrantsCog which also posts its own thread messages)."
+  ],
+  "structure_warnings": []
+}

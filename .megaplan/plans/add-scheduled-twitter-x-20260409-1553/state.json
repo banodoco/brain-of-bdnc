@@ -1,0 +1,65 @@
+{
+  "name": "add-scheduled-twitter-x-20260409-1553",
+  "idea": "Add scheduled Twitter/X posting so admin can queue assets and tweet copy, including replies and retweets, and have them publish daily using the existing sharing pipeline where possible.",
+  "current_state": "planned",
+  "iteration": 1,
+  "created_at": "2026-04-09T13:53:41Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc",
+    "auto_approve": true,
+    "robustness": "light",
+    "agent": ""
+  },
+  "sessions": {
+    "codex_planner": {
+      "id": "019d7285-309c-7783-af45-928ff2f5be01",
+      "mode": "persistent",
+      "created_at": "2026-04-09T14:15:19Z",
+      "last_used_at": "2026-04-09T14:15:19Z",
+      "refreshed": false
+    }
+  },
+  "plan_versions": [
+    {
+      "version": 1,
+      "file": "plan_v1b.md",
+      "hash": "sha256:7ac702b3cc5a5af02a799ef6d88c1d44e79d2a08fe4b571b641ea64f4bad2b94",
+      "timestamp": "2026-04-09T14:15:19Z"
+    }
+  ],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-04-09T13:53:41Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-04-09T14:15:19Z",
+      "duration_ms": 1295071,
+      "cost_usd": 0.0,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019d7285-309c-7783-af45-928ff2f5be01",
+      "agent": "codex",
+      "output_file": "plan_v1b.md",
+      "artifact_hash": "sha256:7ac702b3cc5a5af02a799ef6d88c1d44e79d2a08fe4b571b641ea64f4bad2b94"
+    }
+  ],
+  "meta": {
+    "significant_counts": [],
+    "weighted_scores": [],
+    "plan_deltas": [],
+    "recurring_critiques": [],
+    "total_cost_usd": 0.0,
+    "overrides": [],
+    "notes": []
+  },
+  "last_gate": {}
+}

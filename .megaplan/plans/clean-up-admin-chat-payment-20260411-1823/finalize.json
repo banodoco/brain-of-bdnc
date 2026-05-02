@@ -1,0 +1,273 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Append an idempotent `add column if not exists status_message_id bigint;` block to sql/admin_payment_intents.sql immediately after the existing additive migrations (~line 57), matching the surrounding pattern. Do not touch indexes, constraints, or the status enum.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Appended exactly one additive migration block for `status_message_id bigint` in `sql/admin_payment_intents.sql` immediately after the existing additive `add column if not exists` blocks and before the constraint reset. Verified by diff and line inspection that indexes, constraints, and the status enum were otherwise unchanged.",
+      "files_changed": [
+        "sql/admin_payment_intents.sql"
+      ],
+      "commands_run": [
+        "sed -n '1,140p' sql/admin_payment_intents.sql",
+        "git diff -- sql/admin_payment_intents.sql src/common/db_handler.py src/features/payments/payment_worker_cog.py",
+        "nl -ba sql/admin_payment_intents.sql | sed -n '50,70p'"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T2",
+      "description": "In src/common/db_handler.py update_admin_payment_intent (~lines 2143-2161), add a nested try around the Supabase .update(...).execute() call inside the existing outer try. If it raises AND 'status_message_id' is in payload AND 'status_message_id' is in str(exc), log once at info, pop 'status_message_id', and re-run the update. Any other error re-raises out of the nested try and is still caught by the existing outer handler which returns None. Preserve the None-on-failure caller contract exactly \u2014 do not change return type or introduce a generic unknown-column helper.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Added the nested try inside `update_admin_payment_intent` so only `status_message_id` column errors retry once after logging at info and removing that key. A direct runtime simulation confirmed the retry path succeeds without `status_message_id`, while unrelated column failures still reach the existing outer handler and return `None`.",
+      "files_changed": [
+        "src/common/db_handler.py"
+      ],
+      "commands_run": [
+        "sed -n '2120,2185p' src/common/db_handler.py",
+        "git diff -- sql/admin_payment_intents.sql src/common/db_handler.py src/features/payments/payment_worker_cog.py",
+        "python - <<'PY'\nfrom types import SimpleNamespace\nfrom src.common.db_handler import DatabaseHandler\n\nclass FakeQuery:\n    def __init__(self, client):\n        self.client = client\n        self.payload = None\n    def update(self, payload):\n        self.payload = dict(payload)\n        self.client.calls.append(dict(payload))\n        return self\n    def eq(self, *_args):\n        return self\n    def execute(self):\n        if self.client.failures:\n            failure = self.client.failures.pop(0)\n            if failure is not None:\n                raise Exception(failure)\n        return SimpleNamespace(data=[dict(self.payload, intent_id='intent-1')])\n\nclass FakeSupabase:\n    def __init__(self, failures):\n        self.failures = list(failures)\n        self.calls = []\n    def table(self, name):\n        assert name == 'admin_payment_intents'\n        return FakeQuery(self)\n\nretry_db = DatabaseHandler.__new__(DatabaseHandler)\nretry_db.supabase = FakeSupabase(['column status_message_id does not exist', None])\nretry_db._gate_check = lambda guild_id: True\nretry_db._serialize_supabase_value = lambda payload: dict(payload)\nretry_result = retry_db.update_admin_payment_intent('intent-1', {'status': 'queued', 'status_message_id': 42}, 1)\nprint('retry_result', retry_result)\nprint('retry_calls', retry_db.supabase.calls)\n\nfail_db = DatabaseHandler.__new__(DatabaseHandler)\nfail_db.supabase = FakeSupabase(['column some_other_field does not exist'])\nfail_db._gate_check = lambda guild_id: True\nfail_db._serialize_supabase_value = lambda payload: dict(payload)\nfail_result = fail_db.update_admin_payment_intent('intent-1', {'status': 'queued', 'status_message_id': 42}, 1)\nprint('fail_result', fail_result)\nprint('fail_calls', fail_db.supabase.calls)\nPY",
+        "nl -ba src/common/db_handler.py | sed -n '2143,2175p'"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T3",
+      "description": "In src/features/payments/payment_worker_cog.py _handle_terminal_payment (~lines 149-166), skip the _notify_payment_result(payment) call when str(payment.get('producer') or '').strip().lower() == 'admin_chat'. Leave DM admin helpers, _handoff_terminal_result, and cleanup calls unchanged. Behavior for all other producers and for non-confirmed statuses must be unchanged.",
+      "depends_on": [],
+      "status": "done",
+      "executor_notes": "Updated `_handle_terminal_payment` so `_notify_payment_result` is skipped only when a confirmed payment normalizes to `producer == 'admin_chat'`. Verified the surrounding DM success/failure hooks, producer handoff, and cleanup flow were left intact, and module-level tests covering payment worker behavior still pass.",
+      "files_changed": [
+        "src/features/payments/payment_worker_cog.py"
+      ],
+      "commands_run": [
+        "sed -n '120,210p' src/features/payments/payment_worker_cog.py",
+        "sed -n '2245,2315p' tests/test_admin_payments.py",
+        "sed -n '1,130p' tests/test_terminal_cleanup_wiring.py",
+        "pytest tests/test_admin_payments.py tests/test_terminal_cleanup_wiring.py -q",
+        "git diff -- sql/admin_payment_intents.sql src/common/db_handler.py src/features/payments/payment_worker_cog.py",
+        "nl -ba src/features/payments/payment_worker_cog.py | sed -n '149,172p'"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T4",
+      "description": "In src/features/admin_chat/admin_chat_cog.py add a private helper _set_intent_status_message(intent, channel, content) (~40 lines): if intent['status_message_id'] is set, fetch_message + edit(content=content, suppress=True); else channel.send(content, suppress_embeds=True) then call db_handler.update_admin_payment_intent(intent_id, {'status_message_id': message.id}, guild_id) \u2014 if the update returns a row use it, otherwise mutate intent['status_message_id'] in place. On discord.NotFound when fetching, clear cached id and recurse once to send fresh. Then rewrite: (a) _start_admin_payment_flow (~lines 380-430) \u2014 replace the 'queued a small test payment' send at :427-430 with _set_intent_status_message(intent, channel, 'Verifying wallet with a small test payment\u2026'); (b) _handle_recipient_test_receipt_confirmation (~lines 680-711) \u2014 replace the confirmation channel.send at :711 with _set_intent_status_message(intent, channel, 'Confirmation received. Awaiting admin approval for the final payout.'); (c) handle_payment_result (~lines 713-810) \u2014 for is_test & confirmed, edit status message to '<@recipient> Test payment confirmed. Please reply here with `confirmed` once you see it in your wallet.' and set receipt_prompt_message_id=intent['status_message_id'] so stale-receipt sweep still has a marker; for final confirmed, edit to 'Payout sending\u2026' around the queue/db update, then after db update send status_message.reply(f'<@{recipient_user_id}> Payment sent \u2014 {amount:.4f} SOL. {explorer_link}', mention_author=True, suppress_embeds=True), dropping the multi-line 'Payment sent.' card at :783-788; for failure/manual-review branches, edit the status message to a terminal failure line and skip extra channel sends. Keep admin DM branch at :789-797 and _notify_intent_admin unchanged.",
+      "depends_on": [
+        "T1",
+        "T2"
+      ],
+      "status": "done",
+      "executor_notes": "Implemented `_set_intent_status_message` at `src/features/admin_chat/admin_chat_cog.py:295-333` so one status message is created or edited per intent, `status_message_id` is persisted on first send with mutation fallback if the DB update returns `None`, `discord.NotFound` clears the cached id and retries once, and embed suppression uses `suppress_embeds` / `suppress=True`. Replaced the status-message sends in `_start_admin_payment_flow` (`:467-471`), the recipient test-receipt confirmation path (`:647-651`), and the terminal payment handling branches (`:777-883`). Verification: `python -m py_compile src/features/admin_chat/admin_chat_cog.py` passed; `pytest tests/test_admin_payments.py -q` produced only three stale-text assertion failures scheduled for T6; an inline lifecycle simulation confirmed a single sent status message, three edits, one final reply, and shared `status_message_id` / `receipt_prompt_message_id`.",
+      "files_changed": [
+        "src/features/admin_chat/admin_chat_cog.py"
+      ],
+      "commands_run": [
+        "git diff -- src/features/admin_chat/admin_chat_cog.py",
+        "python -m py_compile src/features/admin_chat/admin_chat_cog.py",
+        "pytest tests/test_admin_payments.py -q",
+        "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '286,340p'",
+        "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '416,472p'",
+        "nl -ba src/features/admin_chat/admin_chat_cog.py | sed -n '632,882p'",
+        "python - <<'PY' ... inline admin-chat lifecycle simulation with fetch/edit/reply-capable fake channel ... PY"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T5",
+      "description": "In src/features/payments/payment_ui_cog.py: (a) rewrite _post_admin_approval_thread_update (~lines 550-565) to resolve the intent via _find_admin_intent_for_payment; if intent['status_message_id'] is set, resolve the channel, fetch_message the status message and message.edit(content='Payout queued for sending.', suppress=True); fall back to the current channel.send(...) ONLY when the status message cannot be fetched (NotFound, HTTPException, missing id). Keep existing try/except so failures still log and return without raising. No new cross-cog imports. (b) Amend _cleanup_admin_intent_messages (~lines 567-584) to exclude intent.get('status_message_id') from the message_ids list passed to safe_delete_messages, so even when receipt_prompt_message_id equals status_message_id the shared message survives. No other cleanup behavior changes.",
+      "depends_on": [
+        "T4"
+      ],
+      "status": "done",
+      "executor_notes": "Rewrote `_post_admin_approval_thread_update` at `src/features/payments/payment_ui_cog.py:550-579` so it resolves the linked admin intent, fetches `status_message_id`, and edits that message to `Payout queued for sending.` with `suppress=True`; it falls back to the existing `channel.send(...)` path only when the status message id is absent or fetch fails with `discord.NotFound` / `discord.HTTPException`. Updated `_cleanup_admin_intent_messages` at `:581-595` to filter `status_message_id` out of the delete list so a shared `receipt_prompt_message_id == status_message_id` survives cleanup. Verification: `python -m py_compile src/features/payments/payment_ui_cog.py` passed; `pytest tests/test_payment_cog_split.py tests/test_admin_payments.py -q` showed only the three pre-existing stale-text assertion failures from T4; an inline runtime simulation confirmed one in-place edit, zero fallback sends, and cleanup deleting only the non-shared prompt id.",
+      "files_changed": [
+        "src/features/payments/payment_ui_cog.py"
+      ],
+      "commands_run": [
+        "git diff -- src/features/payments/payment_ui_cog.py",
+        "python -m py_compile src/features/payments/payment_ui_cog.py",
+        "pytest tests/test_payment_cog_split.py tests/test_admin_payments.py -q",
+        "python - <<'PY' ... inline payment_ui status-message edit and cleanup simulation ... PY",
+        "nl -ba src/features/payments/payment_ui_cog.py | sed -n '546,592p'"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T6",
+      "description": "Update tests/test_admin_payments.py. Extend FakeChannel (~:71-95): channel.send returns a message that records suppress_embeds kwarg and exposes an async edit(content=..., suppress=...) appending to an 'edits' list and mutating self.content, an async reply(content, **kwargs) that appends to channel.sent_messages with a reference attribute, records mention_author/suppress_embeds, and fetch_message(message_id) returning the recorded message or raising a stubbed NotFound. Extend FakeIntentDB (~:298): persist status_message_id on update_admin_payment_intent; add a reject_status_message_id toggle whose underlying supabase stub raises on payloads containing status_message_id so we can drive the real DatabaseHandler.update_admin_payment_intent retry path. Update broken tests: test_handle_payment_result_test_confirmed (:1466) assert one send + one edit, edited content mentions recipient and 'reply' prompt, status_message_id persisted; test_handle_payment_result_final_confirmed_notifies_admin (:2146) assert exactly one send, \u22651 edit, one reply whose content contains '<@42>' and 'Payment sent', mention_author=True, suppress_embeds=True; fix any other test asserting on literal 'Payment sent.' card or 'confirmation received' literal. Add new tests: test_handle_payment_result_suppresses_result_card_for_admin_chat (mock _notify_payment_result, feed producer='admin_chat' confirmed payment through _handle_terminal_payment, assert not awaited; mirror style near :2256-2285); test_handle_payment_result_still_notifies_non_admin_chat_producers (non-admin_chat producer, assert _notify_payment_result WAS awaited); test_update_admin_payment_intent_tolerates_missing_status_message_column (Supabase stub raises first call when status_message_id in payload, assert retried payload omits key and method returns row; AND a separate stub raising for an unrelated column still returns None \u2014 FLAG-002 contract); test_admin_chat_status_message_reused_across_transitions (start \u2192 test confirmed \u2192 receipt confirmed \u2192 final confirmed, assert one message id in channel.sent_messages, three edits, one reply); test_post_admin_approval_thread_update_edits_status_message (fake intent with status_message_id, call PaymentUICog._post_admin_approval_thread_update, assert edit recorded and no new send); test_cleanup_admin_intent_messages_preserves_status_message_id (fake intent where receipt_prompt_message_id == status_message_id, assert safe_delete_messages called without the shared id).",
+      "depends_on": [
+        "T3",
+        "T4",
+        "T5"
+      ],
+      "status": "done",
+      "executor_notes": "Extended `tests/test_admin_payments.py` with richer Discord message/channel doubles and the planned retry-capable DB stub. `FakeChannel` now returns stored message objects with `edit`, `reply`, and `fetch_message` support plus recorded `suppress_embeds` / reply kwargs (`tests/test_admin_payments.py:71-133`). `FakeIntentDB` now exposes a minimal Supabase stub with `reject_status_message_id`, `supabase_failures`, and `supabase_calls` so `DatabaseHandler.update_admin_payment_intent` can be exercised directly (`:336-411`). Updated the stale admin-chat payment assertions for the shared status-message lifecycle (`:1557-1612`, `:1686-1725`, `:2255-2297`, `:2331-2376`) and added the six requested coverage tests for admin-chat worker suppression, non-admin-chat notification preservation, missing-column retry/FLAG-002, full status-message reuse, post-approval edits, and cleanup preservation (`:2109-2178`, `:2514-2623`, `:2627-2700`). Verification: `python -m py_compile tests/test_admin_payments.py` passed and `pytest tests/test_admin_payments.py -q` passed (`67 passed`).",
+      "files_changed": [
+        "tests/test_admin_payments.py"
+      ],
+      "commands_run": [
+        "python -m py_compile tests/test_admin_payments.py",
+        "rg -n \"test_handle_payment_result_suppresses_result_card_for_admin_chat|test_handle_payment_result_still_notifies_non_admin_chat_producers|test_update_admin_payment_intent_tolerates_missing_status_message_column|test_admin_chat_status_message_reused_across_transitions|test_post_admin_approval_thread_update_edits_status_message|test_cleanup_admin_intent_messages_preserves_status_message_id\" tests/test_admin_payments.py",
+        "pytest tests/test_admin_payments.py -q",
+        "nl -ba tests/test_admin_payments.py | sed -n '40,150p'",
+        "nl -ba tests/test_admin_payments.py | sed -n '290,420p'",
+        "nl -ba tests/test_admin_payments.py | sed -n '1460,1665p'",
+        "nl -ba tests/test_admin_payments.py | sed -n '1945,2165p'",
+        "nl -ba tests/test_admin_payments.py | sed -n '2140,2675p'"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    },
+    {
+      "id": "T7",
+      "description": "Run tests in the order specified by the plan and fix any regressions: (1) pytest tests/test_admin_payments.py -k 'status_message or suppresses_result_card or tolerates_missing_status or reused_across_transitions or post_admin_approval_thread_update_edits or cleanup_admin_intent_messages_preserves' -x; (2) pytest tests/test_admin_payments.py -x; (3) pytest -x for the full repo suite. If any test fails, read the error, fix the code, and re-run until green. Do NOT create new test files beyond what T6 already added \u2014 run the existing suite. Additionally, write a short throwaway script under /tmp that sequences start \u2192 test confirmed \u2192 receipt confirmed \u2192 final confirmed against FakeChannel/FakeIntentDB and prints the resulting channel.sent_messages + edits + replies to confirm the single-status-message collapse works end-to-end, then delete the script. Report any baseline failures that pre-exist this change.",
+      "depends_on": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6"
+      ],
+      "status": "done",
+      "executor_notes": "Ran the validation sequence in the approved order and all stages passed. Focused selector: `pytest tests/test_admin_payments.py -k 'status_message or suppresses_result_card or tolerates_missing_status or reused_across_transitions or post_admin_approval_thread_update_edits or cleanup_admin_intent_messages_preserves' -x` -> `5 passed`. Full admin-payments module: `pytest tests/test_admin_payments.py -x` -> `67 passed`. Full repo: `pytest -x` -> `217 passed`. The required throwaway `/tmp/admin_chat_status_message_repro.py` script also ran successfully and printed the expected single-send + three-edits + one-reply lifecycle before being deleted. No baseline failures needed to be separated because the plan\u2019s `baseline_test_failures` list was empty and the final runs were green.",
+      "files_changed": [],
+      "commands_run": [
+        "pytest tests/test_admin_payments.py -k 'status_message or suppresses_result_card or tolerates_missing_status or reused_across_transitions or post_admin_approval_thread_update_edits or cleanup_admin_intent_messages_preserves' -x",
+        "pytest tests/test_admin_payments.py -x",
+        "pytest -x",
+        "python /tmp/admin_chat_status_message_repro.py",
+        "test ! -e /tmp/admin_chat_status_message_repro.py && echo deleted"
+      ],
+      "evidence_files": [],
+      "reviewer_verdict": ""
+    }
+  ],
+  "watch_items": [
+    "FLAG-002 contract: update_admin_payment_intent MUST still return None (not raise) on any non-status_message_id failure. The nested-try retry must only trigger on 'status_message_id' substring match; everything else re-raises into the outer handler. Verify the caller fail-closed recovery paths at admin_chat_cog.py:703-710 and :771-773 still see a falsey return on unrelated DB errors.",
+    "FLAG-001 interlock: Step 4 sets receipt_prompt_message_id = status_message_id when the test is confirmed; Step 5's _cleanup_admin_intent_messages MUST filter status_message_id out of the delete list BEFORE the admin approval cleanup runs, or the shared status message will get deleted mid-flow. Both pieces must land together.",
+    "suppress_embeds support: assumption is that discord.py in use supports channel.send(..., suppress_embeds=True) and message.edit(..., suppress=True) \u2014 same flag already used in src/features/curating/curator.py:189-193. Confirm during implementation by grep, not guessing.",
+    "Worker suppression scope: only admin_chat is silenced. Do NOT widen to other producers. _dm_admin_payment_success/_failure, _handoff_terminal_result, and cleanup calls must all still fire for admin_chat \u2014 only the public _notify_payment_result send is skipped.",
+    "Stale-receipt sweep: _sweep_stale_test_receipts / list_stale_test_receipt_intents still needs a marker when the test is confirmed. Setting receipt_prompt_message_id = status_message_id satisfies this, but only works if Step 5's cleanup exclusion is in place.",
+    "Column-absent retry is transient: older deployments that haven't re-applied sql/admin_payment_intents.sql are temporary. Do not add a feature flag or permanent fallback layer beyond this one narrow retry.",
+    "Debt watch \u2014 admin-payments-intent-state: the intent sync relies on handle_payment_result running on terminal state. Do not inadvertently break that bridge when rewriting handle_payment_result branches.",
+    "Do not introduce a generic 'ignore unknown column' helper or a broad defensive wrapper. Keep the retry narrowly scoped to status_message_id.",
+    "_notify_intent_admin and admin DMs must stay identical in content and trigger points. Only channel-visible messages change.",
+    "Status message fallback: if fetch_message raises NotFound for the stored id, _set_intent_status_message clears the cached id and recurses once to send a fresh one. Do not let it recurse unbounded \u2014 one retry only.",
+    "Cross-channel: assume intent['channel_id'] matches the channel where the status message lives. No cross-channel editing support is planned.",
+    "Question left open: whether failures in-channel should be edited to a terminal failure line or go silent in-channel. Current plan says edit-in-place to a short terminal line. If the user prefers silent, the failure branch wording should change but the structural edit-in-place stays.",
+    "Manual staging smoke is info-only, not a test-suite gate. Do not block on it, but call it out in the final report so the user can schedule the real end-to-end check."
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Does sql/admin_payment_intents.sql now contain exactly one idempotent 'add column if not exists status_message_id bigint;' block placed right after the other additive migrations, with no changes to indexes, constraints, or the status enum?",
+      "executor_note": "Yes. `sql/admin_payment_intents.sql` now has exactly one `add column if not exists status_message_id bigint;` block at lines 59-60, immediately after the other additive migration blocks. No indexes, constraints, or status enum values were changed beyond that insertion point.",
+      "verdict": ""
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "In update_admin_payment_intent, does the nested try retry ONLY trigger when 'status_message_id' is in both the payload and the exception message, and does the outer exception handler still return None (not raise) on any other DB error? Is there no generic 'ignore unknown column' helper?",
+      "executor_note": "Yes. In `update_admin_payment_intent`, the nested retry triggers only when `status_message_id` exists in both the original payload and the exception text. Any other error re-raises to the existing outer handler, which still logs and returns `None`. No generic unknown-column helper was introduced.",
+      "verdict": ""
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "In PaymentWorkerCog._handle_terminal_payment, is _notify_payment_result skipped only when producer == 'admin_chat' (case-insensitive, stripped), while DM helpers, _handoff_terminal_result, and cleanup still run, and is behavior for non-admin_chat producers completely unchanged?",
+      "executor_note": "Yes. In `PaymentWorkerCog._handle_terminal_payment`, `_notify_payment_result` is skipped only for normalized `producer == 'admin_chat'`. `_dm_admin_payment_success`, `_dm_admin_payment_failure`, `_handoff_terminal_result`, and cleanup still run on their original conditions, and behavior for non-`admin_chat` producers remains unchanged.",
+      "verdict": ""
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Does _set_intent_status_message create-or-edit exactly one status message per intent, persist status_message_id on first send (falling back to in-place mutation if the db update returns None), use suppress_embeds/suppress to avoid embed cards, handle NotFound with a single recursion, and does it replace every intermediate channel.send in _start_admin_payment_flow, _handle_recipient_test_receipt_confirmation, and handle_payment_result's confirmed/test-confirmed/failure branches? Does the final-confirmed branch use message.reply with mention_author=True and suppress_embeds=True, and does the test-confirmed branch set receipt_prompt_message_id = status_message_id?",
+      "executor_note": "Yes. `_set_intent_status_message` now creates or edits a single status message per intent, persists `status_message_id` on first send with in-place mutation fallback if the DB update returns `None`, uses `suppress_embeds` / `suppress=True`, and handles `discord.NotFound` by clearing the cached id and retrying once. `_start_admin_payment_flow`, the recipient test-receipt confirmation path, and `handle_payment_result` now route their visible transitions through that helper. The test-confirmed branch sets `receipt_prompt_message_id = status_message_id`, and the final-confirmed branch edits to `Payout sending\u2026` before replying from the status message with `mention_author=True` and `suppress_embeds=True`. An inline lifecycle simulation verified one status message, three edits, one reply, and shared `status_message_id` / `receipt_prompt_message_id`.",
+      "verdict": ""
+    },
+    {
+      "id": "SC5",
+      "task_id": "T5",
+      "question": "Does _post_admin_approval_thread_update edit the stored status_message_id via fetch_message + edit(suppress=True), falling back to channel.send ONLY when the fetch fails or status_message_id is absent? Does _cleanup_admin_intent_messages exclude status_message_id from the ids passed to safe_delete_messages even when receipt_prompt_message_id equals it?",
+      "executor_note": "Yes. `_post_admin_approval_thread_update` now resolves the admin intent, fetches `status_message_id`, and edits that message with `content='Payout queued for sending.'` and `suppress=True`; it falls back to `channel.send(...)` only when the id is absent or fetch fails with `discord.NotFound` / `discord.HTTPException`. `_cleanup_admin_intent_messages` now excludes `status_message_id` from the ids passed to `safe_delete_messages`, including the shared `receipt_prompt_message_id == status_message_id` case. An inline runtime simulation confirmed one edit, no fallback send, and cleanup deleting only the non-shared prompt id.",
+      "verdict": ""
+    },
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "question": "Do the FakeChannel extensions (send\u2192message with edit/reply/fetch_message and NotFound), FakeIntentDB extensions (status_message_id persistence + reject_status_message_id toggle), updated existing tests, and six new tests all exist? Does test_update_admin_payment_intent_tolerates_missing_status_message_column ALSO assert that a non-status_message_id DB error still returns None (FLAG-002)? Does test_admin_chat_status_message_reused_across_transitions verify exactly one send, three edits, one reply across the full lifecycle?",
+      "executor_note": "Yes. `tests/test_admin_payments.py` now contains the `FakeChannel` send/edit/reply/fetch_message extensions (`:71-133`), the `FakeIntentDB` Supabase-backed retry stub with `reject_status_message_id` (`:336-411`), the updated existing assertions for the shared status-message flow (`:1557-1612`, `:1686-1725`, `:2255-2297`, `:2331-2376`), and all six requested new tests (`:2109-2178`, `:2514-2623`, `:2627-2700`). The DB retry test explicitly asserts both the `status_message_id` retry omission and the unrelated-column `None` return contract, and the lifecycle test asserts exactly one base status message, three edits, and one reply.",
+      "verdict": ""
+    },
+    {
+      "id": "SC7",
+      "task_id": "T7",
+      "question": "Did the focused selector, tests/test_admin_payments.py, and the full pytest run all pass? Did the throwaway reproduction script confirm single-send + multi-edit + one-reply behavior and then get deleted? Are any baseline failures clearly distinguished from regressions introduced by this change?",
+      "executor_note": "Yes. The focused selector passed, the full `tests/test_admin_payments.py` module passed, and the full repo `pytest -x` run passed (`217 passed`). The throwaway `/tmp` repro script confirmed the single-send + multi-edit + one-reply behavior and was then deleted. No baseline failures needed special handling because `baseline_test_failures` was empty and all final validation runs were green.",
+      "verdict": ""
+    }
+  ],
+  "meta_commentary": "Land in dependency order: T1 and T2 are independent and unblock everything; T3 is also independent and small. T4 and T5 MUST land together \\u2014 T4 reuses receipt_prompt_message_id to point at the status message, and T5 is the only thing that stops _cleanup_admin_intent_messages from deleting it on admin approval. If you land T4 without T5 you WILL delete the shared status message mid-flow. T6 should be updated alongside T4/T5 and should not be merged without green tests.\n\nThe nested-try retry in T2 is the subtlety that makes FLAG-002 safe: the outer try/except \\u2192 return None contract stays identical, so every caller that branches on a falsey return (e.g. admin_chat_cog.py:703-710, :771-773) keeps its fail-closed recovery path. Do not refactor this into a helper \\u2014 inline is the point.\n\nThe _set_intent_status_message helper should stay ~40 lines. If it's growing past that, you are probably duplicating send logic or over-abstracting; simplify. It is the SINGLE point of creation/edit for the status message within AdminChatCog.\n\nFor the final reply, use message.reply(...) (not channel.send with a reference) so the Discord client renders the reply affordance. mention_author=True ensures the tag actually pings. suppress_embeds=True is the key piece that stops the Solana Explorer link from rendering a card \\u2014 without it the whole collapse is defeated.\n\nStatus wording: default to concise single-line transitions \\u2014 'Verifying wallet with a small test payment\\u2026' \\u2192 '<@recipient> Test payment confirmed. Please reply here with `confirmed` once you see it in your wallet.' \\u2192 'Confirmation received. Awaiting admin approval for the final payout.' \\u2192 'Payout queued for sending.' (from payment_ui_cog on admin approval) \\u2192 'Payout sending\\u2026' \\u2192 reply 'Payment sent \\u2014 X.XXXX SOL. <explorer_link>'. The plan authors flagged these are replaceable \\u2014 if the user asks for different wording during execution, change the strings but not the structure.\n\nFailure branch default: edit the status message to a short terminal failure line rather than going silent. Assumption #5 in the plan metadata. If the user redirects, only the string changes.\n\nBe careful with the test-confirmed transition's reuse of receipt_prompt_message_id. This works only because T5's cleanup exclusion filters status_message_id out of the delete list. If you reorder implementation and ship T4 alone, the cleanup sweep WILL delete the shared status message on admin approval.\n\nDo NOT widen worker-side suppression to other producers. The explicit success criterion requires non-admin_chat producers to keep receiving the generic result card. The negative test (test_handle_payment_result_still_notifies_non_admin_chat_producers) exists to guard this.\n\nFor T7, the throwaway repro script lives under /tmp and is deleted after it runs. Do not commit it, do not add it to tests/. It exists purely to give the executor ground-truth confirmation that the channel collapse works end-to-end at runtime (beyond what unit tests assert).\n\nIf pytest surfaces pre-existing failures unrelated to this change, record them in baseline_test_failures at the START of execution (before making code changes) so the reviewer can distinguish regressions from baseline noise. The plan has no instructions to fix unrelated baseline failures \\u2014 do not attempt to.",
+  "validation": {
+    "plan_steps_covered": [
+      {
+        "plan_step_summary": "Phase 1 Step 1: add status_message_id column to sql/admin_payment_intents.sql",
+        "finalize_task_ids": [
+          "T1"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 1 Step 2: tolerate status_message_id column absent in update_admin_payment_intent via nested retry preserving None-on-failure contract",
+        "finalize_task_ids": [
+          "T2"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 2 Step 3: skip _notify_payment_result generic result card for producer='admin_chat' in PaymentWorkerCog._handle_terminal_payment",
+        "finalize_task_ids": [
+          "T3"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 3 Step 4: introduce _set_intent_status_message helper and rewrite admin_chat_cog flows (_start_admin_payment_flow, _handle_recipient_test_receipt_confirmation, handle_payment_result) to reuse a single edited status message with final reply",
+        "finalize_task_ids": [
+          "T4"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 3 Step 5: rewrite PaymentUICog._post_admin_approval_thread_update to edit the shared status message and amend _cleanup_admin_intent_messages to exclude status_message_id from deletion",
+        "finalize_task_ids": [
+          "T5"
+        ]
+      },
+      {
+        "plan_step_summary": "Phase 4 Step 6: extend FakeChannel/FakeIntentDB, update broken tests, and add the six new coverage tests in tests/test_admin_payments.py",
+        "finalize_task_ids": [
+          "T6"
+        ]
+      },
+      {
+        "plan_step_summary": "Validation: run focused tests \u2192 full test_admin_payments.py \u2192 full repo suite, plus throwaway repro script",
+        "finalize_task_ids": [
+          "T7"
+        ]
+      }
+    ],
+    "orphan_tasks": [],
+    "completeness_notes": "Every approved plan step maps to at least one finalize task. T4 and T5 are split because they touch different cogs and must be reviewable separately, but they are interlocked via dependencies so they cannot land independently. T6 depends on T3/T4/T5 because its assertions exercise the combined behavior. T7 is the mandated final validation task and covers the plan's explicit validation order.",
+    "coverage_complete": true
+  },
+  "baseline_test_failures": [],
+  "baseline_test_command": "pytest --tb=no -q --no-header",
+  "baseline_test_note": "Executor should run this BEFORE making any code changes to capture the true baseline, then populate baseline_test_failures with any pre-existing failures so regressions introduced by T1-T6 are distinguishable. If the baseline is clean, leave the list empty. The plan's validation order (focused selector \\u2192 test_admin_payments.py \\u2192 full repo pytest) is the post-change gate and lives in T7."
+}

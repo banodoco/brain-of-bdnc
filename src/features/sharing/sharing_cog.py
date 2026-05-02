@@ -8,6 +8,7 @@ from discord.ext import commands, tasks
 from src.common.db_handler import DatabaseHandler
 
 from .providers.x_provider import XProvider
+from .providers.youtube_zapier_provider import YouTubeZapierProvider
 from .sharer import Sharer
 from .social_publish_service import SocialPublishService
 
@@ -44,11 +45,13 @@ class SharingCog(commands.Cog):
 
     def _build_social_publish_service(self) -> SocialPublishService:
         x_provider = XProvider()
+        youtube_provider = YouTubeZapierProvider()
         return SocialPublishService(
             db_handler=self.db_handler,
             providers={
                 'twitter': x_provider,
                 'x': x_provider,
+                'youtube': youtube_provider,
             },
             logger_instance=logger,
         )
