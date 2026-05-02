@@ -1,4 +1,0 @@
-# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/sharing/subfeatures/notify_user.py
-# hypothesis_version: 6.151.11
-
-[21600, '+00:00', 'ADMIN_USER_ID', 'Banodoco', 'DatabaseHandler', 'Delete Expired', 'Delete Post', 'DiscordBot', 'Opt-out of Sharing', 'Opted Out', 'Post Deleted', 'Z', 'action', 'cancelled', 'community_name', 'completed_at', 'created_at', 'delete_post', 'delete_supported', 'deleted_at', 'dev_mode', 'guild', 'id', 'opt_out', 'post_share_dm', 'rate_limiter', 'retweet', 'server_config', 'status', 'user_id', '{community_name}', '{original_post_url}', '{tweet_url}', '🗑️', '🚫']

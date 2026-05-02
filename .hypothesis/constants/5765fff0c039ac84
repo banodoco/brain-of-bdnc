@@ -1,4 +1,0 @@
-# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/admin_chat/agent.py
-# hypothesis_version: 6.151.11
-
-[100, 4096, 80000, ')', ')]', '/clear', '/reset', 'ANTHROPIC_API_KEY', 'Aborted by user', 'Banodoco', 'DiscordBot', '[Sent via DM', ']', 'admin_user_id', 'assistant', 'cancel_payment', 'channel_id', 'claude-opus-4-6', 'clear', 'community_name', 'content', 'db_handler', 'dm', 'end_turn', 'error', 'guild_id', 'guild_name', 'hold_payment', 'initiate_payment', 'input', 'is_error', 'is_thread', 'messages', 'name', 'recent_messages', 'release_payment', 'replied_to', 'reply', 'reset', 'resolve_admin_intent', 'result', 'retry_payment', 'role', 'send_message', 'server_config', 'share_to_social', 'source', 'source_channel_id', 'success', 'text', 'tool', 'tool_result', 'tool_use', 'tool_use_id', 'type', 'unknown', 'upload_file', 'user', 'utf-8']

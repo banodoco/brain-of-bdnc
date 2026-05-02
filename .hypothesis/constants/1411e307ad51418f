@@ -1,4 +1,0 @@
-# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/../src/features/summarising/summariser_cog.py
-# hypothesis_version: 6.151.11
-
-[300, 'DiscordBot', 'SharingCog', 'SummarizerCog', 'archive_days', 'channel_summarizer', 'dev_mode', 'logger', 'server_config', 'sharer_instance', 'summary_now', 'summarynow']

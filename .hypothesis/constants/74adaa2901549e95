@@ -1,4 +1,0 @@
-# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/payments/payment_ui_cog.py
-# hypothesis_version: 6.151.11
-
-['ADMIN_USER_ID', 'Confirm Payment', 'DiscordBot', 'PaymentUICog', 'TOKEN', 'admin-only', 'amount_token', 'chain', 'confirm_channel_id', 'confirm_thread_id', 'db_handler', 'disabled', 'final payment', 'guild_id', 'is_test', 'payment-resolve', 'payment_id', 'payment_service', 'pending_confirmation', 'provider', 'providers', 'queued', 'rate_limiter', 'recipient_discord_id', 'server_config', 'status', 'test payment', 'tx_signature', 'unknown']

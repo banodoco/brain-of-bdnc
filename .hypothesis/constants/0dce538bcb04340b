@@ -1,4 +1,0 @@
-# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/sharing/social_publish_service.py
-# hypothesis_version: 6.151.11
-
-[',', ':', 'DISCORD_BOT_TOKEN', 'DatabaseHandler', 'DiscordBot', 'action', 'attempt_count', 'channel_id', 'delete_supported', 'deleted_at', 'enabled', 'guild_id', 'id', 'integrity_signature', 'integrity_version', 'message_id', 'metadata', 'platform', 'post', 'processing', 'provider_ref', 'provider_url', 'publication_id', 'queued', 'request_payload', 'route_config', 'route_key', 'scheduled_at', 'server_config', 'sharing', 'social_publications', 'source_context', 'source_kind', 'status', 'supabase', 'target_post_ref', 'tweet_id', 'tweet_url', 'twitter', 'user_id', 'utf-8', 'v1', 'x']

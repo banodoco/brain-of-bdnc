@@ -1,4 +1,0 @@
-# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/../src/common/log_handler.py
-# hypothesis_version: 6.151.11
-
-[5.0, 200, 512, 1024, 5000, '%(message)s', 'Application', 'INFO', 'LOG_LEVEL', 'SUPABASE_SERVICE_KEY', 'SUPABASE_URL', 'a', 'app.log', 'app_dev.log', 'args', 'asctime', 'created', 'exc_info', 'exc_text', 'exception', 'extra', 'filename', 'funcName', 'function_name', 'hostname', 'level', 'levelname', 'levelno', 'line_number', 'lineno', 'logger_name', 'message', 'module', 'msecs', 'msg', 'name', 'pathname', 'process', 'processName', 'r', 'relativeCreated', 'replace', 'stack_info', 'system_logs', 'thread', 'threadName', 'timestamp', 'utf-8', 'w']

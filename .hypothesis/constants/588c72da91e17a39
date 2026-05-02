@@ -1,4 +1,0 @@
-# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/reacting/subfeatures/tweet_sharer_bridge.py
-# hypothesis_version: 6.151.11
-
-[21600.0, 150, 200, 1000, 1500, 1900, '#', '-', '.', '...', '/', '://', '?', '@', 'ADMIN ALERT', 'ADMIN_USER_ID', 'Consent Path', 'LLM Decision', 'LLM Rejection Reason', 'Moderation Outcome', 'Original Message ID', 'Original Poster', "Please don't share", 'Pre-Approved Path', 'Reactor (Initiator)', "Reactor's Comment", 'Your Comment', '[^a-zA-Z0-9._-]', '_', 'author_display_name', 'check_existing', 'consent_share_no', 'consent_share_yes', 'content', 'decision', 'enabled', 'global_name', 'guild_id', 'http://', 'https://', 'id', 'local_path', 'message', 'n', 'name', 'nick', 'no', 'nsfw', 'original_content', 'path_type', 'post', 'rate_limiter', 'rb', 'reaction_bridge', 'reason', 'role', 'twitter', 'twitter.com/', 'twitter_url', 'user', 'user_details', 'www.twitter.com/', 'www.x.com/', 'x.com/', 'yes', '|']

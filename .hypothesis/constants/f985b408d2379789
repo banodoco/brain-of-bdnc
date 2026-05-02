@@ -1,4 +1,0 @@
-# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/assessor.py
-# hypothesis_version: 6.151.11
-
-[0.2, 0.3, 1024, 'DiscordBot', '```', 'approved', 'assistant', 'community', 'community_name', 'content', 'decision', 'gpu_type', 'needs_info', 'needs_review', 'our server', 'reasoning', 'recent_messages', 'recommended_hours', 'rejected', 'response', 'role', 'spam', 'total_cost_usd', 'total_messages', 'user', '{', '{bot_voice}', '{gpu_info}', '{max_grant_usd:.0f}', '{{', '}', '}}']

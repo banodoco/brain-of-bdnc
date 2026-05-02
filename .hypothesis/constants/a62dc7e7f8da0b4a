@@ -1,4 +1,0 @@
-# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/src/features/grants/solana_client.py
-# hypothesis_version: 6.151.11
-
-[0.75, 2.0, 60.0, 1000, 10000, 1000000000, '10000000', '429', '500000', 'Blockhash not found', 'DiscordBot', 'SOLANA_PRIVATE_KEY', 'SOLANA_RPC_URL', 'SendResult', 'confirmation_status', 'confirmed', 'decision', 'err', 'errored', 'event', 'failed', 'finalized', 'not_found', 'prioritization_fee', 'signature', 'slot', 'tx_confirm_decision', 'value']

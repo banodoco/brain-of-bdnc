@@ -1,4 +1,0 @@
-# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/../src/features/summarising/subfeatures/top_generations.py
-# hypothesis_version: 6.151.11
-
-['\n## Top Generations\n', ',', '.mov', '.mp4', '.webm', '<@!?(\\d+)>', '?', 'AND m.channel_id = ?', 'TEST_DATA_CHANNEL', 'art_channel_id', 'attachments', 'content', 'filename', 'm.created_at > ?', 'member_id', 'message_id', 'url']

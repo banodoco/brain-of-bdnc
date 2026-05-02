@@ -51,6 +51,7 @@ env/
 
 # cache
 cache/
+.hypothesis/
 
 # Log files
 discord_bot_dev.log*

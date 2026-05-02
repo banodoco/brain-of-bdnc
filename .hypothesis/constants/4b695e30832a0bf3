@@ -1,4 +1,0 @@
-# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/../src/common/content_moderator.py
-# hypothesis_version: 6.151.11
-
-[0.5, 200, '.gif', '.jpeg', '.jpg', '.png', '.webp', 'Authorization', 'Content-Type', 'DiscordBot', 'Failed to get result', 'Timeout', 'WAVESPEED_API_KEY', 'application/json', 'attachments', 'categories', 'channel_id', 'completed', 'content_type', 'data', 'enable_sync_mode', 'error', 'failed', 'filename', 'id', 'image', 'image/', 'mainMediaMessageId', 'outputs', 'should_block', 'status', 'subTopics']

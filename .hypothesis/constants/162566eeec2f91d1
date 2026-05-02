@@ -1,4 +1,0 @@
-# file: /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc/scripts/../src/common/openmuse_interactor.py
-# hypothesis_version: 6.151.11
-
-[512, 1024, '*', '... (truncated)', '.jpg', 'Listed', '_', 'admin_status', 'art', 'aspectRatio', 'avatar_url', 'background_image_url', 'base64,', 'bio', 'classification', 'content-type', 'created_at', 'data', 'description', 'discord_channel_id', 'discord_connected', 'discord_guild_id', 'discord_message_id', 'discord_user_id', 'discord_username', 'display_name', 'file_size', 'gen', 'global_name', 'id', 'image/jpeg', 'links', 'media', 'member_id', 'members', 'metadata', 'name', 'original_filename', 'placeholder_image', 'real_name', 'response', 'stored_avatar_url', 'thumbnails', 'title', 'type', 'updated_at', 'upsert', 'url', 'user_status', 'username', 'video', 'video/', 'videos', 'workflows']
