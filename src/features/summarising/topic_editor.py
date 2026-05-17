@@ -4086,16 +4086,15 @@ def collect_document_source_ids(blocks: List[Dict[str, Any]]) -> List[str]:
 
 def render_topic(topic: Dict[str, Any]) -> List[str]:
     """Render a topic into Discord message text without DB or Discord effects."""
-    headline = _clean_render_text(topic.get("headline") or topic.get("display_slug") or "Live update")
+    headline = _clean_render_text(topic.get("headline") or topic.get("display_slug") or "Untitled")
     summary = topic.get("summary") or {}
     if not isinstance(summary, dict):
         summary = {"body": str(summary)}
-    prefix = "Update" if topic.get("parent_topic_id") else "Live update"
     source_suffix = _render_source_suffix(topic)
 
     sections = summary.get("sections") or []
     if sections:
-        lines = [f"## {prefix}: {headline}"]
+        lines = [f"## {headline}"]
         body = _clean_render_text(summary.get("body"))
         if body:
             lines.extend(["", body])
@@ -4112,7 +4111,7 @@ def render_topic(topic: Dict[str, Any]) -> List[str]:
         return [_trim_discord_message("\n".join(lines))]
 
     body = _clean_render_text(summary.get("body") or summary.get("why_interesting") or topic.get("body"))
-    lines = [f"## {prefix}: {headline}"]
+    lines = [f"## {headline}"]
     if body:
         lines.extend(["", body])
     # Simple topics are text-only. Media refs belong in structured block
@@ -4153,10 +4152,9 @@ def render_topic_publish_units(
         return [{"kind": "text", "content": msg} for msg in rendered]
 
     headline = _clean_render_text(
-        topic.get("headline") or topic.get("display_slug") or "Live update"
+        topic.get("headline") or topic.get("display_slug") or "Untitled"
     )
-    prefix = "Update" if topic.get("parent_topic_id") else "Live update"
-    header = f"## {prefix}: {headline}"
+    header = f"## {headline}"
 
     units: List[Dict[str, Any]] = []
 
