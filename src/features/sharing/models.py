@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 
 SocialAction = Literal['post', 'reply', 'retweet', 'quote']
-SocialSourceKind = Literal['admin_chat', 'reaction_bridge', 'summary', 'reaction_auto']
+SocialSourceKind = Literal['admin_chat', 'reaction_bridge', 'summary', 'reaction_auto', 'live_update_social']
 RouteOverride = Union[str, Dict[str, Any]]
 
 
@@ -66,3 +66,4 @@ class SocialPublishResult:
     delete_supported: bool = False
     already_shared: bool = False
     error: Optional[str] = None
+    media_ids: List[str] = field(default_factory=list)
