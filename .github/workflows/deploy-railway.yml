@@ -1,0 +1,43 @@
+name: Deploy to Railway
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: railway-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify RAILWAY_TOKEN is set
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::RAILWAY_TOKEN secret is not set."
+            echo "Add it at: https://github.com/banodoco/brain-of-bndc/settings/secrets/actions/new"
+            echo "Generate the token at: https://railway.com/account/tokens (project-scoped token for project 'bndc')"
+            exit 1
+          fi
+          echo "RAILWAY_TOKEN present"
+
+      - name: Install Railway CLI
+        run: |
+          curl -fsSL https://railway.com/install.sh | sh
+          echo "$HOME/.railway/bin" >> $GITHUB_PATH
+
+      - name: Deploy
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          railway up \
+            --service megaplan-brain-social-chain \
+            --environment production \
+            --ci \
+            --detach
