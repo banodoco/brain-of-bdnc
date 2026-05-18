@@ -88,24 +88,6 @@ def _bind_cap_breach_dm(bot, logger):
 
     return _notify
 
-async def run_archive_script(days, dev_mode=False, logger=None, in_depth=False,
-                             guild_id=None, channels=None):
-    """Run the archive_discord.py script with the specified number of days"""
-    if logger is None:
-        logger = logging.getLogger(__name__)
-
-    from src.common.archive_runner import ArchiveRunner
-
-    logger.info(f"Starting archive process for {days} days (in_depth={in_depth})"
-                + (f" guild={guild_id}" if guild_id else ""))
-
-    archive_runner = ArchiveRunner()
-    success = await archive_runner.run_archive(days, dev_mode, in_depth=in_depth,
-                                                guild_id=guild_id, channels=channels)
-
-    if not success:
-        raise RuntimeError("Archive script failed")
-
 async def main_async(args):
     logger = setup_logging(dev_mode=args.dev)
     
@@ -159,8 +141,6 @@ async def main_async(args):
         bot.summary_now = args.summary_now
         bot.summary_with_archive = args.summary_with_archive
         bot.archive_days = args.archive_days
-        bot.run_archive_script = run_archive_script  # Make the function available to cogs
-
         # Startup live-update gate: --summary-now may run archive ingestion before
         # one live-editor pass, so hourly archive fetch waits until that pass is
         # complete. The name is kept for compatibility with existing cogs/tests.
@@ -336,8 +316,15 @@ async def main_async(args):
                         gid = guild_cfg['guild_id']
                         try:
                             logger.info(f"Archiving guild {gid} ({guild_cfg.get('guild_name', '?')})...")
-                            await run_archive_script(days=1, dev_mode=args.dev, logger=logger,
-                                                     guild_id=gid)
+                            from src.features.archiving.archive_task import ArchiveTask
+                            task = ArchiveTask(bot, days=1, guild_id=gid, in_depth=False, logger=logger)
+                            result = await task.run()
+                            logger.info(
+                                f"Archive guild={gid} ok={result.success} "
+                                f"msgs={result.messages_archived} "
+                                f"dur={result.duration_seconds:.1f}s "
+                                f"errors={len(result.per_channel_errors)}"
+                            )
                         except Exception as e:
                             logger.error(f"Error archiving guild {gid}: {e}", exc_info=True)
                 else:

@@ -58,7 +58,7 @@
 | **Cogs** | Discord.py's modular extension system. Each feature has a `_cog.py` that registers commands/listeners with the bot. |
 | **Feature Structure** | Features live in `src/features/[name]/` with: core logic (`reactor.py`) + Discord integration (`reactor_cog.py`) + optional `subfeatures/` for complex actions. |
 | **Reaction Watchlist** | JSON env var (`REACTION_WATCHLIST`) that configures which emoji reactions trigger which actions. Central routing for all reaction-based workflows. |
-| **Archiving** | Messages are archived from Discord → Supabase via `archive_runner.py`. Can run on-demand or scheduled. |
+| **Archiving** | Messages are archived from Discord → Supabase via `ArchiveTask` in `src/features/archiving/archive_task.py`. Runs in-process inside the main bot. Can run on-demand or scheduled. |
 | **Live Updates** | Agentic editorial loop over archived messages. Accepted updates append as feed items in the configured summary/live-updates channel and are audited in `live_update_*` tables. |
 | **Legacy Summaries** | Historical/backfill-only daily digests in `daily_summaries` and old summary thread mappings. These are not the active overview system. |
 | **Member Permissions** | Two boolean flags with TRUE defaults: `include_in_updates` (can be mentioned in summaries/digests) and `allow_content_sharing` (content can be shared externally). When `allow_content_sharing=FALSE`, a Discord role is assigned to make opt-out visible. |
