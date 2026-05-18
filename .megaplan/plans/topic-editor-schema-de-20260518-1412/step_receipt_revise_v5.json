@@ -1,0 +1,31 @@
+{
+  "receipt_id": "1382a2ba-9d82-4167-97a2-b754d3e114f7",
+  "plan_id": "topic-editor-schema-de-20260518-1412",
+  "phase": "revise",
+  "iteration": 5,
+  "attempt": 1,
+  "timestamp_utc": "2026-05-18T13:35:17.982483+00:00",
+  "profile_name": null,
+  "agent": "claude",
+  "agent_mode": "persistent",
+  "model_configured": null,
+  "model_actual": null,
+  "session_id": "0c74f302-4db8-4d9d-94e8-1bd8f27b5da2",
+  "megaplan_version": "0.21.0",
+  "schema_version": 1,
+  "prompt_hash_raw": "b5eb727761ceeb4227d25f124dbaf9cbfdc1401a3ebedc65a4dfeb9909068c4f",
+  "prompt_hash_canonical": "305cbcd0e53e273a2400220dc5f10fcb2ba59df6f3d8f069b8c0e552c37d0a8d",
+  "canonicalization_version": 1,
+  "upstream_artifact_hashes": [],
+  "cost_usd": 0.57213525,
+  "duration_ms": 214458,
+  "prompt_tokens": 75533,
+  "completion_tokens": 16600,
+  "verdict": null,
+  "metrics": {
+    "start_timestamp_utc": "2026-05-18T13:31:22Z",
+    "notes_consumed": [],
+    "notes_consumed_count": 0
+  },
+  "scope_drift_severity": null
+}

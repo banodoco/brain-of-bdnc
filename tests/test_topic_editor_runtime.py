@@ -12,6 +12,7 @@ from src.features.summarising.topic_editor import (
     build_rejected_transition,
     parse_optional_datetime,
     render_topic,
+    render_topic_publish_units,
 )
 
 
@@ -299,7 +300,7 @@ def test_topic_editor_run_once_uses_native_tools_and_topic_run_lifecycle(monkeyp
 
     llm_call = editor.llm_client.client.messages.calls[0]
     assert llm_call["tools"] == TOPIC_EDITOR_TOOLS
-    assert len(llm_call["tools"]) == 14
+    assert len(llm_call["tools"]) == 15
 
 
 def test_post_simple_topic_with_media_ref_is_rejected():
@@ -1109,6 +1110,39 @@ def test_topic_editor_auto_shortlists_reaction_qualified_media(monkeypatch):
     assert db.transitions[0][0]["payload"]["tool_name"] == "auto_media_shortlist"
 
 
+def test_auto_shortlist_suggested_actions_uses_post_topic_not_post_sectioned_topic(monkeypatch):
+    monkeypatch.setenv("TOPIC_EDITOR_MEDIA_SHORTLIST_MIN_REACTIONS", "5")
+    monkeypatch.setenv("TOPIC_EDITOR_MEDIA_SHORTLIST_LIMIT", "5")
+    db = FakeDB()
+    editor = TopicEditor(db_handler=db, llm_client=FakeClaude(SimpleNamespace(content=[])), guild_id=1, live_channel_id=2, environment="prod")
+
+    editor._auto_shortlist_media_messages(
+        [
+            {
+                "message_id": 200,
+                "guild_id": 1,
+                "channel_id": 10,
+                "author_id": 42,
+                "content": "single media update",
+                "created_at": "2026-05-13T10:00:00Z",
+                "reaction_count": 5,
+                "author_context_snapshot": {"username": "alice"},
+                "attachments": [
+                    {"url": "https://cdn.example.test/render.mp4", "content_type": "video/mp4", "filename": "render.mp4"},
+                ],
+                "embeds": [],
+            }
+        ],
+        [],
+        run_id="run-shortlist",
+        guild_id=1,
+    )
+
+    suggested_actions = db.topics[0][0]["summary"]["suggested_actions"]
+    assert any("post_topic" in action for action in suggested_actions)
+    assert all("post_sectioned_topic" not in action for action in suggested_actions)
+
+
 def test_topic_editor_auto_shortlist_respects_discard_ignore(monkeypatch):
     monkeypatch.setenv("TOPIC_EDITOR_MEDIA_SHORTLIST_MIN_REACTIONS", "5")
     db = FakeDB()
@@ -1379,6 +1413,7 @@ def test_topic_editor_read_tools_return_structured_real_data_from_store_and_sour
 
 def test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions():
     allowed_actions = {
+        "post_topic",
         "post_simple",
         "post_sectioned",
         "watch",
@@ -1386,6 +1421,7 @@ def test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions(
         "discard",
         "observation",
         "override",
+        "rejected_post_topic",
         "rejected_post_simple",
         "rejected_post_sectioned",
         "rejected_watch",
@@ -1393,7 +1429,9 @@ def test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions(
     configured_actions = set()
     for tool in TOPIC_EDITOR_TOOLS:
         name = tool["name"]
-        if name == "post_simple_topic":
+        if name == "post_topic":
+            configured_actions.add("post_topic")
+        elif name == "post_simple_topic":
             configured_actions.add("post_simple")
         elif name == "post_sectioned_topic":
             configured_actions.add("post_sectioned")
@@ -1408,6 +1446,7 @@ def test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions(
 
     assert {"rejected_update_sources", "rejected_discard"}.isdisjoint(allowed_actions)
     assert configured_actions == {
+        "post_topic",
         "post_simple",
         "post_sectioned",
         "watch",
@@ -1424,6 +1463,15 @@ def test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions(
         reason="collision",
         payload={"outcome": "tool_error"},
     )["action"] == "rejected_watch"
+    assert build_rejected_transition(
+        run_id="run-1",
+        environment="prod",
+        guild_id=1,
+        action="rejected_post_topic",
+        tool_call_id="tool-1b",
+        reason="collision",
+        payload={"outcome": "tool_error"},
+    )["action"] == "rejected_post_topic"
     with pytest.raises(ValueError):
         build_rejected_transition(
             run_id="run-1",
@@ -1460,11 +1508,11 @@ def test_render_topic_is_pure_and_handles_simple_sectioned_and_story_update():
     }
 
     assert render_topic(simple) == [
-        "## Live update: Alice ships a LoRA\n\nA concise update.\n\nSource: 100"
+        "## Alice ships a LoRA\n\nA concise update.\n\nSource: 100"
     ]
     assert "**Model**" in render_topic(sectioned)[0]
     assert "Sources: 101, 102" in render_topic(sectioned)[0]
-    assert render_topic(story_update)[0].startswith("## Update: Alice follows up with results")
+    assert render_topic(story_update)[0].startswith("## Alice follows up with results")
 
 
 # ------------------------------------------------------------------
@@ -1926,7 +1974,7 @@ def test_topic_editor_publisher_sends_only_when_enabled_and_records_status(monke
 
     result = asyncio.run(editor.run_once("manual"))
 
-    assert channel.sent == ["## Live update: Alice publish test\n\nThis should publish.\n\nSource: 100"]
+    assert channel.sent == ["## Alice publish test\n\nThis should publish.\n\nSource: 100"]
     assert result["publish_results"][0]["status"] == "sent"
     assert db.topic_updates[0][1]["publication_status"] == "sent"
     assert db.topic_updates[0][1]["discord_message_ids"] == [9101]
@@ -2137,7 +2185,380 @@ def _sample_context_messages():
     ]
 
 
+def _source_metadata_by_id(rows):
+    return {str(row["message_id"]): row for row in rows}
+
+
 # ---- (a) post_sectioned_topic with blocks and no sections accepted and stored ----
+
+def test_post_topic_single_intro_block_with_media_accepted():
+    db = FakeDB()
+    db.source_message_rows = _sample_source_message_rows()
+    messages = _sample_source_message_rows()
+    editor = _make_editor_with_source_rows(db=db)
+    ctx = _make_source_context(messages=messages)
+
+    call = {
+        "id": "tool-post-topic-single-media",
+        "name": "post_topic",
+        "input": {
+            "proposed_key": "Alice LoRA Single Beat",
+            "headline": "Alice ships a LoRA benchmark image",
+            "source_message_ids": ["200"],
+            "blocks": [
+                {
+                    "type": "intro",
+                    "text": "Alice shared a single LoRA benchmark update with the render attached.",
+                    "source_message_ids": ["200"],
+                    "media_refs": [{"message_id": "200", "kind": "attachment", "index": 0}],
+                }
+            ],
+        },
+    }
+
+    outcome = editor._dispatch_tool_call(call, ctx)
+
+    assert outcome["outcome"] == "accepted"
+    assert outcome["action"] == "post_topic"
+    stored_topic = db.topics[0][0]
+    summary = stored_topic["summary"]
+    assert len(summary["blocks"]) == 1
+    assert "body" not in summary
+    assert "sections" not in summary
+
+    units = render_topic_publish_units(stored_topic, source_metadata=_source_metadata_by_id(messages))
+    assert [unit["kind"] for unit in units] == ["text", "media"]
+    assert "**" not in units[0]["content"]
+    assert units[1]["url"] == "https://cdn.example.com/image1.png"
+
+
+def test_post_topic_multi_block_accepted():
+    db = FakeDB()
+    db.source_message_rows = _sample_source_message_rows()
+    messages = _sample_source_message_rows()
+    editor = _make_editor_with_source_rows(db=db)
+    ctx = _make_source_context(messages=messages)
+
+    call = {
+        "id": "tool-post-topic-multi-block",
+        "name": "post_topic",
+        "input": {
+            "proposed_key": "Multi Creator Demo",
+            "headline": "Creators share a multi-part demo",
+            "source_message_ids": ["200", "201", "202"],
+            "blocks": [
+                {
+                    "type": "intro",
+                    "text": "The thread pulls together several related updates.",
+                    "source_message_ids": ["200"],
+                },
+                {
+                    "type": "section",
+                    "title": "Workflow",
+                    "text": "Bob shared the workflow graph and preview.",
+                    "source_message_ids": ["201"],
+                },
+                {
+                    "type": "section",
+                    "title": "Video Follow-up",
+                    "text": "Alice followed with a video preview.",
+                    "source_message_ids": ["202"],
+                },
+            ],
+        },
+    }
+
+    outcome = editor._dispatch_tool_call(call, ctx)
+
+    assert outcome["outcome"] == "accepted"
+    assert outcome["action"] == "post_topic"
+    blocks = db.topics[0][0]["summary"]["blocks"]
+    assert len(blocks) == 3
+    assert [block["source_message_ids"] for block in blocks] == [["200"], ["201"], ["202"]]
+
+
+def test_post_topic_rejects_empty_blocks_returns_tool_error():
+    db = FakeDB()
+    db.source_message_rows = _sample_source_message_rows()
+    editor = _make_editor_with_source_rows(db=db)
+    ctx = _make_source_context(messages=_sample_source_message_rows())
+
+    call = {
+        "id": "tool-post-topic-empty-blocks",
+        "name": "post_topic",
+        "input": {
+            "proposed_key": "Empty Blocks",
+            "headline": "Empty blocks rejected",
+            "source_message_ids": ["200"],
+            "blocks": [],
+        },
+    }
+
+    outcome = editor._dispatch_tool_call(call, ctx)
+
+    assert outcome["outcome"] == "rejected_post_topic"
+    assert outcome["error"] == "post_topic_requires_blocks"
+    assert db.topics == []
+    transition = db.transitions[0][0]
+    assert transition["action"] == "rejected_post_topic"
+    assert transition["reason"] == "post_topic_requires_blocks"
+    assert transition["payload"]["outcome"] == "tool_error"
+    assert build_rejected_transition(
+        run_id="run-1",
+        environment="prod",
+        guild_id=1,
+        action="rejected_post_topic",
+        tool_call_id="tool-1",
+        reason="post_topic_requires_blocks",
+        payload={"outcome": "tool_error"},
+    )["action"] == "rejected_post_topic"
+
+
+def test_post_topic_rejects_empty_blocks_even_with_stray_sections():
+    db = FakeDB()
+    db.source_message_rows = _sample_source_message_rows()
+    editor = _make_editor_with_source_rows(db=db)
+    ctx = _make_source_context(messages=_sample_source_message_rows())
+
+    call = {
+        "id": "tool-post-topic-stray-sections",
+        "name": "post_topic",
+        "input": {
+            "proposed_key": "Stray Sections",
+            "headline": "Stray sections cannot satisfy post_topic",
+            "source_message_ids": ["200"],
+            "blocks": [],
+            "sections": [{"title": "Stray", "body": "This legacy field must not count."}],
+        },
+    }
+
+    outcome = editor._dispatch_tool_call(call, ctx)
+
+    assert outcome["outcome"] == "rejected_post_topic"
+    assert outcome["error"] == "post_topic_requires_blocks"
+    assert db.transitions[0][0]["action"] == "rejected_post_topic"
+    assert db.transitions[0][0]["reason"] == "post_topic_requires_blocks"
+
+
+def test_post_topic_collision_returns_tool_error():
+    db = FakeDB()
+    db.source_message_rows = _sample_source_message_rows()
+    db.active_topics = [
+        {
+            "topic_id": "topic-existing",
+            "canonical_key": "alice-lora-test",
+            "headline": "Alice ships a LoRA test",
+            "state": "watching",
+            "source_authors": ["alice"],
+        }
+    ]
+    editor = _make_editor_with_source_rows(db=db)
+    ctx = _make_source_context(messages=_sample_source_message_rows(), active_topics=db.active_topics)
+
+    call = {
+        "id": "tool-post-topic-collision",
+        "name": "post_topic",
+        "input": {
+            "proposed_key": "Alice LoRA Test",
+            "headline": "Alice ships a LoRA test update",
+            "source_message_ids": ["200"],
+            "blocks": [
+                {
+                    "type": "intro",
+                    "text": "Alice posted an update on the same LoRA test.",
+                    "source_message_ids": ["200"],
+                }
+            ],
+        },
+    }
+
+    outcome = editor._dispatch_tool_call(call, ctx)
+
+    assert outcome["outcome"] == "rejected_post_topic"
+    assert outcome["error"] == "topic_collision"
+    assert db.topics == []
+    transition = db.transitions[0][0]
+    assert transition["action"] == "rejected_post_topic"
+    assert transition["payload"]["outcome"] == "tool_error"
+    assert transition["payload"]["collisions"][0]["topic_id"] == "topic-existing"
+
+
+def test_legacy_post_simple_topic_still_normalizes_via_alias_and_keeps_existing_storage():
+    db = FakeDB()
+    db.source_message_rows = _sample_source_message_rows()
+    editor = _make_editor_with_source_rows(db=db)
+    ctx = _make_source_context(messages=_sample_source_message_rows())
+
+    call = {
+        "id": "tool-legacy-simple",
+        "name": "post_simple_topic",
+        "input": {
+            "proposed_key": "Legacy Simple Topic",
+            "headline": "Legacy simple topic",
+            "body": "Legacy simple storage still keeps body and media only.",
+            "source_message_ids": ["200"],
+        },
+    }
+
+    outcome = editor._dispatch_tool_call(call, ctx)
+
+    assert outcome["outcome"] == "accepted"
+    assert outcome["action"] == "post_simple"
+    assert db.topics[0][0]["summary"] == {
+        "body": "Legacy simple storage still keeps body and media only.",
+        "media": [],
+    }
+
+
+def test_legacy_post_simple_topic_media_rejection_unchanged():
+    db = FakeDB()
+    db.source_message_rows = _sample_source_message_rows()
+    editor = _make_editor_with_source_rows(db=db)
+    ctx = _make_source_context(messages=_sample_source_message_rows())
+
+    call = {
+        "id": "tool-legacy-simple-media",
+        "name": "post_simple_topic",
+        "input": {
+            "proposed_key": "Legacy Simple Media",
+            "headline": "Legacy simple media",
+            "body": "This legacy alias is still text-only.",
+            "media": ["200:attachment:0"],
+            "source_message_ids": ["200"],
+        },
+    }
+
+    outcome = editor._dispatch_tool_call(call, ctx)
+
+    assert outcome["outcome"] == "rejected_post_simple"
+    assert outcome["error"] == "post_simple_cannot_attach_media_use_post_sectioned_topic"
+    assert db.topics == []
+    assert db.transitions[0][0]["action"] == "rejected_post_simple"
+
+
+def test_legacy_post_sectioned_topic_with_body_and_blocks_preserves_storage_shape():
+    db = FakeDB()
+    db.source_message_rows = _sample_source_message_rows()
+    editor = _make_editor_with_source_rows(db=db)
+    ctx = _make_source_context(messages=_sample_source_message_rows())
+
+    call = {
+        "id": "tool-legacy-sectioned-body-blocks",
+        "name": "post_sectioned_topic",
+        "input": {
+            "proposed_key": "Legacy Sectioned Body Blocks",
+            "headline": "Legacy sectioned keeps body",
+            "body": "Legacy top-level body is retained for compatibility.",
+            "source_message_ids": ["200"],
+            "blocks": [
+                {
+                    "type": "intro",
+                    "text": "The block payload is retained alongside legacy body.",
+                    "source_message_ids": ["200"],
+                }
+            ],
+        },
+    }
+
+    outcome = editor._dispatch_tool_call(call, ctx)
+
+    assert outcome["outcome"] == "accepted"
+    assert outcome["action"] == "post_sectioned"
+    summary = db.topics[0][0]["summary"]
+    assert summary["body"] == "Legacy top-level body is retained for compatibility."
+    assert summary["sections"] == []
+    assert len(summary["blocks"]) == 1
+    assert summary["blocks"][0]["text"] == "The block payload is retained alongside legacy body."
+
+
+def test_nebsh_last_party_single_video_normalizes_to_one_intro_block_with_media():
+    messages = [
+        {
+            "message_id": "900",
+            "guild_id": 1,
+            "channel_id": 10,
+            "author_id": 77,
+            "content": "NebSH just dropped The Last Party video.",
+            "created_at": "2026-05-13T10:00:00Z",
+            "author_context_snapshot": {"username": "NebSH"},
+            "attachments": [
+                {"url": "https://cdn.example.com/the-last-party.mp4", "content_type": "video/mp4", "filename": "last-party.mp4"}
+            ],
+            "embeds": [],
+        },
+        {
+            "message_id": "901",
+            "guild_id": 1,
+            "channel_id": 10,
+            "author_id": 77,
+            "content": "Thanks for checking it out.",
+            "created_at": "2026-05-13T10:01:00Z",
+            "reply_to_message_id": "900",
+            "author_context_snapshot": {"username": "NebSH"},
+            "attachments": [],
+            "embeds": [],
+        },
+        {
+            "message_id": "902",
+            "guild_id": 1,
+            "channel_id": 10,
+            "author_id": 88,
+            "content": "The atmosphere is unreal.",
+            "created_at": "2026-05-13T10:02:00Z",
+            "reply_to_message_id": "900",
+            "author_context_snapshot": {"username": "fan-one"},
+            "attachments": [],
+            "embeds": [],
+        },
+        {
+            "message_id": "903",
+            "guild_id": 1,
+            "channel_id": 10,
+            "author_id": 89,
+            "content": "Sound design is excellent.",
+            "created_at": "2026-05-13T10:03:00Z",
+            "reply_to_message_id": "900",
+            "author_context_snapshot": {"username": "fan-two"},
+            "attachments": [],
+            "embeds": [],
+        },
+    ]
+    db = FakeDB()
+    db.source_message_rows = messages
+    editor = _make_editor_with_source_rows(db=db)
+    ctx = _make_source_context(messages=messages)
+
+    call = {
+        "id": "tool-nebsh-last-party",
+        "name": "post_topic",
+        "input": {
+            "proposed_key": "NebSH Last Party",
+            "headline": "NebSH drops The Last Party",
+            "source_message_ids": ["900", "901", "902", "903"],
+            "blocks": [
+                {
+                    "type": "intro",
+                    "text": (
+                        "NebSH dropped The Last Party as a single video post, with replies "
+                        "mostly reacting to the atmosphere and sound design."
+                    ),
+                    "source_message_ids": ["900", "901", "902", "903"],
+                    "media_refs": [{"message_id": "900", "kind": "attachment", "index": 0}],
+                }
+            ],
+        },
+    }
+
+    outcome = editor._dispatch_tool_call(call, ctx)
+
+    assert outcome["outcome"] == "accepted"
+    stored_topic = db.topics[0][0]
+    assert len(stored_topic["summary"]["blocks"]) == 1
+    units = render_topic_publish_units(stored_topic, source_metadata=_source_metadata_by_id(messages))
+    assert [unit["kind"] for unit in units] == ["text", "media"]
+    assert "**" not in units[0]["content"]
+    assert units[1]["url"] == "https://cdn.example.com/the-last-party.mp4"
+
 
 def test_post_sectioned_topic_with_blocks_no_sections_accepted_and_stored():
     db = FakeDB()
@@ -2697,7 +3118,7 @@ def test_publishing_enabled_sends_structured_blocks_in_order():
     assert result["status"] == "sent"
     assert len(channel.sent) == 4
 
-    assert channel.sent[0].startswith("## Live update: Structured Publish Test")
+    assert channel.sent[0].startswith("## Structured Publish Test")
     assert "Alice released a new LoRA with benchmarks." in channel.sent[0]
     assert "Sources: [1] https://discord.com/channels/1/10/200" in channel.sent[0]
 
@@ -2802,7 +3223,7 @@ def test_discord_media_refs_are_bundled_and_temp_files_deleted(monkeypatch, tmp_
 
     assert result["status"] == "sent"
     assert len(channel.sent) == 2
-    assert channel.sent[0]["content"].startswith("## Live update: Bundled Media Test")
+    assert channel.sent[0]["content"].startswith("## Bundled Media Test")
     assert len(channel.sent[1]["files"]) == 2
     assert {file.filename for file in channel.sent[1]["files"]} == {"a.mp4", "b.mp4"}
     assert all(not path.exists() for path in created_paths)

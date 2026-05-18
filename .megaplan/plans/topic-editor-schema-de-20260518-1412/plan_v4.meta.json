@@ -1,0 +1,211 @@
+{
+  "version": 4,
+  "timestamp": "2026-05-18T13:07:00Z",
+  "hash": "sha256:e2b934e006f3876238b7bbe2d02f7df2a3cabc09a32089c24e9cc01b6629c1f7",
+  "changes_summary": "Addressed all 10 open significant flags by tightening the dispatch and supporting-infrastructure spec. Key revisions: (1) Added explicit Step 3.5 extending `build_rejected_transition`'s allowed-action set at topic_editor.py:3870 to include `rejected_post_topic` \u2014 resolves the ValueError risk on collision/empty-blocks rejections (FLAG-001, correctness-1, all_locations-2). (2) Replaced the assert-empty-media plan in alias normalization with an explicit ordering rule: legacy structural guards (post_simple media check, source-count check) run BEFORE any normalization, so existing structured rejections (`post_simple_cannot_attach_media_use_post_sectioned_topic`) and their pinned tests at :305-337 keep firing unchanged (FLAG-002, correctness-2). (3) Generalized the writeback at topic_editor.py:1849-1850 to fire for `post_topic` in addition to `post_sectioned_topic`, so default-media-attached blocks reach `args` and `_summary_for_tool` (FLAG-003, all_locations-1). (4) Reversed the prior plan's decision to drop legacy `body` from legacy-alias storage: legacy alias calls now KEEP their existing storage shape (body+sections+blocks), and only NEW `post_topic` calls are blocks-only \u2014 minimizes downstream-reader risk (issue_hints). (5) Made the original-vs-normalized tool-name handoff convention explicit: `_summary_for_tool` is called with the ORIGINAL tool name and selects shape per name; telemetry labels (`post_simple`/`post_sectioned`) stay tied to the original name while the unified blocks pipeline runs internally (callers). (6) Added Step 7.2 explicitly updating the existing action-coverage test at tests/test_topic_editor_runtime.py:1380-1437 to include `post_topic` and `rejected_post_topic` (scope). Also added two new tests: one for `rejected_post_topic` collision returning tool_error (verifies the helper extension), and one pinning the post_simple media-rejection ordering. Success criteria updated to reflect the no-drop-body decision for aliases and to add a criterion for `build_rejected_transition` accepting `rejected_post_topic` without raising.",
+  "flags_addressed": [
+    {
+      "id": "FLAG-001",
+      "resolution": "addressed",
+      "reason": "Step 3.5 explicitly extends `build_rejected_transition`'s allowed-action set at topic_editor.py:3870 to include `rejected_post_topic`, so post_topic rejection paths (collision, empty blocks) return tool_error instead of raising ValueError."
+    },
+    {
+      "id": "FLAG-002",
+      "resolution": "addressed",
+      "reason": "Removed the assert-empty-media language. Step 3 now specifies a strict ordering rule: existing legacy guards at topic_editor.py:1858-1890 run BEFORE any alias normalization, preserving the structured rejection `post_simple_cannot_attach_media_use_post_sectioned_topic` and the pinned test at tests/test_topic_editor_runtime.py:305-337. Added an explicit regression test in Step 7.1."
+    },
+    {
+      "id": "FLAG-003",
+      "resolution": "addressed",
+      "reason": "Step 3.1 generalizes the writeback at topic_editor.py:1849-1850 to fire for both `post_sectioned_topic` and `post_topic`, so `_attach_default_media_refs_to_blocks` results reach `args` and downstream `_summary_for_tool` for the unified path."
+    },
+    {
+      "id": "issue_hints",
+      "resolution": "addressed",
+      "reason": "Reversed the prior plan's recommendation to drop `body` from legacy-alias storage. Step 4 explicitly preserves the existing storage shape for legacy `post_sectioned_topic` (body+sections+blocks unchanged from current behavior at :3632-3641); only NEW `post_topic` calls store blocks-only. This eliminates the compatibility-sensitive divergence for downstream readers and is documented in Overview constraints, Step 4, and assumptions."
+    },
+    {
+      "id": "correctness-1",
+      "resolution": "addressed",
+      "reason": "Same fix as FLAG-001: Step 3.5 extends `build_rejected_transition` to accept `rejected_post_topic`. The rejected-action map at :1915-1919 is extended in Step 3.4 to map `post_topic` to `rejected_post_topic`."
+    },
+    {
+      "id": "correctness-2",
+      "resolution": "addressed",
+      "reason": "Same fix as FLAG-002: explicit ordering rule (legacy guards first, normalization second, alias re-keying third) ensures the existing structured rejection path runs before any new normalization code, so invalid legacy calls return tool_error as today instead of crashing."
+    },
+    {
+      "id": "scope",
+      "resolution": "addressed",
+      "reason": "Step 7.2 explicitly enumerates the update to `test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions` at tests/test_topic_editor_runtime.py:1380-1437: add `post_topic` to `configured_actions`, add `post_topic`/`rejected_post_topic` to `allowed_actions`, extend the configured-actions branch to detect `post_topic`, and assert that `build_rejected_transition` accepts `rejected_post_topic`."
+    },
+    {
+      "id": "all_locations-1",
+      "resolution": "addressed",
+      "reason": "Same fix as FLAG-003: Step 3.1 generalizes the writeback condition at topic_editor.py:1849-1850 to include `post_topic`. The explicit ordering rule in Step 3 places normalization+writeback before the alias re-keying step, so post_topic args carry the default-media-attached blocks into persistence."
+    },
+    {
+      "id": "all_locations-2",
+      "resolution": "addressed",
+      "reason": "Same fix as FLAG-001: Step 3.5 extends `build_rejected_transition`'s allowed-action set. Added to Step 1's audit list explicitly as 'critical supporting infrastructure' so the executor cannot miss it."
+    },
+    {
+      "id": "callers",
+      "resolution": "addressed",
+      "reason": "Step 4 defines an explicit handoff convention: `_summary_for_tool(tool_name, args)` is called with the ORIGINAL `call['name']` (not a normalized name), so telemetry labels stay tied to the original tool name while the function selects storage shape per branch. The branch order (`post_topic` first, `post_sectioned_topic` unchanged, `post_simple_topic` unchanged, `watch_topic` unchanged) is enumerated. Aliases keep their existing storage; only `post_topic` produces blocks-only."
+    }
+  ],
+  "questions": [
+    "Should the deprecated aliases emit a runtime warning (logger.warning) when invoked, so we can track when the model has stopped using them and we can remove the aliases later? (Cheap to add; useful signal \u2014 recommended yes.)",
+    "Confirm: legacy `post_sectioned_topic` storage shape stays exactly as today (`{body, sections, blocks?}`) \u2014 i.e. we preserve `body` even when `blocks` is present. The prior plan recommended dropping `body`; this revision reverses that to minimize downstream-reader compatibility risk. OK?",
+    "Is there any downstream consumer (analytics, replays, archive jobs) that filters on `action == 'post_simple'` or `'post_sectioned'` and would also need to start handling `'post_topic'`? The plan preserves legacy labels for aliases, but new writes will emit `post_topic` \u2014 confirm dashboards can absorb a new value or whether a follow-up dashboards-update ticket is needed."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "A unified `post_topic` tool definition exists in `TOPIC_EDITOR_TOOLS` with `blocks` as the only prose carrier (no top-level `body` field), required fields are `proposed_key`/`headline`/`source_message_ids`/`blocks`, and the tool description frames the choice as editorial complexity not media presence.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "parse_diff"
+      ]
+    },
+    {
+      "criterion": "`post_simple_topic` and `post_sectioned_topic` are still accepted at the model-call dispatch layer (no `unknown_tool` rejection), their tool descriptions are prefixed with `[DEPRECATED`, and their existing storage shapes at `_summary_for_tool` (`{body, media}` for simple, `{body, sections, blocks?}` for sectioned) are unchanged.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Existing legacy structural guards run BEFORE any alias normalization: a `post_simple_topic` call carrying media still returns the structured rejection `post_simple_cannot_attach_media_use_post_sectioned_topic` (action `rejected_post_simple`), pinning the current test at `tests/test_topic_editor_runtime.py:305-337`.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "A `post_topic` call carrying exactly one `intro` block with one `media_ref` is accepted, persists with `summary.blocks` length 1, has no `summary.body` and no `summary.sections`, and `render_topic_publish_units` produces exactly one text unit followed by one media unit with no section header markup.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "A `post_topic` call with empty `blocks` is rejected with action `rejected_post_topic`, reason `post_topic_requires_blocks`, and returns a tool_error transition (does NOT raise ValueError from `build_rejected_transition`).",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "A `post_topic` call that collides with an existing topic is rejected with action `rejected_post_topic`, reason `topic_collision`, and returns a tool_error transition (does NOT raise ValueError from `build_rejected_transition`). Confirms the helper's allowed-action set was extended to include `rejected_post_topic`.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "`build_rejected_transition` at topic_editor.py:3870 accepts `rejected_post_topic` in its allowed-action set in addition to `rejected_post_simple`, `rejected_post_sectioned`, and `rejected_watch`.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "The writeback at topic_editor.py:1849-1850 (default-media-attached `normalized_blocks` \u2192 `args['blocks']`) fires for both `post_sectioned_topic` and `post_topic`, so `_summary_for_tool` stores blocks that went through `_attach_default_media_refs_to_blocks`.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Existing `normalize_document_blocks` behaviour is unchanged: legacy `body`-only summaries become a single intro block, legacy `body`+`sections` summaries become intro+section blocks, and new-style summaries with `blocks` pass through.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "`TOPIC_EDITOR_SYSTEM_PROMPT` no longer contains the rule 'use sectioned for ANY media' or equivalent media\u2192sectioned steering, and instead contains explicit guidance that one creator + one artifact = one intro block.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "parse_diff"
+      ]
+    },
+    {
+      "criterion": "`TOPIC_EDITOR_SYSTEM_PROMPT` contains explicit brevity guidance (intro 1-3 sentences ~30-150 words; sections 1-2 sentences; no bullet lists) and at least one worked example showing a single-creator single-video topic as exactly one intro block, plus a labeled 'do not do this' counter-example.",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "The role label in `TOPIC_EDITOR_SYSTEM_PROMPT` is changed from 'BNDC live-update topic editor' to a non-editor framing (e.g. 'BNDC live-update writer' or 'live-update author').",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "The existing action-coverage test `test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions` at tests/test_topic_editor_runtime.py:1380-1437 is updated: `allowed_actions` includes `post_topic` and `rejected_post_topic`; `configured_actions` includes `post_topic`; and the test asserts `build_rejected_transition(... action='rejected_post_topic' ...)` returns a payload with `action == 'rejected_post_topic'`.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "The full pytest suite (`pytest -x -q`) passes after the change, with all topic-editor and live-update editor tests green.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "An end-to-end-style test simulating the NebSH 'Last Party' scenario (one author, one video drop, one reply, two praise comments) produces a topic with exactly one block when run through the topic editor's normalization + dispatch path.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Telemetry/action labels: new `post_topic` calls emit action `post_topic`; legacy alias calls retain `post_simple` / `post_sectioned` action labels. The `_summary_for_tool` call site passes the ORIGINAL `call['name']` (not a normalized name).",
+      "priority": "should",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "No new file exceeds ~400 added lines and `topic_editor.py` retains a clean separation between tool definitions, prompt constant, dispatch, normalization, and rendering.",
+      "priority": "should",
+      "requires": [
+        "read_files",
+        "subjective_judgment"
+      ]
+    },
+    {
+      "criterion": "On the next dev-environment live-update cron tick after merge, a single-author single-video topic posts as title + one paragraph + media (no separate 'The Video' / 'Audio' / 'Community Reaction' sections), and a genuinely multi-creator topic still posts as a multi-section document.",
+      "priority": "info",
+      "requires": [
+        "inspect_runtime_ui"
+      ]
+    }
+  ],
+  "assumptions": [
+    "No `TOPIC_EDITOR_DECISION_TOOLS` constant exists in the repo today; tool advertising is the order of `TOPIC_EDITOR_TOOLS` plus `WRITE_TOOL_NAMES`. The unified `post_topic` is listed first so the model sees it as the preferred entry point.",
+    "Legacy `post_simple_topic` calls keep their existing storage shape `{body, media}` at `_summary_for_tool` (topic_editor.py:3647). The alias is accepted; its current structured rejection on media (`post_simple_cannot_attach_media_use_post_sectioned_topic`) continues to fire because legacy guards run BEFORE any normalization. No new validation behavior for the simple-with-media case.",
+    "Legacy `post_sectioned_topic` calls keep their existing storage shape `{body, sections, blocks?}` at `_summary_for_tool` (topic_editor.py:3632-3641). This is a deliberate reversal of the prior plan's recommendation to drop `body`; the goal is to eliminate any compatibility risk for downstream readers that inspect `summary.body` directly on freshly stored alias rows. Only NEW `post_topic` calls produce blocks-only storage.",
+    "`build_rejected_transition` (topic_editor.py:3859-3871) must be extended to accept `rejected_post_topic` as part of this change; this is supporting infrastructure, not optional, because `_reject_create_tool` delegates to it and the new action label is required for post_topic rejection paths.",
+    "The writeback at topic_editor.py:1849-1850 (currently gated to `post_sectioned_topic`) must be extended to also fire for `post_topic`, ensuring default-media-attached blocks reach `args` and persistence.",
+    "Tool-name handoff convention: `_summary_for_tool` receives the ORIGINAL `call['name']` so telemetry/action labels remain tied to the original tool (e.g. `post_simple`/`post_sectioned` for legacy aliases, `post_topic` for the new tool). Storage shape selection in `_summary_for_tool` is by branch on the original name. Aliases keep existing shapes; only `post_topic` is new.",
+    "Validation/dispatch ordering is mandatory: tool-name acceptance \u2192 legacy structural guards (post_simple media, source-count) \u2192 block normalization + default-media attachment \u2192 alias re-keying for downstream validation \u2192 unified blocks-required guard \u2192 collision check \u2192 persistence. Reordering breaks `tests/test_topic_editor_runtime.py:305-337`.",
+    "`normalize_document_blocks` at topic_editor.py:3957 is the immutable backward-compatibility contract for stored-topic loading and is not modified.",
+    "The publisher path `render_topic_publish_units` (topic_editor.py:4124-4246) renders a one-intro-block topic cleanly without modification; the intro branch at lines 4165-4216 skips the title line for `type == \"intro\"`. If a Step 7 test surfaces a regression, that test dictates the minimal fix.",
+    "Out of scope (per brief, reaffirmed): the candidate-generator prompts in `live_update_prompts.py`, the per-section 'Share with your followers!' publisher CTA, the auto-shortlist media reaction-threshold logic, citation rendering style, and any DB migration for historical topic records."
+  ],
+  "delta_from_previous_percent": 0.0,
+  "structure_warnings": []
+}

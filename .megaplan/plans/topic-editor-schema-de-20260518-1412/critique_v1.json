@@ -1,0 +1,121 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "findings": [
+        {
+          "detail": "Checked the current prompt and tool surface in src/features/summarising/topic_editor.py:54-143 and 219-295 against the issue brief. The plan directly addresses the core user requirements: adding a blocks-only unified post_topic tool, removing the media-implies-sectioned prompt rule, adding brevity guidance and a one-video worked example, keeping source/media block rules, and preserving legacy post_simple_topic/post_sectioned_topic aliases.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked the proposed alias behavior against the brief's requirement that legacy tool calls keep working. The plan says legacy post_sectioned_topic calls with body + blocks should normalize to blocks-only storage and drop the top-level body; that is a deliberate divergence from the current storage behavior at src/features/summarising/topic_editor.py:3632-3641, which preserves body/sections alongside blocks for readability. This is probably consistent with the goal of dropping redundant prose for new writes, but it is still a compatibility-sensitive behavior change for any downstream reader that inspects newly stored alias summaries rather than using normalize_document_blocks.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "findings": [
+        {
+          "detail": "Checked rejection flow for create-topic tools. _reject_create_tool delegates to build_rejected_transition, and build_rejected_transition currently only accepts rejected_post_simple, rejected_post_sectioned, and rejected_watch at src/features/summarising/topic_editor.py:3859-3871. The plan says to add post_topic to the rejected-action map 'similarly' to accepted action_by_tool; if that becomes rejected_post_topic, any post_topic rejection such as topic_collision or post_topic_requires_blocks will raise ValueError unless build_rejected_transition is also extended or post_topic reuses an existing rejected action label.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked the current post_simple_topic media guard at src/features/summarising/topic_editor.py:1858-1880. The plan's proposed _normalize_post_topic_call says to synthesize an intro block for post_simple_topic and 'assert empty' legacy media, while also saying the legacy media/source-count guards remain intact. If the normalizer runs before those guards, an invalid post_simple_topic media call would crash or assert instead of returning the current structured rejection post_simple_cannot_attach_media_use_post_sectioned_topic, so the plan needs to specify graceful normalization or validation ordering.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked the publisher rendering path at src/features/summarising/topic_editor.py:4165-4195. The plan's assertion that a single intro block does not emit a section title is correct: section header markup is only added for block['type'] == 'section' with a title, while intro blocks receive the topic header and text only before media refs are appended.",
+          "flagged": false
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "findings": [
+        {
+          "detail": "Searched src/ and tests/ for post_simple_topic, post_sectioned_topic, TOPIC_EDITOR_DECISION_TOOLS, and the 'Share with your followers' CTA. There is no TOPIC_EDITOR_DECISION_TOOLS constant and no CTA string in this repo, so the plan's assumption that tool advertising is TOPIC_EDITOR_TOOLS plus prompt/tool ordering matches the actual codebase, and publisher CTA changes are not actionable here.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked tests/test_topic_editor_runtime.py and tests/test_topic_editor_core.py references. Existing tests assert old post_simple media rejection behavior, post_sectioned block storage, configured action coverage, and build_rejected_transition accepted action values; the plan includes adding new tests but does not explicitly call out updating the action-coverage/build_rejected_transition tests around tests/test_topic_editor_runtime.py:1388-1428. This is supporting test work rather than product logic, but it is a likely failure point if a new post_topic/rejected_post_topic action is introduced.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "findings": [
+        {
+          "detail": "Checked all current dispatch/integration gates for create-topic tools: WRITE_TOOL_NAMES at src/features/summarising/topic_editor.py:43-51, _dispatch_tool_call at 1059, _is_collision_override_retry at 2441, _tool_summary at 2855, action_by_tool at 1852-1856, rejected_action at 1915-1919, and _summary_for_tool at 3631-3647. The plan identifies most of these locations, including idempotency and override-retry gates, so the high-level wiring inventory is largely complete.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked the block normalization/default-media branch at src/features/summarising/topic_editor.py:1844-1850. It currently writes normalized/default-media blocks back into args only when call['name'] == 'post_sectioned_topic'. The plan says validation and persistence should deal with the unified blocks shape, but its specific line-by-line edits do not mention changing this condition for post_topic; if missed, post_topic summaries produced by _summary_for_tool could store unnormalized blocks and lose automatically attached default media_refs even though validation/transition payloads saw normalized_blocks.",
+          "flagged": true
+        },
+        {
+          "detail": "Checked build_rejected_transition at src/features/summarising/topic_editor.py:3859-3871 as supporting infrastructure for rejected create-topic actions. The plan updates dispatch maps but omits this helper, so a new rejected_post_topic action would not be accepted by the transition builder unless the executor also updates this lower-level allowed-action set.",
+          "flagged": true
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "findings": [
+        {
+          "detail": "Checked callers and consumers of normalize_document_blocks: tests/test_topic_editor_core.py exercises body-only, body+sections, and blocks cases; topic_editor.py uses it for source derivation at 1598, topic normalization at 4058, and rendering at 4148. The plan's instruction not to change normalize_document_blocks preserves the current stored-topic compatibility contract, and the proposed new tests cover the legacy body+sections path.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked _summary_for_tool callers. _dispatch_create_topic_tool passes call['name'] and the mutable args dict to _summary_for_tool at src/features/summarising/topic_editor.py:1940, so the correctness of post_topic storage depends on args being normalized before that point. The plan adds a post_topic branch to _summary_for_tool, but the current caller passes legacy and new tool names directly; without an explicit 'original tool name vs normalized tool name' convention, it is easy to either lose legacy telemetry labels or store the wrong summary shape for aliases.",
+          "flagged": true
+        }
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "id": "FLAG-001",
+      "concern": "Topic-editor rejected transitions: adding a distinct rejected_post_topic label requires updating build_rejected_transition's allowed action set; otherwise post_topic rejection paths raise ValueError instead of returning tool_error.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "_reject_create_tool calls build_rejected_transition (src/features/summarising/topic_editor.py:2328-2350), and build_rejected_transition currently allows only rejected_post_simple, rejected_post_sectioned, and rejected_watch (src/features/summarising/topic_editor.py:3859-3871)."
+    },
+    {
+      "id": "FLAG-002",
+      "concern": "Topic-editor alias normalization: asserting empty media for legacy post_simple_topic can bypass the existing graceful rejection path if normalization runs before legacy validation.",
+      "category": "correctness",
+      "severity_hint": "likely-significant",
+      "evidence": "The plan proposes an assert in _normalize_post_topic_call for post_simple_topic media, while current dispatch returns a structured rejection for post_simple media at src/features/summarising/topic_editor.py:1858-1880 and tests assert that behavior in tests/test_topic_editor_runtime.py:305-337."
+    },
+    {
+      "id": "FLAG-003",
+      "concern": "Topic-editor post_topic persistence: normalized/default media_refs may not be written back to args for post_topic unless the current post_sectioned-only assignment is generalized.",
+      "category": "completeness",
+      "severity_hint": "uncertain",
+      "evidence": "After _attach_default_media_refs_to_blocks, src/features/summarising/topic_editor.py:1844-1850 assigns args['blocks'] = normalized_blocks only for post_sectioned_topic; the plan's specific edits do not mention this condition, while _summary_for_tool later stores from args at src/features/summarising/topic_editor.py:1940 and 3631-3647."
+    },
+    {
+      "id": "verifiability-0",
+      "concern": "Criterion 10: requires human verification (subjective_judgment).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-1",
+      "concern": "Criterion 12: requires human verification (inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    }
+  ],
+  "verified_flag_ids": [],
+  "disputed_flag_ids": []
+}

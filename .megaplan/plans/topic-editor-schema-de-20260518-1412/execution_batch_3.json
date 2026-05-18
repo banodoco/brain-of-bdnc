@@ -1,0 +1,82 @@
+{
+  "output": "Batch 3 completed. `post_topic` now routes through create-topic dispatch and has the required rejection/action plumbing. The topic-editor system prompt now uses the writer framing, steers publishing to `post_topic`, removes media-to-sectioned bias, and adds the single-beat/brevity example guidance. Checkpoint written to `.megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_3.json`.",
+  "files_changed": [
+    "src/features/summarising/topic_editor.py",
+    ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_3.json"
+  ],
+  "commands_run": [
+    "sed -n '54,143p' src/features/summarising/topic_editor.py",
+    "sed -n '1048,1064p' src/features/summarising/topic_editor.py && sed -n '1838,1928p' src/features/summarising/topic_editor.py && sed -n '3860,3880p' src/features/summarising/topic_editor.py",
+    "rg -n \"use sectioned for ANY media|BNDC live-update topic editor|post_sectioned_topic|post_simple_topic|TOPIC_EDITOR_SYSTEM_PROMPT\" tests",
+    "rg -n \"jsonschema|validate|input_schema|required|minItems|unknown_tool|post_simple_topic|post_sectioned_topic|watch_topic\" src/features/summarising/topic_editor.py",
+    "nl -ba src/features/summarising/topic_editor.py | sed -n '1020,1070p' && nl -ba src/features/summarising/topic_editor.py | sed -n '1870,1975p' && nl -ba src/features/summarising/topic_editor.py | sed -n '2430,2460p' && nl -ba src/features/summarising/topic_editor.py | sed -n '3905,3925p'",
+    "nl -ba src/features/summarising/topic_editor.py | sed -n '1070,1130p' && nl -ba src/features/summarising/topic_editor.py | sed -n '2460,2520p' && nl -ba src/features/summarising/topic_editor.py | sed -n '3925,3948p'",
+    "sed -n '54,165p' src/features/summarising/topic_editor.py",
+    "nl -ba src/features/summarising/topic_editor.py | sed -n '1070,1125p' && nl -ba src/features/summarising/topic_editor.py | sed -n '1900,1988p' && nl -ba src/features/summarising/topic_editor.py | sed -n '2495,2508p' && nl -ba src/features/summarising/topic_editor.py | sed -n '2920,2930p' && nl -ba src/features/summarising/topic_editor.py | sed -n '3930,3935p'",
+    "rg -n \"BNDC live-update topic editor|For multi-source / multi-section topics|ANY topic that includes|use sectioned for ANY media|post_sectioned_topic over|The Video|Audio|Community Reaction|BNDC live-update writer|post_topic|deprecated|1-3 sentences|30-150|No bullet lists|source_message_ids|media_refs|No global Sources footer|Canonical media-ref\" src/features/summarising/topic_editor.py tests",
+    "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+    "nl -ba src/features/summarising/topic_editor.py | sed -n '1128,1158p' && nl -ba src/features/summarising/topic_editor.py | sed -n '1984,2036p' && nl -ba src/features/summarising/topic_editor.py | sed -n '2540,2548p' && nl -ba src/features/summarising/topic_editor.py | sed -n '2950,2964p' && nl -ba src/features/summarising/topic_editor.py | sed -n '3970,3976p'",
+    "pytest tests/test_topic_editor_media_understanding.py -q",
+    "pytest tests/test_topic_editor_core.py -q",
+    "git diff -- src/features/summarising/topic_editor.py | sed -n '1,260p'",
+    "test -e .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_3.json && echo exists || echo missing"
+  ],
+  "deviations": [
+    "`pytest tests/test_topic_editor_core.py -q` failed on `TestRenderTopicPublishUnits.test_intro_text_renders_with_header_and_inline_citations`: expected `## Live update: Test Topic`, actual current renderer output is `## Test Topic`. The renderer code was not changed in this batch, so I did not alter publisher behavior here.",
+    "Advisory quality: code changes lacked test updates: src/features/summarising/topic_editor.py.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_3.json",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/briefs/agentkit-migration/, .megaplan/briefs/live-update-social-chain/, .megaplan/briefs/topic-editor-deconflation/, .megaplan/debt.json, agentkit-migration-chain.yaml, cloud.yaml, live-update-social-megaplan-chain.yaml",
+    "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Tasks left pending after execute (executor never started them): T4, T8, T9"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T3",
+      "status": "done",
+      "executor_notes": "Extended dispatch for `post_topic` without changing summary storage (T4 remains pending). `_dispatch_tool_call` now routes `post_topic` to `_dispatch_create_topic_tool`; normalized block writeback now writes `args[\"blocks\"]` for both `post_sectioned_topic` and `post_topic`; `action_by_tool` maps `post_topic` to `post_topic`; the blocks-required guard is split so `post_topic` rejects unconditionally on `not has_blocks` with `rejected_post_topic` / `post_topic_requires_blocks`, while legacy `post_sectioned_topic` preserves existing `not has_sections and not has_blocks` semantics and reason; the collision rejection map includes `post_topic: rejected_post_topic`; `build_rejected_transition` now accepts `rejected_post_topic`; idempotent collision override retry and tool input hint helper include `post_topic` so override retries and trace hints work for the new tool. Legacy `post_simple_topic` media/raw-media-ref and source/author-count guards remain in their existing order before the new split block-required guard. Syntax parse passed.",
+      "files_changed": [
+        "src/features/summarising/topic_editor.py"
+      ],
+      "commands_run": [
+        "nl -ba src/features/summarising/topic_editor.py | sed -n '1128,1158p'",
+        "nl -ba src/features/summarising/topic_editor.py | sed -n '1931,2022p'",
+        "nl -ba src/features/summarising/topic_editor.py | sed -n '2540,2548p'",
+        "nl -ba src/features/summarising/topic_editor.py | sed -n '2950,2964p'",
+        "nl -ba src/features/summarising/topic_editor.py | sed -n '3968,3974p'",
+        "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+        "pytest tests/test_topic_editor_media_understanding.py -q",
+        "pytest tests/test_topic_editor_core.py -q"
+      ],
+      "auto_attributed_files": false
+    },
+    {
+      "task_id": "T6",
+      "status": "done",
+      "executor_notes": "Rewrote `TOPIC_EDITOR_SYSTEM_PROMPT`: role is now `BNDC live-update writer`; `post_topic` is named as the primary publishing tool; legacy `post_simple_topic` and `post_sectioned_topic` are listed once as deprecated/backward-compatible aliases; the media-to-sectioned rule was removed; editorial minimalism now states a single creator dropping one artifact is exactly one `intro` block with media attached, and warns against splitting one video into `The Video` / `Audio` / `Community Reaction` sections; brevity guidance now specifies intro body 1-3 sentences / roughly 30-150 words, section body 1-2 sentences, no bullet lists in posted prose, no padding, and no filler restatement of the title; a worked NebSH-style one-video example shows exactly one intro block with a `media_ref`, followed by a labeled `Don't do this` counter-example using three sections. Preserved the per-block source attribution rule, per-block media attachment rule, canonical media-ref shape, no-global-Sources-footer rule, block type guidance, and message_id-not-CDN guidance. Grep found no tests asserting the retired prompt strings (`BNDC live-update topic editor`, media-to-sectioned wording, or `post_sectioned_topic over`).",
+      "files_changed": [
+        "src/features/summarising/topic_editor.py"
+      ],
+      "commands_run": [
+        "sed -n '54,165p' src/features/summarising/topic_editor.py",
+        "rg -n \"BNDC live-update topic editor|For multi-source / multi-section topics|ANY topic that includes|post_sectioned_topic over|use sectioned for ANY media\" src/features/summarising/topic_editor.py tests",
+        "rg -n \"BNDC live-update writer|Use the minimum number of blocks|single artifact = exactly ONE|1-3 sentences|30-150|Section block body: 1-2|No bullet lists|Don't do this|Canonical media-ref shape|No global Sources footer\" src/features/summarising/topic_editor.py",
+        "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+        "pytest tests/test_topic_editor_media_understanding.py -q",
+        "pytest tests/test_topic_editor_core.py -q"
+      ],
+      "auto_attributed_files": false
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC3",
+      "executor_note": "SC3 satisfied: writeback covers `post_sectioned_topic` and `post_topic`; action map includes `post_topic`; split guards are present with `post_topic` checking `not has_blocks` without consulting `has_sections`; collision map includes `rejected_post_topic`; `build_rejected_transition` accepts `rejected_post_topic`; legacy simple media/source-count guards remain before the new split blocks-required guard."
+    },
+    {
+      "sense_check_id": "SC6",
+      "executor_note": "SC6 satisfied: prompt no longer contains old media-to-sectioned steering or the old editor role label; it contains the one-creator/one-artifact/minimum-blocks rule, brevity guidance, worked one-video intro-block example and labeled counter-example; source attribution, media attachment, canonical media_ref, and no-global-Sources-footer safety rails are preserved. Grep found no obsolete prompt-string tests to update."
+    }
+  ]
+}

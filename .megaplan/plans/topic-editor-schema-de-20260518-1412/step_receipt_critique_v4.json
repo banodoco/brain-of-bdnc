@@ -1,0 +1,43 @@
+{
+  "receipt_id": "bec533fe-d15d-4fcd-8dab-8b0b624a1664",
+  "plan_id": "topic-editor-schema-de-20260518-1412",
+  "phase": "critique",
+  "iteration": 4,
+  "attempt": 1,
+  "timestamp_utc": "2026-05-18T13:10:05.883153+00:00",
+  "profile_name": null,
+  "agent": "codex",
+  "agent_mode": "persistent",
+  "model_configured": null,
+  "model_actual": "gpt-5.5",
+  "session_id": "019e3b0e-85c3-72a2-9a47-4a4d0b0c47d7",
+  "megaplan_version": "0.21.0",
+  "schema_version": 1,
+  "prompt_hash_raw": "1c9c6c0e0c20f6af63275a5dab33345ee5dd772927f889d5b7bf52f2e5698604",
+  "prompt_hash_canonical": "761a8f8d5a45252512f59a9e47a7a9b32764223925225d304e316d996856e1c3",
+  "canonicalization_version": 1,
+  "upstream_artifact_hashes": [
+    "sha256:e2b934e006f3876238b7bbe2d02f7df2a3cabc09a32089c24e9cc01b6629c1f7"
+  ],
+  "cost_usd": 4.595257,
+  "duration_ms": 88791,
+  "prompt_tokens": 4178261,
+  "completion_tokens": 27960,
+  "verdict": null,
+  "metrics": {
+    "findings_per_check": {
+      "issue_hints": 2,
+      "correctness": 2,
+      "scope": 2,
+      "all_locations": 2,
+      "callers": 2
+    },
+    "severity_distribution": {
+      "unknown": 10
+    },
+    "clean_checks_count": 0,
+    "flagged_checks_count": 5,
+    "rubber_stamp_ratio": 0.0
+  },
+  "scope_drift_severity": null
+}

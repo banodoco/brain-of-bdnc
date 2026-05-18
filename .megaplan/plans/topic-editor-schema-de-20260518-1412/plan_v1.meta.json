@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "timestamp": "2026-05-18T12:27:37Z",
+  "hash": "sha256:42126786a0d46c0e3ec100937465dd7e5f3fdcd407fa33e47ca2a381ef405498",
+  "questions": [
+    "Should the unified `post_topic` tool emit a separate runtime action label (e.g. `\"post_topic\"`) in telemetry, or should it reuse `\"post_simple\"` / `\"post_sectioned\"` based on block count so existing dashboards keep working? (Recommendation: emit `\"post_topic\"` and keep legacy labels only for the deprecated aliases.)",
+    "When a legacy `post_sectioned_topic` call arrives with both a top-level `body` AND a `blocks` array, should the normalization drop `body` from the stored summary (treating blocks as the source of truth) or preserve it for downstream readers? (Recommendation: drop, to enforce one source of truth going forward; legacy stored rows are unaffected because we are not migrating data.)",
+    "Is there an LLM model-routing config that advertises tool preference to the model (e.g. ordering in `TOPIC_EDITOR_TOOLS` or a `tool_choice` setting)? The brief mentions `TOPIC_EDITOR_DECISION_TOOLS` but the repo only contains `WRITE_TOOL_NAMES` / `TOPIC_EDITOR_TOOLS`. Assuming none \u2014 confirmation requested so we know whether further steering changes are needed.",
+    "Should the deprecated aliases emit a runtime warning (logger.warning) when invoked, so we can track when the model has stopped using them and we can remove the aliases later? (Cheap to add; useful signal.)"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "A unified `post_topic` tool definition exists in `TOPIC_EDITOR_TOOLS` with `blocks` as the only prose carrier (no top-level `body` field), required fields are `proposed_key`/`headline`/`source_message_ids`/`blocks`, and the tool description frames the choice as editorial complexity not media presence.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "parse_diff"
+      ]
+    },
+    {
+      "criterion": "`post_simple_topic` and `post_sectioned_topic` are still accepted at the model-call dispatch layer (no `unknown_tool` rejection for either), and their tool descriptions are prefixed with `[DEPRECATED`.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "A `post_topic` call carrying exactly one `intro` block with one `media_ref` is accepted, persists with `summary.blocks` length 1, has no `summary.body` and no `summary.sections`, and `render_topic_publish_units` produces exactly one text unit followed by one media unit with no section header markup.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "A `post_topic` call with empty `blocks` is rejected with a clear reason (e.g. `post_topic_requires_blocks`).",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Existing `normalize_document_blocks` behaviour is unchanged: legacy `body`-only summaries become a single intro block, legacy `body`+`sections` summaries become intro+section blocks, and new-style summaries with `blocks` pass through.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "`TOPIC_EDITOR_SYSTEM_PROMPT` no longer contains the rule \"use sectioned for ANY media\" or equivalent media\u2192sectioned steering, and instead contains explicit guidance that one creator + one artifact = one intro block.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "parse_diff"
+      ]
+    },
+    {
+      "criterion": "`TOPIC_EDITOR_SYSTEM_PROMPT` contains explicit brevity guidance (intro 1-3 sentences ~30-150 words; sections 1-2 sentences; no bullet lists) and at least one worked example showing a single-creator single-video topic as exactly one intro block.",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "The role label in `TOPIC_EDITOR_SYSTEM_PROMPT` is changed from \"BNDC live-update topic editor\" to a non-editor framing (e.g. \"BNDC live-update writer\" or \"live-update author\").",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "The full pytest suite (`pytest -x -q`) passes after the change, with all topic-editor and live-update editor tests green.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "An end-to-end-style test simulating the NebSH \"Last Party\" scenario (one author, one video drop, one reply, two praise comments) produces a topic with exactly one block when run through the topic editor's normalization + dispatch path.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "No new file exceeds ~400 added lines and `topic_editor.py` retains a clean separation between tool definitions, prompt constant, dispatch, normalization, and rendering \u2014 i.e. the alias-normalization helper is colocated with `_summary_for_tool` and not scattered through dispatch.",
+      "priority": "should",
+      "requires": [
+        "read_files",
+        "subjective_judgment"
+      ]
+    },
+    {
+      "criterion": "Telemetry/action labels for legacy alias calls remain `post_simple` / `post_sectioned` so existing dashboards continue to slice historical data without rewriting.",
+      "priority": "should",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "On the next dev-environment live-update cron tick after merge, a single-author single-video topic posts as title + one paragraph + media (no separate \"The Video\" / \"Audio\" / \"Community Reaction\" sections), and a genuinely multi-creator topic still posts as a multi-section document.",
+      "priority": "info",
+      "requires": [
+        "inspect_runtime_ui"
+      ]
+    }
+  ],
+  "assumptions": [
+    "No `TOPIC_EDITOR_DECISION_TOOLS` constant exists in the repo today; tool advertising is the order of `TOPIC_EDITOR_TOOLS` plus `WRITE_TOOL_NAMES`. The unified `post_topic` will be listed first among the write tools so the model sees it as the preferred entry point.",
+    "Legacy `post_simple_topic` calls in practice never carry media (the current code rejects them with `post_simple_cannot_attach_media_use_post_sectioned_topic` at `topic_editor.py:1860-1880`); the alias normalizer therefore does not need to handle the media-carrying simple case.",
+    "The brief's reference to `normalize_document_blocks` at `topic_editor.py:3957` is the live contract for stored-topic backward compatibility; this function will not be modified.",
+    "The publisher path (`render_topic_publish_units` at `topic_editor.py:4124`) already renders a one-intro-block topic cleanly (header + intro text + media units, no orphan section markup), confirmed by reading lines 4165-4216. No publisher code changes are needed; if a test in Step 5 surfaces a regression, that test will dictate the minimal fix.",
+    "When a legacy `post_sectioned_topic` call provides both `body` and `blocks`, the alias normalizer drops the top-level `body` from the stored summary (blocks become the single source of truth). Stored historical rows still load via `normalize_document_blocks` and are unaffected.",
+    "The action labels for telemetry will be: new `post_topic` calls \u2192 action `\"post_topic\"`; legacy alias calls keep `\"post_simple\"` / `\"post_sectioned\"` to preserve historical telemetry slicing.",
+    "Tests run via `pytest` from the repo root with no special markers; the existing `tests/test_topic_editor_runtime.py` already exercises the dispatch pipeline deterministically without the real Anthropic API, so new tests can follow the same pattern.",
+    "Out of scope (per brief): the candidate-generator prompts in `live_update_prompts.py`, the per-section \"Share with your followers!\" publisher CTA, the auto-shortlist media reaction-threshold logic, citation rendering style, and any DB migration for historical topic records.",
+    "No `Share with your followers!` string was found in the repo via grep; that CTA may live in a different repo (social-publisher service) and is explicitly out of scope here."
+  ],
+  "structure_warnings": []
+}

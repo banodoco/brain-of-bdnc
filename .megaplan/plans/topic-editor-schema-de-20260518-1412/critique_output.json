@@ -1,0 +1,157 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "guidance": "Cross-check the result against explicit user notes, critique corrections, and watch items. Flag anything the implementation ignored, contradicted, or only partially covered.",
+      "findings": [
+        {
+          "detail": "Checked the revised plan against the explicit user requirements. It now covers the unified post_topic tool, deprecated aliases, blocks-only storage for new post_topic calls, prompt rewrite, publisher verification, tests, and the previously missed auto-shortlist suggested_actions steering string at src/features/summarising/topic_editor.py:2154-2160.",
+          "flagged": false
+        },
+        {
+          "detail": "Verified FLAG-005 is now addressed in the plan: Step 1 adds the auto-shortlist suggested-actions string to the audit list, Step 5 replaces the literal post_sectioned_topic token with post_topic, and Step 8 adds a regression test asserting suggested_actions contains post_topic and not post_sectioned_topic.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the current plan version against the prior legacy-storage and prompt/tool requirements. The plan still preserves legacy alias storage shapes and still covers the prompt/tool description rewrite, so those parts remain clear.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Checked the remaining model-visible steering surfaces in the repository. The plan still does not mention the auto-shortlisted topic summary at src/features/summarising/topic_editor.py:2154-2160, which includes `post_sectioned_topic, watch_topic/update sources, or discard_topic`; because those summaries are included in active_topics payloads, FLAG-005 remains open.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "guidance": "Look for logic errors, invalid assumptions, broken invariants, schema mismatches, or behavior that would fail at runtime. When the fix adds a conditional branch, check whether it handles all relevant cases \u2014 not just the one reported in the issue.",
+      "findings": [
+        {
+          "detail": "Verified FLAG-004 is now addressed in the plan: Step 3.3 replaces the combined post_sectioned_topic/post_topic guard with separate branches, and the post_topic branch rejects when not has_blocks without consulting has_sections. This closes the blocks: [] plus stray sections bypass at the dispatch layer.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked the schema and validation layering. The plan adds minItems: 1 to post_topic.blocks and also keeps the dispatch-level post_topic_requires_blocks guard, so direct tests or permissive tool-schema behavior still reach a deterministic tool_error rejection for empty blocks.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the previously addressed rejection infrastructure and legacy guard ordering. The plan still explicitly extends build_rejected_transition for rejected_post_topic and preserves legacy post_simple_topic media/source-count rejections before normalization, so those concerns remain resolved.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Checked the proposed blocks-required guard. The plan still uses the combined sectioned/post_topic condition `not has_sections and not has_blocks`, so a post_topic call with `blocks: []` and a stray non-empty legacy `sections` array can still bypass `post_topic_requires_blocks`; FLAG-004 remains open.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "guidance": "Look at how the changed function is used across the codebase. Does the fix only address one caller's scenario while others remain broken? Flag missing required work or out-of-scope edits. A minimal patch is often right, but check whether the underlying problem is bigger than what the issue describes.",
+      "findings": [
+        {
+          "detail": "Re-checked related code paths that expose tool names to the model. The plan now covers the primary system prompt, TOPIC_EDITOR_TOOLS descriptions, and the auto-shortlist suggested_actions string; no TOPIC_EDITOR_DECISION_TOOLS constant or in-repo Share with your followers CTA path exists.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked the out-of-scope boundary around auto-shortlisting. The plan only edits the suggested_actions string and explicitly leaves reaction-threshold logic unchanged, which matches the issue's need to remove steering without broadening into unrelated shortlist behavior.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Re-checked the broader symbol search. There is still no TOPIC_EDITOR_DECISION_TOOLS constant and no in-repo 'Share with your followers' CTA path, so the plan's stated scope remains correct for those items.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "The related auto-shortlist media-publication path remains uncovered. It stores a suggested action naming post_sectioned_topic at src/features/summarising/topic_editor.py:2159, so the plan still updates the primary prompt/tool schema but misses a related model-visible steering source; FLAG-005 remains open.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "guidance": "Search for all instances of the symbol/pattern being changed. Also ask: does this feature require setup, registration, or integration code beyond the core logic? Missing glue code causes test failures even when the core fix is correct.",
+      "findings": [
+        {
+          "detail": "Checked the plan's touch-point inventory against the repository. It now includes the prior missing locations: build_rejected_transition at src/features/summarising/topic_editor.py:3859-3871, normalized block writeback around 1844-1850, the split guard around 1893-1905, and auto-shortlist suggested_actions at 2154-2160.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked test support coverage in the plan. Step 8 includes regression tests for rejected_post_topic, empty blocks with stray sections, auto-shortlist suggested_actions, legacy alias behavior, action vocabulary, and the NebSH-style single-block smoke path, which covers the relevant supporting infrastructure.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the main integration locations again: WRITE_TOOL_NAMES, create-tool dispatch, action maps, build_rejected_transition, _summary_for_tool, normalized block writeback, and action-vocabulary tests are still enumerated by the plan.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "The plan's audit list still omits src/features/summarising/topic_editor.py:2159, where auto-shortlisted topics name post_sectioned_topic in summary.suggested_actions. That is a supporting location for this tool-name and model-steering migration, so FLAG-005 remains open.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "guidance": "Grep for call sites. For each caller, check what values it passes \u2014 especially edge cases like None, zero, empty, or composite inputs. Then ask: should this change be here, or in a caller, callee, or new method?",
+      "findings": [
+        {
+          "detail": "Checked the _summary_for_tool caller convention against the current call site at src/features/summarising/topic_editor.py:1940. The plan keeps the original tool name for telemetry/storage selection and only adds a post_topic branch for new blocks-only storage, so legacy callers keep their current shapes.",
+          "flagged": false
+        },
+        {
+          "detail": "Checked caller edge cases for post_topic inputs. The plan now explicitly covers blocks: [] plus stray sections with a dedicated dispatch guard and regression test, so permissive direct calls and extra-field leakage do not satisfy the post_topic contract.",
+          "flagged": false
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Checked the _summary_for_tool caller convention again. The plan still clearly preserves original tool names at the call site and selects storage shape by original name, which handles the prior telemetry/storage ambiguity.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "The post_topic caller/input edge case remains: because extra fields are not explicitly forbidden in the planned schema and the guard consults `sections` for post_topic, a caller can still provide `blocks: []` plus legacy sections and defeat the non-empty-blocks contract; FLAG-004 remains open.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    }
+  ],
+  "flags": [],
+  "verified_flag_ids": [
+    "FLAG-001",
+    "FLAG-002",
+    "FLAG-003",
+    "FLAG-004",
+    "FLAG-005",
+    "issue_hints",
+    "correctness",
+    "correctness-1",
+    "correctness-2",
+    "scope",
+    "all_locations",
+    "all_locations-1",
+    "all_locations-2",
+    "callers"
+  ],
+  "disputed_flag_ids": []
+}

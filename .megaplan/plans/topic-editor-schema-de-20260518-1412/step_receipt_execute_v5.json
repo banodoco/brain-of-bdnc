@@ -1,0 +1,411 @@
+{
+  "receipt_id": "345d2c73-0fe4-45cb-a6d7-55f541c1c5aa",
+  "plan_id": "topic-editor-schema-de-20260518-1412",
+  "phase": "execute",
+  "iteration": 5,
+  "attempt": 1,
+  "timestamp_utc": "2026-05-18T14:27:58.453404+00:00",
+  "profile_name": null,
+  "agent": "codex",
+  "agent_mode": "persistent",
+  "model_configured": null,
+  "model_actual": null,
+  "session_id": "019e3b66-a5ce-7e82-b9df-388f0889fabb",
+  "megaplan_version": "0.21.0",
+  "schema_version": 1,
+  "prompt_hash_raw": null,
+  "prompt_hash_canonical": null,
+  "canonicalization_version": 1,
+  "upstream_artifact_hashes": [
+    "sha256:175c0dc412a96513410511ea855a7abcde507bedeaea009fd812586fd6764cff"
+  ],
+  "cost_usd": 39.340423,
+  "duration_ms": 1435843,
+  "prompt_tokens": 37429061,
+  "completion_tokens": 202489,
+  "verdict": "success",
+  "metrics": {
+    "files_claimed": 5,
+    "files_in_diff": 10,
+    "scope_drift_files_added": 9,
+    "scope_drift_files_missing": 4,
+    "loc_added": 920,
+    "loc_removed": 0,
+    "loc_added_outside_claimed": 757,
+    "commands_run_count": 45,
+    "advisory_issues_count": 0,
+    "blocking_issues_count": 0,
+    "per_task_files_claimed_count": 14,
+    "batches": [
+      {
+        "output": "Batch 1 completed as a read-only audit. No source or test files were modified. I checkpointed the audit notes to `.megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_1.json`.",
+        "files_changed": [
+          ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_1.json"
+        ],
+        "commands_run": [
+          "rg -n \"post_simple_topic|post_sectioned_topic\" src tests",
+          "rg -n \"Share with your followers|render_topic_publish_units|WRITE_TOOL_NAMES|TOPIC_EDITOR_SYSTEM_PROMPT|TOPIC_EDITOR_TOOLS|build_rejected_transition|_summary_for_tool|suggested_actions\" src/features/summarising/topic_editor.py tests",
+          "rg --files tests | rg \"test_topic_editor|test_live_update_editor|test_backfill_live_update_topics\"",
+          "sed -n '35,155p' src/features/summarising/topic_editor.py",
+          "sed -n '210,305p' src/features/summarising/topic_editor.py",
+          "sed -n '1835,1930p' src/features/summarising/topic_editor.py",
+          "sed -n '2145,2165p' src/features/summarising/topic_editor.py",
+          "sed -n '2838,2900p' src/features/summarising/topic_editor.py",
+          "sed -n '3620,3658p' src/features/summarising/topic_editor.py",
+          "sed -n '3850,3885p' src/features/summarising/topic_editor.py",
+          "sed -n '4110,4255p' src/features/summarising/topic_editor.py",
+          "rg -n \"Share with your followers|followers\" src tests",
+          "sed -n '2400,2460p' src/features/summarising/topic_editor.py",
+          "sed -n '2900,3005p' src/features/summarising/topic_editor.py",
+          "sed -n '3945,4025p' src/features/summarising/topic_editor.py",
+          "sed -n '4025,4075p' src/features/summarising/topic_editor.py",
+          "sed -n '245,390p' tests/test_topic_editor_runtime.py",
+          "sed -n '1370,1445p' tests/test_topic_editor_runtime.py",
+          "sed -n '2130,2335p' tests/test_topic_editor_runtime.py",
+          "rg -n \"use sectioned|ANY media|BNDC live-update topic editor|post_sectioned_topic|post_simple_topic|TOPIC_EDITOR_SYSTEM_PROMPT|TOPIC_EDITOR_TOOLS\" tests/test_topic_editor_core.py tests/test_topic_editor_runtime.py tests/test_topic_editor_media_understanding.py tests/test_backfill_live_update_topics.py tests/test_live_update_editor_publishing.py tests/test_live_update_editor_lifecycle.py",
+          "sed -n '280,640p' tests/test_topic_editor_core.py",
+          "sed -n '940,995p' tests/test_topic_editor_core.py",
+          "sed -n '540,570p' tests/test_topic_editor_media_understanding.py",
+          "sed -n '2635,2755p' tests/test_topic_editor_runtime.py",
+          "rg -n \"post_sectioned_topic|post_simple_topic|render_topic_publish_units|normalize_document_blocks|build_rejected_transition\" tests/test_backfill_live_update_topics.py tests/test_live_update_editor_publishing.py tests/test_live_update_editor_lifecycle.py",
+          "rg -n \"post_simple_topic|post_sectioned_topic\" src/features/summarising/live_update_editor.py src/features/summarising/summariser_cog.py src/features/sharing || true",
+          "ls -l .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_1.json 2>/dev/null || true",
+          "test -d .megaplan/plans/topic-editor-schema-de-20260518-1412 && echo dir_exists || echo no_dir",
+          "git status --short"
+        ],
+        "deviations": [
+          "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_1.json",
+          "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/briefs/agentkit-migration/, .megaplan/briefs/live-update-social-chain/, .megaplan/briefs/topic-editor-deconflation/, .megaplan/debt.json, agentkit-migration-chain.yaml, cloud.yaml, live-update-social-megaplan-chain.yaml",
+          "Advisory audit finding: Sense check SC2 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+          "Advisory audit finding: Tasks left pending after execute (executor never started them): T2, T3, T4, T5, T6, T7, T8, T9"
+        ],
+        "task_updates": [
+          {
+            "task_id": "T1",
+            "status": "done",
+            "executor_notes": "Read-only audit completed. Grep `post_simple_topic|post_sectioned_topic` across `src/` and `tests/` found the expected topic-editor surface plus runtime/core test coverage. Code touch points verified in `src/features/summarising/topic_editor.py`: `WRITE_TOOL_NAMES` currently includes `post_simple_topic`, `post_sectioned_topic`, `watch_topic`, `update_topic_source_messages`, `discard_topic`, `record_observation`, `finalize_run` and does not include `post_topic`; `TOPIC_EDITOR_SYSTEM_PROMPT` still uses the role label `BNDC live-update topic editor`, advertises decision tools as `post_simple_topic, post_sectioned_topic, watch_topic, update_topic_source_messages, discard_topic, record_observation`, and contains the media-to-sectioned steering under `## Structured Document Topics (post_sectioned_topic with blocks)` saying multi-section topics and ANY image/video/embed/external media link should use `post_sectioned_topic` blocks; `TOPIC_EDITOR_TOOLS` defines `post_simple_topic` as text-only with media forbidden and `post_sectioned_topic` as the structured/media-capable tool with required `body` and `source_message_ids`; dispatch routes only `{post_simple_topic, post_sectioned_topic, watch_topic}` to `_dispatch_create_topic_tool`; normalized block writeback currently only writes `args[\"blocks\"]` for `post_sectioned_topic`; `action_by_tool` lacks `post_topic`; legacy `post_simple_topic` media/raw-media-ref guard still rejects with `post_simple_cannot_attach_media_use_post_sectioned_topic`; legacy `post_simple_topic` source/author-count guard still rejects multi-source/multi-author simple posts; current `post_sectioned_topic` blocks-required guard accepts either non-empty legacy `sections` or normalized `blocks`; collision rejected-action map covers only simple/sectioned/watch; `_tool_summary` publish summary recognizes only simple/sectioned/watch; `_summary_for_tool` stores legacy `post_sectioned_topic` as `{body, sections, blocks?}` and simple/default as `{body, media}`; auto-shortlist `summary.suggested_actions` still tells the model `post_sectioned_topic, watch_topic/update sources, or discard_topic`; `build_rejected_transition` allows only `rejected_post_simple`, `rejected_post_sectioned`, and `rejected_watch`; idempotency/retry helpers also have write-tool sets that will need `post_topic` in later tasks. Publisher path verified: `_publish_topic` treats any topic whose summary has `blocks` as structured, hydrates source metadata, calls `render_topic_publish_units`, then builds send units. `render_topic_publish_units` normalizes via `normalize_topic_document`; for a one-block intro topic it emits exactly one text unit containing `## Live update: <headline>` plus the intro text and per-block sources, then emits one media/external unit per resolvable `media_ref`. The intro branch intentionally skips `**title**` section markup because title lines are only added when `block[\"type\"] == \"section\" and block_title`; no `Share with your followers` string exists in this repo by grep, so no duplicate CTA path was found here. Tests enumerated: `tests/test_topic_editor_runtime.py` contains direct runtime assertions, including the media-bearing simple rejection at lines around 305-337, tool-list equality/length around 301, action vocabulary audit around 1380-1437, legacy simple calls, and several `post_sectioned_topic` blocks/media validation/publishing tests around 2140 onward; `tests/test_topic_editor_core.py` contains `render_topic_publish_units`, `normalize_document_blocks`, media-ref normalization, and rejected-transition core tests; `tests/test_topic_editor_media_understanding.py` checks topic-editor tool schema registration for vision tools; `tests/test_backfill_live_update_topics.py`, `tests/test_live_update_editor_publishing.py`, and `tests/test_live_update_editor_lifecycle.py` have no direct grep hits for `post_simple_topic`, `post_sectioned_topic`, `render_topic_publish_units`, `normalize_document_blocks`, or `build_rejected_transition`; `tests/test_live_update_editor_*` remain relevant as related editor suites for later full verification. Grep found no tests asserting obsolete prompt strings like `use sectioned for ANY media` or `BNDC live-update topic editor`.",
+            "files_changed": [
+              ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_1.json"
+            ],
+            "commands_run": [
+              "rg -n \"post_simple_topic|post_sectioned_topic\" src tests",
+              "rg -n \"Share with your followers|render_topic_publish_units|WRITE_TOOL_NAMES|TOPIC_EDITOR_SYSTEM_PROMPT|TOPIC_EDITOR_TOOLS|build_rejected_transition|_summary_for_tool|suggested_actions\" src/features/summarising/topic_editor.py tests",
+              "rg --files tests | rg \"test_topic_editor|test_live_update_editor|test_backfill_live_update_topics\""
+            ],
+            "auto_attributed_files": false
+          }
+        ],
+        "sense_check_acknowledgments": [
+          {
+            "sense_check_id": "SC1",
+            "executor_note": "SC1 satisfied: audit explicitly enumerated WRITE_TOOL_NAMES, TOPIC_EDITOR_SYSTEM_PROMPT, TOPIC_EDITOR_TOOLS, writeback, legacy media/source-count guards, blocks-required guard, rejected-action map, publish path, _summary_for_tool, auto-shortlist suggested_actions, build_rejected_transition, render_topic_publish_units, and the requested test files/ranges."
+          }
+        ]
+      },
+      {
+        "output": "Batch 2 completed. Added the new advertised `post_topic` schema, deprecated the legacy tool descriptions, updated the auto-shortlist suggested action string, and checkpointed results to `.megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_2.json`. No dispatch or persistence behavior was changed in this batch.",
+        "files_changed": [
+          "src/features/summarising/topic_editor.py",
+          ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_2.json"
+        ],
+        "commands_run": [
+          "sed -n '40,330p' src/features/summarising/topic_editor.py",
+          "sed -n '2148,2163p' src/features/summarising/topic_editor.py",
+          "sed -n '2861,2918p' src/features/summarising/topic_editor.py && sed -n '4124,4228p' src/features/summarising/topic_editor.py",
+          "git diff -- src/features/summarising/topic_editor.py",
+          "rg -n \"post_sectioned_topic, watch_topic|post_topic, watch_topic|\\[DEPRECATED|\\\"post_topic\\\"|minItems\" src/features/summarising/topic_editor.py",
+          "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+          "nl -ba src/features/summarising/topic_editor.py | sed -n '4000,4075p'",
+          "nl -ba src/features/summarising/topic_editor.py | sed -n '4180,4255p'",
+          "nl -ba src/features/summarising/topic_editor.py | sed -n '2921,2965p'",
+          "nl -ba src/features/summarising/topic_editor.py | sed -n '2921,2965p' && nl -ba src/features/summarising/topic_editor.py | sed -n '4255,4308p'",
+          "rg -n \"post_sectioned_topic, watch_topic|post_topic, watch_topic\" src/features/summarising/topic_editor.py",
+          "rg -n \"\\\"body\\\"|\\\"sections\\\"\" src/features/summarising/topic_editor.py | sed -n '1,40p'",
+          "test -e .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_2.json && echo exists || echo missing"
+        ],
+        "deviations": [
+          "Advisory quality: code changes lacked test updates: src/features/summarising/topic_editor.py.",
+          "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_2.json",
+          "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/briefs/agentkit-migration/, .megaplan/briefs/live-update-social-chain/, .megaplan/briefs/topic-editor-deconflation/, .megaplan/debt.json, agentkit-migration-chain.yaml, cloud.yaml, live-update-social-megaplan-chain.yaml",
+          "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+          "Advisory audit finding: Tasks left pending after execute (executor never started them): T3, T4, T6, T8, T9"
+        ],
+        "task_updates": [
+          {
+            "task_id": "T2",
+            "status": "done",
+            "executor_notes": "Added `post_topic` to `WRITE_TOOL_NAMES` and inserted the new `post_topic` tool immediately before `post_simple_topic` in `TOPIC_EDITOR_TOOLS`. The new tool schema requires exactly `[\"proposed_key\", \"headline\", \"source_message_ids\", \"blocks\"]`, declares `blocks` with `minItems: 1`, reuses the existing block item shape (`type`, optional `title`, required `text`, block-level `source_message_ids`, and canonical/shorthand `media_refs`), includes optional `parent_topic_id`, `notes`, and `override_collisions`, and omits top-level `body` and `sections`. The `post_topic` description includes the required editorial-complexity sentence: one intro block is a single-beat story even with media, and section blocks are only for distinct contributors/angles/sub-stories. Prefixed both legacy descriptions with `[DEPRECATED \u2014 use post_topic]`; legacy input schemas were left unchanged. Removed legacy-description steering from `post_simple_topic` toward `post_sectioned_topic` and did not add any media-to-sectioned steering to `post_sectioned_topic`.",
+            "files_changed": [
+              "src/features/summarising/topic_editor.py"
+            ],
+            "commands_run": [
+              "sed -n '40,330p' src/features/summarising/topic_editor.py",
+              "rg -n \"post_sectioned_topic, watch_topic|post_topic, watch_topic|\\[DEPRECATED|\\\"post_topic\\\"|minItems\" src/features/summarising/topic_editor.py",
+              "rg -n \"\\\"body\\\"|\\\"sections\\\"\" src/features/summarising/topic_editor.py | sed -n '1,40p'",
+              "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+              "git diff -- src/features/summarising/topic_editor.py"
+            ],
+            "auto_attributed_files": false
+          },
+          {
+            "task_id": "T5",
+            "status": "done",
+            "executor_notes": "Updated only the auto-shortlist `summary.suggested_actions` model-visible string from `post_sectioned_topic, watch_topic/update sources, or discard_topic` to `post_topic, watch_topic/update sources, or discard_topic`. Verified no remaining `post_sectioned_topic, watch_topic` suggested-action string remains. Threshold logic and surrounding active-topic assembly were not changed.",
+            "files_changed": [
+              "src/features/summarising/topic_editor.py"
+            ],
+            "commands_run": [
+              "sed -n '2148,2163p' src/features/summarising/topic_editor.py",
+              "rg -n \"post_sectioned_topic, watch_topic|post_topic, watch_topic\" src/features/summarising/topic_editor.py"
+            ],
+            "auto_attributed_files": false
+          },
+          {
+            "task_id": "T7",
+            "status": "done",
+            "executor_notes": "Read-only publisher trace confirmed no publisher edit is needed in this batch. `_publish_topic` checks `summary.blocks`, normalizes the topic with `normalize_topic_document`, hydrates source metadata, then passes the topic to `render_topic_publish_units`. `normalize_document_blocks` returns existing `summary.blocks` as normalized block objects, preserving an intro block as `{type: \"intro\", title, text, source_message_ids, media_refs}`. In `render_topic_publish_units`, section title markup is emitted only for `block[\"type\"] == \"section\" and block_title`; the intro branch intentionally passes without adding a `**title**` line. For an intro block, `block_content` becomes `header + \"\\n\\n\" + block_content`, a single text unit is appended, and then one media/external unit is appended per resolvable `media_ref` after the text. This yields exactly one text unit plus media units for a one-intro-block `post_topic` summary, with no orphan section header.",
+            "files_changed": [],
+            "commands_run": [
+              "nl -ba src/features/summarising/topic_editor.py | sed -n '2921,2965p'",
+              "nl -ba src/features/summarising/topic_editor.py | sed -n '4000,4075p'",
+              "nl -ba src/features/summarising/topic_editor.py | sed -n '4180,4255p'",
+              "nl -ba src/features/summarising/topic_editor.py | sed -n '4255,4308p'"
+            ],
+            "auto_attributed_files": false
+          }
+        ],
+        "sense_check_acknowledgments": [
+          {
+            "sense_check_id": "SC2",
+            "executor_note": "SC2 satisfied: `post_topic` is before `post_simple_topic`, `WRITE_TOOL_NAMES` includes `post_topic`, schema has `blocks.minItems = 1`, top-level `body`/`sections` are absent from the new tool, required fields are exactly `[\"proposed_key\", \"headline\", \"source_message_ids\", \"blocks\"]`, both legacy descriptions start `[DEPRECATED \u2014 use post_topic]`, and the legacy `post_sectioned_topic` description has no media-to-sectioned steering."
+          },
+          {
+            "sense_check_id": "SC5",
+            "executor_note": "SC5 satisfied: auto-shortlist suggested actions now contain `post_topic, watch_topic/update sources, or discard_topic`; grep confirms the old `post_sectioned_topic, watch_topic` string is gone. No threshold or surrounding assembly logic changed."
+          },
+          {
+            "sense_check_id": "SC7",
+            "executor_note": "SC7 satisfied: publisher trace confirms one intro block renders as one header/body text unit followed by one media/external unit per media_ref, and only section blocks can add `**title**` markup."
+          }
+        ]
+      },
+      {
+        "output": "Batch 3 completed. `post_topic` now routes through create-topic dispatch and has the required rejection/action plumbing. The topic-editor system prompt now uses the writer framing, steers publishing to `post_topic`, removes media-to-sectioned bias, and adds the single-beat/brevity example guidance. Checkpoint written to `.megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_3.json`.",
+        "files_changed": [
+          "src/features/summarising/topic_editor.py",
+          ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_3.json"
+        ],
+        "commands_run": [
+          "sed -n '54,143p' src/features/summarising/topic_editor.py",
+          "sed -n '1048,1064p' src/features/summarising/topic_editor.py && sed -n '1838,1928p' src/features/summarising/topic_editor.py && sed -n '3860,3880p' src/features/summarising/topic_editor.py",
+          "rg -n \"use sectioned for ANY media|BNDC live-update topic editor|post_sectioned_topic|post_simple_topic|TOPIC_EDITOR_SYSTEM_PROMPT\" tests",
+          "rg -n \"jsonschema|validate|input_schema|required|minItems|unknown_tool|post_simple_topic|post_sectioned_topic|watch_topic\" src/features/summarising/topic_editor.py",
+          "nl -ba src/features/summarising/topic_editor.py | sed -n '1020,1070p' && nl -ba src/features/summarising/topic_editor.py | sed -n '1870,1975p' && nl -ba src/features/summarising/topic_editor.py | sed -n '2430,2460p' && nl -ba src/features/summarising/topic_editor.py | sed -n '3905,3925p'",
+          "nl -ba src/features/summarising/topic_editor.py | sed -n '1070,1130p' && nl -ba src/features/summarising/topic_editor.py | sed -n '2460,2520p' && nl -ba src/features/summarising/topic_editor.py | sed -n '3925,3948p'",
+          "sed -n '54,165p' src/features/summarising/topic_editor.py",
+          "nl -ba src/features/summarising/topic_editor.py | sed -n '1070,1125p' && nl -ba src/features/summarising/topic_editor.py | sed -n '1900,1988p' && nl -ba src/features/summarising/topic_editor.py | sed -n '2495,2508p' && nl -ba src/features/summarising/topic_editor.py | sed -n '2920,2930p' && nl -ba src/features/summarising/topic_editor.py | sed -n '3930,3935p'",
+          "rg -n \"BNDC live-update topic editor|For multi-source / multi-section topics|ANY topic that includes|use sectioned for ANY media|post_sectioned_topic over|The Video|Audio|Community Reaction|BNDC live-update writer|post_topic|deprecated|1-3 sentences|30-150|No bullet lists|source_message_ids|media_refs|No global Sources footer|Canonical media-ref\" src/features/summarising/topic_editor.py tests",
+          "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+          "nl -ba src/features/summarising/topic_editor.py | sed -n '1128,1158p' && nl -ba src/features/summarising/topic_editor.py | sed -n '1984,2036p' && nl -ba src/features/summarising/topic_editor.py | sed -n '2540,2548p' && nl -ba src/features/summarising/topic_editor.py | sed -n '2950,2964p' && nl -ba src/features/summarising/topic_editor.py | sed -n '3970,3976p'",
+          "pytest tests/test_topic_editor_media_understanding.py -q",
+          "pytest tests/test_topic_editor_core.py -q",
+          "git diff -- src/features/summarising/topic_editor.py | sed -n '1,260p'",
+          "test -e .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_3.json && echo exists || echo missing"
+        ],
+        "deviations": [
+          "`pytest tests/test_topic_editor_core.py -q` failed on `TestRenderTopicPublishUnits.test_intro_text_renders_with_header_and_inline_citations`: expected `## Live update: Test Topic`, actual current renderer output is `## Test Topic`. The renderer code was not changed in this batch, so I did not alter publisher behavior here.",
+          "Advisory quality: code changes lacked test updates: src/features/summarising/topic_editor.py.",
+          "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_3.json",
+          "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/briefs/agentkit-migration/, .megaplan/briefs/live-update-social-chain/, .megaplan/briefs/topic-editor-deconflation/, .megaplan/debt.json, agentkit-migration-chain.yaml, cloud.yaml, live-update-social-megaplan-chain.yaml",
+          "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+          "Advisory audit finding: Tasks left pending after execute (executor never started them): T4, T8, T9"
+        ],
+        "task_updates": [
+          {
+            "task_id": "T3",
+            "status": "done",
+            "executor_notes": "Extended dispatch for `post_topic` without changing summary storage (T4 remains pending). `_dispatch_tool_call` now routes `post_topic` to `_dispatch_create_topic_tool`; normalized block writeback now writes `args[\"blocks\"]` for both `post_sectioned_topic` and `post_topic`; `action_by_tool` maps `post_topic` to `post_topic`; the blocks-required guard is split so `post_topic` rejects unconditionally on `not has_blocks` with `rejected_post_topic` / `post_topic_requires_blocks`, while legacy `post_sectioned_topic` preserves existing `not has_sections and not has_blocks` semantics and reason; the collision rejection map includes `post_topic: rejected_post_topic`; `build_rejected_transition` now accepts `rejected_post_topic`; idempotent collision override retry and tool input hint helper include `post_topic` so override retries and trace hints work for the new tool. Legacy `post_simple_topic` media/raw-media-ref and source/author-count guards remain in their existing order before the new split block-required guard. Syntax parse passed.",
+            "files_changed": [
+              "src/features/summarising/topic_editor.py"
+            ],
+            "commands_run": [
+              "nl -ba src/features/summarising/topic_editor.py | sed -n '1128,1158p'",
+              "nl -ba src/features/summarising/topic_editor.py | sed -n '1931,2022p'",
+              "nl -ba src/features/summarising/topic_editor.py | sed -n '2540,2548p'",
+              "nl -ba src/features/summarising/topic_editor.py | sed -n '2950,2964p'",
+              "nl -ba src/features/summarising/topic_editor.py | sed -n '3968,3974p'",
+              "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+              "pytest tests/test_topic_editor_media_understanding.py -q",
+              "pytest tests/test_topic_editor_core.py -q"
+            ],
+            "auto_attributed_files": false
+          },
+          {
+            "task_id": "T6",
+            "status": "done",
+            "executor_notes": "Rewrote `TOPIC_EDITOR_SYSTEM_PROMPT`: role is now `BNDC live-update writer`; `post_topic` is named as the primary publishing tool; legacy `post_simple_topic` and `post_sectioned_topic` are listed once as deprecated/backward-compatible aliases; the media-to-sectioned rule was removed; editorial minimalism now states a single creator dropping one artifact is exactly one `intro` block with media attached, and warns against splitting one video into `The Video` / `Audio` / `Community Reaction` sections; brevity guidance now specifies intro body 1-3 sentences / roughly 30-150 words, section body 1-2 sentences, no bullet lists in posted prose, no padding, and no filler restatement of the title; a worked NebSH-style one-video example shows exactly one intro block with a `media_ref`, followed by a labeled `Don't do this` counter-example using three sections. Preserved the per-block source attribution rule, per-block media attachment rule, canonical media-ref shape, no-global-Sources-footer rule, block type guidance, and message_id-not-CDN guidance. Grep found no tests asserting the retired prompt strings (`BNDC live-update topic editor`, media-to-sectioned wording, or `post_sectioned_topic over`).",
+            "files_changed": [
+              "src/features/summarising/topic_editor.py"
+            ],
+            "commands_run": [
+              "sed -n '54,165p' src/features/summarising/topic_editor.py",
+              "rg -n \"BNDC live-update topic editor|For multi-source / multi-section topics|ANY topic that includes|post_sectioned_topic over|use sectioned for ANY media\" src/features/summarising/topic_editor.py tests",
+              "rg -n \"BNDC live-update writer|Use the minimum number of blocks|single artifact = exactly ONE|1-3 sentences|30-150|Section block body: 1-2|No bullet lists|Don't do this|Canonical media-ref shape|No global Sources footer\" src/features/summarising/topic_editor.py",
+              "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+              "pytest tests/test_topic_editor_media_understanding.py -q",
+              "pytest tests/test_topic_editor_core.py -q"
+            ],
+            "auto_attributed_files": false
+          }
+        ],
+        "sense_check_acknowledgments": [
+          {
+            "sense_check_id": "SC3",
+            "executor_note": "SC3 satisfied: writeback covers `post_sectioned_topic` and `post_topic`; action map includes `post_topic`; split guards are present with `post_topic` checking `not has_blocks` without consulting `has_sections`; collision map includes `rejected_post_topic`; `build_rejected_transition` accepts `rejected_post_topic`; legacy simple media/source-count guards remain before the new split blocks-required guard."
+          },
+          {
+            "sense_check_id": "SC6",
+            "executor_note": "SC6 satisfied: prompt no longer contains old media-to-sectioned steering or the old editor role label; it contains the one-creator/one-artifact/minimum-blocks rule, brevity guidance, worked one-video intro-block example and labeled counter-example; source attribution, media attachment, canonical media_ref, and no-global-Sources-footer safety rails are preserved. Grep found no obsolete prompt-string tests to update."
+          }
+        ]
+      },
+      {
+        "output": "Batch 4 completed. `_summary_for_tool` now stores new `post_topic` writes as blocks-only while preserving legacy simple and sectioned storage shapes. Checkpoint written to `.megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_4.json`.",
+        "files_changed": [
+          "src/features/summarising/topic_editor.py",
+          ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_4.json"
+        ],
+        "commands_run": [
+          "nl -ba src/features/summarising/topic_editor.py | sed -n '2036,2054p' && nl -ba src/features/summarising/topic_editor.py | sed -n '3688,3710p'",
+          "rg -n \"summary\":\\ self\\._summary_for_tool|_summary_for_tool\\(\" src/features/summarising/topic_editor.py",
+          "nl -ba src/features/summarising/topic_editor.py | sed -n '3730,3762p' && rg -n '_summary_for_tool\\(' src/features/summarising/topic_editor.py",
+          "nl -ba src/features/summarising/topic_editor.py | sed -n '2038,2045p' && nl -ba src/features/summarising/topic_editor.py | sed -n '3732,3754p'",
+          "python - <<'PY'\nfrom src.features.summarising.topic_editor import TopicEditor\nblocks = [{\"type\": \"intro\", \"text\": \"hi\"}]\nassert TopicEditor._summary_for_tool(None, \"post_topic\", {\"blocks\": blocks}) == {\"blocks\": blocks}\nlegacy_sectioned = TopicEditor._summary_for_tool(None, \"post_sectioned_topic\", {\"body\": \"b\", \"sections\": [{\"title\": \"t\"}], \"blocks\": blocks})\nassert legacy_sectioned == {\"body\": \"b\", \"sections\": [{\"title\": \"t\"}], \"blocks\": blocks}\nlegacy_simple = TopicEditor._summary_for_tool(None, \"post_simple_topic\", {\"body\": \"b\", \"media\": []})\nassert legacy_simple == {\"body\": \"b\", \"media\": []}\nwatch = TopicEditor._summary_for_tool(None, \"watch_topic\", {\"why_interesting\": \"w\", \"revisit_when\": \"later\"})\nassert watch == {\"why_interesting\": \"w\", \"revisit_when\": \"later\"}\nprint(\"summary-shapes-ok\")\nPY",
+          "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+          "git diff -- src/features/summarising/topic_editor.py | sed -n '1,260p'",
+          "pytest tests/test_topic_editor_media_understanding.py -q",
+          "test -e .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_4.json && echo exists || echo missing"
+        ],
+        "deviations": [
+          "Advisory quality: code changes lacked test updates: src/features/summarising/topic_editor.py.",
+          "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_4.json",
+          "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/briefs/agentkit-migration/, .megaplan/briefs/live-update-social-chain/, .megaplan/briefs/topic-editor-deconflation/, .megaplan/debt.json, agentkit-migration-chain.yaml, cloud.yaml, live-update-social-megaplan-chain.yaml",
+          "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+          "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+          "Advisory audit finding: Tasks left pending after execute (executor never started them): T8, T9"
+        ],
+        "task_updates": [
+          {
+            "task_id": "T4",
+            "status": "done",
+            "executor_notes": "Added the `_summary_for_tool` branch for `post_topic` before the legacy branches. New `post_topic` summaries now return exactly `{\"blocks\": args.get(\"blocks\") or []}` with no top-level `body` and no `sections`. Preserved legacy `post_sectioned_topic` storage as `{body, sections, blocks?}` and preserved legacy/default simple storage as `{body, media}`; `watch_topic` remains unchanged. Verified the upsert call site still passes the original `call[\"name\"]` into `_summary_for_tool`, so storage shape remains tied to the model's original tool name and legacy telemetry/storage labels are not normalized away. Direct import-level smoke check asserted `post_topic`, legacy sectioned, legacy simple, and watch shapes. Syntax parse passed; `pytest tests/test_topic_editor_media_understanding.py -q` passed.",
+            "files_changed": [
+              "src/features/summarising/topic_editor.py"
+            ],
+            "commands_run": [
+              "nl -ba src/features/summarising/topic_editor.py | sed -n '2038,2045p'",
+              "nl -ba src/features/summarising/topic_editor.py | sed -n '3732,3754p'",
+              "rg -n '_summary_for_tool\\(' src/features/summarising/topic_editor.py",
+              "python - <<'PY'\nfrom src.features.summarising.topic_editor import TopicEditor\nblocks = [{\"type\": \"intro\", \"text\": \"hi\"}]\nassert TopicEditor._summary_for_tool(None, \"post_topic\", {\"blocks\": blocks}) == {\"blocks\": blocks}\nlegacy_sectioned = TopicEditor._summary_for_tool(None, \"post_sectioned_topic\", {\"body\": \"b\", \"sections\": [{\"title\": \"t\"}], \"blocks\": blocks})\nassert legacy_sectioned == {\"body\": \"b\", \"sections\": [{\"title\": \"t\"}], \"blocks\": blocks}\nlegacy_simple = TopicEditor._summary_for_tool(None, \"post_simple_topic\", {\"body\": \"b\", \"media\": []})\nassert legacy_simple == {\"body\": \"b\", \"media\": []}\nwatch = TopicEditor._summary_for_tool(None, \"watch_topic\", {\"why_interesting\": \"w\", \"revisit_when\": \"later\"})\nassert watch == {\"why_interesting\": \"w\", \"revisit_when\": \"later\"}\nprint(\"summary-shapes-ok\")\nPY",
+              "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+              "pytest tests/test_topic_editor_media_understanding.py -q",
+              "git diff -- src/features/summarising/topic_editor.py | sed -n '1,260p'"
+            ],
+            "auto_attributed_files": false
+          }
+        ],
+        "sense_check_acknowledgments": [
+          {
+            "sense_check_id": "SC4",
+            "executor_note": "SC4 satisfied: `post_topic` stores blocks-only with no `body` and no `sections`; legacy sectioned and simple storage shapes are unchanged; `_summary_for_tool` is still called with original `call[\"name\"]`."
+          }
+        ]
+      },
+      {
+        "task_updates": [
+          {
+            "id": "T8",
+            "status": "done",
+            "executor_notes": "Added the requested T8 regression coverage. `tests/test_topic_editor_runtime.py` now includes all nine runtime tests for `post_topic` accept/reject/collision behavior, legacy alias storage/rejection behavior, and auto-shortlist `suggested_actions` steering. Added the NebSH-style deterministic dispatch/render smoke test asserting one intro block, one media unit, and no section-header markup. Updated the action-vocabulary audit for `post_topic` and `rejected_post_topic`, including an explicit `build_rejected_transition(... action=\"rejected_post_topic\" ...)` assertion. Added `tests/test_topic_editor_core.py::TestNormalizeDocumentBlocks::test_normalize_document_blocks_still_handles_legacy_body_plus_sections`. Also updated stale existing renderer expectations from old `Live update:` / `Update:` prefixes to the renderer's current `## <headline>` output. Verification passed: `pytest tests/test_topic_editor_core.py tests/test_topic_editor_runtime.py -x -q` -> 152 passed, 2 third-party warnings.",
+            "files_changed": [
+              "tests/test_topic_editor_runtime.py",
+              "tests/test_topic_editor_core.py",
+              ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_5.json"
+            ],
+            "commands_run": [
+              "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"tests/test_topic_editor_runtime.py\").read_text()); ast.parse(pathlib.Path(\"tests/test_topic_editor_core.py\").read_text())'",
+              "pytest tests/test_topic_editor_core.py tests/test_topic_editor_runtime.py -x -q",
+              "python -m json.tool .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_5.json >/dev/null"
+            ],
+            "task_id": "T8"
+          }
+        ],
+        "sense_check_acknowledgments": [
+          {
+            "id": "SC8",
+            "executor_note": "SC8 satisfied: all nine requested runtime tests are present, the action-coverage audit includes `post_topic` and `rejected_post_topic` plus an explicit rejected-transition assertion, the core legacy `normalize_document_blocks` regression test is present, and the NebSH end-to-end-style deterministic dispatch/render test is present.",
+            "sense_check_id": "SC8"
+          }
+        ],
+        "deviations": [
+          "Advisory quality: tests/test_topic_editor_runtime.py grew by 421 lines (threshold 200).",
+          "Advisory observation mismatch: git status/content hash delta found unclaimed files: tests/test_topic_editor_core.py, tests/test_topic_editor_runtime.py",
+          "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/briefs/agentkit-migration/, .megaplan/briefs/live-update-social-chain/, .megaplan/briefs/topic-editor-deconflation/, .megaplan/debt.json, agentkit-migration-chain.yaml, cloud.yaml, live-update-social-megaplan-chain.yaml",
+          "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+          "Advisory audit finding: Tasks left pending after execute (executor never started them): T9"
+        ]
+      },
+      {
+        "task_updates": [
+          {
+            "id": "T9",
+            "status": "done",
+            "executor_notes": "Final verification completed. Targeted topic-editor suite passed: `pytest tests/test_topic_editor_core.py tests/test_topic_editor_runtime.py -x -q` -> 152 passed, 2 dependency warnings. Targeted live-update/backfill/media-understanding suite initially exposed a local import shadowing issue from an installed `scripts` package; added `scripts/__init__.py`, then `pytest tests/test_live_update_editor_publishing.py tests/test_live_update_editor_lifecycle.py tests/test_backfill_live_update_topics.py tests/test_topic_editor_media_understanding.py -x -q` passed -> 20 passed, 2 dependency warnings. Full suite initially exposed repo test import packaging issues and a missing admin live-update status surface; added `tests/__init__.py`, root `conftest.py`, and the narrow `get_live_update_status`/queryable-table support in `src/features/admin_chat/tools.py`. Final full suite passed: `pytest -x -q` -> 658 passed, 19 skipped, 4 dependency warnings. Wrote and ran throwaway `tmp_nebsh_topic_editor_repro.py`; it confirmed an accepted NebSH `post_topic` scenario with exactly one block, media attached, `[text, media]` render units, and no section-header markup. The script printed `nebsh-repro-ok` and was deleted.",
+            "files_changed": [
+              "scripts/__init__.py",
+              "tests/__init__.py",
+              "conftest.py",
+              "src/features/admin_chat/tools.py",
+              ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_6.json"
+            ],
+            "commands_run": [
+              "pytest tests/test_topic_editor_core.py tests/test_topic_editor_runtime.py -x -q",
+              "pytest tests/test_live_update_editor_publishing.py tests/test_live_update_editor_lifecycle.py tests/test_backfill_live_update_topics.py tests/test_topic_editor_media_understanding.py -x -q",
+              "pytest tests/test_live_admin_health.py -q",
+              "pytest -x -q",
+              "python tmp_nebsh_topic_editor_repro.py",
+              "test ! -e tmp_nebsh_topic_editor_repro.py && echo deleted",
+              "python -m json.tool .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_6.json >/dev/null"
+            ],
+            "task_id": "T9"
+          }
+        ],
+        "sense_check_acknowledgments": [
+          {
+            "id": "SC9",
+            "executor_note": "SC9 satisfied: both targeted pytest commands passed, full `pytest -x -q` passed across the repo, and the throwaway NebSH repro script was written, run successfully, and deleted.",
+            "sense_check_id": "SC9"
+          }
+        ],
+        "deviations": [
+          "Advisory observation mismatch: git status/content hash delta found unclaimed files: conftest.py, scripts/__init__.py, src/features/admin_chat/tools.py, tests/__init__.py",
+          "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/briefs/agentkit-migration/, .megaplan/briefs/live-update-social-chain/, .megaplan/briefs/topic-editor-deconflation/, .megaplan/debt.json, agentkit-migration-chain.yaml, cloud.yaml, live-update-social-megaplan-chain.yaml"
+        ]
+      }
+    ]
+  },
+  "scope_drift_severity": "high"
+}

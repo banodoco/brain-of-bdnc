@@ -1,0 +1,184 @@
+{
+  "checks": [
+    {
+      "id": "issue_hints",
+      "question": "Did the work fully address the issue hints, user notes, and approved plan requirements?",
+      "guidance": "Cross-check the result against explicit user notes, critique corrections, and watch items. Flag anything the implementation ignored, contradicted, or only partially covered.",
+      "findings": [
+        {
+          "detail": "Verified again that the legacy-alias storage concern remains resolved in the current plan: Step 4 keeps post_simple_topic storage as `{body, media}` and post_sectioned_topic storage as `{body, sections, blocks?}`, matching the current _summary_for_tool branches at src/features/summarising/topic_editor.py:3631-3647. Only new post_topic calls are intended to store blocks-only summaries.",
+          "flagged": false
+        },
+        {
+          "detail": "Re-checked the current plan text against the user requirement to remove media-to-sectioned steering. The plan still does not mention the auto-shortlisted media topic summary at src/features/summarising/topic_editor.py:2154-2160, where model-visible suggested_actions include `post_sectioned_topic, watch_topic/update sources, or discard_topic`; since these topics are added to active_topics and included in the initial payload, FLAG-005 remains open.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Verified the prior legacy-storage concern against the revised plan and current _summary_for_tool at src/features/summarising/topic_editor.py:3631-3647. The revised plan now preserves existing post_simple_topic and post_sectioned_topic storage shapes and limits blocks-only storage to new post_topic calls, so the earlier compatibility risk around dropping body from legacy sectioned calls is resolved.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Checked the issue's steering requirement against all model-visible strings that mention the old write tools. The revised plan updates TOPIC_EDITOR_SYSTEM_PROMPT and TOPIC_EDITOR_TOOLS, but it does not call out the auto-shortlisted topic summary at src/features/summarising/topic_editor.py:2154-2160, whose suggested_actions still tell the agent to use post_sectioned_topic for media-threshold topics. Because those auto-shortlisted topics are appended to active_topics and included verbatim in the initial payload at src/features/summarising/topic_editor.py:528-578 and 847-861, this leaves a model-visible media-to-sectioned steering path in the exact media-bearing flow this change targets.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "correctness",
+      "question": "Are the proposed changes technically correct?",
+      "guidance": "Look for logic errors, invalid assumptions, broken invariants, schema mismatches, or behavior that would fail at runtime. When the fix adds a conditional branch, check whether it handles all relevant cases \u2014 not just the one reported in the issue.",
+      "findings": [
+        {
+          "detail": "Verified the previously addressed rejection and legacy-guard risks are still covered by the current plan: Step 3.5 extends build_rejected_transition for rejected_post_topic, and Step 3 preserves the existing post_simple_topic media/source-count rejection ordering before alias normalization.",
+          "flagged": false
+        },
+        {
+          "detail": "The post_topic blocks-required guard is still specified as `if call['name'] in ('post_sectioned_topic', 'post_topic') and not has_sections and not has_blocks`. That still allows a post_topic input with `blocks: []` and a stray legacy `sections` array to bypass `post_topic_requires_blocks`, while _summary_for_tool('post_topic') would store only `blocks`; FLAG-004 remains open.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Verified the prior rejected-transition concern against _reject_create_tool and build_rejected_transition. The revised plan explicitly adds rejected_post_topic to the rejected-action map and to build_rejected_transition's allowed-action set at src/features/summarising/topic_editor.py:3859-3871, with tests for empty-block and collision rejections, so the prior ValueError risk is adequately addressed.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Verified the prior post_simple media assertion concern against the current guard at src/features/summarising/topic_editor.py:1858-1880. The revised plan removes the assert-empty-media normalization and requires the existing legacy media/source-count guards to run before alias normalization, preserving the current structured rejection tested around tests/test_topic_editor_runtime.py:305-337.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Checked the proposed post_topic blocks-required guard carefully. The plan's concrete condition is `if call['name'] in ('post_sectioned_topic', 'post_topic') and not has_sections and not has_blocks`, but post_topic must require non-empty blocks regardless of any legacy `sections` field. Since the tool schema does not set additionalProperties false, a malformed or legacy-habit post_topic call with `blocks: []` and a stray non-empty `sections` array would bypass `post_topic_requires_blocks`, be accepted, and then `_summary_for_tool('post_topic')` would store `{'blocks': []}`, violating the stated success criterion that empty post_topic blocks are rejected.",
+          "flagged": true,
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "question": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?",
+      "guidance": "Look at how the changed function is used across the codebase. Does the fix only address one caller's scenario while others remain broken? Flag missing required work or out-of-scope edits. A minimal patch is often right, but check whether the underlying problem is bigger than what the issue describes.",
+      "findings": [
+        {
+          "detail": "Re-ran the relevant search for post_sectioned_topic references. The main prompt/tool schema and dispatch locations are covered by the plan, and there is still no TOPIC_EDITOR_DECISION_TOOLS constant or in-repo 'Share with your followers' CTA path to update.",
+          "flagged": false
+        },
+        {
+          "detail": "The auto-shortlist path is still a related media-publication path that the plan does not cover. It constructs active topic summaries with a suggested action naming post_sectioned_topic at src/features/summarising/topic_editor.py:2154-2160, so the plan still addresses only some model-visible steering surfaces and FLAG-005 remains open.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Re-ran searches for TOPIC_EDITOR_DECISION_TOOLS and the publisher CTA string. There is still no TOPIC_EDITOR_DECISION_TOOLS constant and no 'Share with your followers' string in this repo, so the plan's scoping around tool advertising and out-of-repo CTA work remains consistent with the actual repository.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Re-checked references to post_sectioned_topic outside the prompt/tool schema and dispatch maps. The auto-shortlist path constructs active topics with a `suggested_actions` list containing `post_sectioned_topic, watch_topic/update sources, or discard_topic` at src/features/summarising/topic_editor.py:2154-2160; that summary is passed into the model in active_topics. This is related code handling the same media-publication concept and should be updated to prefer post_topic, even though the reaction-threshold logic itself remains out of scope.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    },
+    {
+      "id": "all_locations",
+      "question": "Does the change touch all locations AND supporting infrastructure?",
+      "guidance": "Search for all instances of the symbol/pattern being changed. Also ask: does this feature require setup, registration, or integration code beyond the core logic? Missing glue code causes test failures even when the core fix is correct.",
+      "findings": [
+        {
+          "detail": "Verified the plan still covers the earlier concrete dispatch/support locations: WRITE_TOOL_NAMES, create-tool dispatch, action_by_tool, rejected-action mapping, build_rejected_transition, _summary_for_tool, normalized block writeback, and the action-vocabulary test.",
+          "flagged": false
+        },
+        {
+          "detail": "The plan's audit checklist still omits the model-visible suggested_actions string at src/features/summarising/topic_editor.py:2159. Because that string is generated by the same topic editor and is included in active_topics payloads, this is a supporting location for the tool-name migration that remains unplanned; FLAG-005 remains open.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Verified the previously missed support locations are now in the plan. Step 3.1 covers the normalized-block writeback at src/features/summarising/topic_editor.py:1844-1850, Step 3.5 covers build_rejected_transition at src/features/summarising/topic_editor.py:3859-3871, and Step 7.2 covers the action-vocabulary test around tests/test_topic_editor_runtime.py:1380-1437.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Checked all remaining post_sectioned_topic mentions after the revised audit list. The plan's Step 1 required hits omit src/features/summarising/topic_editor.py:2159, where auto-shortlisted media topics still recommend the old `post_sectioned_topic` tool inside stored summary.suggested_actions; because _build_initial_user_payload includes active topic summaries, this is a supporting integration location the executor could miss.",
+          "flagged": true,
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "id": "callers",
+      "question": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?",
+      "guidance": "Grep for call sites. For each caller, check what values it passes \u2014 especially edge cases like None, zero, empty, or composite inputs. Then ask: should this change be here, or in a caller, callee, or new method?",
+      "findings": [
+        {
+          "detail": "Verified the _summary_for_tool caller convention remains clear in the plan: _dispatch_create_topic_tool continues to pass the original call name and the post-normalization args, preserving legacy telemetry/storage labels while adding a post_topic storage branch.",
+          "flagged": false
+        },
+        {
+          "detail": "The caller/input edge case behind FLAG-004 is still not contained. Since the planned post_topic schema does not explicitly forbid extra fields and the dispatch guard consults `sections` for post_topic, a direct test or model call can still pass composite legacy fields that defeat the non-empty-blocks contract.",
+          "flagged": true
+        }
+      ],
+      "prior_findings": [
+        {
+          "detail": "Verified the prior _summary_for_tool handoff ambiguity is addressed. The revised plan explicitly says _summary_for_tool receives the original call name, adds a post_topic branch that stores blocks-only, and keeps legacy simple/sectioned branches unchanged, matching the current call site at src/features/summarising/topic_editor.py:1940.",
+          "flagged": false,
+          "status": "n/a"
+        },
+        {
+          "detail": "Checked the arguments that _dispatch_create_topic_tool will actually see from direct tests and model calls. Because JSON schema extra fields are not explicitly forbidden in the planned post_topic schema, callers can pass composite inputs such as `blocks: []` plus legacy `sections`; the proposed guard derives has_sections from args for both post_sectioned_topic and post_topic, so post_topic's required `blocks` contract is not enforced for that edge case.",
+          "flagged": true,
+          "status": "addressed"
+        }
+      ]
+    }
+  ],
+  "flags": [
+    {
+      "id": "FLAG-004",
+      "concern": "Topic-editor post_topic validation: the planned blocks-required guard can still be bypassed by a post_topic call with empty blocks and stray legacy sections, because the condition checks `not has_sections and not has_blocks` for post_topic instead of requiring `has_blocks` unconditionally.",
+      "category": "correctness",
+      "severity_hint": "significant",
+      "evidence": "Plan Step 3.3 still proposes `if call['name'] in ('post_sectioned_topic', 'post_topic') and not has_sections and not has_blocks`; _summary_for_tool for post_topic stores only args['blocks'], so `blocks: []` plus non-empty `sections` can accept and persist an empty blocks summary."
+    },
+    {
+      "id": "FLAG-005",
+      "concern": "Topic-editor model steering: auto-shortlisted media topics still include a model-visible suggested action telling the agent to use post_sectioned_topic, leaving a media-to-sectioned steering path outside the prompt/tool descriptions.",
+      "category": "completeness",
+      "severity_hint": "significant",
+      "evidence": "src/features/summarising/topic_editor.py:2154-2160 builds summary.suggested_actions with `post_sectioned_topic, watch_topic/update sources, or discard_topic`; auto-shortlisted topics are appended to active_topics at lines 528-537 and active topic summaries are included in the initial user payload at lines 847-861. The current plan does not include this location in Step 1 or any edit step."
+    },
+    {
+      "id": "verifiability-0",
+      "concern": "Criterion 16: requires human verification (subjective_judgment).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    },
+    {
+      "id": "verifiability-1",
+      "concern": "Criterion 17: requires human verification (inspect_runtime_ui).",
+      "category": "verifiability",
+      "severity_hint": "likely-minor",
+      "status": "open"
+    }
+  ],
+  "verified_flag_ids": [
+    "FLAG-001",
+    "FLAG-002",
+    "FLAG-003",
+    "correctness-1",
+    "correctness-2",
+    "all_locations-1",
+    "all_locations-2"
+  ],
+  "disputed_flag_ids": []
+}

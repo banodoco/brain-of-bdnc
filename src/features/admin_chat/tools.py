@@ -74,6 +74,15 @@ QUERYABLE_TABLES = {
     'daily_summaries', 'channel_summary', 'shared_posts',
     'pending_intros', 'intro_votes', 'timed_mutes',
     'social_publications', 'social_channel_routes',
+    'topic_editor_runs', 'topics', 'topic_sources', 'topic_aliases',
+    'topic_transitions', 'editorial_observations',
+    'topic_editor_checkpoints',
+    'live_update_editor_runs', 'live_update_candidates',
+    'live_update_decisions', 'live_update_feed_items',
+    'live_update_editorial_memory', 'live_update_watchlist',
+    'live_update_duplicate_state', 'live_update_checkpoints',
+    'live_top_creation_runs', 'live_top_creation_posts',
+    'live_top_creation_checkpoints',
 }
 assert 'payment_requests' not in QUERYABLE_TABLES
 assert 'payment_channel_routes' not in QUERYABLE_TABLES
@@ -783,7 +792,7 @@ TOOLS = [
     },
     {
         "name": "get_daily_summaries",
-        "description": "Get the bot-generated daily summaries for active channels. Great for getting a high-level overview of what happened without reading every message.",
+        "description": "Get legacy bot-generated daily summaries for historical channel context. For active topic-editor state, use get_live_update_status.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -794,6 +803,24 @@ TOOLS = [
                 "channel_id": {
                     "type": "string",
                     "description": "Optional: filter to a specific channel"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "get_live_update_status",
+        "description": "Get active topic-editor state for live updates: recent runs, posted/watching topics, rejections, overrides, publication problems, and legacy rollback-only live_update_* state.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hours": {
+                    "type": "integer",
+                    "description": "How many hours back to inspect (default 24)"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum rows per section (default 10, max 50)"
                 }
             },
             "required": []
@@ -2385,6 +2412,94 @@ async def execute_get_daily_summaries(
         }
     except Exception as e:
         logger.error(f"[AdminChat] Error in get_daily_summaries: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+async def execute_get_live_update_status(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Read the active topic-editor status plus legacy rollback state."""
+    try:
+        hours = max(1, min(int(params.get("hours", 24)), 168))
+        limit = max(1, min(int(params.get("limit", 10)), 50))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "hours and limit must be integers"}
+
+    try:
+        guild_id = _resolve_guild_id(params)
+        sb = _get_supabase()
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+        def _fetch(
+            table: str,
+            *,
+            order_col: str = "created_at",
+            since_col: Optional[str] = None,
+            row_limit: Optional[int] = None,
+        ):
+            query = sb.table(table).select("*")
+            if guild_id:
+                query = query.eq("guild_id", guild_id)
+            if since_col:
+                query = query.gte(since_col, cutoff)
+            return query.order(order_col, desc=True).limit(row_limit or limit).execute().data or []
+
+        runs = _fetch("topic_editor_runs", order_col="started_at", since_col="started_at")
+        topics = _fetch("topics", order_col="updated_at")
+        transitions = _fetch("topic_transitions", order_col="created_at", since_col="created_at")
+        observations = _fetch("editorial_observations", order_col="created_at", since_col="created_at")
+        legacy_runs = _fetch("live_update_editor_runs", order_col="created_at")
+        legacy_feed_items = _fetch("live_update_feed_items", order_col="created_at")
+        legacy_watchlist = _fetch("live_update_watchlist")
+        legacy_duplicate_state = _fetch("live_update_duplicate_state")
+
+        topic_counts = {
+            "posted": sum(1 for topic in topics if topic.get("state") == "posted"),
+            "watching": sum(1 for topic in topics if topic.get("state") == "watching"),
+            "discarded": sum(1 for topic in topics if topic.get("state") == "discarded"),
+        }
+        recent_rejections = [row for row in transitions if str(row.get("action") or "").startswith("rejected_")]
+        recent_overrides = [row for row in transitions if row.get("action") == "override"]
+        publication_problems = [
+            topic for topic in topics
+            if topic.get("publication_status") in {"failed", "partial"}
+        ]
+        total_publish_decisions = topic_counts["posted"] + len(recent_rejections)
+        override_rate = (len(recent_overrides) / total_publish_decisions) if total_publish_decisions else 0.0
+
+        summary = "\n".join([
+            (
+                f"Topic-editor primary status: {len(runs)} recent runs; "
+                f"{topic_counts['posted']} posted, {topic_counts['watching']} watching topics."
+            ),
+            f"Failed/partial publications: {len(publication_problems)} topics.",
+            f"Recent rejections: {len(recent_rejections)}; overrides: {len(recent_overrides)}.",
+            "Rollback legacy live-update state only: live_update_* rows are not the active overview system.",
+        ])
+
+        return {
+            "success": True,
+            "hours": hours,
+            "runs": runs,
+            "topics": topics,
+            "transitions": transitions,
+            "observations": observations,
+            "topic_counts": topic_counts,
+            "state_counts": {
+                "recent_rejections": len(recent_rejections),
+                "recent_overrides": len(recent_overrides),
+                "publication_problems": len(publication_problems),
+            },
+            "override_rate": override_rate,
+            "publication_problems": publication_problems,
+            "summary": summary,
+            "legacy_rollback_state": {
+                "runs": legacy_runs,
+                "feed_items": legacy_feed_items,
+                "watchlist": legacy_watchlist,
+                "duplicate_state": legacy_duplicate_state,
+            },
+        }
+    except Exception as e:
+        logger.error(f"[AdminChat] Error in get_live_update_status: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 
@@ -4500,7 +4615,7 @@ async def execute_tool(
 
     if requester_id is not None and trusted_guild_id is not None:
         trusted_tool_input['guild_id'] = trusted_guild_id
-        if tool_name in {"find_messages", "inspect_message", "get_active_channels", "get_daily_summaries"}:
+        if tool_name in {"find_messages", "inspect_message", "get_active_channels", "get_daily_summaries", "get_live_update_status"}:
             visible_channels = await _get_visible_channel_ids(bot, trusted_guild_id, requester_id)
             # Allow the requester to read their own DM with the bot via live=true.
             if dm_channel_id is not None:
@@ -4591,6 +4706,8 @@ async def execute_tool(
             visible_channels=visible_channels,
             resolved_guild_id=resolved_guild_id,
         )
+    elif tool_name == "get_live_update_status":
+        return await execute_get_live_update_status(trusted_tool_input)
     elif tool_name == "get_member_info":
         return await execute_get_member_info(db_handler, trusted_tool_input)
     elif tool_name == "update_member_socials":

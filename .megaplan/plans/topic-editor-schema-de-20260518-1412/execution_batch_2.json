@@ -1,0 +1,91 @@
+{
+  "output": "Batch 2 completed. Added the new advertised `post_topic` schema, deprecated the legacy tool descriptions, updated the auto-shortlist suggested action string, and checkpointed results to `.megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_2.json`. No dispatch or persistence behavior was changed in this batch.",
+  "files_changed": [
+    "src/features/summarising/topic_editor.py",
+    ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_2.json"
+  ],
+  "commands_run": [
+    "sed -n '40,330p' src/features/summarising/topic_editor.py",
+    "sed -n '2148,2163p' src/features/summarising/topic_editor.py",
+    "sed -n '2861,2918p' src/features/summarising/topic_editor.py && sed -n '4124,4228p' src/features/summarising/topic_editor.py",
+    "git diff -- src/features/summarising/topic_editor.py",
+    "rg -n \"post_sectioned_topic, watch_topic|post_topic, watch_topic|\\[DEPRECATED|\\\"post_topic\\\"|minItems\" src/features/summarising/topic_editor.py",
+    "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+    "nl -ba src/features/summarising/topic_editor.py | sed -n '4000,4075p'",
+    "nl -ba src/features/summarising/topic_editor.py | sed -n '4180,4255p'",
+    "nl -ba src/features/summarising/topic_editor.py | sed -n '2921,2965p'",
+    "nl -ba src/features/summarising/topic_editor.py | sed -n '2921,2965p' && nl -ba src/features/summarising/topic_editor.py | sed -n '4255,4308p'",
+    "rg -n \"post_sectioned_topic, watch_topic|post_topic, watch_topic\" src/features/summarising/topic_editor.py",
+    "rg -n \"\\\"body\\\"|\\\"sections\\\"\" src/features/summarising/topic_editor.py | sed -n '1,40p'",
+    "test -e .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_2.json && echo exists || echo missing"
+  ],
+  "deviations": [
+    "Advisory quality: code changes lacked test updates: src/features/summarising/topic_editor.py.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_2.json",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/briefs/agentkit-migration/, .megaplan/briefs/live-update-social-chain/, .megaplan/briefs/topic-editor-deconflation/, .megaplan/debt.json, agentkit-migration-chain.yaml, cloud.yaml, live-update-social-megaplan-chain.yaml",
+    "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Tasks left pending after execute (executor never started them): T3, T4, T6, T8, T9"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T2",
+      "status": "done",
+      "executor_notes": "Added `post_topic` to `WRITE_TOOL_NAMES` and inserted the new `post_topic` tool immediately before `post_simple_topic` in `TOPIC_EDITOR_TOOLS`. The new tool schema requires exactly `[\"proposed_key\", \"headline\", \"source_message_ids\", \"blocks\"]`, declares `blocks` with `minItems: 1`, reuses the existing block item shape (`type`, optional `title`, required `text`, block-level `source_message_ids`, and canonical/shorthand `media_refs`), includes optional `parent_topic_id`, `notes`, and `override_collisions`, and omits top-level `body` and `sections`. The `post_topic` description includes the required editorial-complexity sentence: one intro block is a single-beat story even with media, and section blocks are only for distinct contributors/angles/sub-stories. Prefixed both legacy descriptions with `[DEPRECATED \u2014 use post_topic]`; legacy input schemas were left unchanged. Removed legacy-description steering from `post_simple_topic` toward `post_sectioned_topic` and did not add any media-to-sectioned steering to `post_sectioned_topic`.",
+      "files_changed": [
+        "src/features/summarising/topic_editor.py"
+      ],
+      "commands_run": [
+        "sed -n '40,330p' src/features/summarising/topic_editor.py",
+        "rg -n \"post_sectioned_topic, watch_topic|post_topic, watch_topic|\\[DEPRECATED|\\\"post_topic\\\"|minItems\" src/features/summarising/topic_editor.py",
+        "rg -n \"\\\"body\\\"|\\\"sections\\\"\" src/features/summarising/topic_editor.py | sed -n '1,40p'",
+        "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+        "git diff -- src/features/summarising/topic_editor.py"
+      ],
+      "auto_attributed_files": false
+    },
+    {
+      "task_id": "T5",
+      "status": "done",
+      "executor_notes": "Updated only the auto-shortlist `summary.suggested_actions` model-visible string from `post_sectioned_topic, watch_topic/update sources, or discard_topic` to `post_topic, watch_topic/update sources, or discard_topic`. Verified no remaining `post_sectioned_topic, watch_topic` suggested-action string remains. Threshold logic and surrounding active-topic assembly were not changed.",
+      "files_changed": [
+        "src/features/summarising/topic_editor.py"
+      ],
+      "commands_run": [
+        "sed -n '2148,2163p' src/features/summarising/topic_editor.py",
+        "rg -n \"post_sectioned_topic, watch_topic|post_topic, watch_topic\" src/features/summarising/topic_editor.py"
+      ],
+      "auto_attributed_files": false
+    },
+    {
+      "task_id": "T7",
+      "status": "done",
+      "executor_notes": "Read-only publisher trace confirmed no publisher edit is needed in this batch. `_publish_topic` checks `summary.blocks`, normalizes the topic with `normalize_topic_document`, hydrates source metadata, then passes the topic to `render_topic_publish_units`. `normalize_document_blocks` returns existing `summary.blocks` as normalized block objects, preserving an intro block as `{type: \"intro\", title, text, source_message_ids, media_refs}`. In `render_topic_publish_units`, section title markup is emitted only for `block[\"type\"] == \"section\" and block_title`; the intro branch intentionally passes without adding a `**title**` line. For an intro block, `block_content` becomes `header + \"\\n\\n\" + block_content`, a single text unit is appended, and then one media/external unit is appended per resolvable `media_ref` after the text. This yields exactly one text unit plus media units for a one-intro-block `post_topic` summary, with no orphan section header.",
+      "files_changed": [],
+      "commands_run": [
+        "nl -ba src/features/summarising/topic_editor.py | sed -n '2921,2965p'",
+        "nl -ba src/features/summarising/topic_editor.py | sed -n '4000,4075p'",
+        "nl -ba src/features/summarising/topic_editor.py | sed -n '4180,4255p'",
+        "nl -ba src/features/summarising/topic_editor.py | sed -n '4255,4308p'"
+      ],
+      "auto_attributed_files": false
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC2",
+      "executor_note": "SC2 satisfied: `post_topic` is before `post_simple_topic`, `WRITE_TOOL_NAMES` includes `post_topic`, schema has `blocks.minItems = 1`, top-level `body`/`sections` are absent from the new tool, required fields are exactly `[\"proposed_key\", \"headline\", \"source_message_ids\", \"blocks\"]`, both legacy descriptions start `[DEPRECATED \u2014 use post_topic]`, and the legacy `post_sectioned_topic` description has no media-to-sectioned steering."
+    },
+    {
+      "sense_check_id": "SC5",
+      "executor_note": "SC5 satisfied: auto-shortlist suggested actions now contain `post_topic, watch_topic/update sources, or discard_topic`; grep confirms the old `post_sectioned_topic, watch_topic` string is gone. No threshold or surrounding assembly logic changed."
+    },
+    {
+      "sense_check_id": "SC7",
+      "executor_note": "SC7 satisfied: publisher trace confirms one intro block renders as one header/body text unit followed by one media/external unit per media_ref, and only section blocks can add `**title**` markup."
+    }
+  ]
+}

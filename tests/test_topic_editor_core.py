@@ -127,6 +127,40 @@ class TestNormalizeDocumentBlocks:
         assert blocks[3]["title"] == "Section C"
         assert blocks[3]["text"] == "Content C."
 
+    def test_normalize_document_blocks_still_handles_legacy_body_plus_sections(self):
+        summary = {
+            "body": "Legacy intro text.",
+            "sections": [
+                {"title": "Video", "body": "Legacy video section."},
+                {"heading": "Reaction", "text": "Legacy reaction section."},
+            ],
+        }
+        blocks = normalize_document_blocks(summary, ["100", "101"])
+
+        assert blocks == [
+            {
+                "type": "intro",
+                "title": None,
+                "text": "Legacy intro text.",
+                "source_message_ids": ["100", "101"],
+                "media_refs": [],
+            },
+            {
+                "type": "section",
+                "title": "Video",
+                "text": "Legacy video section.",
+                "source_message_ids": ["100", "101"],
+                "media_refs": [],
+            },
+            {
+                "type": "section",
+                "title": "Reaction",
+                "text": "Legacy reaction section.",
+                "source_message_ids": ["100", "101"],
+                "media_refs": [],
+            },
+        ]
+
     def test_topic_level_source_ids_used_as_fallback_when_section_has_none(self):
         summary = {
             "body": "Intro.",
@@ -319,7 +353,7 @@ class TestRenderTopicPublishUnits:
         assert len(units) >= 1
         text_unit = units[0]
         assert text_unit["kind"] == "text"
-        assert "## Live update: Test Topic" in text_unit["content"]
+        assert "## Test Topic" in text_unit["content"]
         assert "Hello world." in text_unit["content"]
         assert "Sources: [1] https://discord.com/channels/123/456/111" in text_unit["content"]
 

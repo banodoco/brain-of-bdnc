@@ -1,0 +1,72 @@
+{
+  "output": "Batch 1 completed as a read-only audit. No source or test files were modified. I checkpointed the audit notes to `.megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_1.json`.",
+  "files_changed": [
+    ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_1.json"
+  ],
+  "commands_run": [
+    "rg -n \"post_simple_topic|post_sectioned_topic\" src tests",
+    "rg -n \"Share with your followers|render_topic_publish_units|WRITE_TOOL_NAMES|TOPIC_EDITOR_SYSTEM_PROMPT|TOPIC_EDITOR_TOOLS|build_rejected_transition|_summary_for_tool|suggested_actions\" src/features/summarising/topic_editor.py tests",
+    "rg --files tests | rg \"test_topic_editor|test_live_update_editor|test_backfill_live_update_topics\"",
+    "sed -n '35,155p' src/features/summarising/topic_editor.py",
+    "sed -n '210,305p' src/features/summarising/topic_editor.py",
+    "sed -n '1835,1930p' src/features/summarising/topic_editor.py",
+    "sed -n '2145,2165p' src/features/summarising/topic_editor.py",
+    "sed -n '2838,2900p' src/features/summarising/topic_editor.py",
+    "sed -n '3620,3658p' src/features/summarising/topic_editor.py",
+    "sed -n '3850,3885p' src/features/summarising/topic_editor.py",
+    "sed -n '4110,4255p' src/features/summarising/topic_editor.py",
+    "rg -n \"Share with your followers|followers\" src tests",
+    "sed -n '2400,2460p' src/features/summarising/topic_editor.py",
+    "sed -n '2900,3005p' src/features/summarising/topic_editor.py",
+    "sed -n '3945,4025p' src/features/summarising/topic_editor.py",
+    "sed -n '4025,4075p' src/features/summarising/topic_editor.py",
+    "sed -n '245,390p' tests/test_topic_editor_runtime.py",
+    "sed -n '1370,1445p' tests/test_topic_editor_runtime.py",
+    "sed -n '2130,2335p' tests/test_topic_editor_runtime.py",
+    "rg -n \"use sectioned|ANY media|BNDC live-update topic editor|post_sectioned_topic|post_simple_topic|TOPIC_EDITOR_SYSTEM_PROMPT|TOPIC_EDITOR_TOOLS\" tests/test_topic_editor_core.py tests/test_topic_editor_runtime.py tests/test_topic_editor_media_understanding.py tests/test_backfill_live_update_topics.py tests/test_live_update_editor_publishing.py tests/test_live_update_editor_lifecycle.py",
+    "sed -n '280,640p' tests/test_topic_editor_core.py",
+    "sed -n '940,995p' tests/test_topic_editor_core.py",
+    "sed -n '540,570p' tests/test_topic_editor_media_understanding.py",
+    "sed -n '2635,2755p' tests/test_topic_editor_runtime.py",
+    "rg -n \"post_sectioned_topic|post_simple_topic|render_topic_publish_units|normalize_document_blocks|build_rejected_transition\" tests/test_backfill_live_update_topics.py tests/test_live_update_editor_publishing.py tests/test_live_update_editor_lifecycle.py",
+    "rg -n \"post_simple_topic|post_sectioned_topic\" src/features/summarising/live_update_editor.py src/features/summarising/summariser_cog.py src/features/sharing || true",
+    "ls -l .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_1.json 2>/dev/null || true",
+    "test -d .megaplan/plans/topic-editor-schema-de-20260518-1412 && echo dir_exists || echo no_dir",
+    "git status --short"
+  ],
+  "deviations": [
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_1.json",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/briefs/agentkit-migration/, .megaplan/briefs/live-update-social-chain/, .megaplan/briefs/topic-editor-deconflation/, .megaplan/debt.json, agentkit-migration-chain.yaml, cloud.yaml, live-update-social-megaplan-chain.yaml",
+    "Advisory audit finding: Sense check SC2 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC3 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC7 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Tasks left pending after execute (executor never started them): T2, T3, T4, T5, T6, T7, T8, T9"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T1",
+      "status": "done",
+      "executor_notes": "Read-only audit completed. Grep `post_simple_topic|post_sectioned_topic` across `src/` and `tests/` found the expected topic-editor surface plus runtime/core test coverage. Code touch points verified in `src/features/summarising/topic_editor.py`: `WRITE_TOOL_NAMES` currently includes `post_simple_topic`, `post_sectioned_topic`, `watch_topic`, `update_topic_source_messages`, `discard_topic`, `record_observation`, `finalize_run` and does not include `post_topic`; `TOPIC_EDITOR_SYSTEM_PROMPT` still uses the role label `BNDC live-update topic editor`, advertises decision tools as `post_simple_topic, post_sectioned_topic, watch_topic, update_topic_source_messages, discard_topic, record_observation`, and contains the media-to-sectioned steering under `## Structured Document Topics (post_sectioned_topic with blocks)` saying multi-section topics and ANY image/video/embed/external media link should use `post_sectioned_topic` blocks; `TOPIC_EDITOR_TOOLS` defines `post_simple_topic` as text-only with media forbidden and `post_sectioned_topic` as the structured/media-capable tool with required `body` and `source_message_ids`; dispatch routes only `{post_simple_topic, post_sectioned_topic, watch_topic}` to `_dispatch_create_topic_tool`; normalized block writeback currently only writes `args[\"blocks\"]` for `post_sectioned_topic`; `action_by_tool` lacks `post_topic`; legacy `post_simple_topic` media/raw-media-ref guard still rejects with `post_simple_cannot_attach_media_use_post_sectioned_topic`; legacy `post_simple_topic` source/author-count guard still rejects multi-source/multi-author simple posts; current `post_sectioned_topic` blocks-required guard accepts either non-empty legacy `sections` or normalized `blocks`; collision rejected-action map covers only simple/sectioned/watch; `_tool_summary` publish summary recognizes only simple/sectioned/watch; `_summary_for_tool` stores legacy `post_sectioned_topic` as `{body, sections, blocks?}` and simple/default as `{body, media}`; auto-shortlist `summary.suggested_actions` still tells the model `post_sectioned_topic, watch_topic/update sources, or discard_topic`; `build_rejected_transition` allows only `rejected_post_simple`, `rejected_post_sectioned`, and `rejected_watch`; idempotency/retry helpers also have write-tool sets that will need `post_topic` in later tasks. Publisher path verified: `_publish_topic` treats any topic whose summary has `blocks` as structured, hydrates source metadata, calls `render_topic_publish_units`, then builds send units. `render_topic_publish_units` normalizes via `normalize_topic_document`; for a one-block intro topic it emits exactly one text unit containing `## Live update: <headline>` plus the intro text and per-block sources, then emits one media/external unit per resolvable `media_ref`. The intro branch intentionally skips `**title**` section markup because title lines are only added when `block[\"type\"] == \"section\" and block_title`; no `Share with your followers` string exists in this repo by grep, so no duplicate CTA path was found here. Tests enumerated: `tests/test_topic_editor_runtime.py` contains direct runtime assertions, including the media-bearing simple rejection at lines around 305-337, tool-list equality/length around 301, action vocabulary audit around 1380-1437, legacy simple calls, and several `post_sectioned_topic` blocks/media validation/publishing tests around 2140 onward; `tests/test_topic_editor_core.py` contains `render_topic_publish_units`, `normalize_document_blocks`, media-ref normalization, and rejected-transition core tests; `tests/test_topic_editor_media_understanding.py` checks topic-editor tool schema registration for vision tools; `tests/test_backfill_live_update_topics.py`, `tests/test_live_update_editor_publishing.py`, and `tests/test_live_update_editor_lifecycle.py` have no direct grep hits for `post_simple_topic`, `post_sectioned_topic`, `render_topic_publish_units`, `normalize_document_blocks`, or `build_rejected_transition`; `tests/test_live_update_editor_*` remain relevant as related editor suites for later full verification. Grep found no tests asserting obsolete prompt strings like `use sectioned for ANY media` or `BNDC live-update topic editor`.",
+      "files_changed": [
+        ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_1.json"
+      ],
+      "commands_run": [
+        "rg -n \"post_simple_topic|post_sectioned_topic\" src tests",
+        "rg -n \"Share with your followers|render_topic_publish_units|WRITE_TOOL_NAMES|TOPIC_EDITOR_SYSTEM_PROMPT|TOPIC_EDITOR_TOOLS|build_rejected_transition|_summary_for_tool|suggested_actions\" src/features/summarising/topic_editor.py tests",
+        "rg --files tests | rg \"test_topic_editor|test_live_update_editor|test_backfill_live_update_topics\""
+      ],
+      "auto_attributed_files": false
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC1",
+      "executor_note": "SC1 satisfied: audit explicitly enumerated WRITE_TOOL_NAMES, TOPIC_EDITOR_SYSTEM_PROMPT, TOPIC_EDITOR_TOOLS, writeback, legacy media/source-count guards, blocks-required guard, rejected-action map, publish path, _summary_for_tool, auto-shortlist suggested_actions, build_rejected_transition, render_topic_publish_units, and the requested test files/ranges."
+    }
+  ]
+}

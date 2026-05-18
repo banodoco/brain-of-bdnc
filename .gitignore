@@ -158,3 +158,6 @@ results/
 
 .megaplan/plans/*/execution_trace.jsonl
 .codex-worktrees/
+
+# User-local megaplan cloud workspace state
+cloud.yaml

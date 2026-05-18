@@ -1,0 +1,36 @@
+{
+  "findings": [
+    "Git status shows changed files not claimed by any task: .megaplan/briefs/agentkit-migration/, .megaplan/briefs/live-update-social-chain/, .megaplan/briefs/topic-editor-deconflation/, .megaplan/debt.json, agentkit-migration-chain.yaml, cloud.yaml, live-update-social-megaplan-chain.yaml"
+  ],
+  "files_in_diff": [
+    ".megaplan/briefs/agentkit-migration/",
+    ".megaplan/briefs/live-update-social-chain/",
+    ".megaplan/briefs/topic-editor-deconflation/",
+    ".megaplan/debt.json",
+    ".megaplan/plans/topic-editor-schema-de-20260518-1412/",
+    "agentkit-migration-chain.yaml",
+    "cloud.yaml",
+    "conftest.py",
+    "live-update-social-megaplan-chain.yaml",
+    "scripts/__init__.py",
+    "src/features/admin_chat/tools.py",
+    "src/features/summarising/topic_editor.py",
+    "tests/__init__.py",
+    "tests/test_topic_editor_core.py",
+    "tests/test_topic_editor_runtime.py"
+  ],
+  "files_claimed": [
+    ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_1.json",
+    ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_5.json",
+    ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_6.json",
+    "conftest.py",
+    "scripts/__init__.py",
+    "src/features/admin_chat/tools.py",
+    "src/features/summarising/topic_editor.py",
+    "tests/__init__.py",
+    "tests/test_topic_editor_core.py",
+    "tests/test_topic_editor_runtime.py"
+  ],
+  "skipped": false,
+  "reason": ""
+}

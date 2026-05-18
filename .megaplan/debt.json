@@ -815,6 +815,40 @@
       "resolved": false,
       "resolved_by": null,
       "resolved_at": null
+    },
+    {
+      "id": "DEBT-049",
+      "subsystem": "verification-capability",
+      "concern": "criterion 18 (no new file exceeds ~400 added lines; topic_editor.py retains clean separation between tool definitions, prompt constant, dispatch, normalization, rendering) requires `subjective_judgment` for verification.",
+      "flag_ids": [
+        "FG-009"
+      ],
+      "plan_ids": [
+        "topic-editor-schema-de-20260518-1412"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T14:00:27Z",
+      "updated_at": "2026-05-18T14:00:27Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-050",
+      "subsystem": "verification-capability",
+      "concern": "criterion 19 (next dev cron tick produces a single-author single-video topic as title + one paragraph + media; multi-creator topics still produce multi-section output) requires `inspect_runtime_ui` for verification.",
+      "flag_ids": [
+        "FG-010"
+      ],
+      "plan_ids": [
+        "topic-editor-schema-de-20260518-1412"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T14:00:27Z",
+      "updated_at": "2026-05-18T14:00:27Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
     }
   ]
 }

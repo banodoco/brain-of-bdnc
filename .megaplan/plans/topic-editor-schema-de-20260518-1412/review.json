@@ -1,0 +1,268 @@
+{
+  "review_verdict": "approved",
+  "checks": [],
+  "pre_check_flags": [
+    {
+      "id": "PRECHECK-DIFF_SIZE_SANITY",
+      "check": "diff_size_sanity",
+      "detail": "Diff size looks larger than expected: changed_lines=920, expected\u224810, ratio=92.00, files=10, hunks=42.",
+      "severity": "significant",
+      "evidence_file": "src/features/admin_chat/tools.py"
+    }
+  ],
+  "verified_flag_ids": [
+    "FLAG-001",
+    "FLAG-002",
+    "FLAG-003",
+    "issue_hints",
+    "correctness-1",
+    "correctness-2",
+    "scope",
+    "all_locations-1",
+    "all_locations-2",
+    "callers",
+    "FLAG-004",
+    "FLAG-005",
+    "correctness",
+    "all_locations"
+  ],
+  "disputed_flag_ids": [
+    "verifiability-0",
+    "verifiability-1"
+  ],
+  "criteria": [
+    {
+      "name": "Unified post_topic tool definition",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified in src/features/summarising/topic_editor.py:252-306. `post_topic` is advertised before legacy tools, has required fields `proposed_key`, `headline`, `source_message_ids`, `blocks`, has `blocks.minItems = 1`, omits top-level `body` and `sections`, and describes editorial complexity rather than media presence."
+    },
+    {
+      "name": "Legacy tool aliases remain accepted",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified dispatch includes `post_simple_topic` and `post_sectioned_topic` alongside `post_topic` at src/features/summarising/topic_editor.py:1151. Tool descriptions are prefixed `[DEPRECATED \u2014 use post_topic]` at lines 311 and 333. `_summary_for_tool` preserves `{body, media}` and `{body, sections, blocks?}` shapes at lines 3737-3752."
+    },
+    {
+      "name": "Legacy post_simple media guard ordering",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified legacy media/source-count guards remain before post_topic block guard at src/features/summarising/topic_editor.py:1951-1983. Runtime tests passed: `pytest tests/test_topic_editor_core.py tests/test_topic_editor_runtime.py -x -q` -> 152 passed."
+    },
+    {
+      "name": "Single intro block with media accepted and renders cleanly",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Runtime test coverage present at tests/test_topic_editor_runtime.py:2194 and NebSH smoke at :2486. Targeted tests passed. Renderer path at src/features/summarising/topic_editor.py:4284-4321 adds header for intro without section title markup, then media units."
+    },
+    {
+      "name": "Empty post_topic blocks rejected as tool_error",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified guard at src/features/summarising/topic_editor.py:1990-1998 returns `rejected_post_topic` / `post_topic_requires_blocks`; `build_rejected_transition` accepts the action at :3975. Targeted runtime tests passed."
+    },
+    {
+      "name": "Empty blocks plus stray sections rejected",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified post_topic guard checks only `not has_blocks` at src/features/summarising/topic_editor.py:1987-1998 and does not consult `has_sections`. Regression test exists at tests/test_topic_editor_runtime.py:2317 and passed."
+    },
+    {
+      "name": "post_topic collision returns tool_error",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified collision map includes `post_topic: rejected_post_topic` at src/features/summarising/topic_editor.py:2017-2022. Regression test at tests/test_topic_editor_runtime.py:2343 passed."
+    },
+    {
+      "name": "Rejected transition helper accepts rejected_post_topic",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified allowed-action set includes `rejected_post_topic` at src/features/summarising/topic_editor.py:3975. Action-vocabulary test includes explicit assertion at tests/test_topic_editor_runtime.py:1466 and passed."
+    },
+    {
+      "name": "Normalized block writeback includes post_topic",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified default-media-attached normalized blocks are written back for `post_sectioned_topic` and `post_topic` at src/features/summarising/topic_editor.py:1936-1942."
+    },
+    {
+      "name": "Auto-shortlist suggested_actions uses post_topic",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified suggested action string is `post_topic, watch_topic/update sources, or discard_topic` at src/features/summarising/topic_editor.py:2257-2262. Regression test at tests/test_topic_editor_runtime.py:1113 passed."
+    },
+    {
+      "name": "normalize_document_blocks unchanged for legacy shapes",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Function still converts existing `blocks`, then legacy `body` + `sections` at src/features/summarising/topic_editor.py:4062-4125. New regression test in tests/test_topic_editor_core.py:130 passed."
+    },
+    {
+      "name": "Prompt removes media-to-sectioned steering",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified prompt now says one creator dropping one artifact is exactly one intro block at src/features/summarising/topic_editor.py:104-112. Grep evidence showed retired media-to-sectioned phrases were absent."
+    },
+    {
+      "name": "Prompt includes brevity and examples",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified brevity rules at src/features/summarising/topic_editor.py:114-119 and worked do/don't example at :121-137."
+    },
+    {
+      "name": "Prompt role label is non-editor",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified prompt starts `You are the BNDC live-update writer` at src/features/summarising/topic_editor.py:55."
+    },
+    {
+      "name": "Action coverage test updated",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified test includes `post_topic` and `rejected_post_topic` in allowed/configured actions and transition assertion at tests/test_topic_editor_runtime.py:1413-1474. Targeted tests passed."
+    },
+    {
+      "name": "Full pytest suite passes",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Ran `pytest -x -q`: 658 passed, 19 skipped, 4 warnings in 7.12s."
+    },
+    {
+      "name": "NebSH end-to-end-style test produces one block",
+      "priority": "must",
+      "pass": "pass",
+      "evidence": "Verified deterministic NebSH-style test at tests/test_topic_editor_runtime.py:2486 asserts one block, text+media units, and no section header markup. Targeted tests passed."
+    },
+    {
+      "name": "Telemetry/action labels preserved",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "Verified `action_by_tool` maps new `post_topic` to `post_topic` and legacy aliases to `post_simple` / `post_sectioned` at src/features/summarising/topic_editor.py:1944-1949. `_summary_for_tool` is called with original `call['name']` at :2043."
+    },
+    {
+      "name": "File size and separation of concerns",
+      "priority": "should",
+      "pass": "pass",
+      "evidence": "`topic_editor.py` changed by 153 lines and keeps tool definitions, prompt, dispatch, summary storage, normalization, and rendering in existing sections. `tests/test_topic_editor_runtime.py` grew substantially, but it is an existing focused runtime test file; the spirit of the production-code separation target is met."
+    },
+    {
+      "name": "Manual dev cron smoke",
+      "priority": "info",
+      "pass": "waived",
+      "evidence": "Requires observing rendered Discord output on the next dev live-update cron tick. Not verifiable in this automated review."
+    }
+  ],
+  "issues": [],
+  "rework_items": [],
+  "summary": "Approved. All must criteria pass, including targeted topic-editor tests and the full suite. The diff includes a significant unrelated-looking admin_chat/tooling expansion needed for full-suite health; I did not gate on it because tests pass and the topic-editor success criteria are satisfied, but it is worth keeping an eye on during final human review.",
+  "task_verdicts": [
+    {
+      "task_id": "T1",
+      "reviewer_verdict": "Pass. Audit notes match the inspected topic-editor surfaces and tests.",
+      "evidence_files": [
+        "src/features/summarising/topic_editor.py",
+        "tests/test_topic_editor_runtime.py",
+        "tests/test_topic_editor_core.py"
+      ]
+    },
+    {
+      "task_id": "T2",
+      "reviewer_verdict": "Pass. `post_topic` schema, ordering, minItems, and deprecated legacy descriptions are present.",
+      "evidence_files": [
+        "src/features/summarising/topic_editor.py"
+      ]
+    },
+    {
+      "task_id": "T3",
+      "reviewer_verdict": "Pass. Dispatch accepts `post_topic`, writeback is generalized, guards are split, and `rejected_post_topic` is wired through rejection infrastructure.",
+      "evidence_files": [
+        "src/features/summarising/topic_editor.py"
+      ]
+    },
+    {
+      "task_id": "T4",
+      "reviewer_verdict": "Pass. `post_topic` stores blocks-only, while legacy simple and sectioned storage shapes are preserved.",
+      "evidence_files": [
+        "src/features/summarising/topic_editor.py"
+      ]
+    },
+    {
+      "task_id": "T5",
+      "reviewer_verdict": "Pass. Auto-shortlist suggested actions now steer to `post_topic` and not `post_sectioned_topic`.",
+      "evidence_files": [
+        "src/features/summarising/topic_editor.py",
+        "tests/test_topic_editor_runtime.py"
+      ]
+    },
+    {
+      "task_id": "T6",
+      "reviewer_verdict": "Pass. Prompt now uses writer framing, minimum-block guidance, brevity rules, and the worked do/don't example while retaining source/media rules.",
+      "evidence_files": [
+        "src/features/summarising/topic_editor.py"
+      ]
+    },
+    {
+      "task_id": "T7",
+      "reviewer_verdict": "Pass. Publisher trace is correct; intro blocks do not emit section headers and media units follow text units.",
+      "evidence_files": [
+        "src/features/summarising/topic_editor.py"
+      ]
+    },
+    {
+      "task_id": "T8",
+      "reviewer_verdict": "Pass. Required runtime/core tests are present and targeted suite passed.",
+      "evidence_files": [
+        "tests/test_topic_editor_runtime.py",
+        "tests/test_topic_editor_core.py"
+      ]
+    },
+    {
+      "task_id": "T9",
+      "reviewer_verdict": "Pass. Targeted suites and full `pytest -x -q` passed. Extra admin/package changes are outside the topic-editor scope but are test-green.",
+      "evidence_files": [
+        "src/features/admin_chat/tools.py",
+        "conftest.py",
+        "scripts/__init__.py",
+        "tests/__init__.py"
+      ]
+    }
+  ],
+  "sense_check_verdicts": [
+    {
+      "sense_check_id": "SC1",
+      "verdict": "Confirmed. Audit covered the expected tool, prompt, dispatch, persistence, shortlist, rejection, publisher, and test locations."
+    },
+    {
+      "sense_check_id": "SC2",
+      "verdict": "Confirmed. New tool schema and legacy deprecation descriptions match the plan."
+    },
+    {
+      "sense_check_id": "SC3",
+      "verdict": "Confirmed. Dispatch edits and guard ordering are present; `post_topic` does not consult `sections` for block-required validation."
+    },
+    {
+      "sense_check_id": "SC4",
+      "verdict": "Confirmed. `_summary_for_tool` uses blocks-only for new tool and preserves legacy shapes with original tool name."
+    },
+    {
+      "sense_check_id": "SC5",
+      "verdict": "Confirmed. Suggested-actions string uses `post_topic`; no threshold logic was changed in the inspected diff."
+    },
+    {
+      "sense_check_id": "SC6",
+      "verdict": "Confirmed. Prompt content satisfies the settled guidance and preserves citation/media safety rails."
+    },
+    {
+      "sense_check_id": "SC7",
+      "verdict": "Confirmed. Renderer emits header/body for intro and media afterward, with section title markup only for section blocks."
+    },
+    {
+      "sense_check_id": "SC8",
+      "verdict": "Confirmed. Required tests are present and passed in the targeted suite."
+    },
+    {
+      "sense_check_id": "SC9",
+      "verdict": "Confirmed. Targeted suites and full suite passed in this review; manual cron smoke remains waived/info."
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "receipt_id": "173609da-f4e0-4be0-8c9c-df47ba526b81",
+  "plan_id": "topic-editor-schema-de-20260518-1412",
+  "phase": "gate",
+  "iteration": 2,
+  "attempt": 1,
+  "timestamp_utc": "2026-05-18T13:04:33.359722+00:00",
+  "profile_name": null,
+  "agent": "claude",
+  "agent_mode": "persistent",
+  "model_configured": null,
+  "model_actual": null,
+  "session_id": "3497fd11-a24b-4649-aaa6-ba8380fa48bf",
+  "megaplan_version": "0.21.0",
+  "schema_version": 1,
+  "prompt_hash_raw": "04908e6101f7443cdaaf37f3321901b7b9b476437ba994e2913d7e1a82e9a082",
+  "prompt_hash_canonical": "ef0a34adbf3ea0997e497717e79c279582cc4131eb512e16854761fdac6982a6",
+  "canonicalization_version": 1,
+  "upstream_artifact_hashes": [
+    "sha256:7828131e3fbe468e1b6a08880cea6c9896dae1546bfa5bc1874b67ddd2725423",
+    "sha256:1b1cc07be105d1646a81940c6738f2993189f01581436fac6d9ea40abe3986ca"
+  ],
+  "cost_usd": 0.15656475,
+  "duration_ms": 1184,
+  "prompt_tokens": 81230,
+  "completion_tokens": 4420,
+  "verdict": null,
+  "metrics": {
+    "recommendation": "ITERATE",
+    "blocking_flags_resolved": 0,
+    "blocking_flags_remaining": 0,
+    "override_forced": false
+  },
+  "scope_drift_severity": null
+}

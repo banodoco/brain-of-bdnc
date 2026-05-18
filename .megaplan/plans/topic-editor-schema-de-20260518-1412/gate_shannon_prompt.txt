@@ -1,0 +1,1530 @@
+You are already running inside the megaplan harness for this step. Do the requested planning/review/execution work directly. Do NOT invoke the `megaplan` CLI, do NOT read or activate the `megaplan` skill, do NOT start nested megaplan plans, and do NOT recurse into another planning harness. Treat mentions of megaplan in the repository or environment as implementation context only.
+
+WRITE ACCESS CONTRACT: You are running with auto-approved writes inside a writable workspace. Treat the working directory as fully writable. Do NOT preemptively skip or block tasks on permission, sandbox, or read-only grounds. Attempt every required edit; only report failure AFTER a real OS-level rejection from a specific shell command. Do not infer 'read-only' from absence of activity; absence is not denial. If a single shell command unexpectedly fails, retry with a different invocation before concluding the environment is restricted.
+
+You are the gatekeeper for the megaplan workflow. Make the continuation decision directly.
+
+        Project directory:
+        /Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc
+
+        Idea:
+# Topic-Editor Schema De-conflation — Fix Multi-Section Bias in Hourly Summary Posts
+
+## Goal
+
+Stop the BNDC hourly summary live-update flow from producing long, multi-section editorial posts for single-beat stories. A single-creator single-video post (e.g. "NebSH drops 'The Last Party'") should render as one paragraph alongside the video — not as a three-section document with separate "The Video" / "Audio" / "Community Reaction" headers.
+
+## Root cause (analysis is settled — do not re-litigate)
+
+`src/features/summarising/topic_editor.py` conflates two orthogonal axes into a single tool choice:
+
+1. **Has media or not** — a *rendering* concern (Discord needs media attached to a specific message so the publisher can lay it out).
+2. **Has one editorial angle or many** — an *editorial* concern (one paragraph vs. a structured document).
+
+`post_simple_topic` vs `post_sectioned_topic` is meant to be the editorial switch. But the rule "media must attach to a block" turned it into the rendering switch: any media → sectioned. Once sectioned, the schema shape (`blocks: [{type: "intro" | "section", title, text, source_message_ids, media_refs}]`) and the tool name itself prompt the model to fill in sections.
+
+Concrete reinforcers in the current code:
+
+- `post_simple_topic` (topic_editor.py:219-224) is gated to text-only — its tool description and the system prompt at lines 101-105 both forbid media on it, forcing media topics into `post_sectioned_topic`.
+- `post_sectioned_topic` (topic_editor.py:241-295) requires BOTH a top-level `body` string AND a `blocks` array — structural duplication that invites an intro paragraph plus sectioned content (look at `required` at line 293).
+- The system-prompt rule "every factual block gets its own `source_message_ids`" (lines 108-113) pressures the model to *create* extra blocks just to house multiple citations cleanly.
+- The role label "You are the BNDC live-update topic editor" (line 54) primes article-style sectioned output.
+- The topic-editor system prompt has **zero brevity guidance**. (Compare `live_update_prompts.py:382-383` which says "1-2 sentences, 35-220 words, compact prose, no bullet lists" — that lives in the candidate generator, not the topic editor.)
+- The publisher emits a "Share with your followers!" CTA per rendered block — a system-level incentive to split (not in scope to remove, just context for why this matters).
+
+## In scope
+
+1. **Collapse `post_simple_topic` + `post_sectioned_topic` into one unified `post_topic` tool.** The unified tool takes a `blocks` array. A one-block topic is "simple"; a many-block topic is "sectioned". One semantic, one entry point.
+
+2. **Keep `post_simple_topic` and `post_sectioned_topic` as deprecated aliases** that normalize into the unified shape so existing model calls don't error. Mark them deprecated in their tool descriptions. Drop them from `TOPIC_EDITOR_DECISION_TOOLS` advertising preference if there is one; the model should be steered to `post_topic`.
+
+3. **Drop the redundant top-level `body` field on the unified tool.** Prose lives in blocks only. Existing stored topics that have a top-level `body` continue to load via `normalize_document_blocks` (topic_editor.py:3957) — that path already converts `body` → intro block. Don't break it.
+
+4. **Rewrite the topic-editor system prompt** (`TOPIC_EDITOR_SYSTEM_PROMPT` constant, lines 54-143):
+   - Remove the "use sectioned for ANY media" rule. Replace with editorial guidance: *"Use the minimum number of blocks that fits the story. A single creator with a single artifact = exactly ONE intro block with the media attached. Only add `section` blocks when the topic has genuinely distinct contributors, angles, or sub-stories that each independently merit their own header."*
+   - Add explicit brevity guidance: intro block body = 1-3 sentences, ~30-150 words; section block bodies = 1-2 sentences each. No bullet lists. No padding.
+   - Add a concrete minimal example showing a single-creator single-video post as exactly one intro block with the video attached. The example should illustrate what NOT to do as well (don't split a single-beat story into Video/Audio/Reaction sections).
+   - Replace the "editor" role framing with "writer" or "live-update author" — the label is itself a bias.
+   - Keep the per-block source attribution and per-block media attachment rules (those are valuable for citation/render correctness and are not the problem).
+
+5. **Update the tool descriptions** in `TOPIC_EDITOR_TOOLS` to remove the "post_sectioned_topic for ANY media" steering. The unified `post_topic` description should frame the choice as editorial complexity (one beat vs. many), not media presence.
+
+6. **Verify the publisher renders a single-block topic cleanly.** Grep for the publisher path (likely in `src/features/sharing/` or wherever topic rendering happens). A single-intro-block topic with media must render as: title + one paragraph + media attached, with no orphan "section" UI, no missing-section placeholders, no duplicated "Share with your followers!" CTAs. If the existing publisher already handles one-block topics, no change needed; otherwise add the rendering branch.
+
+7. **Tests** in the existing topic-editor test file (find it under `tests/`):
+   - Unified `post_topic` accepts a single-intro-block topic with media → normalizes correctly.
+   - Unified `post_topic` accepts a multi-block topic → normalizes correctly.
+   - Legacy `post_simple_topic` still works (deprecated alias path).
+   - Legacy `post_sectioned_topic` with `body` + `blocks` still works (deprecated alias path).
+   - `normalize_document_blocks` still converts old `body + sections` shape to blocks (legacy stored-topic compat).
+   - End-to-end smoke: a fixture mimicking the NebSH scenario (one author, one video drop, one reply, two praise comments) produces a topic with exactly one block when run through the topic editor's normalization path. (If running the full LLM pipeline in tests is impractical, test the schema acceptance + prompt-content assertions instead.)
+
+## Out of scope
+
+- The candidate-generator path (`live_update_prompts.py`) — different feature, already has good brevity guidance.
+- Visual rendering of citations (inline brackets vs footer) — leave as-is.
+- The auto-shortlist media reaction-threshold logic — unrelated.
+- The "Share with your followers!" per-section CTA in the publisher — separate concern; if it ends up looking weird with one-block posts, file a follow-up ticket, don't fix in this run.
+- Database schema migrations for stored topic records — the legacy normalization path already handles old shapes; we are not migrating data, only changing what NEW topics look like.
+
+## Constraints
+
+- **Backward compatibility for stored topics is mandatory.** Existing rows must keep loading. `normalize_document_blocks` (topic_editor.py:3957) is the contract — don't change its accepted inputs.
+- **Legacy tool aliases must keep working at the model-call layer.** If a model call comes in with `post_simple_topic` or `post_sectioned_topic`, accept and normalize. Don't reject.
+- **The live-update feed runs on a cron in production.** Botched prompt changes show up as ugly posts publicly. Prompt language must be conservative and well-tested. Prefer adding rules over removing the safety rails on source/media attachment.
+
+## Validation
+
+After the change, the NebSH "Last Party" scenario should generate a one-block post — title + one intro paragraph with the video attached, no separate "The Video" / "Audio" / "Community Reaction" sections. Multi-creator/multi-angle stories (e.g. a tool release with several creators showing different demos) should still produce multi-block output.
+
+## Files (starting points — investigate the full call graph)
+
+- `src/features/summarising/topic_editor.py` — primary: schema, prompts, tools, `normalize_document_blocks`.
+- `src/features/summarising/live_update_editor.py` — related editor logic.
+- `src/features/summarising/summariser_cog.py` — cog wiring.
+- Publisher path: grep for `post_simple_topic` / `post_sectioned_topic` references and "Share with your followers" string to locate.
+- Tests: existing topic-editor test file under `tests/`.
+
+        Plan:
+        # Implementation Plan: Topic-Editor Schema De-conflation — Unify `post_topic` and Fix Multi-Section Bias
+
+## Overview
+
+The BNDC hourly live-update editor (`src/features/summarising/topic_editor.py`, ~4540 lines) exposes two write tools — `post_simple_topic` (text-only) and `post_sectioned_topic` (anything with media) — that conflate a *rendering* concern ("does media need to attach to a specific block?") with an *editorial* concern ("is this one beat or many beats?"). The system prompt and tool descriptions steer the model toward sectioned output for any media-bearing topic, producing three-section posts ("The Video" / "Audio" / "Community Reaction") for single-beat single-creator stories. A secondary steering surface — the auto-shortlist topic-summary builder at `topic_editor.py:2154-2160` — bakes the legacy tool name into `summary.suggested_actions`, which the model sees in `active_topics` payloads.
+
+The fix introduces a unified `post_topic` tool whose only prose carrier is a `blocks` array — a single intro block IS "simple"; multiple blocks IS "sectioned" — and rewrites the topic-editor system prompt to give explicit brevity guidance and a worked example. Legacy tools stay accepted as deprecated aliases so in-flight model calls and stored topics continue to function. The publisher already renders blocks-only topics via `render_topic_publish_units` (topic_editor.py:4124), so no rendering changes are expected. The auto-shortlist suggested-actions string is updated to name `post_topic` so the model is never steered back to `post_sectioned_topic` from inside an `active_topics` payload.
+
+**Constraints that matter:**
+- Stored-topic backward compatibility via `normalize_document_blocks` (topic_editor.py:3957) is mandatory and untouched.
+- Legacy tool names (`post_simple_topic`, `post_sectioned_topic`) must remain accepted at the model-call layer AND must keep their current structured rejection behavior on bad inputs (e.g. `post_simple_cannot_attach_media_use_post_sectioned_topic`).
+- Legacy alias call STORAGE shape is preserved (body/sections/blocks combo) to avoid compatibility risk for any reader that inspects `summary.body` directly; only NEW `post_topic` calls store blocks-only.
+- `post_topic`'s blocks-required contract is non-bypassable: a `post_topic` call must produce a non-empty `blocks` regardless of whether a stray `sections` field happens to be present in the args.
+- The live feed is production-public on a cron — prompt language must be conservative.
+- Out of scope: candidate-generator prompts (`live_update_prompts.py`), citation visual style, auto-shortlist *threshold* logic (we touch only the suggested_actions string, not the threshold), publisher CTAs, DB migrations.
+
+## Main Phase
+
+### Step 1: Audit the current write-tool surface and capture all touch points (`src/features/summarising/topic_editor.py`, `tests/test_topic_editor_runtime.py`)
+**Scope:** Small
+1. **Re-confirm** every site that branches on the tool names by grepping `post_simple_topic|post_sectioned_topic` across `src/` and `tests/`. Required hits in `topic_editor.py`:
+   - `WRITE_TOOL_NAMES` set (`topic_editor.py:43-51`)
+   - `TOPIC_EDITOR_SYSTEM_PROMPT` body (`topic_editor.py:54-143`)
+   - `TOPIC_EDITOR_TOOLS` definitions (`topic_editor.py:219-295`)
+   - Dispatch / validation branches: legacy-guard block at `1849-1850` (writeback), `1858-1890` (post_simple media + source-count guards), `1893-1905` (sectioned-requires-sections-or-blocks), `1916-1919` (rejected-action map), `2855` (publish), `3631-3647` (`_summary_for_tool`).
+   - **Auto-shortlist suggested-actions string** at `topic_editor.py:2154-2160` — builds `summary.suggested_actions` with the literal `post_sectioned_topic` token. This is a model-visible steering surface because shortlisted-topic summaries are appended to `active_topics` and surfaced in the initial user payload to the topic-editor model. Must be updated.
+   - **Critical supporting infrastructure:** `build_rejected_transition` allowed-action set at `topic_editor.py:3870` (currently `{rejected_post_simple, rejected_post_sectioned, rejected_watch}` — raises ValueError on anything else).
+2. **Re-confirm** related tests by listing every test file that exercises these tools, the rejected-action helper, or the auto-shortlist suggested-actions string: `tests/test_topic_editor_runtime.py` (specifically `test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions` at `:1380-1437`, plus the post_simple media-rejection assertions around `:305-337`), `tests/test_topic_editor_core.py`, `tests/test_topic_editor_media_understanding.py`, `tests/test_backfill_live_update_topics.py`, `tests/test_live_update_editor_*`. Also grep tests for the literal string `'post_sectioned_topic'` inside any `suggested_actions`-related assertion. Don't modify yet — enumerate.
+3. **Confirm** the publisher path `render_topic_publish_units` (`topic_editor.py:4124-4246`) handles a one-intro-block topic cleanly: a single intro block produces header + intro text + (optional) media units, with no orphan `**title**` section header (the intro branch at `4165-4216` skips the title line for `type == "intro"`).
+
+### Step 2: Introduce the unified `post_topic` tool definition and deprecate the legacy two (`src/features/summarising/topic_editor.py`)
+**Scope:** Medium
+1. **Add** a new tool entry `post_topic` in `TOPIC_EDITOR_TOOLS` (insert immediately before `post_simple_topic` at `topic_editor.py:219` so it advertises first). Schema:
+   - Required: `proposed_key`, `headline`, `source_message_ids`, `blocks`.
+   - **No top-level `body` field.** Prose lives in blocks only.
+   - **No `sections` field.** The unified tool exposes `blocks` only; the legacy `sections` axis is not part of `post_topic`'s contract.
+   - `blocks` items reuse the existing block schema (`type="intro"|"section"`, `title?`, `text` required, per-block `source_message_ids`, per-block `media_refs` with the existing canonical/shorthand shapes), and `blocks` itself MUST have `minItems: 1` in its JSON schema entry — this is the first line of defense against an empty-blocks call.
+   - Optional: `parent_topic_id`, `notes`, `override_collisions`.
+   - Description frames the choice as **editorial complexity (one beat vs. many)**: "One intro block = a single-beat story, even if it has media. Add section blocks only when the topic has distinct contributors, angles, or sub-stories that each independently merit a header."
+2. **Update** the existing `post_simple_topic` (`topic_editor.py:219-239`) and `post_sectioned_topic` (`topic_editor.py:241-295`) tool descriptions to start with `"[DEPRECATED — use post_topic]"` and remove the "use this for ANY media" steering on `post_sectioned_topic`. Keep their schemas unchanged so old model calls still validate.
+3. **Extend** `WRITE_TOOL_NAMES` (`topic_editor.py:43-51`) to include `"post_topic"`.
+
+### Step 3: Extend dispatch with strict ordering (legacy guards FIRST, then unified shape) (`src/features/summarising/topic_editor.py`)
+**Scope:** Medium
+
+**Ordering rule (must be followed exactly):**
+1. Tool-name acceptance + raw schema validation (including `blocks: minItems: 1` for `post_topic`).
+2. **Legacy structural guards** (post_simple media check at `:1858-1880`, post_simple source-count check at `:1881-1890`) — unchanged; legacy alias calls keep their current structured rejection behavior (`post_simple_cannot_attach_media_use_post_sectioned_topic`, `post_simple_requires_single_author_and_one_or_two_sources`).
+3. **Block normalization + default-media attachment** (the existing path that produces `normalized_blocks` and `_attach_default_media_refs_to_blocks`).
+4. **Alias re-keying** — at this point, `post_simple_topic` and `post_sectioned_topic` are coerced into the unified shape ONLY in a local variable used for downstream validation/persistence; the original `call["name"]` is preserved for telemetry.
+5. **Blocks-required guards — SEPARATE branches by tool name** (see Step 3.3 below).
+6. Collision check + rejection.
+7. Persistence via `_summary_for_tool`.
+
+**Concrete edits:**
+1. **Generalize the writeback at `topic_editor.py:1849-1850`** so it fires for `post_topic` as well as `post_sectioned_topic`:
+   ```python
+   if call["name"] in ("post_sectioned_topic", "post_topic"):
+       args["blocks"] = normalized_blocks
+   ```
+   This ensures default-media-attached blocks make it into `args` for both the legacy sectioned path AND the new unified path. The legacy `post_simple_topic` alias path is intentionally excluded here because it has no `blocks` in its native schema; its alias normalization happens in step 3 below by synthesizing an intro block from `body` after the legacy guards have already run.
+2. **Extend `action_by_tool`** (`topic_editor.py:1852-1856`) with `"post_topic": "post_topic"`. Legacy aliases keep their existing action labels (`post_simple`/`post_sectioned`) for telemetry continuity.
+3. **Split the blocks-required guard into two separate branches** (replacing the prior plan's combined `or`). The `post_topic` branch checks `has_blocks` UNCONDITIONALLY — it does NOT consult `has_sections`, since the unified tool's contract has no `sections` field and a stray `sections` value in args must not satisfy a `blocks: []` call. At `topic_editor.py:1893-1905`:
+   ```python
+   if call["name"] == "post_topic" and not has_blocks:
+       return self._reject_create_tool(
+           call, context,
+           action="rejected_post_topic",
+           reason="post_topic_requires_blocks",
+           ...,
+       )
+   if call["name"] == "post_sectioned_topic" and not has_sections and not has_blocks:
+       return self._reject_create_tool(
+           call, context,
+           action="rejected_post_sectioned",
+           reason="post_sectioned_requires_sections_or_blocks",
+           ...,
+       )
+   ```
+   This means: a `post_topic` call with `blocks: []` plus a stray legacy `sections` array is REJECTED with `post_topic_requires_blocks` (FLAG-004 closed). The schema-level `minItems: 1` from Step 2.1 is the first line; this dispatch-level guard is the redundant second line that also catches the case where schema validation is permissive (e.g. extra-properties leakage).
+4. **Extend the rejected-action map** at `topic_editor.py:1915-1919` to include `"post_topic": "rejected_post_topic"`.
+5. **Critical supporting-infrastructure change:** extend the allowed-action set in `build_rejected_transition` at `topic_editor.py:3870` to include `"rejected_post_topic"`:
+   ```python
+   if action not in {"rejected_post_simple", "rejected_post_sectioned", "rejected_post_topic", "rejected_watch"}:
+   ```
+   Without this, any `post_topic` rejection (collision, empty-blocks) raises ValueError instead of returning `tool_error`.
+
+### Step 4: Add alias-to-unified-shape normalization for `_summary_for_tool` persistence (`src/features/summarising/topic_editor.py:3631-3647`)
+**Scope:** Small
+
+The handoff convention is explicit: `_summary_for_tool(tool_name, args)` is called with the ORIGINAL tool name (preserving telemetry-relevant identity) and the post-normalization `args` dict. The function selects the storage shape based on the original name:
+1. **`post_topic`** (new): store `{"blocks": args["blocks"]}` only. No top-level `body`. No `sections`. Because Step 3.3 guarantees `args["blocks"]` is non-empty by the time this branch runs, `_summary_for_tool` does not need its own emptiness check.
+2. **`post_sectioned_topic`** (legacy alias): keep the existing storage shape `{"body": args.get("body"), "sections": args.get("sections") or [], "blocks": args["blocks"] if args.get("blocks") else <omitted>}`. **Do not drop `body`** — preserve the current behavior at lines 3632-3641 to avoid changing how legacy alias rows look to downstream readers. `normalize_document_blocks` handles both shapes on read; this minimizes compatibility risk.
+3. **`post_simple_topic`** (legacy alias): keep the existing `{"body": args.get("body"), "media": args.get("media") or []}` shape at line 3647. Unchanged.
+4. **`watch_topic`**: unchanged.
+
+The new branch ordering at `_summary_for_tool`:
+```python
+if tool_name == "post_topic":
+    return {"blocks": args.get("blocks") or []}
+if tool_name == "post_sectioned_topic":
+    # unchanged from current behavior
+    ...
+```
+
+### Step 5: Update the auto-shortlist suggested-actions string (`src/features/summarising/topic_editor.py:2154-2160`)
+**Scope:** Small
+1. **Locate** the auto-shortlist topic-summary builder at `topic_editor.py:2154-2160`. The current `summary.suggested_actions` string includes the literal `post_sectioned_topic` (the model-visible token telling the agent how to act on this shortlisted topic) plus `watch_topic`/update sources and `discard_topic`.
+2. **Replace** `post_sectioned_topic` with `post_topic` in that string. The resulting string should read e.g. `"post_topic, watch_topic/update sources, or discard_topic"`. No mention of `post_sectioned_topic` here — the active-topics payload is a hot model-steering surface and we do not want the model nudged back toward the legacy tool from inside it.
+3. **Do not** change the auto-shortlist threshold logic, the upstream `active_topics` payload assembly, or any other behavior in this area. The edit is a one-token string replacement plus any directly adjacent grammar.
+4. **Grep** `tests/` for any test that asserts on the literal `'post_sectioned_topic'` inside a `suggested_actions` or auto-shortlist context and update those assertions to the new wording. Add a small regression test in Step 7 that pins the new string.
+
+### Step 6: Rewrite `TOPIC_EDITOR_SYSTEM_PROMPT` for editorial brevity (`src/features/summarising/topic_editor.py:54-143`)
+**Scope:** Medium
+1. **Replace** the constant with a version that:
+   - Renames the role from "BNDC live-update topic editor" to **"BNDC live-update writer"** (line 54).
+   - Mentions only `post_topic` in the primary instructions; lists `post_simple_topic` and `post_sectioned_topic` once as **"deprecated — accepted for backward compatibility; prefer `post_topic`"**.
+   - **Removes** the rule "use sectioned for ANY media" (lines 101-105). Replaces it with:
+     > *"Use the minimum number of blocks that fits the story. A single creator dropping a single artifact = exactly ONE `intro` block with the media attached to it. Only add `section` blocks when the topic has genuinely distinct contributors, angles, or sub-stories that each independently merit their own header. If you find yourself splitting one creator's one video into 'The Video' / 'Audio' / 'Community Reaction' sections, you are wrong — collapse it to one block."*
+   - **Adds** brevity guidance: intro block body = 1-3 sentences, ~30-150 words; section block body = 1-2 sentences; no bullet lists; no filler restatement of the title.
+   - **Adds** a concrete worked example: a one-creator one-video drop with two praise replies → exactly one intro block with the video as a `media_ref`. Show the "don't do this" counter-example (the same input split into three sections) labeled as wrong.
+   - **Keeps** the per-block source-attribution rule and the per-block media-attachment rule.
+   - **Keeps** the canonical `media_ref` shape doc and the no-global-Sources-footer rule.
+2. **Search** `tests/` for any test that greps for old prompt strings (e.g. `"use sectioned for ANY media"`, `"BNDC live-update topic editor"`) and update those assertions to match the new wording or delete them as obsolete.
+
+### Step 7: Verify the publisher renders a one-block topic cleanly (`src/features/summarising/topic_editor.py:4087-4246`)
+**Scope:** Small
+1. **Trace** `_publish_topic` (`topic_editor.py:2861`) → `render_topic_publish_units` (`topic_editor.py:4124`). With a unified `post_topic` call producing one intro block:
+   - `normalize_topic_document` returns `[{type: "intro", title: None, text, source_message_ids, media_refs}]`.
+   - The function emits one text unit (`header + "\n\n" + block_content`) followed by one media unit per `media_ref`.
+2. **Confirm** by reading the loop body at `topic_editor.py:4165-4216`.
+3. **Do not modify the publisher** unless a test in Step 8 fails.
+
+### Step 8: Tests (`tests/test_topic_editor_runtime.py`, `tests/test_topic_editor_core.py`)
+**Scope:** Medium
+1. **Add** to `tests/test_topic_editor_runtime.py`:
+   - `test_post_topic_single_intro_block_with_media_accepted`: drives a `post_topic` call with one `intro` block containing one `media_ref`; asserts the persisted topic has `summary.blocks` of length 1, no `summary.body`, no `summary.sections`, and `render_topic_publish_units` produces `[text_unit, media_unit]`.
+   - `test_post_topic_multi_block_accepted`: drives a `post_topic` call with one intro + two section blocks; asserts blocks length 3, per-block sources preserved.
+   - `test_post_topic_rejects_empty_blocks_returns_tool_error`: empty `blocks` → returns a `tool_error` transition with action `rejected_post_topic` and reason `post_topic_requires_blocks`. **Verifies `build_rejected_transition` accepts `rejected_post_topic`** (would raise ValueError without Step 3.5).
+   - **`test_post_topic_rejects_empty_blocks_even_with_stray_sections`**: drives a `post_topic` call with `blocks: []` AND a non-empty stray `sections` array in args. Asserts the call is rejected with action `rejected_post_topic`, reason `post_topic_requires_blocks` — i.e. the stray `sections` does NOT satisfy the contract (FLAG-004 regression pin). Test the dispatch-level guard directly; if schema-level `minItems` filters it first that is also fine, but the test asserts the final rejection shape either way.
+   - `test_post_topic_collision_returns_tool_error`: a `post_topic` call that collides with an existing topic returns a `tool_error` transition with action `rejected_post_topic` (not a raised exception).
+   - `test_legacy_post_simple_topic_still_normalizes_via_alias_and_keeps_existing_storage`: legacy `post_simple_topic` call (body + source_message_ids, no media) is accepted and stored with the existing `{body, media}` shape (no behavioral change for legacy alias storage).
+   - `test_legacy_post_simple_topic_media_rejection_unchanged`: existing structured rejection `post_simple_cannot_attach_media_use_post_sectioned_topic` still fires for legacy media-bearing `post_simple_topic` calls (the legacy guard at `:1858-1880` runs BEFORE any normalization). This pins the test at `:305-337`.
+   - `test_legacy_post_sectioned_topic_with_body_and_blocks_preserves_storage_shape`: existing `post_sectioned_topic` call with `body` + `blocks` is accepted; stored summary keeps `body`, `sections`, and `blocks` exactly as it does today (no behavioral change for legacy alias storage).
+   - **`test_auto_shortlist_suggested_actions_uses_post_topic_not_post_sectioned_topic`**: drives the auto-shortlist topic-summary builder for a shortlisted media topic and asserts `summary.suggested_actions` contains the substring `"post_topic"` and does NOT contain `"post_sectioned_topic"` (FLAG-005 regression pin).
+2. **Update** the existing action-coverage test `test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions` at `tests/test_topic_editor_runtime.py:1380-1437` to:
+   - Add `"post_topic"` to both `allowed_actions` and `configured_actions`.
+   - Add `"rejected_post_topic"` to `allowed_actions`.
+   - Update the configured-actions branch to add `"post_topic"` when `tool["name"] == "post_topic"`.
+   - Add an assertion that `build_rejected_transition(... action="rejected_post_topic" ...)` returns a payload with `action == "rejected_post_topic"` (mirroring the existing `rejected_watch` happy path).
+3. **Add** to `tests/test_topic_editor_core.py`:
+   - `test_normalize_document_blocks_still_handles_legacy_body_plus_sections`: explicit regression confirming `normalize_document_blocks` is unchanged.
+4. **Add** an end-to-end-style normalization test mimicking the NebSH "Last Party" scenario: fixture with one author, one video-bearing source message, one reply, two praise comments, model call emits one intro block. Assert (a) accepted, (b) `summary.blocks` length 1, (c) publisher emits exactly one text unit + one media unit, (d) no `**...**` section header markup in the rendered text. Drive against the deterministic dispatch entry point — do NOT call the real Anthropic API.
+
+### Step 9: Run targeted then broad tests (repo root)
+**Scope:** Small
+1. **Run** targeted suites first:
+   ```bash
+   pytest tests/test_topic_editor_core.py tests/test_topic_editor_runtime.py -x -q
+   ```
+2. **Run** the live-update and backfill suites:
+   ```bash
+   pytest tests/test_live_update_editor_publishing.py tests/test_live_update_editor_lifecycle.py tests/test_backfill_live_update_topics.py tests/test_topic_editor_media_understanding.py -x -q
+   ```
+3. **Run** the full suite once green:
+   ```bash
+   pytest -x -q
+   ```
+
+## Execution Order
+1. Step 1 (audit) — confirm touch points without writing code; includes the new `:2154-2160` and `:3870` supporting-infrastructure entries.
+2. Step 2 (tool surface) — declarative additions only, including `blocks: minItems: 1` on `post_topic`.
+3. Step 3 (dispatch + supporting infrastructure) — code change including the split blocks-required guard (FLAG-004), the `build_rejected_transition` allowed-action extension, and the writeback generalization. Ordering rule (legacy guards FIRST, then normalization, then alias re-keying, then split blocks-required guards) is mandatory.
+4. Step 4 (`_summary_for_tool` branch) — small persistence-shape addition.
+5. Step 5 (auto-shortlist suggested-actions string) — one-token replacement at `:2154-2160` (FLAG-005).
+6. Step 6 (system prompt rewrite) — independent of dispatch mechanics.
+7. Step 7 (publisher verification) — read-only confirmation.
+8. Step 8 (tests) — new tests + targeted update to the action-coverage test, including the two new regression pins for FLAG-004 and FLAG-005.
+9. Step 9 (validation) — targeted suites first, then full repo.
+
+## Validation Order
+1. `tests/test_topic_editor_core.py` — pure unit tests on `normalize_document_blocks`. Cheapest; pins backward compat.
+2. `tests/test_topic_editor_runtime.py` — dispatch + validation pipeline. Confirms unified tool, deprecated aliases, the legacy-guard ordering, the split blocks-required guards (no bypass via stray `sections`), the action-coverage update, that `build_rejected_transition` accepts `rejected_post_topic`, and the auto-shortlist suggested-actions string.
+3. `tests/test_live_update_editor_*` and `tests/test_backfill_live_update_topics.py` — downstream consumers of stored topic summaries. Confirms publisher and lifecycle untouched.
+4. Full `pytest -x -q` — catches any unrelated grep-based assertions on the old prompt string or the old suggested-actions string.
+5. Manual smoke (info-only, cannot run in CI): on the next scheduled live-update cron tick in dev, eyeball that a single-author single-video topic posts as one paragraph + media, not three sections.
+
+
+        Plan metadata:
+        {
+  "version": 5,
+  "timestamp": "2026-05-18T13:35:17Z",
+  "hash": "sha256:a0034de1d6856f374209d142bbb0748bc19ed9c7af3a8909a49d4c0ba772e4b4",
+  "changes_summary": "Addressed the two remaining real flag clusters. (1) FLAG-004 / correctness / callers: split the blocks-required guard into separate per-tool branches at topic_editor.py:1893-1905. `post_topic` now requires `has_blocks` UNCONDITIONALLY \u2014 a stray non-empty `sections` field in args no longer satisfies the contract. Belt-and-braces with `blocks: {minItems: 1}` in the schema entry. Added a new regression test `test_post_topic_rejects_empty_blocks_even_with_stray_sections`. `post_sectioned_topic`'s legacy `or` semantics (`not has_sections and not has_blocks`) are preserved verbatim. (2) FLAG-005 / issue_hints / scope / all_locations: added Step 5 to update the auto-shortlist suggested-actions string at topic_editor.py:2154-2160, replacing the literal `post_sectioned_topic` token with `post_topic` so the model is not steered to the legacy tool from inside `active_topics` payloads. Added this location to the Step 1 audit list explicitly and added a regression test `test_auto_shortlist_suggested_actions_uses_post_topic_not_post_sectioned_topic`. Renumbered subsequent steps (system prompt rewrite is now Step 6, publisher verification Step 7, tests Step 8, validation Step 9). The other two flag IDs (`callers`, `correctness`, `all_locations`) are duplicates of FLAG-004/FLAG-005 and are addressed by the same fixes. Recurring critiques for criteria 16/17 (subjective_judgment, inspect_runtime_ui) are inherent verification-capability requirements, not plan defects, so they remain as `should`/`info`.",
+  "flags_addressed": [
+    {
+      "id": "FLAG-004",
+      "resolution": "addressed",
+      "reason": "Split the blocks-required guard at topic_editor.py:1893-1905 into separate per-tool branches. The `post_topic` branch checks `not has_blocks` unconditionally \u2014 it does not consult `has_sections`. Belt-and-braces: `post_topic`'s schema entry adds `blocks: {minItems: 1}` as the first line of defense. The legacy `post_sectioned_topic` branch keeps its existing `not has_sections and not has_blocks` semantics. Added regression test `test_post_topic_rejects_empty_blocks_even_with_stray_sections` to Step 8.1 pinning that `blocks: []` + stray non-empty `sections` returns `rejected_post_topic`/`post_topic_requires_blocks`."
+    },
+    {
+      "id": "correctness",
+      "resolution": "addressed",
+      "reason": "Same fix as FLAG-004: the combined `or` guard is replaced with two separate per-tool branches. `post_topic`'s contract is `has_blocks` unconditionally."
+    },
+    {
+      "id": "callers",
+      "resolution": "addressed",
+      "reason": "Same fix as FLAG-004 from the caller-input perspective: callers that pass a `post_topic` call with `blocks: []` plus a stray `sections` array now hit the rejection path with action `rejected_post_topic`. Additionally, `post_topic`'s schema entry explicitly omits a `sections` field, so a well-behaved Anthropic tool-validation pass rejects stray `sections` at the schema layer; the dispatch-level guard is the redundant second line for any schema permissiveness."
+    },
+    {
+      "id": "FLAG-005",
+      "resolution": "addressed",
+      "reason": "Added Step 5 explicitly updating the auto-shortlist suggested-actions string at topic_editor.py:2154-2160. The literal `post_sectioned_topic` token is replaced with `post_topic` so the model is no longer steered back to the legacy tool from inside `active_topics` payloads. Step 1 audit list now includes this location as a model-visible steering surface. Step 8.1 adds regression test `test_auto_shortlist_suggested_actions_uses_post_topic_not_post_sectioned_topic` that asserts the new string contains `post_topic` and does not contain `post_sectioned_topic`."
+    },
+    {
+      "id": "issue_hints",
+      "resolution": "addressed",
+      "reason": "Same fix as FLAG-005: the auto-shortlisted topic summary at topic_editor.py:2154-2160 is now an explicit edit step (Step 5) with a corresponding test. The plan no longer omits this model-visible steering surface."
+    },
+    {
+      "id": "scope",
+      "resolution": "addressed",
+      "reason": "Same fix as FLAG-005: the related auto-shortlist media-publication path is now covered (Step 1 audit + Step 5 edit + Step 8.1 regression test). The plan now touches every model-visible steering surface that names the legacy tool, not just the primary prompt and tool descriptions."
+    },
+    {
+      "id": "all_locations",
+      "resolution": "addressed",
+      "reason": "Step 1's audit list now explicitly enumerates topic_editor.py:2154-2160 (auto-shortlist suggested_actions) as a touch point alongside the primary surfaces. Step 5 makes the edit; Step 8.1 pins it with a regression test."
+    }
+  ],
+  "questions": [
+    "Should the deprecated aliases emit a runtime warning (logger.warning) when invoked, so we can track when the model has stopped using them and we can remove the aliases later? (Cheap to add; useful signal \u2014 recommended yes.)",
+    "Confirm: legacy `post_sectioned_topic` storage shape stays exactly as today (`{body, sections, blocks?}`) \u2014 i.e. we preserve `body` even when `blocks` is present. The prior plan recommended dropping `body`; this revision reverses that to minimize downstream-reader compatibility risk. OK?",
+    "Is there any downstream consumer (analytics, replays, archive jobs) that filters on `action == 'post_simple'` or `'post_sectioned'` and would also need to start handling `'post_topic'`? The plan preserves legacy labels for aliases, but new writes will emit `post_topic` \u2014 confirm dashboards can absorb a new value or whether a follow-up dashboards-update ticket is needed.",
+    "Confirm the auto-shortlist suggested-actions edit (Step 5) is in scope. The brief's out-of-scope list mentions 'auto-shortlist media reaction-threshold logic' \u2014 this plan reads that narrowly as the threshold logic only, and treats the `suggested_actions` *string* as in scope because it is a model-visible steering surface. If you want this carved out into a follow-up ticket instead, say so and I will remove Step 5 and the corresponding regression test."
+  ],
+  "success_criteria": [
+    {
+      "criterion": "A unified `post_topic` tool definition exists in `TOPIC_EDITOR_TOOLS` with `blocks` as the only prose carrier (no top-level `body` field, no `sections` field), `blocks` declared with `minItems: 1` in its JSON schema, required fields are `proposed_key`/`headline`/`source_message_ids`/`blocks`, and the tool description frames the choice as editorial complexity not media presence.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "parse_diff"
+      ]
+    },
+    {
+      "criterion": "`post_simple_topic` and `post_sectioned_topic` are still accepted at the model-call dispatch layer (no `unknown_tool` rejection), their tool descriptions are prefixed with `[DEPRECATED`, and their existing storage shapes at `_summary_for_tool` (`{body, media}` for simple, `{body, sections, blocks?}` for sectioned) are unchanged.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Existing legacy structural guards run BEFORE any alias normalization: a `post_simple_topic` call carrying media still returns the structured rejection `post_simple_cannot_attach_media_use_post_sectioned_topic` (action `rejected_post_simple`), pinning the current test at `tests/test_topic_editor_runtime.py:305-337`.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "A `post_topic` call carrying exactly one `intro` block with one `media_ref` is accepted, persists with `summary.blocks` length 1, has no `summary.body` and no `summary.sections`, and `render_topic_publish_units` produces exactly one text unit followed by one media unit with no section header markup.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "A `post_topic` call with empty `blocks` is rejected with action `rejected_post_topic`, reason `post_topic_requires_blocks`, and returns a tool_error transition (does NOT raise ValueError from `build_rejected_transition`).",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "A `post_topic` call with `blocks: []` AND a non-empty stray `sections` array is rejected with action `rejected_post_topic`, reason `post_topic_requires_blocks` \u2014 i.e. the stray `sections` does NOT satisfy the contract. This pins the dispatch-level guard's independence from `has_sections` for `post_topic`.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "A `post_topic` call that collides with an existing topic is rejected with action `rejected_post_topic`, reason `topic_collision`, and returns a tool_error transition (does NOT raise ValueError from `build_rejected_transition`). Confirms the helper's allowed-action set was extended to include `rejected_post_topic`.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "`build_rejected_transition` at topic_editor.py:3870 accepts `rejected_post_topic` in its allowed-action set in addition to `rejected_post_simple`, `rejected_post_sectioned`, and `rejected_watch`.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "The writeback at topic_editor.py:1849-1850 (default-media-attached `normalized_blocks` \u2192 `args['blocks']`) fires for both `post_sectioned_topic` and `post_topic`, so `_summary_for_tool` stores blocks that went through `_attach_default_media_refs_to_blocks`.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "The auto-shortlist topic-summary builder at topic_editor.py:2154-2160 emits `summary.suggested_actions` containing the token `post_topic` and NOT containing the token `post_sectioned_topic`. (Regression pin for FLAG-005 \u2014 the auto-shortlisted topic payload is a model-visible steering surface and must not name the legacy tool.)",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Existing `normalize_document_blocks` behaviour is unchanged: legacy `body`-only summaries become a single intro block, legacy `body`+`sections` summaries become intro+section blocks, and new-style summaries with `blocks` pass through.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "`TOPIC_EDITOR_SYSTEM_PROMPT` no longer contains the rule 'use sectioned for ANY media' or equivalent media\u2192sectioned steering, and instead contains explicit guidance that one creator + one artifact = one intro block.",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "parse_diff"
+      ]
+    },
+    {
+      "criterion": "`TOPIC_EDITOR_SYSTEM_PROMPT` contains explicit brevity guidance (intro 1-3 sentences ~30-150 words; sections 1-2 sentences; no bullet lists) and at least one worked example showing a single-creator single-video topic as exactly one intro block, plus a labeled 'do not do this' counter-example.",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "The role label in `TOPIC_EDITOR_SYSTEM_PROMPT` is changed from 'BNDC live-update topic editor' to a non-editor framing (e.g. 'BNDC live-update writer' or 'live-update author').",
+      "priority": "must",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "The existing action-coverage test `test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions` at tests/test_topic_editor_runtime.py:1380-1437 is updated: `allowed_actions` includes `post_topic` and `rejected_post_topic`; `configured_actions` includes `post_topic`; and the test asserts `build_rejected_transition(... action='rejected_post_topic' ...)` returns a payload with `action == 'rejected_post_topic'`.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "The full pytest suite (`pytest -x -q`) passes after the change, with all topic-editor and live-update editor tests green.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "An end-to-end-style test simulating the NebSH 'Last Party' scenario (one author, one video drop, one reply, two praise comments) produces a topic with exactly one block when run through the topic editor's normalization + dispatch path.",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Telemetry/action labels: new `post_topic` calls emit action `post_topic`; legacy alias calls retain `post_simple` / `post_sectioned` action labels. The `_summary_for_tool` call site passes the ORIGINAL `call['name']` (not a normalized name).",
+      "priority": "should",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "No new file exceeds ~400 added lines and `topic_editor.py` retains a clean separation between tool definitions, prompt constant, dispatch, normalization, and rendering.",
+      "priority": "should",
+      "requires": [
+        "read_files",
+        "subjective_judgment"
+      ]
+    },
+    {
+      "criterion": "On the next dev-environment live-update cron tick after merge, a single-author single-video topic posts as title + one paragraph + media (no separate 'The Video' / 'Audio' / 'Community Reaction' sections), and a genuinely multi-creator topic still posts as a multi-section document.",
+      "priority": "info",
+      "requires": [
+        "inspect_runtime_ui"
+      ]
+    }
+  ],
+  "assumptions": [
+    "No `TOPIC_EDITOR_DECISION_TOOLS` constant exists in the repo today; tool advertising is the order of `TOPIC_EDITOR_TOOLS` plus `WRITE_TOOL_NAMES`. The unified `post_topic` is listed first so the model sees it as the preferred entry point.",
+    "`post_topic`'s schema entry adds `blocks: {minItems: 1}` and omits a `sections` field entirely. This is the first line of defense for the non-empty-blocks contract; the dispatch-level guard at Step 3.3 is the redundant second line.",
+    "The blocks-required guard for `post_topic` checks `has_blocks` UNCONDITIONALLY and does not consult `has_sections`. A `post_topic` call with `blocks: []` plus a stray non-empty `sections` array is rejected with action `rejected_post_topic` and reason `post_topic_requires_blocks`. Legacy `post_sectioned_topic`'s existing `or` semantics (`not has_sections and not has_blocks`) are preserved verbatim to avoid changing the legacy alias contract.",
+    "The auto-shortlist topic-summary builder at topic_editor.py:2154-2160 is a model-visible steering surface (its output is included in `active_topics` payloads sent to the topic-editor model). Updating the `suggested_actions` string to name `post_topic` instead of `post_sectioned_topic` is in scope for THIS plan even though the brief's out-of-scope list mentions the auto-shortlist *threshold* logic \u2014 the threshold logic is untouched; only the suggested-actions string is edited.",
+    "Legacy `post_simple_topic` calls keep their existing storage shape `{body, media}` at `_summary_for_tool` (topic_editor.py:3647). The alias is accepted; its current structured rejection on media (`post_simple_cannot_attach_media_use_post_sectioned_topic`) continues to fire because legacy guards run BEFORE any normalization. No new validation behavior for the simple-with-media case.",
+    "Legacy `post_sectioned_topic` calls keep their existing storage shape `{body, sections, blocks?}` at `_summary_for_tool` (topic_editor.py:3632-3641). Only NEW `post_topic` calls produce blocks-only storage. This minimizes compatibility risk for downstream readers that inspect `summary.body` directly on freshly stored alias rows.",
+    "`build_rejected_transition` (topic_editor.py:3859-3871) must be extended to accept `rejected_post_topic` as part of this change; this is supporting infrastructure, not optional, because `_reject_create_tool` delegates to it and the new action label is required for post_topic rejection paths.",
+    "The writeback at topic_editor.py:1849-1850 (currently gated to `post_sectioned_topic`) must be extended to also fire for `post_topic`, ensuring default-media-attached blocks reach `args` and persistence.",
+    "Tool-name handoff convention: `_summary_for_tool` receives the ORIGINAL `call['name']` so telemetry/action labels remain tied to the original tool (e.g. `post_simple`/`post_sectioned` for legacy aliases, `post_topic` for the new tool). Storage shape selection in `_summary_for_tool` is by branch on the original name. Aliases keep existing shapes; only `post_topic` is new.",
+    "Validation/dispatch ordering is mandatory: tool-name acceptance (incl. schema `minItems: 1` for post_topic blocks) \u2192 legacy structural guards (post_simple media, source-count) \u2192 block normalization + default-media attachment \u2192 alias re-keying for downstream validation \u2192 split blocks-required guards by tool name \u2192 collision check \u2192 persistence. Reordering breaks `tests/test_topic_editor_runtime.py:305-337` and/or admits the FLAG-004 bypass.",
+    "`normalize_document_blocks` at topic_editor.py:3957 is the immutable backward-compatibility contract for stored-topic loading and is not modified.",
+    "The publisher path `render_topic_publish_units` (topic_editor.py:4124-4246) renders a one-intro-block topic cleanly without modification; the intro branch at lines 4165-4216 skips the title line for `type == \"intro\"`. If a Step 8 test surfaces a regression, that test dictates the minimal fix.",
+    "Out of scope (per brief, reaffirmed): the candidate-generator prompts in `live_update_prompts.py`, the per-section 'Share with your followers!' publisher CTA, the auto-shortlist *threshold* logic (we touch only the suggested_actions string), citation rendering style, and any DB migration for historical topic records."
+  ],
+  "delta_from_previous_percent": 14.85,
+  "structure_warnings": []
+}
+
+        Gate signals:
+        {
+  "robustness": "full",
+  "signals": {
+    "iteration": 5,
+    "idea": "# Topic-Editor Schema De-conflation \u2014 Fix Multi-Section Bias in Hourly Summary Posts\n\n## Goal\n\nStop the BNDC hourly summary live-update flow from producing long, multi-section editorial posts for single-beat stories. A single-creator single-video post (e.g. \"NebSH drops 'The Last Party'\") should render as one paragraph alongside the video \u2014 not as a three-section document with separate \"The Video\" / \"Audio\" / \"Community Reaction\" headers.\n\n## Root cause (analysis is settled \u2014 do not re-litigate)\n\n`src/features/summarising/topic_editor.py` conflates two orthogonal axes into a single tool choice:\n\n1. **Has media or not** \u2014 a *rendering* concern (Discord needs media attached to a specific message so the publisher can lay it out).\n2. **Has one editorial angle or many** \u2014 an *editorial* concern (one paragraph vs. a structured document).\n\n`post_simple_topic` vs `post_sectioned_topic` is meant to be the editorial switch. But the rule \"media must attach to a block\" turned it into the rendering switch: any media \u2192 sectioned. Once sectioned, the schema shape (`blocks: [{type: \"intro\" | \"section\", title, text, source_message_ids, media_refs}]`) and the tool name itself prompt the model to fill in sections.\n\nConcrete reinforcers in the current code:\n\n- `post_simple_topic` (topic_editor.py:219-224) is gated to text-only \u2014 its tool description and the system prompt at lines 101-105 both forbid media on it, forcing media topics into `post_sectioned_topic`.\n- `post_sectioned_topic` (topic_editor.py:241-295) requires BOTH a top-level `body` string AND a `blocks` array \u2014 structural duplication that invites an intro paragraph plus sectioned content (look at `required` at line 293).\n- The system-prompt rule \"every factual block gets its own `source_message_ids`\" (lines 108-113) pressures the model to *create* extra blocks just to house multiple citations cleanly.\n- The role label \"You are the BNDC live-update topic editor\" (line 54) primes article-style sectioned output.\n- The topic-editor system prompt has **zero brevity guidance**. (Compare `live_update_prompts.py:382-383` which says \"1-2 sentences, 35-220 words, compact prose, no bullet lists\" \u2014 that lives in the candidate generator, not the topic editor.)\n- The publisher emits a \"Share with your followers!\" CTA per rendered block \u2014 a system-level incentive to split (not in scope to remove, just context for why this matters).\n\n## In scope\n\n1. **Collapse `post_simple_topic` + `post_sectioned_topic` into one unified `post_topic` tool.** The unified tool takes a `blocks` array. A one-block topic is \"simple\"; a many-block topic is \"sectioned\". One semantic, one entry point.\n\n2. **Keep `post_simple_topic` and `post_sectioned_topic` as deprecated aliases** that normalize into the unified shape so existing model calls don't error. Mark them deprecated in their tool descriptions. Drop them from `TOPIC_EDITOR_DECISION_TOOLS` advertising preference if there is one; the model should be steered to `post_topic`.\n\n3. **Drop the redundant top-level `body` field on the unified tool.** Prose lives in blocks only. Existing stored topics that have a top-level `body` continue to load via `normalize_document_blocks` (topic_editor.py:3957) \u2014 that path already converts `body` \u2192 intro block. Don't break it.\n\n4. **Rewrite the topic-editor system prompt** (`TOPIC_EDITOR_SYSTEM_PROMPT` constant, lines 54-143):\n   - Remove the \"use sectioned for ANY media\" rule. Replace with editorial guidance: *\"Use the minimum number of blocks that fits the story. A single creator with a single artifact = exactly ONE intro block with the media attached. Only add `section` blocks when the topic has genuinely distinct contributors, angles, or sub-stories that each independently merit their own header.\"*\n   - Add explicit brevity guidance: intro block body = 1-3 sentences, ~30-150 words; section block bodies = 1-2 sentences each. No bullet lists. No padding.\n   - Add a concrete minimal example showing a single-creator single-video post as exactly one intro block with the video attached. The example should illustrate what NOT to do as well (don't split a single-beat story into Video/Audio/Reaction sections).\n   - Replace the \"editor\" role framing with \"writer\" or \"live-update author\" \u2014 the label is itself a bias.\n   - Keep the per-block source attribution and per-block media attachment rules (those are valuable for citation/render correctness and are not the problem).\n\n5. **Update the tool descriptions** in `TOPIC_EDITOR_TOOLS` to remove the \"post_sectioned_topic for ANY media\" steering. The unified `post_topic` description should frame the choice as editorial complexity (one beat vs. many), not media presence.\n\n6. **Verify the publisher renders a single-block topic cleanly.** Grep for the publisher path (likely in `src/features/sharing/` or wherever topic rendering happens). A single-intro-block topic with media must render as: title + one paragraph + media attached, with no orphan \"section\" UI, no missing-section placeholders, no duplicated \"Share with your followers!\" CTAs. If the existing publisher already handles one-block topics, no change needed; otherwise add the rendering branch.\n\n7. **Tests** in the existing topic-editor test file (find it under `tests/`):\n   - Unified `post_topic` accepts a single-intro-block topic with media \u2192 normalizes correctly.\n   - Unified `post_topic` accepts a multi-block topic \u2192 normalizes correctly.\n   - Legacy `post_simple_topic` still works (deprecated alias path).\n   - Legacy `post_sectioned_topic` with `body` + `blocks` still works (deprecated alias path).\n   - `normalize_document_blocks` still converts old `body + sections` shape to blocks (legacy stored-topic compat).\n   - End-to-end smoke: a fixture mimicking the NebSH scenario (one author, one video drop, one reply, two praise comments) produces a topic with exactly one block when run through the topic editor's normalization path. (If running the full LLM pipeline in tests is impractical, test the schema acceptance + prompt-content assertions instead.)\n\n## Out of scope\n\n- The candidate-generator path (`live_update_prompts.py`) \u2014 different feature, already has good brevity guidance.\n- Visual rendering of citations (inline brackets vs footer) \u2014 leave as-is.\n- The auto-shortlist media reaction-threshold logic \u2014 unrelated.\n- The \"Share with your followers!\" per-section CTA in the publisher \u2014 separate concern; if it ends up looking weird with one-block posts, file a follow-up ticket, don't fix in this run.\n- Database schema migrations for stored topic records \u2014 the legacy normalization path already handles old shapes; we are not migrating data, only changing what NEW topics look like.\n\n## Constraints\n\n- **Backward compatibility for stored topics is mandatory.** Existing rows must keep loading. `normalize_document_blocks` (topic_editor.py:3957) is the contract \u2014 don't change its accepted inputs.\n- **Legacy tool aliases must keep working at the model-call layer.** If a model call comes in with `post_simple_topic` or `post_sectioned_topic`, accept and normalize. Don't reject.\n- **The live-update feed runs on a cron in production.** Botched prompt changes show up as ugly posts publicly. Prompt language must be conservative and well-tested. Prefer adding rules over removing the safety rails on source/media attachment.\n\n## Validation\n\nAfter the change, the NebSH \"Last Party\" scenario should generate a one-block post \u2014 title + one intro paragraph with the video attached, no separate \"The Video\" / \"Audio\" / \"Community Reaction\" sections. Multi-creator/multi-angle stories (e.g. a tool release with several creators showing different demos) should still produce multi-block output.\n\n## Files (starting points \u2014 investigate the full call graph)\n\n- `src/features/summarising/topic_editor.py` \u2014 primary: schema, prompts, tools, `normalize_document_blocks`.\n- `src/features/summarising/live_update_editor.py` \u2014 related editor logic.\n- `src/features/summarising/summariser_cog.py` \u2014 cog wiring.\n- Publisher path: grep for `post_simple_topic` / `post_sectioned_topic` references and \"Share with your followers\" string to locate.\n- Tests: existing topic-editor test file under `tests/`.",
+    "significant_flags": 0,
+    "unresolved_flags": [],
+    "resolved_flags": [
+      {
+        "id": "FLAG-001",
+        "concern": "Topic-editor rejected transitions: adding a distinct rejected_post_topic label requires updating build_rejected_transition's allowed action set; otherwise post_topic rejection paths raise ValueError instead of returning tool_error.",
+        "resolution": "Addressed all 10 open significant flags by tightening the dispatch and supporting-infrastructure spec. Key revisions: (1) Added explicit Step 3.5 extending `build_rejected_transition`'s allowed-action set at topic_editor.py:3870 to include `rejected_post_topic` \u2014 resolves the ValueError risk on collision/empty-blocks rejections (FLAG-001, correctness-1, all_locations-2). (2) Replaced the assert-empty-media plan in alias normalization with an explicit ordering rule: legacy structural guards (post_simple media check, source-count check) run BEFORE any normalization, so existing structured rejections (`post_simple_cannot_attach_media_use_post_sectioned_topic`) and their pinned tests at :305-337 keep firing unchanged (FLAG-002, correctness-2). (3) Generalized the writeback at topic_editor.py:1849-1850 to fire for `post_topic` in addition to `post_sectioned_topic`, so default-media-attached blocks reach `args` and `_summary_for_tool` (FLAG-003, all_locations-1). (4) Reversed the prior plan's decision to drop legacy `body` from legacy-alias storage: legacy alias calls now KEEP their existing storage shape (body+sections+blocks), and only NEW `post_topic` calls are blocks-only \u2014 minimizes downstream-reader risk (issue_hints). (5) Made the original-vs-normalized tool-name handoff convention explicit: `_summary_for_tool` is called with the ORIGINAL tool name and selects shape per name; telemetry labels (`post_simple`/`post_sectioned`) stay tied to the original name while the unified blocks pipeline runs internally (callers). (6) Added Step 7.2 explicitly updating the existing action-coverage test at tests/test_topic_editor_runtime.py:1380-1437 to include `post_topic` and `rejected_post_topic` (scope). Also added two new tests: one for `rejected_post_topic` collision returning tool_error (verifies the helper extension), and one pinning the post_simple media-rejection ordering. Success criteria updated to reflect the no-drop-body decision for aliases and to add a criterion for `build_rejected_transition` accepting `rejected_post_topic` without raising."
+      },
+      {
+        "id": "FLAG-002",
+        "concern": "Topic-editor alias normalization: asserting empty media for legacy post_simple_topic can bypass the existing graceful rejection path if normalization runs before legacy validation.",
+        "resolution": "Addressed all 10 open significant flags by tightening the dispatch and supporting-infrastructure spec. Key revisions: (1) Added explicit Step 3.5 extending `build_rejected_transition`'s allowed-action set at topic_editor.py:3870 to include `rejected_post_topic` \u2014 resolves the ValueError risk on collision/empty-blocks rejections (FLAG-001, correctness-1, all_locations-2). (2) Replaced the assert-empty-media plan in alias normalization with an explicit ordering rule: legacy structural guards (post_simple media check, source-count check) run BEFORE any normalization, so existing structured rejections (`post_simple_cannot_attach_media_use_post_sectioned_topic`) and their pinned tests at :305-337 keep firing unchanged (FLAG-002, correctness-2). (3) Generalized the writeback at topic_editor.py:1849-1850 to fire for `post_topic` in addition to `post_sectioned_topic`, so default-media-attached blocks reach `args` and `_summary_for_tool` (FLAG-003, all_locations-1). (4) Reversed the prior plan's decision to drop legacy `body` from legacy-alias storage: legacy alias calls now KEEP their existing storage shape (body+sections+blocks), and only NEW `post_topic` calls are blocks-only \u2014 minimizes downstream-reader risk (issue_hints). (5) Made the original-vs-normalized tool-name handoff convention explicit: `_summary_for_tool` is called with the ORIGINAL tool name and selects shape per name; telemetry labels (`post_simple`/`post_sectioned`) stay tied to the original name while the unified blocks pipeline runs internally (callers). (6) Added Step 7.2 explicitly updating the existing action-coverage test at tests/test_topic_editor_runtime.py:1380-1437 to include `post_topic` and `rejected_post_topic` (scope). Also added two new tests: one for `rejected_post_topic` collision returning tool_error (verifies the helper extension), and one pinning the post_simple media-rejection ordering. Success criteria updated to reflect the no-drop-body decision for aliases and to add a criterion for `build_rejected_transition` accepting `rejected_post_topic` without raising."
+      },
+      {
+        "id": "FLAG-003",
+        "concern": "Topic-editor post_topic persistence: normalized/default media_refs may not be written back to args for post_topic unless the current post_sectioned-only assignment is generalized.",
+        "resolution": "Addressed all 10 open significant flags by tightening the dispatch and supporting-infrastructure spec. Key revisions: (1) Added explicit Step 3.5 extending `build_rejected_transition`'s allowed-action set at topic_editor.py:3870 to include `rejected_post_topic` \u2014 resolves the ValueError risk on collision/empty-blocks rejections (FLAG-001, correctness-1, all_locations-2). (2) Replaced the assert-empty-media plan in alias normalization with an explicit ordering rule: legacy structural guards (post_simple media check, source-count check) run BEFORE any normalization, so existing structured rejections (`post_simple_cannot_attach_media_use_post_sectioned_topic`) and their pinned tests at :305-337 keep firing unchanged (FLAG-002, correctness-2). (3) Generalized the writeback at topic_editor.py:1849-1850 to fire for `post_topic` in addition to `post_sectioned_topic`, so default-media-attached blocks reach `args` and `_summary_for_tool` (FLAG-003, all_locations-1). (4) Reversed the prior plan's decision to drop legacy `body` from legacy-alias storage: legacy alias calls now KEEP their existing storage shape (body+sections+blocks), and only NEW `post_topic` calls are blocks-only \u2014 minimizes downstream-reader risk (issue_hints). (5) Made the original-vs-normalized tool-name handoff convention explicit: `_summary_for_tool` is called with the ORIGINAL tool name and selects shape per name; telemetry labels (`post_simple`/`post_sectioned`) stay tied to the original name while the unified blocks pipeline runs internally (callers). (6) Added Step 7.2 explicitly updating the existing action-coverage test at tests/test_topic_editor_runtime.py:1380-1437 to include `post_topic` and `rejected_post_topic` (scope). Also added two new tests: one for `rejected_post_topic` collision returning tool_error (verifies the helper extension), and one pinning the post_simple media-rejection ordering. Success criteria updated to reflect the no-drop-body decision for aliases and to add a criterion for `build_rejected_transition` accepting `rejected_post_topic` without raising."
+      },
+      {
+        "id": "issue_hints",
+        "concern": "Did the work fully address the issue hints, user notes, and approved plan requirements?: Checked the remaining model-visible steering surfaces in the repository. The plan still does not mention the auto-shortlisted topic summary at src/features/summarising/topic_editor.py:2154-2160, which includes `post_sectioned_topic, watch_topic/update sources, or discard_topic`; because those summaries are included in active_topics payloads, FLAG-005 remains open.",
+        "resolution": "Addressed the two remaining real flag clusters. (1) FLAG-004 / correctness / callers: split the blocks-required guard into separate per-tool branches at topic_editor.py:1893-1905. `post_topic` now requires `has_blocks` UNCONDITIONALLY \u2014 a stray non-empty `sections` field in args no longer satisfies the contract. Belt-and-braces with `blocks: {minItems: 1}` in the schema entry. Added a new regression test `test_post_topic_rejects_empty_blocks_even_with_stray_sections`. `post_sectioned_topic`'s legacy `or` semantics (`not has_sections and not has_blocks`) are preserved verbatim. (2) FLAG-005 / issue_hints / scope / all_locations: added Step 5 to update the auto-shortlist suggested-actions string at topic_editor.py:2154-2160, replacing the literal `post_sectioned_topic` token with `post_topic` so the model is not steered to the legacy tool from inside `active_topics` payloads. Added this location to the Step 1 audit list explicitly and added a regression test `test_auto_shortlist_suggested_actions_uses_post_topic_not_post_sectioned_topic`. Renumbered subsequent steps (system prompt rewrite is now Step 6, publisher verification Step 7, tests Step 8, validation Step 9). The other two flag IDs (`callers`, `correctness`, `all_locations`) are duplicates of FLAG-004/FLAG-005 and are addressed by the same fixes. Recurring critiques for criteria 16/17 (subjective_judgment, inspect_runtime_ui) are inherent verification-capability requirements, not plan defects, so they remain as `should`/`info`."
+      },
+      {
+        "id": "correctness-1",
+        "concern": "Are the proposed changes technically correct?: Checked rejection flow for create-topic tools. _reject_create_tool delegates to build_rejected_transition, and build_rejected_transition currently only accepts rejected_post_simple, rejected_post_sectioned, and rejected_watch at src/features/summarising/topic_editor.py:3859-3871. The plan says to add post_topic to the rejected-action map 'similarly' to accepted action_by_tool; if that becomes rejected_post_topic, any post_topic rejection such as topic_collision or post_topic_requires_blocks will raise ValueError unless build_rejected_transition is also extended or post_topic reuses an existing rejected action label.",
+        "resolution": "Addressed all 10 open significant flags by tightening the dispatch and supporting-infrastructure spec. Key revisions: (1) Added explicit Step 3.5 extending `build_rejected_transition`'s allowed-action set at topic_editor.py:3870 to include `rejected_post_topic` \u2014 resolves the ValueError risk on collision/empty-blocks rejections (FLAG-001, correctness-1, all_locations-2). (2) Replaced the assert-empty-media plan in alias normalization with an explicit ordering rule: legacy structural guards (post_simple media check, source-count check) run BEFORE any normalization, so existing structured rejections (`post_simple_cannot_attach_media_use_post_sectioned_topic`) and their pinned tests at :305-337 keep firing unchanged (FLAG-002, correctness-2). (3) Generalized the writeback at topic_editor.py:1849-1850 to fire for `post_topic` in addition to `post_sectioned_topic`, so default-media-attached blocks reach `args` and `_summary_for_tool` (FLAG-003, all_locations-1). (4) Reversed the prior plan's decision to drop legacy `body` from legacy-alias storage: legacy alias calls now KEEP their existing storage shape (body+sections+blocks), and only NEW `post_topic` calls are blocks-only \u2014 minimizes downstream-reader risk (issue_hints). (5) Made the original-vs-normalized tool-name handoff convention explicit: `_summary_for_tool` is called with the ORIGINAL tool name and selects shape per name; telemetry labels (`post_simple`/`post_sectioned`) stay tied to the original name while the unified blocks pipeline runs internally (callers). (6) Added Step 7.2 explicitly updating the existing action-coverage test at tests/test_topic_editor_runtime.py:1380-1437 to include `post_topic` and `rejected_post_topic` (scope). Also added two new tests: one for `rejected_post_topic` collision returning tool_error (verifies the helper extension), and one pinning the post_simple media-rejection ordering. Success criteria updated to reflect the no-drop-body decision for aliases and to add a criterion for `build_rejected_transition` accepting `rejected_post_topic` without raising."
+      },
+      {
+        "id": "correctness-2",
+        "concern": "Are the proposed changes technically correct?: Checked the current post_simple_topic media guard at src/features/summarising/topic_editor.py:1858-1880. The plan's proposed _normalize_post_topic_call says to synthesize an intro block for post_simple_topic and 'assert empty' legacy media, while also saying the legacy media/source-count guards remain intact. If the normalizer runs before those guards, an invalid post_simple_topic media call would crash or assert instead of returning the current structured rejection post_simple_cannot_attach_media_use_post_sectioned_topic, so the plan needs to specify graceful normalization or validation ordering.",
+        "resolution": "Addressed all 10 open significant flags by tightening the dispatch and supporting-infrastructure spec. Key revisions: (1) Added explicit Step 3.5 extending `build_rejected_transition`'s allowed-action set at topic_editor.py:3870 to include `rejected_post_topic` \u2014 resolves the ValueError risk on collision/empty-blocks rejections (FLAG-001, correctness-1, all_locations-2). (2) Replaced the assert-empty-media plan in alias normalization with an explicit ordering rule: legacy structural guards (post_simple media check, source-count check) run BEFORE any normalization, so existing structured rejections (`post_simple_cannot_attach_media_use_post_sectioned_topic`) and their pinned tests at :305-337 keep firing unchanged (FLAG-002, correctness-2). (3) Generalized the writeback at topic_editor.py:1849-1850 to fire for `post_topic` in addition to `post_sectioned_topic`, so default-media-attached blocks reach `args` and `_summary_for_tool` (FLAG-003, all_locations-1). (4) Reversed the prior plan's decision to drop legacy `body` from legacy-alias storage: legacy alias calls now KEEP their existing storage shape (body+sections+blocks), and only NEW `post_topic` calls are blocks-only \u2014 minimizes downstream-reader risk (issue_hints). (5) Made the original-vs-normalized tool-name handoff convention explicit: `_summary_for_tool` is called with the ORIGINAL tool name and selects shape per name; telemetry labels (`post_simple`/`post_sectioned`) stay tied to the original name while the unified blocks pipeline runs internally (callers). (6) Added Step 7.2 explicitly updating the existing action-coverage test at tests/test_topic_editor_runtime.py:1380-1437 to include `post_topic` and `rejected_post_topic` (scope). Also added two new tests: one for `rejected_post_topic` collision returning tool_error (verifies the helper extension), and one pinning the post_simple media-rejection ordering. Success criteria updated to reflect the no-drop-body decision for aliases and to add a criterion for `build_rejected_transition` accepting `rejected_post_topic` without raising."
+      },
+      {
+        "id": "scope",
+        "concern": "Search for related code that handles the same concept. Is the reported issue a symptom of something broader?: The related auto-shortlist media-publication path remains uncovered. It stores a suggested action naming post_sectioned_topic at src/features/summarising/topic_editor.py:2159, so the plan still updates the primary prompt/tool schema but misses a related model-visible steering source; FLAG-005 remains open.",
+        "resolution": "Addressed the two remaining real flag clusters. (1) FLAG-004 / correctness / callers: split the blocks-required guard into separate per-tool branches at topic_editor.py:1893-1905. `post_topic` now requires `has_blocks` UNCONDITIONALLY \u2014 a stray non-empty `sections` field in args no longer satisfies the contract. Belt-and-braces with `blocks: {minItems: 1}` in the schema entry. Added a new regression test `test_post_topic_rejects_empty_blocks_even_with_stray_sections`. `post_sectioned_topic`'s legacy `or` semantics (`not has_sections and not has_blocks`) are preserved verbatim. (2) FLAG-005 / issue_hints / scope / all_locations: added Step 5 to update the auto-shortlist suggested-actions string at topic_editor.py:2154-2160, replacing the literal `post_sectioned_topic` token with `post_topic` so the model is not steered to the legacy tool from inside `active_topics` payloads. Added this location to the Step 1 audit list explicitly and added a regression test `test_auto_shortlist_suggested_actions_uses_post_topic_not_post_sectioned_topic`. Renumbered subsequent steps (system prompt rewrite is now Step 6, publisher verification Step 7, tests Step 8, validation Step 9). The other two flag IDs (`callers`, `correctness`, `all_locations`) are duplicates of FLAG-004/FLAG-005 and are addressed by the same fixes. Recurring critiques for criteria 16/17 (subjective_judgment, inspect_runtime_ui) are inherent verification-capability requirements, not plan defects, so they remain as `should`/`info`."
+      },
+      {
+        "id": "all_locations-1",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: Checked the block normalization/default-media branch at src/features/summarising/topic_editor.py:1844-1850. It currently writes normalized/default-media blocks back into args only when call['name'] == 'post_sectioned_topic'. The plan says validation and persistence should deal with the unified blocks shape, but its specific line-by-line edits do not mention changing this condition for post_topic; if missed, post_topic summaries produced by _summary_for_tool could store unnormalized blocks and lose automatically attached default media_refs even though validation/transition payloads saw normalized_blocks.",
+        "resolution": "Addressed all 10 open significant flags by tightening the dispatch and supporting-infrastructure spec. Key revisions: (1) Added explicit Step 3.5 extending `build_rejected_transition`'s allowed-action set at topic_editor.py:3870 to include `rejected_post_topic` \u2014 resolves the ValueError risk on collision/empty-blocks rejections (FLAG-001, correctness-1, all_locations-2). (2) Replaced the assert-empty-media plan in alias normalization with an explicit ordering rule: legacy structural guards (post_simple media check, source-count check) run BEFORE any normalization, so existing structured rejections (`post_simple_cannot_attach_media_use_post_sectioned_topic`) and their pinned tests at :305-337 keep firing unchanged (FLAG-002, correctness-2). (3) Generalized the writeback at topic_editor.py:1849-1850 to fire for `post_topic` in addition to `post_sectioned_topic`, so default-media-attached blocks reach `args` and `_summary_for_tool` (FLAG-003, all_locations-1). (4) Reversed the prior plan's decision to drop legacy `body` from legacy-alias storage: legacy alias calls now KEEP their existing storage shape (body+sections+blocks), and only NEW `post_topic` calls are blocks-only \u2014 minimizes downstream-reader risk (issue_hints). (5) Made the original-vs-normalized tool-name handoff convention explicit: `_summary_for_tool` is called with the ORIGINAL tool name and selects shape per name; telemetry labels (`post_simple`/`post_sectioned`) stay tied to the original name while the unified blocks pipeline runs internally (callers). (6) Added Step 7.2 explicitly updating the existing action-coverage test at tests/test_topic_editor_runtime.py:1380-1437 to include `post_topic` and `rejected_post_topic` (scope). Also added two new tests: one for `rejected_post_topic` collision returning tool_error (verifies the helper extension), and one pinning the post_simple media-rejection ordering. Success criteria updated to reflect the no-drop-body decision for aliases and to add a criterion for `build_rejected_transition` accepting `rejected_post_topic` without raising."
+      },
+      {
+        "id": "all_locations-2",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: Checked build_rejected_transition at src/features/summarising/topic_editor.py:3859-3871 as supporting infrastructure for rejected create-topic actions. The plan updates dispatch maps but omits this helper, so a new rejected_post_topic action would not be accepted by the transition builder unless the executor also updates this lower-level allowed-action set.",
+        "resolution": "Addressed all 10 open significant flags by tightening the dispatch and supporting-infrastructure spec. Key revisions: (1) Added explicit Step 3.5 extending `build_rejected_transition`'s allowed-action set at topic_editor.py:3870 to include `rejected_post_topic` \u2014 resolves the ValueError risk on collision/empty-blocks rejections (FLAG-001, correctness-1, all_locations-2). (2) Replaced the assert-empty-media plan in alias normalization with an explicit ordering rule: legacy structural guards (post_simple media check, source-count check) run BEFORE any normalization, so existing structured rejections (`post_simple_cannot_attach_media_use_post_sectioned_topic`) and their pinned tests at :305-337 keep firing unchanged (FLAG-002, correctness-2). (3) Generalized the writeback at topic_editor.py:1849-1850 to fire for `post_topic` in addition to `post_sectioned_topic`, so default-media-attached blocks reach `args` and `_summary_for_tool` (FLAG-003, all_locations-1). (4) Reversed the prior plan's decision to drop legacy `body` from legacy-alias storage: legacy alias calls now KEEP their existing storage shape (body+sections+blocks), and only NEW `post_topic` calls are blocks-only \u2014 minimizes downstream-reader risk (issue_hints). (5) Made the original-vs-normalized tool-name handoff convention explicit: `_summary_for_tool` is called with the ORIGINAL tool name and selects shape per name; telemetry labels (`post_simple`/`post_sectioned`) stay tied to the original name while the unified blocks pipeline runs internally (callers). (6) Added Step 7.2 explicitly updating the existing action-coverage test at tests/test_topic_editor_runtime.py:1380-1437 to include `post_topic` and `rejected_post_topic` (scope). Also added two new tests: one for `rejected_post_topic` collision returning tool_error (verifies the helper extension), and one pinning the post_simple media-rejection ordering. Success criteria updated to reflect the no-drop-body decision for aliases and to add a criterion for `build_rejected_transition` accepting `rejected_post_topic` without raising."
+      },
+      {
+        "id": "callers",
+        "concern": "Find the callers of the changed function. What arguments do they actually pass? Does the fix handle all of them?: The post_topic caller/input edge case remains: because extra fields are not explicitly forbidden in the planned schema and the guard consults `sections` for post_topic, a caller can still provide `blocks: []` plus legacy sections and defeat the non-empty-blocks contract; FLAG-004 remains open.",
+        "resolution": "Addressed the two remaining real flag clusters. (1) FLAG-004 / correctness / callers: split the blocks-required guard into separate per-tool branches at topic_editor.py:1893-1905. `post_topic` now requires `has_blocks` UNCONDITIONALLY \u2014 a stray non-empty `sections` field in args no longer satisfies the contract. Belt-and-braces with `blocks: {minItems: 1}` in the schema entry. Added a new regression test `test_post_topic_rejects_empty_blocks_even_with_stray_sections`. `post_sectioned_topic`'s legacy `or` semantics (`not has_sections and not has_blocks`) are preserved verbatim. (2) FLAG-005 / issue_hints / scope / all_locations: added Step 5 to update the auto-shortlist suggested-actions string at topic_editor.py:2154-2160, replacing the literal `post_sectioned_topic` token with `post_topic` so the model is not steered to the legacy tool from inside `active_topics` payloads. Added this location to the Step 1 audit list explicitly and added a regression test `test_auto_shortlist_suggested_actions_uses_post_topic_not_post_sectioned_topic`. Renumbered subsequent steps (system prompt rewrite is now Step 6, publisher verification Step 7, tests Step 8, validation Step 9). The other two flag IDs (`callers`, `correctness`, `all_locations`) are duplicates of FLAG-004/FLAG-005 and are addressed by the same fixes. Recurring critiques for criteria 16/17 (subjective_judgment, inspect_runtime_ui) are inherent verification-capability requirements, not plan defects, so they remain as `should`/`info`."
+      },
+      {
+        "id": "FLAG-004",
+        "concern": "Topic-editor post_topic validation: the planned blocks-required guard can still be bypassed by a post_topic call with empty blocks and stray legacy sections, because the condition checks `not has_sections and not has_blocks` for post_topic instead of requiring `has_blocks` unconditionally.",
+        "resolution": "Addressed the two remaining real flag clusters. (1) FLAG-004 / correctness / callers: split the blocks-required guard into separate per-tool branches at topic_editor.py:1893-1905. `post_topic` now requires `has_blocks` UNCONDITIONALLY \u2014 a stray non-empty `sections` field in args no longer satisfies the contract. Belt-and-braces with `blocks: {minItems: 1}` in the schema entry. Added a new regression test `test_post_topic_rejects_empty_blocks_even_with_stray_sections`. `post_sectioned_topic`'s legacy `or` semantics (`not has_sections and not has_blocks`) are preserved verbatim. (2) FLAG-005 / issue_hints / scope / all_locations: added Step 5 to update the auto-shortlist suggested-actions string at topic_editor.py:2154-2160, replacing the literal `post_sectioned_topic` token with `post_topic` so the model is not steered to the legacy tool from inside `active_topics` payloads. Added this location to the Step 1 audit list explicitly and added a regression test `test_auto_shortlist_suggested_actions_uses_post_topic_not_post_sectioned_topic`. Renumbered subsequent steps (system prompt rewrite is now Step 6, publisher verification Step 7, tests Step 8, validation Step 9). The other two flag IDs (`callers`, `correctness`, `all_locations`) are duplicates of FLAG-004/FLAG-005 and are addressed by the same fixes. Recurring critiques for criteria 16/17 (subjective_judgment, inspect_runtime_ui) are inherent verification-capability requirements, not plan defects, so they remain as `should`/`info`."
+      },
+      {
+        "id": "FLAG-005",
+        "concern": "Topic-editor model steering: auto-shortlisted media topics still include a model-visible suggested action telling the agent to use post_sectioned_topic, leaving a media-to-sectioned steering path outside the prompt/tool descriptions.",
+        "resolution": "Addressed the two remaining real flag clusters. (1) FLAG-004 / correctness / callers: split the blocks-required guard into separate per-tool branches at topic_editor.py:1893-1905. `post_topic` now requires `has_blocks` UNCONDITIONALLY \u2014 a stray non-empty `sections` field in args no longer satisfies the contract. Belt-and-braces with `blocks: {minItems: 1}` in the schema entry. Added a new regression test `test_post_topic_rejects_empty_blocks_even_with_stray_sections`. `post_sectioned_topic`'s legacy `or` semantics (`not has_sections and not has_blocks`) are preserved verbatim. (2) FLAG-005 / issue_hints / scope / all_locations: added Step 5 to update the auto-shortlist suggested-actions string at topic_editor.py:2154-2160, replacing the literal `post_sectioned_topic` token with `post_topic` so the model is not steered to the legacy tool from inside `active_topics` payloads. Added this location to the Step 1 audit list explicitly and added a regression test `test_auto_shortlist_suggested_actions_uses_post_topic_not_post_sectioned_topic`. Renumbered subsequent steps (system prompt rewrite is now Step 6, publisher verification Step 7, tests Step 8, validation Step 9). The other two flag IDs (`callers`, `correctness`, `all_locations`) are duplicates of FLAG-004/FLAG-005 and are addressed by the same fixes. Recurring critiques for criteria 16/17 (subjective_judgment, inspect_runtime_ui) are inherent verification-capability requirements, not plan defects, so they remain as `should`/`info`."
+      },
+      {
+        "id": "correctness",
+        "concern": "Are the proposed changes technically correct?: Checked the proposed blocks-required guard. The plan still uses the combined sectioned/post_topic condition `not has_sections and not has_blocks`, so a post_topic call with `blocks: []` and a stray non-empty legacy `sections` array can still bypass `post_topic_requires_blocks`; FLAG-004 remains open.",
+        "resolution": "Addressed the two remaining real flag clusters. (1) FLAG-004 / correctness / callers: split the blocks-required guard into separate per-tool branches at topic_editor.py:1893-1905. `post_topic` now requires `has_blocks` UNCONDITIONALLY \u2014 a stray non-empty `sections` field in args no longer satisfies the contract. Belt-and-braces with `blocks: {minItems: 1}` in the schema entry. Added a new regression test `test_post_topic_rejects_empty_blocks_even_with_stray_sections`. `post_sectioned_topic`'s legacy `or` semantics (`not has_sections and not has_blocks`) are preserved verbatim. (2) FLAG-005 / issue_hints / scope / all_locations: added Step 5 to update the auto-shortlist suggested-actions string at topic_editor.py:2154-2160, replacing the literal `post_sectioned_topic` token with `post_topic` so the model is not steered to the legacy tool from inside `active_topics` payloads. Added this location to the Step 1 audit list explicitly and added a regression test `test_auto_shortlist_suggested_actions_uses_post_topic_not_post_sectioned_topic`. Renumbered subsequent steps (system prompt rewrite is now Step 6, publisher verification Step 7, tests Step 8, validation Step 9). The other two flag IDs (`callers`, `correctness`, `all_locations`) are duplicates of FLAG-004/FLAG-005 and are addressed by the same fixes. Recurring critiques for criteria 16/17 (subjective_judgment, inspect_runtime_ui) are inherent verification-capability requirements, not plan defects, so they remain as `should`/`info`."
+      },
+      {
+        "id": "all_locations",
+        "concern": "Does the change touch all locations AND supporting infrastructure?: The plan's audit list still omits src/features/summarising/topic_editor.py:2159, where auto-shortlisted topics name post_sectioned_topic in summary.suggested_actions. That is a supporting location for this tool-name and model-steering migration, so FLAG-005 remains open.",
+        "resolution": "Addressed the two remaining real flag clusters. (1) FLAG-004 / correctness / callers: split the blocks-required guard into separate per-tool branches at topic_editor.py:1893-1905. `post_topic` now requires `has_blocks` UNCONDITIONALLY \u2014 a stray non-empty `sections` field in args no longer satisfies the contract. Belt-and-braces with `blocks: {minItems: 1}` in the schema entry. Added a new regression test `test_post_topic_rejects_empty_blocks_even_with_stray_sections`. `post_sectioned_topic`'s legacy `or` semantics (`not has_sections and not has_blocks`) are preserved verbatim. (2) FLAG-005 / issue_hints / scope / all_locations: added Step 5 to update the auto-shortlist suggested-actions string at topic_editor.py:2154-2160, replacing the literal `post_sectioned_topic` token with `post_topic` so the model is not steered to the legacy tool from inside `active_topics` payloads. Added this location to the Step 1 audit list explicitly and added a regression test `test_auto_shortlist_suggested_actions_uses_post_topic_not_post_sectioned_topic`. Renumbered subsequent steps (system prompt rewrite is now Step 6, publisher verification Step 7, tests Step 8, validation Step 9). The other two flag IDs (`callers`, `correctness`, `all_locations`) are duplicates of FLAG-004/FLAG-005 and are addressed by the same fixes. Recurring critiques for criteria 16/17 (subjective_judgment, inspect_runtime_ui) are inherent verification-capability requirements, not plan defects, so they remain as `should`/`info`."
+      }
+    ],
+    "weighted_score": 0,
+    "weighted_history": [
+      17.5,
+      8.0,
+      10.5,
+      9.5
+    ],
+    "plan_delta_from_previous": 14.85,
+    "recurring_critiques": [],
+    "scope_creep_flags": [],
+    "loop_summary": "Iteration 5. Weighted score trajectory: 17.5 -> 8.0 -> 10.5 -> 9.5 -> 0. Plan deltas: 42.7%, 0.0%, 0.0%, 14.8%. Recurring critiques: 0. Resolved flags: 14. Open significant flags: 0.",
+    "debt_overlaps": [],
+    "escalated_debt_subsystems": []
+  },
+  "warnings": [
+    "Iteration 5: high iteration count."
+  ],
+  "criteria_check": {
+    "count": 20,
+    "items": [
+      {
+        "criterion": "A unified `post_topic` tool definition exists in `TOPIC_EDITOR_TOOLS` with `blocks` as the only prose carrier (no top-level `body` field, no `sections` field), `blocks` declared with `minItems: 1` in its JSON schema, required fields are `proposed_key`/`headline`/`source_message_ids`/`blocks`, and the tool description frames the choice as editorial complexity not media presence.",
+        "priority": "must",
+        "requires": [
+          "read_files",
+          "parse_diff"
+        ]
+      },
+      {
+        "criterion": "`post_simple_topic` and `post_sectioned_topic` are still accepted at the model-call dispatch layer (no `unknown_tool` rejection), their tool descriptions are prefixed with `[DEPRECATED`, and their existing storage shapes at `_summary_for_tool` (`{body, media}` for simple, `{body, sections, blocks?}` for sectioned) are unchanged.",
+        "priority": "must",
+        "requires": [
+          "read_files",
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "Existing legacy structural guards run BEFORE any alias normalization: a `post_simple_topic` call carrying media still returns the structured rejection `post_simple_cannot_attach_media_use_post_sectioned_topic` (action `rejected_post_simple`), pinning the current test at `tests/test_topic_editor_runtime.py:305-337`.",
+        "priority": "must",
+        "requires": [
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "A `post_topic` call carrying exactly one `intro` block with one `media_ref` is accepted, persists with `summary.blocks` length 1, has no `summary.body` and no `summary.sections`, and `render_topic_publish_units` produces exactly one text unit followed by one media unit with no section header markup.",
+        "priority": "must",
+        "requires": [
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "A `post_topic` call with empty `blocks` is rejected with action `rejected_post_topic`, reason `post_topic_requires_blocks`, and returns a tool_error transition (does NOT raise ValueError from `build_rejected_transition`).",
+        "priority": "must",
+        "requires": [
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "A `post_topic` call with `blocks: []` AND a non-empty stray `sections` array is rejected with action `rejected_post_topic`, reason `post_topic_requires_blocks` \u2014 i.e. the stray `sections` does NOT satisfy the contract. This pins the dispatch-level guard's independence from `has_sections` for `post_topic`.",
+        "priority": "must",
+        "requires": [
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "A `post_topic` call that collides with an existing topic is rejected with action `rejected_post_topic`, reason `topic_collision`, and returns a tool_error transition (does NOT raise ValueError from `build_rejected_transition`). Confirms the helper's allowed-action set was extended to include `rejected_post_topic`.",
+        "priority": "must",
+        "requires": [
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "`build_rejected_transition` at topic_editor.py:3870 accepts `rejected_post_topic` in its allowed-action set in addition to `rejected_post_simple`, `rejected_post_sectioned`, and `rejected_watch`.",
+        "priority": "must",
+        "requires": [
+          "read_files",
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "The writeback at topic_editor.py:1849-1850 (default-media-attached `normalized_blocks` \u2192 `args['blocks']`) fires for both `post_sectioned_topic` and `post_topic`, so `_summary_for_tool` stores blocks that went through `_attach_default_media_refs_to_blocks`.",
+        "priority": "must",
+        "requires": [
+          "read_files",
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "The auto-shortlist topic-summary builder at topic_editor.py:2154-2160 emits `summary.suggested_actions` containing the token `post_topic` and NOT containing the token `post_sectioned_topic`. (Regression pin for FLAG-005 \u2014 the auto-shortlisted topic payload is a model-visible steering surface and must not name the legacy tool.)",
+        "priority": "must",
+        "requires": [
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "Existing `normalize_document_blocks` behaviour is unchanged: legacy `body`-only summaries become a single intro block, legacy `body`+`sections` summaries become intro+section blocks, and new-style summaries with `blocks` pass through.",
+        "priority": "must",
+        "requires": [
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "`TOPIC_EDITOR_SYSTEM_PROMPT` no longer contains the rule 'use sectioned for ANY media' or equivalent media\u2192sectioned steering, and instead contains explicit guidance that one creator + one artifact = one intro block.",
+        "priority": "must",
+        "requires": [
+          "read_files",
+          "parse_diff"
+        ]
+      },
+      {
+        "criterion": "`TOPIC_EDITOR_SYSTEM_PROMPT` contains explicit brevity guidance (intro 1-3 sentences ~30-150 words; sections 1-2 sentences; no bullet lists) and at least one worked example showing a single-creator single-video topic as exactly one intro block, plus a labeled 'do not do this' counter-example.",
+        "priority": "must",
+        "requires": [
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "The role label in `TOPIC_EDITOR_SYSTEM_PROMPT` is changed from 'BNDC live-update topic editor' to a non-editor framing (e.g. 'BNDC live-update writer' or 'live-update author').",
+        "priority": "must",
+        "requires": [
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "The existing action-coverage test `test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions` at tests/test_topic_editor_runtime.py:1380-1437 is updated: `allowed_actions` includes `post_topic` and `rejected_post_topic`; `configured_actions` includes `post_topic`; and the test asserts `build_rejected_transition(... action='rejected_post_topic' ...)` returns a payload with `action == 'rejected_post_topic'`.",
+        "priority": "must",
+        "requires": [
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "The full pytest suite (`pytest -x -q`) passes after the change, with all topic-editor and live-update editor tests green.",
+        "priority": "must",
+        "requires": [
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "An end-to-end-style test simulating the NebSH 'Last Party' scenario (one author, one video drop, one reply, two praise comments) produces a topic with exactly one block when run through the topic editor's normalization + dispatch path.",
+        "priority": "must",
+        "requires": [
+          "run_tests"
+        ]
+      },
+      {
+        "criterion": "Telemetry/action labels: new `post_topic` calls emit action `post_topic`; legacy alias calls retain `post_simple` / `post_sectioned` action labels. The `_summary_for_tool` call site passes the ORIGINAL `call['name']` (not a normalized name).",
+        "priority": "should",
+        "requires": [
+          "read_files"
+        ]
+      },
+      {
+        "criterion": "No new file exceeds ~400 added lines and `topic_editor.py` retains a clean separation between tool definitions, prompt constant, dispatch, normalization, and rendering.",
+        "priority": "should",
+        "requires": [
+          "read_files",
+          "subjective_judgment"
+        ]
+      },
+      {
+        "criterion": "On the next dev-environment live-update cron tick after merge, a single-author single-video topic posts as title + one paragraph + media (no separate 'The Video' / 'Audio' / 'Community Reaction' sections), and a genuinely multi-creator topic still posts as a multi-section document.",
+        "priority": "info",
+        "requires": [
+          "inspect_runtime_ui"
+        ]
+      }
+    ]
+  },
+  "preflight_results": {
+    "project_dir_exists": true,
+    "project_dir_writable": true,
+    "success_criteria_present": true,
+    "claude_available": true,
+    "codex_available": true
+  },
+  "unresolved_flags": []
+}
+
+        Critique check summary:
+        - issue_hints: clear
+        - correctness: clear
+        - scope: clear
+        - all_locations: clear
+        - callers: clear
+
+        Unresolved significant flags:
+        []
+
+        Known accepted debt grouped by subsystem:
+        {
+  "admin-chat-classification": [
+    {
+      "id": "DEBT-006",
+      "concern": "anthropic client may not be initialized when interceptor fires before _ensure_agent.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "admin-triggered-payments-let-20260410-1448"
+      ]
+    }
+  ],
+  "admin-payments-intent-state": [
+    {
+      "id": "DEBT-004",
+      "concern": "button confirmation path does not directly update admin_payment_intents \u2014 intent sync happens indirectly via handle_payment_result on terminal state.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "admin-triggered-payments-let-20260410-1448"
+      ]
+    },
+    {
+      "id": "DEBT-005",
+      "concern": "no direct bridge from paymentconfirmview to admin_payment_intents.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "admin-triggered-payments-let-20260410-1448"
+      ]
+    },
+    {
+      "id": "DEBT-008",
+      "concern": "awaiting_admin_init stale cleanup only runs at cog_load, not periodically, so stranded verified-batch intents could remain active until restart",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "identity-based-routing-for-20260411-0256"
+      ]
+    },
+    {
+      "id": "DEBT-009",
+      "concern": "scheduling glue for periodic _reconcile_admin_chat_orphans invocation is not in the plan",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "identity-based-routing-for-20260411-0256"
+      ]
+    },
+    {
+      "id": "DEBT-010",
+      "concern": "awaiting_admin_init in the active set has broader effects on active-intent callers across the repo until restart",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "identity-based-routing-for-20260411-0256"
+      ]
+    }
+  ],
+  "are-the-proposed-changes-technically-correct": [
+    {
+      "id": "DEBT-015",
+      "concern": "are the proposed changes technically correct?: current init at live_update_editor.py:101-104 is `self.max_publish_per_run = max(1, int(max_publish_per_run or os.getenv('live_update_max_posts_per_run', self.default_max_publish_per_run)))`. if default becomes none and env is unset, `int(none)` raises typeerror. plan step 5.1 says 'leave self.max_publish_per_run = none unless env var set' but does not explicitly rewrite the `max(1, int(...))` expression.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    },
+    {
+      "id": "DEBT-017",
+      "concern": "are the proposed changes technically correct?: `_meets_editorial_bar` (live_update_prompts.py:903) is a classmethod with a fixed signature; `scanned_message_count` does not exist anywhere in the repo (grep confirms zero hits). plan assumption #4 calls threading 'trivial', but the bar is invoked from `_message_meets_editorial_bar` (line 941) and other paths \u2014 every call site needs the new args, including indirect ones.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    },
+    {
+      "id": "DEBT-023",
+      "concern": "are the proposed changes technically correct?: step 2.2 says `extend` sets `next_revisit_at = least(now()+6-12h, expires_at)` \u2014 '6-12h' is a range, not a concrete value. implementation needs a single number or documented derivation.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    },
+    {
+      "id": "DEBT-024",
+      "concern": "are the proposed changes technically correct?: plan auto-archives ttl-expired rows inside `get_live_update_watchlist` (a read path), turning every read into a write and exposing a race across concurrent dev/prod runs sharing a db. safer as an idempotent update before the select.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    },
+    {
+      "id": "DEBT-032",
+      "concern": "are the proposed changes technically correct?: the plan repeatedly references the 'legacy run-source' as a way to distinguish legacy-editor rows from new-editor rows on the shared `live_update_editor_runs` table. \u00a73 precondition says 'latest live_update_editor_runs row under legacy run-source within last hour', and \u00a75 branch a primary signal says 'no new live_update_editor_runs rows under the legacy run-source after the flip timestamp'. i read src/common/storage_handler.py:652-682 and `live_update_editor_runs` today has columns guild_id, environment, trigger, status, live_channel_id, checkpoint_*, memory_snapshot, duplicate_snapshot, *_count, skipped_reason, error_message, metadata, completed_at \u2014 no `run_source` / `editor_source` / `run_type` column. per redesign :223/:562 the table is retained for both editors; without a phase-1-added discriminator (could be a new column, a metadata json key, or a trigger-prefix convention), branch a's sql verification cannot tell legacy runs apart from new runs and the precondition check cannot confirm 'legacy editor still running'. this gap is not captured in the five todo(phase-1) markers \u2014 it is a sixth phase-1 dependency.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "produce-the-phase-2-prod-20260513-1822"
+      ]
+    },
+    {
+      "id": "DEBT-045",
+      "concern": "are the proposed changes technically correct?: checked the publish path in `src/features/summarising/topic_editor.py` around `_publish_topic`: structured topics are rendered into text/media units, flattened into strings, and then sent with `channel.send(message_text)`. the plan's step 8 says external resolver success should send `discord.file`, but it does not spell out how to preserve the current `flat_messages`, `media_indices`, suppressed-mode return shape, sent-id accounting, and partial-failure status when some units become file sends and some remain text fallback links.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-best-effort-20260514-1615"
+      ]
+    },
+    {
+      "id": "DEBT-046",
+      "concern": "are the proposed changes technically correct?: checked the resolver safeguard proposal against likely yt-dlp output. the plan says to safelist the original url and the resolved media host \"where applicable\", but yt-dlp often returns signed cdn hosts such as reddit/twitter/instagram/tiktok media cdns that are not the same as the source domains; using the curator source-domain safelist for resolved media urls would cause valid links to fall back, while skipping resolved-host validation entirely would weaken the ssrf/download boundary.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-best-effort-20260514-1615"
+      ]
+    }
+  ],
+  "db-handler-social-publications": [
+    {
+      "id": "DEBT-001",
+      "concern": "mixing fluent client, raw sql, and rpc access patterns in one subsystem increases maintenance surface.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-a-unified-social-20260409-1710"
+      ]
+    }
+  ],
+  "db-handler-supabase-infrastructure": [
+    {
+      "id": "DEBT-002",
+      "concern": "supabase rpc is untested in this codebase and may require dashboard configuration.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-a-unified-social-20260409-1710"
+      ]
+    }
+  ],
+  "did-the-work-fully-address-the-issue-hints-user-notes-and-approved-plan-requirements": [
+    {
+      "id": "DEBT-021",
+      "concern": "did the work fully address the issue hints, user notes, and approved plan requirements?: brief phase 4 item #5 (hard-requirement assertion in output shape saying an omitted reasoning prefix makes the response invalid and will be re-requested) is folded into plan step 9.1 with the prefix instruction; plan should explicitly preserve that behaviour-shaping wording, not just the prefix mechanics.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    },
+    {
+      "id": "DEBT-022",
+      "concern": "did the work fully address the issue hints, user notes, and approved plan requirements?: brief caps active rows at 50 globally; plan step 2.4 only auto-archives oldest `fresh` rows beyond cap, so accumulated `revisit_due`/`last_call` items can push the active count beyond 50 indefinitely.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    },
+    {
+      "id": "DEBT-040",
+      "concern": "did the work fully address the issue hints, user notes, and approved plan requirements?: the brief requires source-payload enrichment to inline any existing media understandings. the plan only guarantees looping over known fast/best model presets unless a new all-understandings helper is added, so cached rows created by another valid model string or a future preset could be omitted from `_build_initial_user_payload` even though the data already exists.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "fresh-thoughtful-standard-20260514-0058"
+      ]
+    }
+  ],
+  "discord-resource-sync-promoter": [
+    {
+      "id": "DEBT-011",
+      "concern": "pl/pgsql promoter + cursor-table removal deviates from the brief's stated two-edge-function + cursor-table shape.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "sync-discord-resources-20260423-2100"
+      ]
+    }
+  ],
+  "discord-resource-sync-schema": [
+    {
+      "id": "DEBT-012",
+      "concern": "`asset_comments.discord_guild_id bigint not null` could fail on historical `discord_messages` rows with null `guild_id`.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "sync-discord-resources-20260423-2100"
+      ]
+    },
+    {
+      "id": "DEBT-013",
+      "concern": "same null-guild_id concern as flag-012, raised as category-level flag.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "sync-discord-resources-20260423-2100"
+      ]
+    }
+  ],
+  "does-the-change-touch-all-locations-and-supporting-infrastructure": [
+    {
+      "id": "DEBT-020",
+      "concern": "does the change touch all locations and supporting infrastructure?: tool dispatch: `_run_requested_tool` (live_update_prompts.py:562) is a generic invoker that calls `tool_runner(name, args)`. the real per-tool routing lives in `live_update_editor.py`'s tool runner at ~line 440 (`return {'error': f'unknown_tool:{tool_name}'}`). plan step 3.2 points dispatch wiring at `_run_requested_tool`, but new tool names must be added to the editor's dispatcher.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    },
+    {
+      "id": "DEBT-028",
+      "concern": "does the change touch all locations and supporting infrastructure?: storage layer (`storage_handler.py:1733-1780`) wraps supabase calls; plan's db_handler step does not explicitly call out the storage_handler counterpart for the new insert/update methods or for new column writes (storage_handler.py:1738 builds the payload with hardcoded keys). the file inventory lists storage_handler edits, but step 2 lacks specifics for the lower layer.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    },
+    {
+      "id": "DEBT-041",
+      "concern": "does the change touch all locations and supporting infrastructure?: checked archived message selection in `storage_handler.py`: `get_archived_messages_after_checkpoint` selects `*` and current compact live-context helpers include `attachments` and `embeds`, but `get_topic_editor_message_context` selects only text/reply/thread fields. the plan resolves vision tools from `context['messages']`, so initial-window attachments are covered; however, if an agent discovers a media-bearing message only through `get_message_context`, that returned context will not include attachments unless this read tool is also enriched.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "fresh-thoughtful-standard-20260514-0058"
+      ]
+    }
+  ],
+  "editor-init-cap": [
+    {
+      "id": "DEBT-014",
+      "concern": "editor-init-cap: changing default_max_publish_per_run to none breaks the existing `max(1, int(... or os.getenv(..., default)))` initializer (int(none) raises). plan must rewrite the init expression, not just flip the constant.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    }
+  ],
+  "editorial-bar-threading": [
+    {
+      "id": "DEBT-016",
+      "concern": "editorial-bar-threading: `scanned_message_count` and `is_last_call` are new inputs to a classmethod with multiple call sites; no caller threads them today. plan asserts threading is trivial but does not enumerate `_message_meets_editorial_bar` or other callers.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    }
+  ],
+  "external-media-host-safety": [
+    {
+      "id": "DEBT-042",
+      "concern": "external media host safety: plan does not define a separate resolved-media cdn allowlist or provenance rule, creating a tradeoff between false fallbacks for legitimate yt-dlp cdn urls and unsafe arbitrary downloads.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-best-effort-20260514-1615"
+      ]
+    }
+  ],
+  "external-url-indexing": [
+    {
+      "id": "DEBT-044",
+      "concern": "external url indexing: plan relies on external url indexes across payload exposure, validation, rendering, and publishing but does not explicitly require all locations to use one shared deterministic extraction helper.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-best-effort-20260514-1615"
+      ]
+    }
+  ],
+  "find-the-callers-of-the-changed-function-what-arguments-do-they-actually-pass-does-the-fix-handle-all-of-them": [
+    {
+      "id": "DEBT-018",
+      "concern": "find the callers of the changed function. what arguments do they actually pass? does the fix handle all of them?: `_meets_editorial_bar` callers: `_message_meets_editorial_bar` at line 941 forwards a single message and computes confidence locally; with new `scanned_message_count`/`is_last_call` params, that wrapper plus every direct caller must thread the new context. plan should enumerate caller-by-caller.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    },
+    {
+      "id": "DEBT-027",
+      "concern": "find the callers of the changed function. what arguments do they actually pass? does the fix handle all of them?: `get_live_update_watchlist` is called at live_update_editor.py:140 with only `guild_id`+`environment`. changing the return shape from list-of-rows to a state-grouped dict requires the prompt builder (live_update_prompts.py:450) to consume the new shape; plan step 4 handles rendering but doesn't note the type change is a breaking contract for any editor-level telemetry that counts/loops watchlist items.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    },
+    {
+      "id": "DEBT-029",
+      "concern": "find the callers of the changed function. what arguments do they actually pass? does the fix handle all of them?: `_parse_raw_candidates` (line 595) currently stashes `self.last_editor_reasoning` for the editor to consume. plan adds `reasoning_recovery_path` telemetry but doesn't specify the handoff channel (new attribute? return value?). editor needs an unambiguous handle to write into `metadata.agent_trace`.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    },
+    {
+      "id": "DEBT-031",
+      "concern": "find the callers of the changed function. what arguments do they actually pass? does the fix handle all of them?: the provisional banner in \u00a71 (now five todos) plus the precondition gate plus the decision-tree row form a tight containment of phase-1-not-yet-landed risk. the only residual concern is the unenumerated sixth phase-1 dependency (run-source discriminator) flagged under correctness; if the operator follows the runbook strictly and phase 1 omits the discriminator, the gating logic does not catch it.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "produce-the-phase-2-prod-20260513-1822"
+      ]
+    },
+    {
+      "id": "DEBT-048",
+      "concern": "find the callers of the changed function. what arguments do they actually pass? does the fix handle all of them?: grep found `normalize_media_ref` is used directly by tests, `normalize_topic_document`, and `block_media_refs`; `block_media_refs` feeds both validation and `render_topic_publish_units`. extending `normalize_media_ref` to `kind: \"external\"` is the right choke point, but every downstream branch that currently treats non-attachment as embed must be made explicit or external refs will be validated/resolved through the embed path.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-best-effort-20260514-1615"
+      ]
+    }
+  ],
+  "live-update-editor-phase1-decisions": [
+    {
+      "id": "DEBT-033",
+      "concern": "borderline (3-5/week) defer-audit volume handling not enumerated",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "build-phase-1-of-the-live-20260513-1822"
+      ]
+    }
+  ],
+  "live-update-editor-phase2-runbook": [
+    {
+      "id": "DEBT-030",
+      "concern": "operator may not catch a missing run-source discriminator on live_update_editor_runs because it is not explicitly enumerated in the v3 plan's todo(phase-1) list (which lists five items, not six).",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "produce-the-phase-2-prod-20260513-1822"
+      ]
+    }
+  ],
+  "media-discovery-outside-the-initial-source-window": [
+    {
+      "id": "DEBT-039",
+      "concern": "media discovery outside the initial source window: `get_message_context` currently returns no attachments, so vision tools that only resolve media from `context['messages']` will not work for media-bearing messages discovered by that read tool.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "fresh-thoughtful-standard-20260514-0058"
+      ]
+    }
+  ],
+  "payment-service-confirmation": [
+    {
+      "id": "DEBT-007",
+      "concern": "success criterion bundles null-recipient dm wiring with cap-breach/collision dm wiring; step 1 only does log+return-none for null-recipient.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "harden-the-solana-payment-20260410-2147"
+      ]
+    }
+  ],
+  "phase-0-prereq": [
+    {
+      "id": "DEBT-036",
+      "concern": "phase 0 needs postgres-with-pg_trgm for one-time similarity_pairs.json generation",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "build-phase-1-of-the-live-20260513-1822"
+      ]
+    }
+  ],
+  "publish-integration": [
+    {
+      "id": "DEBT-043",
+      "concern": "publish integration: plan says to send `discord.file` for resolved external media but does not specify the revised send loop/status model needed because the existing structured publisher flattens every unit into text and sends only `channel.send(message_text)`.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-best-effort-20260514-1615"
+      ]
+    }
+  ],
+  "search-for-related-code-that-handles-the-same-concept-is-the-reported-issue-a-symptom-of-something-broader": [
+    {
+      "id": "DEBT-025",
+      "concern": "search for related code that handles the same concept. is the reported issue a symptom of something broader?: existing `upsert_live_update_watchlist` (db_handler.py:595, storage_handler.py:1733) already writes the table; plan introduces a parallel `insert_live_update_watchlist`. two write entry points for the same table risk divergent column handling. plan should replace the upsert or document the relationship.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    },
+    {
+      "id": "DEBT-026",
+      "concern": "search for related code that handles the same concept. is the reported issue a symptom of something broader?: `get_live_update_watchlist` currently accepts a `status='active'` filter; plan broadens values and changes return shape to a grouped dict. only caller is editor.py:140 which doesn't pass status, so direct risk is low \u2014 but the contract change is a real break for any future caller assuming a list.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    },
+    {
+      "id": "DEBT-047",
+      "concern": "search for related code that handles the same concept. is the reported issue a symptom of something broader?: checked source-message hydration paths used by validation and publishing. the plan covers `_message_payload`, `get_topic_editor_message_context`, and `get_topic_editor_source_messages`, but it should require one shared extraction helper across all three paths; otherwise external url index assignment can drift between the initial payload, read-tool payload, validation, and publish-time fallback resolution.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-best-effort-20260514-1615"
+      ]
+    }
+  ],
+  "social-channel-routes": [
+    {
+      "id": "DEBT-003",
+      "concern": "route management tooling is absent, leaving the routing system inert until manual db inserts.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-a-unified-social-20260409-1710"
+      ]
+    }
+  ],
+  "test-fake-store": [
+    {
+      "id": "DEBT-037",
+      "concern": "difflib leakage in fake store could degrade flag-010 fix over time",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "build-phase-1-of-the-live-20260513-1822"
+      ]
+    }
+  ],
+  "topic-dispatcher": [
+    {
+      "id": "DEBT-034",
+      "concern": "lean accessor missing-message contract",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "build-phase-1-of-the-live-20260513-1822"
+      ]
+    },
+    {
+      "id": "DEBT-038",
+      "concern": "lean accessor edge cases (missing/duplicate/null author) not enumerated",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "build-phase-1-of-the-live-20260513-1822"
+      ]
+    }
+  ],
+  "topic-editor-run-lifecycle": [
+    {
+      "id": "DEBT-035",
+      "concern": "run-lifecycle fk coupling: run-insert failure blocks all transition logging",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "build-phase-1-of-the-live-20260513-1822"
+      ]
+    }
+  ],
+  "watchlist-tool-dispatch": [
+    {
+      "id": "DEBT-019",
+      "concern": "watchlist-tool-dispatch: new `watchlist_add`/`watchlist_update` must be registered in the editor's tool dispatcher (live_update_editor.py ~line 440 unknown_tool branch), not in the generic `_run_requested_tool` invoker. plan step 3.2 points at the wrong location.",
+      "occurrence_count": 1,
+      "plan_ids": [
+        "implement-the-watchlist-20260512-1809"
+      ]
+    }
+  ]
+}
+
+        Escalated debt subsystems:
+        [
+  {
+    "subsystem": "are-the-proposed-changes-technically-correct",
+    "total_occurrences": 7,
+    "plan_count": 3,
+    "entries": [
+      {
+        "id": "DEBT-015",
+        "concern": "are the proposed changes technically correct?: current init at live_update_editor.py:101-104 is `self.max_publish_per_run = max(1, int(max_publish_per_run or os.getenv('live_update_max_posts_per_run', self.default_max_publish_per_run)))`. if default becomes none and env is unset, `int(none)` raises typeerror. plan step 5.1 says 'leave self.max_publish_per_run = none unless env var set' but does not explicitly rewrite the `max(1, int(...))` expression.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-the-watchlist-20260512-1809"
+        ]
+      },
+      {
+        "id": "DEBT-017",
+        "concern": "are the proposed changes technically correct?: `_meets_editorial_bar` (live_update_prompts.py:903) is a classmethod with a fixed signature; `scanned_message_count` does not exist anywhere in the repo (grep confirms zero hits). plan assumption #4 calls threading 'trivial', but the bar is invoked from `_message_meets_editorial_bar` (line 941) and other paths \u2014 every call site needs the new args, including indirect ones.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-the-watchlist-20260512-1809"
+        ]
+      },
+      {
+        "id": "DEBT-023",
+        "concern": "are the proposed changes technically correct?: step 2.2 says `extend` sets `next_revisit_at = least(now()+6-12h, expires_at)` \u2014 '6-12h' is a range, not a concrete value. implementation needs a single number or documented derivation.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-the-watchlist-20260512-1809"
+        ]
+      },
+      {
+        "id": "DEBT-024",
+        "concern": "are the proposed changes technically correct?: plan auto-archives ttl-expired rows inside `get_live_update_watchlist` (a read path), turning every read into a write and exposing a race across concurrent dev/prod runs sharing a db. safer as an idempotent update before the select.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-the-watchlist-20260512-1809"
+        ]
+      },
+      {
+        "id": "DEBT-032",
+        "concern": "are the proposed changes technically correct?: the plan repeatedly references the 'legacy run-source' as a way to distinguish legacy-editor rows from new-editor rows on the shared `live_update_editor_runs` table. \u00a73 precondition says 'latest live_update_editor_runs row under legacy run-source within last hour', and \u00a75 branch a primary signal says 'no new live_update_editor_runs rows under the legacy run-source after the flip timestamp'. i read src/common/storage_handler.py:652-682 and `live_update_editor_runs` today has columns guild_id, environment, trigger, status, live_channel_id, checkpoint_*, memory_snapshot, duplicate_snapshot, *_count, skipped_reason, error_message, metadata, completed_at \u2014 no `run_source` / `editor_source` / `run_type` column. per redesign :223/:562 the table is retained for both editors; without a phase-1-added discriminator (could be a new column, a metadata json key, or a trigger-prefix convention), branch a's sql verification cannot tell legacy runs apart from new runs and the precondition check cannot confirm 'legacy editor still running'. this gap is not captured in the five todo(phase-1) markers \u2014 it is a sixth phase-1 dependency.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "produce-the-phase-2-prod-20260513-1822"
+        ]
+      },
+      {
+        "id": "DEBT-045",
+        "concern": "are the proposed changes technically correct?: checked the publish path in `src/features/summarising/topic_editor.py` around `_publish_topic`: structured topics are rendered into text/media units, flattened into strings, and then sent with `channel.send(message_text)`. the plan's step 8 says external resolver success should send `discord.file`, but it does not spell out how to preserve the current `flat_messages`, `media_indices`, suppressed-mode return shape, sent-id accounting, and partial-failure status when some units become file sends and some remain text fallback links.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-best-effort-20260514-1615"
+        ]
+      },
+      {
+        "id": "DEBT-046",
+        "concern": "are the proposed changes technically correct?: checked the resolver safeguard proposal against likely yt-dlp output. the plan says to safelist the original url and the resolved media host \"where applicable\", but yt-dlp often returns signed cdn hosts such as reddit/twitter/instagram/tiktok media cdns that are not the same as the source domains; using the curator source-domain safelist for resolved media urls would cause valid links to fall back, while skipping resolved-host validation entirely would weaken the ssrf/download boundary.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-best-effort-20260514-1615"
+        ]
+      }
+    ]
+  },
+  {
+    "subsystem": "admin-payments-intent-state",
+    "total_occurrences": 5,
+    "plan_count": 2,
+    "entries": [
+      {
+        "id": "DEBT-004",
+        "concern": "button confirmation path does not directly update admin_payment_intents \u2014 intent sync happens indirectly via handle_payment_result on terminal state.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "admin-triggered-payments-let-20260410-1448"
+        ]
+      },
+      {
+        "id": "DEBT-005",
+        "concern": "no direct bridge from paymentconfirmview to admin_payment_intents.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "admin-triggered-payments-let-20260410-1448"
+        ]
+      },
+      {
+        "id": "DEBT-008",
+        "concern": "awaiting_admin_init stale cleanup only runs at cog_load, not periodically, so stranded verified-batch intents could remain active until restart",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "identity-based-routing-for-20260411-0256"
+        ]
+      },
+      {
+        "id": "DEBT-009",
+        "concern": "scheduling glue for periodic _reconcile_admin_chat_orphans invocation is not in the plan",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "identity-based-routing-for-20260411-0256"
+        ]
+      },
+      {
+        "id": "DEBT-010",
+        "concern": "awaiting_admin_init in the active set has broader effects on active-intent callers across the repo until restart",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "identity-based-routing-for-20260411-0256"
+        ]
+      }
+    ]
+  },
+  {
+    "subsystem": "find-the-callers-of-the-changed-function-what-arguments-do-they-actually-pass-does-the-fix-handle-all-of-them",
+    "total_occurrences": 5,
+    "plan_count": 3,
+    "entries": [
+      {
+        "id": "DEBT-018",
+        "concern": "find the callers of the changed function. what arguments do they actually pass? does the fix handle all of them?: `_meets_editorial_bar` callers: `_message_meets_editorial_bar` at line 941 forwards a single message and computes confidence locally; with new `scanned_message_count`/`is_last_call` params, that wrapper plus every direct caller must thread the new context. plan should enumerate caller-by-caller.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-the-watchlist-20260512-1809"
+        ]
+      },
+      {
+        "id": "DEBT-027",
+        "concern": "find the callers of the changed function. what arguments do they actually pass? does the fix handle all of them?: `get_live_update_watchlist` is called at live_update_editor.py:140 with only `guild_id`+`environment`. changing the return shape from list-of-rows to a state-grouped dict requires the prompt builder (live_update_prompts.py:450) to consume the new shape; plan step 4 handles rendering but doesn't note the type change is a breaking contract for any editor-level telemetry that counts/loops watchlist items.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-the-watchlist-20260512-1809"
+        ]
+      },
+      {
+        "id": "DEBT-029",
+        "concern": "find the callers of the changed function. what arguments do they actually pass? does the fix handle all of them?: `_parse_raw_candidates` (line 595) currently stashes `self.last_editor_reasoning` for the editor to consume. plan adds `reasoning_recovery_path` telemetry but doesn't specify the handoff channel (new attribute? return value?). editor needs an unambiguous handle to write into `metadata.agent_trace`.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-the-watchlist-20260512-1809"
+        ]
+      },
+      {
+        "id": "DEBT-031",
+        "concern": "find the callers of the changed function. what arguments do they actually pass? does the fix handle all of them?: the provisional banner in \u00a71 (now five todos) plus the precondition gate plus the decision-tree row form a tight containment of phase-1-not-yet-landed risk. the only residual concern is the unenumerated sixth phase-1 dependency (run-source discriminator) flagged under correctness; if the operator follows the runbook strictly and phase 1 omits the discriminator, the gating logic does not catch it.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "produce-the-phase-2-prod-20260513-1822"
+        ]
+      },
+      {
+        "id": "DEBT-048",
+        "concern": "find the callers of the changed function. what arguments do they actually pass? does the fix handle all of them?: grep found `normalize_media_ref` is used directly by tests, `normalize_topic_document`, and `block_media_refs`; `block_media_refs` feeds both validation and `render_topic_publish_units`. extending `normalize_media_ref` to `kind: \"external\"` is the right choke point, but every downstream branch that currently treats non-attachment as embed must be made explicit or external refs will be validated/resolved through the embed path.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-best-effort-20260514-1615"
+        ]
+      }
+    ]
+  },
+  {
+    "subsystem": "did-the-work-fully-address-the-issue-hints-user-notes-and-approved-plan-requirements",
+    "total_occurrences": 3,
+    "plan_count": 2,
+    "entries": [
+      {
+        "id": "DEBT-021",
+        "concern": "did the work fully address the issue hints, user notes, and approved plan requirements?: brief phase 4 item #5 (hard-requirement assertion in output shape saying an omitted reasoning prefix makes the response invalid and will be re-requested) is folded into plan step 9.1 with the prefix instruction; plan should explicitly preserve that behaviour-shaping wording, not just the prefix mechanics.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-the-watchlist-20260512-1809"
+        ]
+      },
+      {
+        "id": "DEBT-022",
+        "concern": "did the work fully address the issue hints, user notes, and approved plan requirements?: brief caps active rows at 50 globally; plan step 2.4 only auto-archives oldest `fresh` rows beyond cap, so accumulated `revisit_due`/`last_call` items can push the active count beyond 50 indefinitely.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-the-watchlist-20260512-1809"
+        ]
+      },
+      {
+        "id": "DEBT-040",
+        "concern": "did the work fully address the issue hints, user notes, and approved plan requirements?: the brief requires source-payload enrichment to inline any existing media understandings. the plan only guarantees looping over known fast/best model presets unless a new all-understandings helper is added, so cached rows created by another valid model string or a future preset could be omitted from `_build_initial_user_payload` even though the data already exists.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "fresh-thoughtful-standard-20260514-0058"
+        ]
+      }
+    ]
+  },
+  {
+    "subsystem": "does-the-change-touch-all-locations-and-supporting-infrastructure",
+    "total_occurrences": 3,
+    "plan_count": 2,
+    "entries": [
+      {
+        "id": "DEBT-020",
+        "concern": "does the change touch all locations and supporting infrastructure?: tool dispatch: `_run_requested_tool` (live_update_prompts.py:562) is a generic invoker that calls `tool_runner(name, args)`. the real per-tool routing lives in `live_update_editor.py`'s tool runner at ~line 440 (`return {'error': f'unknown_tool:{tool_name}'}`). plan step 3.2 points dispatch wiring at `_run_requested_tool`, but new tool names must be added to the editor's dispatcher.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-the-watchlist-20260512-1809"
+        ]
+      },
+      {
+        "id": "DEBT-028",
+        "concern": "does the change touch all locations and supporting infrastructure?: storage layer (`storage_handler.py:1733-1780`) wraps supabase calls; plan's db_handler step does not explicitly call out the storage_handler counterpart for the new insert/update methods or for new column writes (storage_handler.py:1738 builds the payload with hardcoded keys). the file inventory lists storage_handler edits, but step 2 lacks specifics for the lower layer.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-the-watchlist-20260512-1809"
+        ]
+      },
+      {
+        "id": "DEBT-041",
+        "concern": "does the change touch all locations and supporting infrastructure?: checked archived message selection in `storage_handler.py`: `get_archived_messages_after_checkpoint` selects `*` and current compact live-context helpers include `attachments` and `embeds`, but `get_topic_editor_message_context` selects only text/reply/thread fields. the plan resolves vision tools from `context['messages']`, so initial-window attachments are covered; however, if an agent discovers a media-bearing message only through `get_message_context`, that returned context will not include attachments unless this read tool is also enriched.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "fresh-thoughtful-standard-20260514-0058"
+        ]
+      }
+    ]
+  },
+  {
+    "subsystem": "search-for-related-code-that-handles-the-same-concept-is-the-reported-issue-a-symptom-of-something-broader",
+    "total_occurrences": 3,
+    "plan_count": 2,
+    "entries": [
+      {
+        "id": "DEBT-025",
+        "concern": "search for related code that handles the same concept. is the reported issue a symptom of something broader?: existing `upsert_live_update_watchlist` (db_handler.py:595, storage_handler.py:1733) already writes the table; plan introduces a parallel `insert_live_update_watchlist`. two write entry points for the same table risk divergent column handling. plan should replace the upsert or document the relationship.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-the-watchlist-20260512-1809"
+        ]
+      },
+      {
+        "id": "DEBT-026",
+        "concern": "search for related code that handles the same concept. is the reported issue a symptom of something broader?: `get_live_update_watchlist` currently accepts a `status='active'` filter; plan broadens values and changes return shape to a grouped dict. only caller is editor.py:140 which doesn't pass status, so direct risk is low \u2014 but the contract change is a real break for any future caller assuming a list.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-the-watchlist-20260512-1809"
+        ]
+      },
+      {
+        "id": "DEBT-047",
+        "concern": "search for related code that handles the same concept. is the reported issue a symptom of something broader?: checked source-message hydration paths used by validation and publishing. the plan covers `_message_payload`, `get_topic_editor_message_context`, and `get_topic_editor_source_messages`, but it should require one shared extraction helper across all three paths; otherwise external url index assignment can drift between the initial payload, read-tool payload, validation, and publish-time fallback resolution.",
+        "occurrence_count": 1,
+        "plan_ids": [
+          "implement-best-effort-20260514-1615"
+        ]
+      }
+    ]
+  }
+]
+
+        Debt guidance:
+        - Treat recurring debt as decision context, not background noise.
+        - If the current unresolved flags overlap an escalated subsystem, prefer recommending holistic redesign over another point fix.
+
+        Iteration Pressure Analysis:
+Group      Flags  Iters  Reopened  Concern
+------------------------------------------------------------------------
+FG-001     1      4      0         Checked the remaining model-visible steering surfa
+FG-002     1      4      0         Checked the proposed blocks-required guard. The pl
+FG-003     1      4      0         The related auto-shortlist media-publication path 
+FG-004     1      4      0         The plan's audit list still omits src/features/sum
+FG-005     1      4      0         The post_topic caller/input edge case remains: bec
+FG-006     1      1      0         Topic-editor rejected transitions: adding a distin
+FG-007     1      1      0         Topic-editor alias normalization: asserting empty 
+FG-008     1      1      0         Topic-editor post_topic persistence: normalized/de
+FG-009     1      5      0         Criterion 18: requires human verification (subject
+FG-010     1      5      0         Criterion 19: requires human verification (inspect
+FG-011     1      3      0         Topic-editor post_topic validation: the planned bl
+FG-012     1      3      0         Topic-editor model steering: auto-shortlisted medi
+FG-013     1      1      0         Are the proposed changes technically correct?: Che
+FG-014     1      1      0         Are the proposed changes technically correct?: Che
+FG-015     1      1      0         Does the change touch all locations AND supporting
+FG-016     1      1      0         Does the change touch all locations AND supporting
+
+        Robustness level:
+        full
+
+        Requirements:
+        - Decide exactly one of: PROCEED, ITERATE, ESCALATE, TIEBREAKER.
+        - Use the weighted score, flag details (including `evidence`), plan delta, recurring critiques, and preflight results as judgment context.
+        - PROCEED when execution should move forward now.
+        - ITERATE when revising the plan is the best next move.
+        - ESCALATE when the loop is stuck, churn is recurring, or user intervention is needed.
+        - TIEBREAKER when a flag group reflects an *unresolvable constraint tension* (architectural or philosophical — requires a human call) rather than a plan-quality issue. Use TIEBREAKER only when the Iteration Pressure Analysis shows `addressed_then_reopened_count >= 2` for a fuzzy group OR the group has >=2 member flags across >=2 iterations. If the concern is simply that the plan writer hasn't tried hard enough, use ITERATE instead. When recommending TIEBREAKER you MUST provide `tiebreaker_question` (the decision question for human resolution), `tiebreaker_flag_ids` (which flags this resolves), and `tiebreaker_fuzzy_group_id` (which group this resolves). Cite specific flag IDs and iterations in your rationale.
+        - `signals_assessment`: one paragraph summarizing score trajectory, flag status, and preflight posture.
+
+        Flags come in two tiers:
+        - **Blocking** (severity = significant/likely-significant): These are serious concerns. If you recommend PROCEED, you MUST provide a `flag_resolutions` entry for every blocking flag. There is no implicit acceptance.
+        - **Noted** (everything else): Acknowledge in your rationale but they don't block PROCEED.
+
+        If there are blocking flags and you want to PROCEED, provide `flag_resolutions` with one entry per blocking flag. If you cannot resolve every blocking flag, choose ITERATE (send back for revision) or ESCALATE (human intervention needed).
+        Structurally unresolvable flags (for example, infrastructure outside the repo or product decisions that require a human) are ESCALATE, not PROCEED with a non-answer.
+
+        For each blocking flag:
+        - **dispute**: The critique is factually wrong. Evidence must cite something specific (file path, line, API doc, etc.). Generic statements like "handled correctly" are invalid.
+        - **accept_tradeoff**: The concern is real but intentionally accepted as a known limitation. Rationale must be specific to this flag. Boilerplate like "acceptable within scope" is invalid.
+        - Schema requirement: every `flag_resolutions` entry must include both `evidence` and `rationale`. Use `""` for the field that does not apply to that action.
+
+        If there are no blocking flags, return `flag_resolutions: []`.
+        Always return `accepted_tradeoffs`; use `[]` when none apply.
+
+        Populate `settled_decisions` with design choices that should carry into review without re-litigation. Return `[]` when there are none.
+
+        Example:
+        ```json
+        {
+          "recommendation": "PROCEED",
+          "rationale": "Core fix is correct. Convention concern accepted.",
+          "signals_assessment": "Score stable at 2.5, preflight passed, no recurring critiques.",
+          "warnings": ["Verify edge case with composite moduli during execution."],
+          "flag_resolutions": [
+            {"flag_id": "correctness-1", "action": "dispute", "evidence": "allow_migrate and allow_migrate_model produce identical behavior for this use case (verified at django/db/utils.py:286).", "rationale": ""},
+            {"flag_id": "performance-1", "action": "accept_tradeoff", "evidence": "", "rationale": "Cold-start latency remains 40ms above target because the cache warmup job is owned by platform and outside this repo; rollout is still approved for the limited internal beta."},
+            {"flag_id": "conventions-1", "action": "accept_tradeoff", "evidence": "", "rationale": "Minor naming inconsistency is confined to this helper and would create churn across generated fixtures; track it as follow-up cleanup instead of blocking this fix."}
+          ],
+          "accepted_tradeoffs": [],
+          "settled_decisions": []
+        }
+        ```
+
+SHANNON STRUCTURED OUTPUT CONTRACT:
+- This megaplan phase is `gate`.
+- Your final answer MUST be exactly one valid JSON object and nothing else.
+- Do not wrap the JSON in markdown fences. Do not include prose before or after it.
+- The JSON object MUST conform to this schema. If a field is markdown, put the markdown as a JSON string value.
+{"type": "object", "properties": {"recommendation": {"type": "string", "enum": ["PROCEED", "ITERATE", "ESCALATE", "TIEBREAKER"]}, "rationale": {"type": "string"}, "signals_assessment": {"type": "string"}, "warnings": {"type": "array", "items": {"type": "string"}}, "settled_decisions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "decision": {"type": "string"}, "rationale": {"type": "string"}}, "required": ["id", "decision", "rationale"], "additionalProperties": false}}, "flag_resolutions": {"type": "array", "items": {"type": "object", "properties": {"flag_id": {"type": "string"}, "action": {"type": "string", "enum": ["dispute", "accept_tradeoff"]}, "evidence": {"type": "string"}, "rationale": {"type": "string"}}, "required": ["flag_id", "action", "evidence", "rationale"], "additionalProperties": false}}, "accepted_tradeoffs": {"type": "array", "items": {"type": "object", "properties": {"flag_id": {"type": "string"}, "concern": {"type": "string"}, "subsystem": {"type": "string"}, "rationale": {"type": "string"}}, "required": ["flag_id", "concern", "subsystem", "rationale"], "additionalProperties": false}}, "tiebreaker_question": {"type": "string"}, "tiebreaker_flag_ids": {"type": "array", "items": {"type": "string"}}, "tiebreaker_fuzzy_group_id": {"type": "string"}}, "required": ["recommendation", "rationale", "signals_assessment", "warnings", "settled_decisions", "flag_resolutions", "accepted_tradeoffs", "tiebreaker_question", "tiebreaker_flag_ids", "tiebreaker_fuzzy_group_id"], "additionalProperties": false}

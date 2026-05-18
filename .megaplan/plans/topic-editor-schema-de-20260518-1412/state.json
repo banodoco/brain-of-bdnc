@@ -1,0 +1,755 @@
+{
+  "name": "topic-editor-schema-de-20260518-1412",
+  "idea": "# Topic-Editor Schema De-conflation \u2014 Fix Multi-Section Bias in Hourly Summary Posts\n\n## Goal\n\nStop the BNDC hourly summary live-update flow from producing long, multi-section editorial posts for single-beat stories. A single-creator single-video post (e.g. \"NebSH drops 'The Last Party'\") should render as one paragraph alongside the video \u2014 not as a three-section document with separate \"The Video\" / \"Audio\" / \"Community Reaction\" headers.\n\n## Root cause (analysis is settled \u2014 do not re-litigate)\n\n`src/features/summarising/topic_editor.py` conflates two orthogonal axes into a single tool choice:\n\n1. **Has media or not** \u2014 a *rendering* concern (Discord needs media attached to a specific message so the publisher can lay it out).\n2. **Has one editorial angle or many** \u2014 an *editorial* concern (one paragraph vs. a structured document).\n\n`post_simple_topic` vs `post_sectioned_topic` is meant to be the editorial switch. But the rule \"media must attach to a block\" turned it into the rendering switch: any media \u2192 sectioned. Once sectioned, the schema shape (`blocks: [{type: \"intro\" | \"section\", title, text, source_message_ids, media_refs}]`) and the tool name itself prompt the model to fill in sections.\n\nConcrete reinforcers in the current code:\n\n- `post_simple_topic` (topic_editor.py:219-224) is gated to text-only \u2014 its tool description and the system prompt at lines 101-105 both forbid media on it, forcing media topics into `post_sectioned_topic`.\n- `post_sectioned_topic` (topic_editor.py:241-295) requires BOTH a top-level `body` string AND a `blocks` array \u2014 structural duplication that invites an intro paragraph plus sectioned content (look at `required` at line 293).\n- The system-prompt rule \"every factual block gets its own `source_message_ids`\" (lines 108-113) pressures the model to *create* extra blocks just to house multiple citations cleanly.\n- The role label \"You are the BNDC live-update topic editor\" (line 54) primes article-style sectioned output.\n- The topic-editor system prompt has **zero brevity guidance**. (Compare `live_update_prompts.py:382-383` which says \"1-2 sentences, 35-220 words, compact prose, no bullet lists\" \u2014 that lives in the candidate generator, not the topic editor.)\n- The publisher emits a \"Share with your followers!\" CTA per rendered block \u2014 a system-level incentive to split (not in scope to remove, just context for why this matters).\n\n## In scope\n\n1. **Collapse `post_simple_topic` + `post_sectioned_topic` into one unified `post_topic` tool.** The unified tool takes a `blocks` array. A one-block topic is \"simple\"; a many-block topic is \"sectioned\". One semantic, one entry point.\n\n2. **Keep `post_simple_topic` and `post_sectioned_topic` as deprecated aliases** that normalize into the unified shape so existing model calls don't error. Mark them deprecated in their tool descriptions. Drop them from `TOPIC_EDITOR_DECISION_TOOLS` advertising preference if there is one; the model should be steered to `post_topic`.\n\n3. **Drop the redundant top-level `body` field on the unified tool.** Prose lives in blocks only. Existing stored topics that have a top-level `body` continue to load via `normalize_document_blocks` (topic_editor.py:3957) \u2014 that path already converts `body` \u2192 intro block. Don't break it.\n\n4. **Rewrite the topic-editor system prompt** (`TOPIC_EDITOR_SYSTEM_PROMPT` constant, lines 54-143):\n   - Remove the \"use sectioned for ANY media\" rule. Replace with editorial guidance: *\"Use the minimum number of blocks that fits the story. A single creator with a single artifact = exactly ONE intro block with the media attached. Only add `section` blocks when the topic has genuinely distinct contributors, angles, or sub-stories that each independently merit their own header.\"*\n   - Add explicit brevity guidance: intro block body = 1-3 sentences, ~30-150 words; section block bodies = 1-2 sentences each. No bullet lists. No padding.\n   - Add a concrete minimal example showing a single-creator single-video post as exactly one intro block with the video attached. The example should illustrate what NOT to do as well (don't split a single-beat story into Video/Audio/Reaction sections).\n   - Replace the \"editor\" role framing with \"writer\" or \"live-update author\" \u2014 the label is itself a bias.\n   - Keep the per-block source attribution and per-block media attachment rules (those are valuable for citation/render correctness and are not the problem).\n\n5. **Update the tool descriptions** in `TOPIC_EDITOR_TOOLS` to remove the \"post_sectioned_topic for ANY media\" steering. The unified `post_topic` description should frame the choice as editorial complexity (one beat vs. many), not media presence.\n\n6. **Verify the publisher renders a single-block topic cleanly.** Grep for the publisher path (likely in `src/features/sharing/` or wherever topic rendering happens). A single-intro-block topic with media must render as: title + one paragraph + media attached, with no orphan \"section\" UI, no missing-section placeholders, no duplicated \"Share with your followers!\" CTAs. If the existing publisher already handles one-block topics, no change needed; otherwise add the rendering branch.\n\n7. **Tests** in the existing topic-editor test file (find it under `tests/`):\n   - Unified `post_topic` accepts a single-intro-block topic with media \u2192 normalizes correctly.\n   - Unified `post_topic` accepts a multi-block topic \u2192 normalizes correctly.\n   - Legacy `post_simple_topic` still works (deprecated alias path).\n   - Legacy `post_sectioned_topic` with `body` + `blocks` still works (deprecated alias path).\n   - `normalize_document_blocks` still converts old `body + sections` shape to blocks (legacy stored-topic compat).\n   - End-to-end smoke: a fixture mimicking the NebSH scenario (one author, one video drop, one reply, two praise comments) produces a topic with exactly one block when run through the topic editor's normalization path. (If running the full LLM pipeline in tests is impractical, test the schema acceptance + prompt-content assertions instead.)\n\n## Out of scope\n\n- The candidate-generator path (`live_update_prompts.py`) \u2014 different feature, already has good brevity guidance.\n- Visual rendering of citations (inline brackets vs footer) \u2014 leave as-is.\n- The auto-shortlist media reaction-threshold logic \u2014 unrelated.\n- The \"Share with your followers!\" per-section CTA in the publisher \u2014 separate concern; if it ends up looking weird with one-block posts, file a follow-up ticket, don't fix in this run.\n- Database schema migrations for stored topic records \u2014 the legacy normalization path already handles old shapes; we are not migrating data, only changing what NEW topics look like.\n\n## Constraints\n\n- **Backward compatibility for stored topics is mandatory.** Existing rows must keep loading. `normalize_document_blocks` (topic_editor.py:3957) is the contract \u2014 don't change its accepted inputs.\n- **Legacy tool aliases must keep working at the model-call layer.** If a model call comes in with `post_simple_topic` or `post_sectioned_topic`, accept and normalize. Don't reject.\n- **The live-update feed runs on a cron in production.** Botched prompt changes show up as ugly posts publicly. Prompt language must be conservative and well-tested. Prefer adding rules over removing the safety rails on source/media attachment.\n\n## Validation\n\nAfter the change, the NebSH \"Last Party\" scenario should generate a one-block post \u2014 title + one intro paragraph with the video attached, no separate \"The Video\" / \"Audio\" / \"Community Reaction\" sections. Multi-creator/multi-angle stories (e.g. a tool release with several creators showing different demos) should still produce multi-block output.\n\n## Files (starting points \u2014 investigate the full call graph)\n\n- `src/features/summarising/topic_editor.py` \u2014 primary: schema, prompts, tools, `normalize_document_blocks`.\n- `src/features/summarising/live_update_editor.py` \u2014 related editor logic.\n- `src/features/summarising/summariser_cog.py` \u2014 cog wiring.\n- Publisher path: grep for `post_simple_topic` / `post_sectioned_topic` references and \"Share with your followers\" string to locate.\n- Tests: existing topic-editor test file under `tests/`.",
+  "current_state": "done",
+  "iteration": 5,
+  "created_at": "2026-05-18T12:12:30Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc",
+    "auto_approve": true,
+    "robustness": "standard",
+    "mode": "code",
+    "strict_notes": false,
+    "agent": ""
+  },
+  "sessions": {
+    "claude_planner": {
+      "id": "0c74f302-4db8-4d9d-94e8-1bd8f27b5da2",
+      "mode": "persistent",
+      "created_at": "2026-05-18T12:27:37Z",
+      "last_used_at": "2026-05-18T13:35:17Z",
+      "refreshed": true
+    },
+    "codex_critic": {
+      "id": "019e3b0e-85c3-72a2-9a47-4a4d0b0c47d7",
+      "mode": "persistent",
+      "created_at": "2026-05-18T12:31:10Z",
+      "last_used_at": "2026-05-18T13:37:39Z",
+      "refreshed": false
+    },
+    "claude_gatekeeper": {
+      "id": "a6da201f-2157-4864-87b9-5911b6e11825",
+      "mode": "persistent",
+      "created_at": "2026-05-18T12:33:20Z",
+      "last_used_at": "2026-05-18T14:00:27Z",
+      "refreshed": true
+    },
+    "claude_finalizer": {
+      "id": "6440f7a6-ce0a-4625-8d6e-5240438760ed",
+      "mode": "persistent",
+      "created_at": "2026-05-18T14:03:56Z",
+      "last_used_at": "2026-05-18T14:03:56Z",
+      "refreshed": false
+    },
+    "codex_executor": {
+      "id": "019e3b66-a5ce-7e82-b9df-388f0889fabb",
+      "mode": "persistent",
+      "created_at": "2026-05-18T14:06:52Z",
+      "last_used_at": "2026-05-18T14:27:58Z",
+      "refreshed": false
+    },
+    "codex_reviewer": {
+      "id": "019e3b7c-bd33-7c02-8c5f-5927755e5f2d",
+      "mode": "persistent",
+      "created_at": "2026-05-18T14:30:40Z",
+      "last_used_at": "2026-05-18T14:30:40Z",
+      "refreshed": false
+    }
+  },
+  "plan_versions": [
+    {
+      "version": 1,
+      "file": "plan_v1.md",
+      "hash": "sha256:42126786a0d46c0e3ec100937465dd7e5f3fdcd407fa33e47ca2a381ef405498",
+      "timestamp": "2026-05-18T12:27:37Z"
+    },
+    {
+      "version": 2,
+      "file": "plan_v2.md",
+      "hash": "sha256:e2b934e006f3876238b7bbe2d02f7df2a3cabc09a32089c24e9cc01b6629c1f7",
+      "timestamp": "2026-05-18T13:00:49Z"
+    },
+    {
+      "version": 3,
+      "file": "plan_v3.md",
+      "hash": "sha256:e2b934e006f3876238b7bbe2d02f7df2a3cabc09a32089c24e9cc01b6629c1f7",
+      "timestamp": "2026-05-18T13:04:40Z"
+    },
+    {
+      "version": 4,
+      "file": "plan_v4.md",
+      "hash": "sha256:e2b934e006f3876238b7bbe2d02f7df2a3cabc09a32089c24e9cc01b6629c1f7",
+      "timestamp": "2026-05-18T13:07:00Z"
+    },
+    {
+      "version": 5,
+      "file": "plan_v5.md",
+      "hash": "sha256:a0034de1d6856f374209d142bbb0748bc19ed9c7af3a8909a49d4c0ba772e4b4",
+      "timestamp": "2026-05-18T13:35:17Z"
+    }
+  ],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-05-18T12:12:30Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-05-18T12:14:50Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "plan_v1_raw.txt",
+      "message": "Command timed out after 120s: shannon -p Hi, quick handshake before the request. Say all set when ready...."
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-05-18T12:17:01Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "plan_v1_raw.txt",
+      "message": "Command timed out after 120s: shannon -p Hi, can you confirm the session is ready? Just say yes if it is...."
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-05-18T12:27:37Z",
+      "duration_ms": 168877,
+      "cost_usd": 0.25579575,
+      "result": "success",
+      "prompt_tokens": 61371,
+      "completion_tokens": 8521,
+      "total_tokens": 69892,
+      "session_mode": "persistent",
+      "session_id": "223627c5-e58f-43c4-9ab4-574361ba7edc",
+      "agent": "claude",
+      "output_file": "plan_v1.md",
+      "artifact_hash": "sha256:42126786a0d46c0e3ec100937465dd7e5f3fdcd407fa33e47ca2a381ef405498"
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-05-18T12:31:10Z",
+      "duration_ms": 203506,
+      "cost_usd": 1.093211,
+      "result": "success",
+      "prompt_tokens": 691903,
+      "completion_tokens": 11632,
+      "total_tokens": 703535,
+      "session_mode": "persistent",
+      "session_id": "019e3b0e-85c3-72a2-9a47-4a4d0b0c47d7",
+      "agent": "codex",
+      "output_file": "critique_v1.json",
+      "artifact_hash": "sha256:7828131e3fbe468e1b6a08880cea6c9896dae1546bfa5bc1874b67ddd2725423",
+      "flags_count": 12
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-05-18T12:33:20Z",
+      "duration_ms": 102283,
+      "cost_usd": 0.15656475,
+      "result": "success",
+      "prompt_tokens": 81230,
+      "completion_tokens": 4420,
+      "total_tokens": 85650,
+      "session_mode": "persistent",
+      "session_id": "3497fd11-a24b-4649-aaa6-ba8380fa48bf",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:b327b79fba013adb1eb4dd78e9cf3383dae00b830c10aba31a7aa5d25c3681a8",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-05-18T12:36:28Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "revise_v2_raw.txt",
+      "message": "Shannon output was not valid JSON: Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-05-18T12:38:53Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "revise_v2_raw.txt",
+      "message": "Command timed out after 120s: shannon -p Hey, can you confirm this window is ready? A short yes is fine...."
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-05-18T12:43:02Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "revise_v2_raw.txt",
+      "message": "Command timed out after 120s: shannon -p Hello, this is just a quick session check. Reply with a short confirmation...."
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-05-18T12:55:41Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "revise_v2_raw.txt",
+      "message": "Command timed out after 120s: shannon -p Hello, the actual brief is coming next. Say ready for it when you are...."
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-05-18T13:00:49Z",
+      "duration_ms": 215499,
+      "cost_usd": 0.40305525,
+      "result": "success",
+      "prompt_tokens": 72642,
+      "completion_tokens": 14404,
+      "total_tokens": 87046,
+      "session_mode": "persistent",
+      "session_id": "cb3a8966-1fe4-44c7-836e-7353f36df6ea",
+      "agent": "claude",
+      "output_file": "plan_v2.md",
+      "artifact_hash": "sha256:e2b934e006f3876238b7bbe2d02f7df2a3cabc09a32089c24e9cc01b6629c1f7",
+      "flags_addressed": [
+        {
+          "id": "FLAG-001",
+          "resolution": "addressed",
+          "reason": "Step 3.5 explicitly extends `build_rejected_transition`'s allowed-action set at topic_editor.py:3870 to include `rejected_post_topic`, so post_topic rejection paths (collision, empty blocks) return tool_error instead of raising ValueError."
+        },
+        {
+          "id": "FLAG-002",
+          "resolution": "addressed",
+          "reason": "Removed the assert-empty-media language. Step 3 now specifies a strict ordering rule: existing legacy guards at topic_editor.py:1858-1890 run BEFORE any alias normalization, preserving the structured rejection `post_simple_cannot_attach_media_use_post_sectioned_topic` and the pinned test at tests/test_topic_editor_runtime.py:305-337. Added an explicit regression test in Step 7.1."
+        },
+        {
+          "id": "FLAG-003",
+          "resolution": "addressed",
+          "reason": "Step 3.1 generalizes the writeback at topic_editor.py:1849-1850 to fire for both `post_sectioned_topic` and `post_topic`, so `_attach_default_media_refs_to_blocks` results reach `args` and downstream `_summary_for_tool` for the unified path."
+        },
+        {
+          "id": "issue_hints",
+          "resolution": "addressed",
+          "reason": "Reversed the prior plan's recommendation to drop `body` from legacy-alias storage. Step 4 explicitly preserves the existing storage shape for legacy `post_sectioned_topic` (body+sections+blocks unchanged from current behavior at :3632-3641); only NEW `post_topic` calls store blocks-only. This eliminates the compatibility-sensitive divergence for downstream readers and is documented in Overview constraints, Step 4, and assumptions."
+        },
+        {
+          "id": "correctness-1",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-001: Step 3.5 extends `build_rejected_transition` to accept `rejected_post_topic`. The rejected-action map at :1915-1919 is extended in Step 3.4 to map `post_topic` to `rejected_post_topic`."
+        },
+        {
+          "id": "correctness-2",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-002: explicit ordering rule (legacy guards first, normalization second, alias re-keying third) ensures the existing structured rejection path runs before any new normalization code, so invalid legacy calls return tool_error as today instead of crashing."
+        },
+        {
+          "id": "scope",
+          "resolution": "addressed",
+          "reason": "Step 7.2 explicitly enumerates the update to `test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions` at tests/test_topic_editor_runtime.py:1380-1437: add `post_topic` to `configured_actions`, add `post_topic`/`rejected_post_topic` to `allowed_actions`, extend the configured-actions branch to detect `post_topic`, and assert that `build_rejected_transition` accepts `rejected_post_topic`."
+        },
+        {
+          "id": "all_locations-1",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-003: Step 3.1 generalizes the writeback condition at topic_editor.py:1849-1850 to include `post_topic`. The explicit ordering rule in Step 3 places normalization+writeback before the alias re-keying step, so post_topic args carry the default-media-attached blocks into persistence."
+        },
+        {
+          "id": "all_locations-2",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-001: Step 3.5 extends `build_rejected_transition`'s allowed-action set. Added to Step 1's audit list explicitly as 'critical supporting infrastructure' so the executor cannot miss it."
+        },
+        {
+          "id": "callers",
+          "resolution": "addressed",
+          "reason": "Step 4 defines an explicit handoff convention: `_summary_for_tool(tool_name, args)` is called with the ORIGINAL `call['name']` (not a normalized name), so telemetry labels stay tied to the original tool name while the function selects storage shape per branch. The branch order (`post_topic` first, `post_sectioned_topic` unchanged, `post_simple_topic` unchanged, `watch_topic` unchanged) is enumerated. Aliases keep their existing storage; only `post_topic` produces blocks-only."
+        }
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-05-18T13:04:26Z",
+      "duration_ms": 208312,
+      "cost_usd": 2.875849,
+      "result": "success",
+      "prompt_tokens": 1956047,
+      "completion_tokens": 19377,
+      "total_tokens": 1975424,
+      "session_mode": "persistent",
+      "session_id": "019e3b0e-85c3-72a2-9a47-4a4d0b0c47d7",
+      "agent": "codex",
+      "output_file": "critique_v2.json",
+      "artifact_hash": "sha256:1b1cc07be105d1646a81940c6738f2993189f01581436fac6d9ea40abe3986ca",
+      "flags_count": 9
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-05-18T13:04:33Z",
+      "duration_ms": 1184,
+      "cost_usd": 0.15656475,
+      "result": "success",
+      "prompt_tokens": 81230,
+      "completion_tokens": 4420,
+      "total_tokens": 85650,
+      "session_mode": "persistent",
+      "session_id": "3497fd11-a24b-4649-aaa6-ba8380fa48bf",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:6852ee03c1fc446b4db94a88189fc547706e9320b3758efe6a0dfca4b9d9f551",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-05-18T13:04:40Z",
+      "duration_ms": 987,
+      "cost_usd": 0.40305525,
+      "result": "success",
+      "prompt_tokens": 72642,
+      "completion_tokens": 14404,
+      "total_tokens": 87046,
+      "session_mode": "persistent",
+      "session_id": "cb3a8966-1fe4-44c7-836e-7353f36df6ea",
+      "agent": "claude",
+      "output_file": "plan_v3.md",
+      "artifact_hash": "sha256:e2b934e006f3876238b7bbe2d02f7df2a3cabc09a32089c24e9cc01b6629c1f7",
+      "flags_addressed": [
+        {
+          "id": "FLAG-001",
+          "resolution": "addressed",
+          "reason": "Step 3.5 explicitly extends `build_rejected_transition`'s allowed-action set at topic_editor.py:3870 to include `rejected_post_topic`, so post_topic rejection paths (collision, empty blocks) return tool_error instead of raising ValueError."
+        },
+        {
+          "id": "FLAG-002",
+          "resolution": "addressed",
+          "reason": "Removed the assert-empty-media language. Step 3 now specifies a strict ordering rule: existing legacy guards at topic_editor.py:1858-1890 run BEFORE any alias normalization, preserving the structured rejection `post_simple_cannot_attach_media_use_post_sectioned_topic` and the pinned test at tests/test_topic_editor_runtime.py:305-337. Added an explicit regression test in Step 7.1."
+        },
+        {
+          "id": "FLAG-003",
+          "resolution": "addressed",
+          "reason": "Step 3.1 generalizes the writeback at topic_editor.py:1849-1850 to fire for both `post_sectioned_topic` and `post_topic`, so `_attach_default_media_refs_to_blocks` results reach `args` and downstream `_summary_for_tool` for the unified path."
+        },
+        {
+          "id": "issue_hints",
+          "resolution": "addressed",
+          "reason": "Reversed the prior plan's recommendation to drop `body` from legacy-alias storage. Step 4 explicitly preserves the existing storage shape for legacy `post_sectioned_topic` (body+sections+blocks unchanged from current behavior at :3632-3641); only NEW `post_topic` calls store blocks-only. This eliminates the compatibility-sensitive divergence for downstream readers and is documented in Overview constraints, Step 4, and assumptions."
+        },
+        {
+          "id": "correctness-1",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-001: Step 3.5 extends `build_rejected_transition` to accept `rejected_post_topic`. The rejected-action map at :1915-1919 is extended in Step 3.4 to map `post_topic` to `rejected_post_topic`."
+        },
+        {
+          "id": "correctness-2",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-002: explicit ordering rule (legacy guards first, normalization second, alias re-keying third) ensures the existing structured rejection path runs before any new normalization code, so invalid legacy calls return tool_error as today instead of crashing."
+        },
+        {
+          "id": "scope",
+          "resolution": "addressed",
+          "reason": "Step 7.2 explicitly enumerates the update to `test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions` at tests/test_topic_editor_runtime.py:1380-1437: add `post_topic` to `configured_actions`, add `post_topic`/`rejected_post_topic` to `allowed_actions`, extend the configured-actions branch to detect `post_topic`, and assert that `build_rejected_transition` accepts `rejected_post_topic`."
+        },
+        {
+          "id": "all_locations-1",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-003: Step 3.1 generalizes the writeback condition at topic_editor.py:1849-1850 to include `post_topic`. The explicit ordering rule in Step 3 places normalization+writeback before the alias re-keying step, so post_topic args carry the default-media-attached blocks into persistence."
+        },
+        {
+          "id": "all_locations-2",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-001: Step 3.5 extends `build_rejected_transition`'s allowed-action set. Added to Step 1's audit list explicitly as 'critical supporting infrastructure' so the executor cannot miss it."
+        },
+        {
+          "id": "callers",
+          "resolution": "addressed",
+          "reason": "Step 4 defines an explicit handoff convention: `_summary_for_tool(tool_name, args)` is called with the ORIGINAL `call['name']` (not a normalized name), so telemetry labels stay tied to the original tool name while the function selects storage shape per branch. The branch order (`post_topic` first, `post_sectioned_topic` unchanged, `post_simple_topic` unchanged, `watch_topic` unchanged) is enumerated. Aliases keep their existing storage; only `post_topic` produces blocks-only."
+        }
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-05-18T13:06:28Z",
+      "duration_ms": 100765,
+      "cost_usd": 3.73061,
+      "result": "success",
+      "prompt_tokens": 2967172,
+      "completion_tokens": 24385,
+      "total_tokens": 2991557,
+      "session_mode": "persistent",
+      "session_id": "019e3b0e-85c3-72a2-9a47-4a4d0b0c47d7",
+      "agent": "codex",
+      "output_file": "critique_v3.json",
+      "artifact_hash": "sha256:bd3da805439e96444bc580dc3abc056d51a1c738a7811bfb75cdbb6403fdc0ef",
+      "flags_count": 9
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-05-18T13:06:38Z",
+      "duration_ms": 2043,
+      "cost_usd": 0.15656475,
+      "result": "success",
+      "prompt_tokens": 81230,
+      "completion_tokens": 4420,
+      "total_tokens": 85650,
+      "session_mode": "persistent",
+      "session_id": "3497fd11-a24b-4649-aaa6-ba8380fa48bf",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:246ac67786c26ac6c23dea4d8534c8d9e21ae4b53bfa5a49fe80c7c751d46f3f",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-05-18T13:07:00Z",
+      "duration_ms": 1752,
+      "cost_usd": 0.40305525,
+      "result": "success",
+      "prompt_tokens": 72642,
+      "completion_tokens": 14404,
+      "total_tokens": 87046,
+      "session_mode": "persistent",
+      "session_id": "cb3a8966-1fe4-44c7-836e-7353f36df6ea",
+      "agent": "claude",
+      "output_file": "plan_v4.md",
+      "artifact_hash": "sha256:e2b934e006f3876238b7bbe2d02f7df2a3cabc09a32089c24e9cc01b6629c1f7",
+      "flags_addressed": [
+        {
+          "id": "FLAG-001",
+          "resolution": "addressed",
+          "reason": "Step 3.5 explicitly extends `build_rejected_transition`'s allowed-action set at topic_editor.py:3870 to include `rejected_post_topic`, so post_topic rejection paths (collision, empty blocks) return tool_error instead of raising ValueError."
+        },
+        {
+          "id": "FLAG-002",
+          "resolution": "addressed",
+          "reason": "Removed the assert-empty-media language. Step 3 now specifies a strict ordering rule: existing legacy guards at topic_editor.py:1858-1890 run BEFORE any alias normalization, preserving the structured rejection `post_simple_cannot_attach_media_use_post_sectioned_topic` and the pinned test at tests/test_topic_editor_runtime.py:305-337. Added an explicit regression test in Step 7.1."
+        },
+        {
+          "id": "FLAG-003",
+          "resolution": "addressed",
+          "reason": "Step 3.1 generalizes the writeback at topic_editor.py:1849-1850 to fire for both `post_sectioned_topic` and `post_topic`, so `_attach_default_media_refs_to_blocks` results reach `args` and downstream `_summary_for_tool` for the unified path."
+        },
+        {
+          "id": "issue_hints",
+          "resolution": "addressed",
+          "reason": "Reversed the prior plan's recommendation to drop `body` from legacy-alias storage. Step 4 explicitly preserves the existing storage shape for legacy `post_sectioned_topic` (body+sections+blocks unchanged from current behavior at :3632-3641); only NEW `post_topic` calls store blocks-only. This eliminates the compatibility-sensitive divergence for downstream readers and is documented in Overview constraints, Step 4, and assumptions."
+        },
+        {
+          "id": "correctness-1",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-001: Step 3.5 extends `build_rejected_transition` to accept `rejected_post_topic`. The rejected-action map at :1915-1919 is extended in Step 3.4 to map `post_topic` to `rejected_post_topic`."
+        },
+        {
+          "id": "correctness-2",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-002: explicit ordering rule (legacy guards first, normalization second, alias re-keying third) ensures the existing structured rejection path runs before any new normalization code, so invalid legacy calls return tool_error as today instead of crashing."
+        },
+        {
+          "id": "scope",
+          "resolution": "addressed",
+          "reason": "Step 7.2 explicitly enumerates the update to `test_topic_editor_audit_action_vocabulary_excludes_invalid_rejected_actions` at tests/test_topic_editor_runtime.py:1380-1437: add `post_topic` to `configured_actions`, add `post_topic`/`rejected_post_topic` to `allowed_actions`, extend the configured-actions branch to detect `post_topic`, and assert that `build_rejected_transition` accepts `rejected_post_topic`."
+        },
+        {
+          "id": "all_locations-1",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-003: Step 3.1 generalizes the writeback condition at topic_editor.py:1849-1850 to include `post_topic`. The explicit ordering rule in Step 3 places normalization+writeback before the alias re-keying step, so post_topic args carry the default-media-attached blocks into persistence."
+        },
+        {
+          "id": "all_locations-2",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-001: Step 3.5 extends `build_rejected_transition`'s allowed-action set. Added to Step 1's audit list explicitly as 'critical supporting infrastructure' so the executor cannot miss it."
+        },
+        {
+          "id": "callers",
+          "resolution": "addressed",
+          "reason": "Step 4 defines an explicit handoff convention: `_summary_for_tool(tool_name, args)` is called with the ORIGINAL `call['name']` (not a normalized name), so telemetry labels stay tied to the original tool name while the function selects storage shape per branch. The branch order (`post_topic` first, `post_sectioned_topic` unchanged, `post_simple_topic` unchanged, `watch_topic` unchanged) is enumerated. Aliases keep their existing storage; only `post_topic` produces blocks-only."
+        }
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-05-18T13:10:05Z",
+      "duration_ms": 88791,
+      "cost_usd": 4.595257,
+      "result": "success",
+      "prompt_tokens": 4178261,
+      "completion_tokens": 27960,
+      "total_tokens": 4206221,
+      "session_mode": "persistent",
+      "session_id": "019e3b0e-85c3-72a2-9a47-4a4d0b0c47d7",
+      "agent": "codex",
+      "output_file": "critique_v4.json",
+      "artifact_hash": "sha256:98f4f3849039c9bb88a38db3d47212ba5afd6327a41ec0055e1ec65bdc07ca85",
+      "flags_count": 9
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-05-18T13:30:53Z",
+      "duration_ms": 1528,
+      "cost_usd": 0.15656475,
+      "result": "success",
+      "prompt_tokens": 81230,
+      "completion_tokens": 4420,
+      "total_tokens": 85650,
+      "session_mode": "persistent",
+      "session_id": "3497fd11-a24b-4649-aaa6-ba8380fa48bf",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:5f293cbd6e213c67377837d748f943808c08b430a3eabcd02072b46605f36124",
+      "recommendation": "ITERATE"
+    },
+    {
+      "step": "revise",
+      "timestamp": "2026-05-18T13:35:17Z",
+      "duration_ms": 214458,
+      "cost_usd": 0.57213525,
+      "result": "success",
+      "prompt_tokens": 75533,
+      "completion_tokens": 16600,
+      "total_tokens": 92133,
+      "session_mode": "persistent",
+      "session_id": "0c74f302-4db8-4d9d-94e8-1bd8f27b5da2",
+      "agent": "claude",
+      "output_file": "plan_v5.md",
+      "artifact_hash": "sha256:a0034de1d6856f374209d142bbb0748bc19ed9c7af3a8909a49d4c0ba772e4b4",
+      "flags_addressed": [
+        {
+          "id": "FLAG-004",
+          "resolution": "addressed",
+          "reason": "Split the blocks-required guard at topic_editor.py:1893-1905 into separate per-tool branches. The `post_topic` branch checks `not has_blocks` unconditionally \u2014 it does not consult `has_sections`. Belt-and-braces: `post_topic`'s schema entry adds `blocks: {minItems: 1}` as the first line of defense. The legacy `post_sectioned_topic` branch keeps its existing `not has_sections and not has_blocks` semantics. Added regression test `test_post_topic_rejects_empty_blocks_even_with_stray_sections` to Step 8.1 pinning that `blocks: []` + stray non-empty `sections` returns `rejected_post_topic`/`post_topic_requires_blocks`."
+        },
+        {
+          "id": "correctness",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-004: the combined `or` guard is replaced with two separate per-tool branches. `post_topic`'s contract is `has_blocks` unconditionally."
+        },
+        {
+          "id": "callers",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-004 from the caller-input perspective: callers that pass a `post_topic` call with `blocks: []` plus a stray `sections` array now hit the rejection path with action `rejected_post_topic`. Additionally, `post_topic`'s schema entry explicitly omits a `sections` field, so a well-behaved Anthropic tool-validation pass rejects stray `sections` at the schema layer; the dispatch-level guard is the redundant second line for any schema permissiveness."
+        },
+        {
+          "id": "FLAG-005",
+          "resolution": "addressed",
+          "reason": "Added Step 5 explicitly updating the auto-shortlist suggested-actions string at topic_editor.py:2154-2160. The literal `post_sectioned_topic` token is replaced with `post_topic` so the model is no longer steered back to the legacy tool from inside `active_topics` payloads. Step 1 audit list now includes this location as a model-visible steering surface. Step 8.1 adds regression test `test_auto_shortlist_suggested_actions_uses_post_topic_not_post_sectioned_topic` that asserts the new string contains `post_topic` and does not contain `post_sectioned_topic`."
+        },
+        {
+          "id": "issue_hints",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-005: the auto-shortlisted topic summary at topic_editor.py:2154-2160 is now an explicit edit step (Step 5) with a corresponding test. The plan no longer omits this model-visible steering surface."
+        },
+        {
+          "id": "scope",
+          "resolution": "addressed",
+          "reason": "Same fix as FLAG-005: the related auto-shortlist media-publication path is now covered (Step 1 audit + Step 5 edit + Step 8.1 regression test). The plan now touches every model-visible steering surface that names the legacy tool, not just the primary prompt and tool descriptions."
+        },
+        {
+          "id": "all_locations",
+          "resolution": "addressed",
+          "reason": "Step 1's audit list now explicitly enumerates topic_editor.py:2154-2160 (auto-shortlist suggested_actions) as a touch point alongside the primary surfaces. Step 5 makes the edit; Step 8.1 pins it with a regression test."
+        }
+      ]
+    },
+    {
+      "step": "critique",
+      "timestamp": "2026-05-18T13:37:39Z",
+      "duration_ms": 127438,
+      "cost_usd": 6.613232,
+      "result": "success",
+      "prompt_tokens": 5431948,
+      "completion_tokens": 32390,
+      "total_tokens": 5464338,
+      "session_mode": "persistent",
+      "session_id": "019e3b0e-85c3-72a2-9a47-4a4d0b0c47d7",
+      "agent": "codex",
+      "output_file": "critique_v5.json",
+      "artifact_hash": "sha256:5f906bf46a5045eaf47a064532665c383bc5a0e340923884d4a029c1794a00d3",
+      "flags_count": 2
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-05-18T13:40:46Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "gate_v5_raw.txt",
+      "message": "Shannon output was not valid JSON: Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-05-18T13:43:16Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "gate_v5_raw.txt",
+      "message": "Command timed out after 120s: shannon -p Hello, please answer with ready when this session can take the brief...."
+    },
+    {
+      "step": "gate",
+      "timestamp": "2026-05-18T14:00:27Z",
+      "duration_ms": 83914,
+      "cost_usd": 0.14151075,
+      "result": "success",
+      "prompt_tokens": 81710,
+      "completion_tokens": 3788,
+      "total_tokens": 85498,
+      "session_mode": "persistent",
+      "session_id": "a6da201f-2157-4864-87b9-5911b6e11825",
+      "agent": "claude",
+      "output_file": "gate.json",
+      "artifact_hash": "sha256:f286aa2e8885dd56ad8eb139e692105627fb04f97b2c603747236d07d24e846f",
+      "recommendation": "PROCEED"
+    },
+    {
+      "step": "finalize",
+      "timestamp": "2026-05-18T14:03:56Z",
+      "duration_ms": 176944,
+      "cost_usd": 0.5191275,
+      "result": "success",
+      "prompt_tokens": 97918,
+      "completion_tokens": 13201,
+      "total_tokens": 111119,
+      "session_mode": "persistent",
+      "session_id": "6440f7a6-ce0a-4625-8d6e-5240438760ed",
+      "agent": "claude",
+      "output_file": "finalize.json",
+      "artifact_hash": "sha256:4474fdeef3cd45f6186df6f41e5e278c29af40f1d2a002f4d580ab1d38fc9e08"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-05-18T14:27:58Z",
+      "duration_ms": 1435843,
+      "cost_usd": 39.340423,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "019e3b66-a5ce-7e82-b9df-388f0889fabb",
+      "agent": "codex",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:2e0b9a7dc3a181c8c11d78f83fab5aa1952512cd019d095263bb523daaef4e0f",
+      "finalize_hash": "sha256:175c0dc412a96513410511ea855a7abcde507bedeaea009fd812586fd6764cff",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "review",
+      "timestamp": "2026-05-18T14:30:40Z",
+      "duration_ms": 149968,
+      "cost_usd": 1.165137,
+      "result": "success",
+      "prompt_tokens": 904785,
+      "completion_tokens": 7522,
+      "total_tokens": 912307,
+      "session_mode": "persistent",
+      "session_id": "019e3b7c-bd33-7c02-8c5f-5927755e5f2d",
+      "agent": "codex",
+      "output_file": "review.json",
+      "artifact_hash": "sha256:4c3fa6bc2f65aa63fbb9440f5b5c9053420325ed8f3c7e2cd207eb8c1ee8c2e7",
+      "finalize_hash": "sha256:64a22cfd168ada10dc836f0940cb64ef936c9bb6c17b1efcbd63ea6182f27428"
+    }
+  ],
+  "meta": {
+    "significant_counts": [
+      10,
+      7,
+      7,
+      7,
+      0
+    ],
+    "weighted_scores": [
+      17.5,
+      8.0,
+      10.5,
+      9.5,
+      0
+    ],
+    "plan_deltas": [
+      42.74,
+      0.0,
+      0.0,
+      14.85
+    ],
+    "recurring_critiques": [
+      [],
+      [],
+      [
+        "criterion 16: requires human verification (subjective_judgment).",
+        "criterion 17: requires human verification (inspect_runtime_ui).",
+        "topic-editor model steering: auto-shortlisted media topics still include a model-visible suggested action telling the agent to use post_sectioned_topic, leaving a media-to-sectioned steering path outside the prompt/tool descriptions."
+      ],
+      [
+        "criterion 16: requires human verification (subjective_judgment).",
+        "criterion 17: requires human verification (inspect_runtime_ui).",
+        "topic-editor model steering: auto-shortlisted media topics still include a model-visible suggested action telling the agent to use post_sectioned_topic, leaving a media-to-sectioned steering path outside the prompt/tool descriptions.",
+        "topic-editor post_topic validation: the planned blocks-required guard can still be bypassed by a post_topic call with empty blocks and stray legacy sections, because the condition checks `not has_sections and not has_blocks` for post_topic instead of requiring `has_blocks` unconditionally."
+      ],
+      []
+    ],
+    "total_cost_usd": 62.737713,
+    "overrides": [],
+    "notes": [],
+    "current_invocation_id": "4f899893b9604659"
+  },
+  "last_gate": {
+    "recommendation": "PROCEED",
+    "rationale": "Iteration 5 has resolved all 14 prior significant flags and the unresolved_flags list is empty. The weighted score trajectory (17.5 \u2192 8.0 \u2192 10.5 \u2192 9.5 \u2192 0) ended at zero with a healthy 14.85% plan delta, indicating substantive revisions rather than churn. All five critique check axes (issue_hints, correctness, scope, all_locations, callers) report clear. The two iteration-pressure groups still active (FG-009 / FG-010) correspond to `should`/`info`-priority success criteria 18 and 19, which inherently require human verification (subjective_judgment, inspect_runtime_ui) \u2014 these are verification-capability gaps, not plan defects, and the executor cannot eliminate them via further iteration. The plan's correctness fixes are concrete and grounded in cited line numbers: (a) split per-tool blocks-required guards with `minItems: 1` defense-in-depth closes FLAG-004's stray-sections bypass; (b) the auto-shortlist suggested-actions string edit at topic_editor.py:2154-2160 closes the last model-visible legacy-tool steering surface (FLAG-005); (c) `build_rejected_transition` allowed-action set extension at :3870 closes the ValueError risk on `rejected_post_topic`; (d) writeback generalization at :1849-1850 ensures `_attach_default_media_refs_to_blocks` output reaches persistence for `post_topic`; (e) legacy alias storage shapes are preserved verbatim, minimizing downstream-reader risk. Preflight is fully green (project dir exists/writable, success criteria present, claude+codex available). The plan has 20 success criteria with 17 `must`, 2 `should`, 1 `info` \u2014 a reasonable distribution. Iteration 5 is high; continuing past this without a substantive new flag would be churn. PROCEED to execution.",
+    "reprompted": false,
+    "signals_assessment": "Weighted score landed at 0 from 17.5 over 5 iterations with monotonically declining recurring critiques (0 recurring at iteration 5). Plan delta of 14.85% from iteration 4 reflects targeted resolution of FLAG-004 (split guard + minItems) and FLAG-005 (auto-shortlist suggested_actions string) rather than wholesale rework. Zero unresolved significant flags; 14 resolved across the iteration history. Preflight clean across all checks. Iteration-pressure groups FG-009 and FG-010 are stable across 5 iterations because they encode human-verification requirements baked into `should`/`info` criteria, not unaddressed defects. Posture is ready for execution.",
+    "warnings": [
+      "Iteration 5: high iteration count.",
+      "Iteration count is 5 \u2014 the harness already flagged 'high iteration count'. Execution should not silently re-litigate settled flags; if a genuinely new concern surfaces mid-execution, escalate rather than spin.",
+      "Plan touches a production-public cron path (BNDC live-update feed). Step 9 validation (full pytest -x -q) is mandatory before merge; the `info`-priority manual smoke (criterion 19) should be performed on the next dev cron tick post-merge.",
+      "Plan question #1 (deprecation logger.warning on alias use) and question #3 (downstream dashboard absorption of new `post_topic` action label) remain open \u2014 executor should default to the plan's stated choices (no warning emission unless asked; preserve legacy alias action labels for telemetry continuity) and surface either as a follow-up if a dashboards consumer is identified during execution.",
+      "Success criteria 18 (subjective_judgment on file size / separation of concerns) and 19 (inspect_runtime_ui on dev cron tick) cannot be CI-verified \u2014 reviewer must perform these manually."
+    ],
+    "settled_decisions": [
+      {
+        "id": "SD-001",
+        "decision": "Legacy `post_simple_topic` and `post_sectioned_topic` keep their EXISTING storage shapes at `_summary_for_tool` (`{body, media}` and `{body, sections, blocks?}` respectively). Only NEW `post_topic` calls produce blocks-only storage.",
+        "rationale": "Iteration 4 reversed an earlier proposal to drop `body` from legacy alias storage. Preserving alias storage minimizes downstream-reader compatibility risk for any consumer that inspects `summary.body` directly. Do not re-debate during review."
+      },
+      {
+        "id": "SD-002",
+        "decision": "Validation/dispatch ordering is fixed: tool-name acceptance (incl. schema `minItems: 1` for `post_topic` blocks) \u2192 legacy structural guards (post_simple media check, source-count check) \u2192 block normalization + default-media attachment \u2192 alias re-keying for downstream validation \u2192 split blocks-required guards by tool name \u2192 collision check \u2192 persistence.",
+        "rationale": "This ordering is the resolution to FLAG-002 and pins `tests/test_topic_editor_runtime.py:305-337`. Re-ordering admits the FLAG-004 bypass and/or breaks the post_simple media rejection. Treat as non-negotiable."
+      },
+      {
+        "id": "SD-003",
+        "decision": "`post_topic`'s schema entry adds `blocks: {minItems: 1}` and omits a `sections` field entirely. The dispatch-level guard checks `not has_blocks` UNCONDITIONALLY for `post_topic` (does not consult `has_sections`). Legacy `post_sectioned_topic`'s existing `not has_sections and not has_blocks` semantics are preserved verbatim.",
+        "rationale": "Belt-and-braces resolution to FLAG-004. The schema guard is the first line; the dispatch guard is the redundant second line for any schema permissiveness (e.g. extra-properties leakage). A `post_topic` call with `blocks: []` + stray `sections` is rejected as `rejected_post_topic` / `post_topic_requires_blocks`."
+      },
+      {
+        "id": "SD-004",
+        "decision": "The auto-shortlist suggested-actions string edit at topic_editor.py:2154-2160 IS in scope for this plan. Only the `suggested_actions` token is changed (`post_sectioned_topic` \u2192 `post_topic`); the auto-shortlist *threshold* logic is untouched.",
+        "rationale": "The brief's out-of-scope list mentions 'auto-shortlist media reaction-threshold logic' \u2014 read narrowly as threshold only. The `suggested_actions` string is a model-visible steering surface flowing into `active_topics` payloads and would re-steer the model back to the legacy tool if left as-is, defeating FLAG-005."
+      },
+      {
+        "id": "SD-005",
+        "decision": "`build_rejected_transition` at topic_editor.py:3870 MUST be extended to accept `rejected_post_topic` as part of this change. This is supporting infrastructure, not optional.",
+        "rationale": "`_reject_create_tool` delegates here, and without the extension every `post_topic` rejection (collision, empty-blocks, stray-sections) raises ValueError instead of returning `tool_error`. Pinned by criteria 5, 6, 7, 8 and the action-coverage audit test update."
+      },
+      {
+        "id": "SD-006",
+        "decision": "`_summary_for_tool` receives the ORIGINAL `call['name']` (not a normalized name) and branches on it. Telemetry action labels stay tied to the original tool: `post_simple` / `post_sectioned` for legacy aliases, `post_topic` for the new tool.",
+        "rationale": "Preserves alias telemetry continuity for dashboards/replays while letting the unified blocks pipeline run internally. Resolves the callers concern about action-label drift."
+      },
+      {
+        "id": "SD-007",
+        "decision": "Role label in `TOPIC_EDITOR_SYSTEM_PROMPT` changes from 'BNDC live-update topic editor' to 'BNDC live-update writer' (or equivalent non-editor framing).",
+        "rationale": "The 'editor' framing was identified in the brief as itself a bias toward article-style sectioned output. Settled in the brief and reaffirmed in the plan; do not re-litigate during review."
+      },
+      {
+        "id": "SD-008",
+        "decision": "`normalize_document_blocks` at topic_editor.py:3957 is NOT modified. It remains the immutable backward-compatibility contract for stored-topic loading.",
+        "rationale": "Mandated by the brief's constraints section ('Backward compatibility for stored topics is mandatory'). All schema changes flow through the write path; the read path is untouched."
+      }
+    ],
+    "passed": true,
+    "preflight_results": {
+      "project_dir_exists": true,
+      "project_dir_writable": true,
+      "success_criteria_present": true,
+      "claude_available": true,
+      "codex_available": true
+    },
+    "orchestrator_guidance": "Plan passed gate and preflight. Proceed to finalize."
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "task_updates": [
+    {
+      "id": "T8",
+      "status": "done",
+      "executor_notes": "Added the requested T8 regression coverage. `tests/test_topic_editor_runtime.py` now includes all nine runtime tests for `post_topic` accept/reject/collision behavior, legacy alias storage/rejection behavior, and auto-shortlist `suggested_actions` steering. Added the NebSH-style deterministic dispatch/render smoke test asserting one intro block, one media unit, and no section-header markup. Updated the action-vocabulary audit for `post_topic` and `rejected_post_topic`, including an explicit `build_rejected_transition(... action=\"rejected_post_topic\" ...)` assertion. Added `tests/test_topic_editor_core.py::TestNormalizeDocumentBlocks::test_normalize_document_blocks_still_handles_legacy_body_plus_sections`. Also updated stale existing renderer expectations from old `Live update:` / `Update:` prefixes to the renderer's current `## <headline>` output. Verification passed: `pytest tests/test_topic_editor_core.py tests/test_topic_editor_runtime.py -x -q` -> 152 passed, 2 third-party warnings.",
+      "files_changed": [
+        "tests/test_topic_editor_runtime.py",
+        "tests/test_topic_editor_core.py",
+        ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_5.json"
+      ],
+      "commands_run": [
+        "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"tests/test_topic_editor_runtime.py\").read_text()); ast.parse(pathlib.Path(\"tests/test_topic_editor_core.py\").read_text())'",
+        "pytest tests/test_topic_editor_core.py tests/test_topic_editor_runtime.py -x -q",
+        "python -m json.tool .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_5.json >/dev/null"
+      ],
+      "task_id": "T8"
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "id": "SC8",
+      "executor_note": "SC8 satisfied: all nine requested runtime tests are present, the action-coverage audit includes `post_topic` and `rejected_post_topic` plus an explicit rejected-transition assertion, the core legacy `normalize_document_blocks` regression test is present, and the NebSH end-to-end-style deterministic dispatch/render test is present.",
+      "sense_check_id": "SC8"
+    }
+  ],
+  "deviations": [
+    "Advisory quality: tests/test_topic_editor_runtime.py grew by 421 lines (threshold 200).",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: tests/test_topic_editor_core.py, tests/test_topic_editor_runtime.py",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/briefs/agentkit-migration/, .megaplan/briefs/live-update-social-chain/, .megaplan/briefs/topic-editor-deconflation/, .megaplan/debt.json, agentkit-migration-chain.yaml, cloud.yaml, live-update-social-megaplan-chain.yaml",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Tasks left pending after execute (executor never started them): T9"
+  ]
+}

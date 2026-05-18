@@ -1,0 +1,52 @@
+{
+  "output": "Batch 4 completed. `_summary_for_tool` now stores new `post_topic` writes as blocks-only while preserving legacy simple and sectioned storage shapes. Checkpoint written to `.megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_4.json`.",
+  "files_changed": [
+    "src/features/summarising/topic_editor.py",
+    ".megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_4.json"
+  ],
+  "commands_run": [
+    "nl -ba src/features/summarising/topic_editor.py | sed -n '2036,2054p' && nl -ba src/features/summarising/topic_editor.py | sed -n '3688,3710p'",
+    "rg -n \"summary\":\\ self\\._summary_for_tool|_summary_for_tool\\(\" src/features/summarising/topic_editor.py",
+    "nl -ba src/features/summarising/topic_editor.py | sed -n '3730,3762p' && rg -n '_summary_for_tool\\(' src/features/summarising/topic_editor.py",
+    "nl -ba src/features/summarising/topic_editor.py | sed -n '2038,2045p' && nl -ba src/features/summarising/topic_editor.py | sed -n '3732,3754p'",
+    "python - <<'PY'\nfrom src.features.summarising.topic_editor import TopicEditor\nblocks = [{\"type\": \"intro\", \"text\": \"hi\"}]\nassert TopicEditor._summary_for_tool(None, \"post_topic\", {\"blocks\": blocks}) == {\"blocks\": blocks}\nlegacy_sectioned = TopicEditor._summary_for_tool(None, \"post_sectioned_topic\", {\"body\": \"b\", \"sections\": [{\"title\": \"t\"}], \"blocks\": blocks})\nassert legacy_sectioned == {\"body\": \"b\", \"sections\": [{\"title\": \"t\"}], \"blocks\": blocks}\nlegacy_simple = TopicEditor._summary_for_tool(None, \"post_simple_topic\", {\"body\": \"b\", \"media\": []})\nassert legacy_simple == {\"body\": \"b\", \"media\": []}\nwatch = TopicEditor._summary_for_tool(None, \"watch_topic\", {\"why_interesting\": \"w\", \"revisit_when\": \"later\"})\nassert watch == {\"why_interesting\": \"w\", \"revisit_when\": \"later\"}\nprint(\"summary-shapes-ok\")\nPY",
+    "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+    "git diff -- src/features/summarising/topic_editor.py | sed -n '1,260p'",
+    "pytest tests/test_topic_editor_media_understanding.py -q",
+    "test -e .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_4.json && echo exists || echo missing"
+  ],
+  "deviations": [
+    "Advisory quality: code changes lacked test updates: src/features/summarising/topic_editor.py.",
+    "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .megaplan/plans/topic-editor-schema-de-20260518-1412/execution_batch_4.json",
+    "Advisory audit finding: Git status shows changed files not claimed by any task: .megaplan/briefs/agentkit-migration/, .megaplan/briefs/live-update-social-chain/, .megaplan/briefs/topic-editor-deconflation/, .megaplan/debt.json, agentkit-migration-chain.yaml, cloud.yaml, live-update-social-megaplan-chain.yaml",
+    "Advisory audit finding: Sense check SC8 is missing an executor acknowledgment.",
+    "Advisory audit finding: Sense check SC9 is missing an executor acknowledgment.",
+    "Advisory audit finding: Tasks left pending after execute (executor never started them): T8, T9"
+  ],
+  "task_updates": [
+    {
+      "task_id": "T4",
+      "status": "done",
+      "executor_notes": "Added the `_summary_for_tool` branch for `post_topic` before the legacy branches. New `post_topic` summaries now return exactly `{\"blocks\": args.get(\"blocks\") or []}` with no top-level `body` and no `sections`. Preserved legacy `post_sectioned_topic` storage as `{body, sections, blocks?}` and preserved legacy/default simple storage as `{body, media}`; `watch_topic` remains unchanged. Verified the upsert call site still passes the original `call[\"name\"]` into `_summary_for_tool`, so storage shape remains tied to the model's original tool name and legacy telemetry/storage labels are not normalized away. Direct import-level smoke check asserted `post_topic`, legacy sectioned, legacy simple, and watch shapes. Syntax parse passed; `pytest tests/test_topic_editor_media_understanding.py -q` passed.",
+      "files_changed": [
+        "src/features/summarising/topic_editor.py"
+      ],
+      "commands_run": [
+        "nl -ba src/features/summarising/topic_editor.py | sed -n '2038,2045p'",
+        "nl -ba src/features/summarising/topic_editor.py | sed -n '3732,3754p'",
+        "rg -n '_summary_for_tool\\(' src/features/summarising/topic_editor.py",
+        "python - <<'PY'\nfrom src.features.summarising.topic_editor import TopicEditor\nblocks = [{\"type\": \"intro\", \"text\": \"hi\"}]\nassert TopicEditor._summary_for_tool(None, \"post_topic\", {\"blocks\": blocks}) == {\"blocks\": blocks}\nlegacy_sectioned = TopicEditor._summary_for_tool(None, \"post_sectioned_topic\", {\"body\": \"b\", \"sections\": [{\"title\": \"t\"}], \"blocks\": blocks})\nassert legacy_sectioned == {\"body\": \"b\", \"sections\": [{\"title\": \"t\"}], \"blocks\": blocks}\nlegacy_simple = TopicEditor._summary_for_tool(None, \"post_simple_topic\", {\"body\": \"b\", \"media\": []})\nassert legacy_simple == {\"body\": \"b\", \"media\": []}\nwatch = TopicEditor._summary_for_tool(None, \"watch_topic\", {\"why_interesting\": \"w\", \"revisit_when\": \"later\"})\nassert watch == {\"why_interesting\": \"w\", \"revisit_when\": \"later\"}\nprint(\"summary-shapes-ok\")\nPY",
+        "python -c 'import ast, pathlib; ast.parse(pathlib.Path(\"src/features/summarising/topic_editor.py\").read_text())'",
+        "pytest tests/test_topic_editor_media_understanding.py -q",
+        "git diff -- src/features/summarising/topic_editor.py | sed -n '1,260p'"
+      ],
+      "auto_attributed_files": false
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "sense_check_id": "SC4",
+      "executor_note": "SC4 satisfied: `post_topic` stores blocks-only with no `body` and no `sections`; legacy sectioned and simple storage shapes are unchanged; `_summary_for_tool` is still called with original `call[\"name\"]`."
+    }
+  ]
+}

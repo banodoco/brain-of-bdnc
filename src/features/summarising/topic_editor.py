@@ -41,6 +41,7 @@ READ_TOOL_NAMES = {
 }
 
 WRITE_TOOL_NAMES = {
+    "post_topic",
     "post_simple_topic",
     "post_sectioned_topic",
     "watch_topic",
@@ -51,7 +52,7 @@ WRITE_TOOL_NAMES = {
 }
 
 
-TOPIC_EDITOR_SYSTEM_PROMPT = """You are the BNDC live-update topic editor.
+TOPIC_EDITOR_SYSTEM_PROMPT = """You are the BNDC live-update writer.
 
 Review the supplied archived Discord messages and active topics. Use read tools
 (search_topics, search_messages, get_author_profile, get_message_context,
@@ -63,8 +64,10 @@ get_reply_chain) when you need more context.
 - `get_reply_chain(message_id="789")` when a source message has `reply_to_message_id` set
 
 For every concrete development worth acting on, call a
-decision tool (post_simple_topic, post_sectioned_topic, watch_topic,
-update_topic_source_messages, discard_topic, record_observation).
+decision tool. Prefer `post_topic` for publishing; `post_simple_topic` and
+`post_sectioned_topic` are deprecated — accepted for backward compatibility;
+prefer `post_topic`. Use watch_topic, update_topic_source_messages,
+discard_topic, or record_observation when publishing is not the right action.
 
 You operate in a multi-turn loop. After each batch of tool calls you make, you
 will receive tool_result messages and may continue iterating — search, decide,
@@ -98,11 +101,41 @@ fun throwaway that is not worth the live feed. If it is publishable but mostly
 visual, the vision result may support a short, playful caption, but do not make
 up details not present in the source or understanding.
 
-## Structured Document Topics (post_sectioned_topic with blocks)
+## Topic Posts (post_topic with blocks)
 
-For multi-source / multi-section topics, and for ANY topic that includes an
-image, video, embed, or external media link, use the new `blocks` array in
-`post_sectioned_topic` over `post_simple_topic` or the legacy `sections` field.
+Use the minimum number of blocks that fits the story. A single creator
+dropping a single artifact = exactly ONE `intro` block with the media attached
+to it. Only add `section` blocks when the topic has genuinely distinct
+contributors, angles, or sub-stories that each independently merit their own
+header. If you find yourself splitting one creator's one video into "The
+Video" / "Audio" / "Community Reaction" sections, you are wrong — collapse it
+to one block.
+
+Brevity rules:
+
+- Intro block body: 1-3 sentences, roughly 30-150 words.
+- Section block body: 1-2 sentences.
+- No bullet lists in posted prose.
+- No padding and no filler restatement of the title.
+
+Worked example:
+
+Input: one creator drops one video, one reply clarifies it is their latest
+piece, and two replies praise the mood and sound.
+
+Do this:
+
+`post_topic` with one block:
+`{"type":"intro","text":"NebSH dropped \"The Last Party,\" a new video with a moody late-night setup, and the replies are already calling out the atmosphere and sound design.","source_message_ids":["100","101","102","103"],"media_refs":[{"message_id":"100","kind":"attachment","index":0}]}`
+
+Don't do this:
+
+- `{"type":"section","title":"The Video","text":"..."}`
+- `{"type":"section","title":"Audio","text":"..."}`
+- `{"type":"section","title":"Community Reaction","text":"..."}`
+
+That is one beat, so it stays one `intro` block.
+
 Rules:
 
 1. **Every factual block gets its own sources.**  Each block object in the
@@ -216,11 +249,68 @@ TOPIC_EDITOR_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "post_topic",
+        "description": (
+            "Publish a topic using the minimum number of editorial blocks. "
+            "One intro block = a single-beat story, even if it has media. "
+            "Add section blocks only when the topic has distinct contributors, "
+            "angles, or sub-stories that each independently merit a header. "
+            "Every factual block MUST include its own `source_message_ids`; "
+            "media (images, video, embeds, external links) MUST be attached to "
+            "the relevant block via `media_refs`, not to a global list. Media "
+            "refs use a stable reference shape: "
+            "`{\"message_id\": \"...\", \"kind\": \"attachment\"|\"embed\", \"index\": N}` "
+            "(shorthand `{\"message_id\": \"...\", \"attachment_index\": N}` is also "
+            "accepted). Do NOT include a global Sources footer — citations are "
+            "rendered inline per block."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "proposed_key": {"type": "string"},
+                "headline": {"type": "string"},
+                "blocks": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "enum": ["intro", "section"]},
+                            "title": {"type": "string"},
+                            "text": {"type": "string"},
+                            "source_message_ids": {"type": "array", "items": {"type": "string"}},
+                            "media_refs": {
+                                "description": "Media references for this block. Use kind='attachment'/'embed' for Discord-hosted media (preferred, indexed first) and kind='external' for off-platform links (Reddit, X, etc.) that are resolved best-effort. External refs are always block-bound and secondary.",
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message_id": {"type": "string"},
+                                        "kind": {"type": "string", "enum": ["attachment", "embed", "external"]},
+                                        "index": {"type": "integer"},
+                                        "attachment_index": {"type": "integer"},
+                                    },
+                                    "required": ["message_id"],
+                                },
+                            },
+                        },
+                        "required": ["type", "text"],
+                    },
+                },
+                "source_message_ids": {"type": "array", "items": {"type": "string"}},
+                "parent_topic_id": {"type": "string"},
+                "notes": {"type": "string"},
+                "override_collisions": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["proposed_key", "headline", "source_message_ids", "blocks"],
+        },
+    },
+    {
         "name": "post_simple_topic",
         "description": (
-            "Publish a text-only single-author, one or two source-message topic. "
-            "Do not use this for images, videos, embeds, or media refs; use "
-            "post_sectioned_topic with blocks[].media_refs instead."
+            "[DEPRECATED — use post_topic] Publish a legacy text-only "
+            "single-author, one or two source-message topic. Do not use this "
+            "for images, videos, embeds, or media refs."
         ),
         "input_schema": {
             "type": "object",
@@ -240,12 +330,14 @@ TOPIC_EDITOR_TOOLS: List[Dict[str, Any]] = [
     {
         "name": "post_sectioned_topic",
         "description": (
-            "Publish a multi-source or multi-contributor topic. Prefer the new "
-            "`blocks` array for structured document topics; `sections` is still "
-            "accepted for backwards compatibility. Every factual block MUST include "
-            "its own `source_message_ids`; media (images, video, embeds) MUST be "
-            "attached to the relevant block via `media_refs`, not to a global list. "
-            "Media refs use a stable reference shape: "
+            "[DEPRECATED — use post_topic] Publish a legacy multi-source or "
+            "multi-contributor topic. Prefer `post_topic`; this alias is "
+            "accepted for backwards compatibility. Use the `blocks` array for "
+            "structured document topics; `sections` is still accepted for "
+            "backwards compatibility. Every factual block MUST include its own "
+            "`source_message_ids`; media (images, video, embeds) MUST be attached "
+            "to the relevant block via `media_refs`, not to a global list. Media "
+            "refs use a stable reference shape: "
             "`{\"message_id\": \"...\", \"kind\": \"attachment\"|\"embed\", \"index\": N}` "
             "(shorthand `{\"message_id\": \"...\", \"attachment_index\": N}` is also "
             "accepted). Do NOT include a global Sources footer — citations are "
@@ -1056,7 +1148,7 @@ class TopicEditor:
                 "model": self.model,
             })
             return {"tool_call_id": call["id"], "tool": name, "outcome": "accepted", "action": "observation"}
-        if name in {"post_simple_topic", "post_sectioned_topic", "watch_topic"}:
+        if name in {"post_topic", "post_simple_topic", "post_sectioned_topic", "watch_topic"}:
             return self._dispatch_create_topic_tool(call, context)
         if name == "update_topic_source_messages":
             return self._dispatch_update_sources(call, context)
@@ -1846,10 +1938,11 @@ class TopicEditor:
                 normalized_blocks,
                 resolved_by_id,
             )
-            if call["name"] == "post_sectioned_topic":
+            if call["name"] in ("post_sectioned_topic", "post_topic"):
                 args["blocks"] = normalized_blocks
 
         action_by_tool = {
+            "post_topic": "post_topic",
             "post_simple_topic": "post_simple",
             "post_sectioned_topic": "post_sectioned",
             "watch_topic": "watch",
@@ -1889,11 +1982,20 @@ class TopicEditor:
                 extra={"distinct_author_count": len(set(source_authors)), "source_count": len(source_ids)},
             )
 
-        # T6: Relax guard — allow blocks-only calls, reject only when BOTH
-        # sections and blocks are missing or normalize to zero publishable blocks.
+        # Unified post_topic requires blocks. Legacy sectioned calls still
+        # accept either sections or normalized blocks.
         sections = args.get("sections") or []
         has_sections = bool(sections and any(isinstance(s, dict) for s in sections))
         has_blocks = bool(normalized_blocks)
+        if call["name"] == "post_topic" and not has_blocks:
+            return self._reject_create_tool(
+                call,
+                context,
+                action="rejected_post_topic",
+                reason="post_topic_requires_blocks",
+                canonical_key=canonical_key,
+                source_message_ids=source_ids,
+            )
         if call["name"] == "post_sectioned_topic" and not has_sections and not has_blocks:
             return self._reject_create_tool(
                 call,
@@ -1913,6 +2015,7 @@ class TopicEditor:
         unresolved = unresolved_collisions(collisions, args.get("override_collisions") or [])
         if unresolved:
             rejected_action = {
+                "post_topic": "rejected_post_topic",
                 "post_simple_topic": "rejected_post_simple",
                 "post_sectioned_topic": "rejected_post_sectioned",
                 "watch_topic": "rejected_watch",
@@ -2156,7 +2259,7 @@ class TopicEditor:
                         "get_reply_chain when it is a reply",
                         "search_messages for related posts by the author/tool",
                         "understand_image or understand_video",
-                        "post_sectioned_topic, watch_topic/update sources, or discard_topic",
+                        "post_topic, watch_topic/update sources, or discard_topic",
                     ],
                 },
                 "source_authors": [author] if author else [],
@@ -2438,7 +2541,7 @@ class TopicEditor:
         context: Dict[str, Any],
         key: tuple[str, str],
     ) -> bool:
-        if call.get("name") not in {"post_simple_topic", "post_sectioned_topic", "watch_topic"}:
+        if call.get("name") not in {"post_topic", "post_simple_topic", "post_sectioned_topic", "watch_topic"}:
             return False
         if not (call.get("input") or {}).get("override_collisions"):
             return False
@@ -2852,7 +2955,7 @@ class TopicEditor:
             message_id = tool_input.get("message_id")
             if message_id:
                 return f"message_id=`{str(message_id)[:40]}`"
-        if tool in {"post_simple_topic", "post_sectioned_topic", "watch_topic"}:
+        if tool in {"post_topic", "post_simple_topic", "post_sectioned_topic", "watch_topic"}:
             slug = tool_input.get("proposed_key")
             if slug:
                 return f"key=`{slug}`"
@@ -3629,6 +3732,8 @@ class TopicEditor:
         return str(snapshot.get("server_nick") or snapshot.get("global_name") or snapshot.get("username") or message.get("author_name") or message.get("author_id") or "")
 
     def _summary_for_tool(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        if tool_name == "post_topic":
+            return {"blocks": args.get("blocks") or []}
         if tool_name == "post_sectioned_topic":
             summary: Dict[str, Any] = {
                 "body": args.get("body"),
@@ -3867,7 +3972,7 @@ def build_rejected_transition(
     payload: Dict[str, Any],
     model: Optional[str] = None,
 ) -> Dict[str, Any]:
-    if action not in {"rejected_post_simple", "rejected_post_sectioned", "rejected_watch"}:
+    if action not in {"rejected_post_simple", "rejected_post_sectioned", "rejected_post_topic", "rejected_watch"}:
         raise ValueError(f"unsupported rejected transition action: {action}")
     return {
         "run_id": run_id,
