@@ -36,18 +36,21 @@ class ArchiveCog(commands.Cog):
             if archive_days and not summary_now:
                 logger.info(f"Detected standalone --archive-days {archive_days} flag on startup.")
                 try:
-                    from src.common.archive_runner import ArchiveRunner
+                    from src.features.archiving.archive_task import ArchiveTask
                     
-                    dev_mode = getattr(self.bot, 'dev_mode', False)
-                    archive_runner = ArchiveRunner()
                     sc = getattr(self.bot, 'server_config', None)
                     guilds_to_archive = sc.get_guilds_to_archive() if sc else []
                     success = True
                     for guild_cfg in guilds_to_archive:
-                        guild_success = await archive_runner.run_archive(
-                            archive_days, dev_mode, in_depth=True, guild_id=guild_cfg['guild_id']
+                        task = ArchiveTask(
+                            self.bot,
+                            days=archive_days,
+                            guild_id=guild_cfg['guild_id'],
+                            in_depth=True,
+                            logger=logger,
                         )
-                        success = success and guild_success
+                        result = await task.run()
+                        success = success and result.success
 
                     if not guilds_to_archive:
                         logger.warning("No writable guilds with archiving enabled in server_config")
@@ -72,15 +75,14 @@ class ArchiveCog(commands.Cog):
         await ctx.send(f"Starting archive process for {days} days...")
         
         try:
-            from src.common.archive_runner import ArchiveRunner
+            from src.features.archiving.archive_task import ArchiveTask
             
-            dev_mode = getattr(self.bot, 'dev_mode', False)
-            archive_runner = ArchiveRunner()
             sc = getattr(self.bot, 'server_config', None)
             _guild_id = getattr(getattr(ctx, 'guild', None), 'id', None) or (sc.bndc_guild_id if sc else None)
-            success = await archive_runner.run_archive(days, dev_mode, in_depth=True, guild_id=_guild_id)
+            task = ArchiveTask(self.bot, days=days, guild_id=_guild_id, in_depth=True, logger=logger)
+            result = await task.run()
             
-            if success:
+            if result.success:
                 await ctx.send("Archive process completed successfully.")
             else:
                 await ctx.send("Archive process failed. Check logs for details.")

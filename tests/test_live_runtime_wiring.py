@@ -195,14 +195,20 @@ def test_startup_summary_now_runs_archive_before_live_editor(monkeypatch):
     async def run():
         events = []
 
-        class FakeArchiveRunner:
-            async def run_archive(self, days, dev_mode, in_depth=False, guild_id=None):
-                events.append(f"archive:{days}:{guild_id}:{in_depth}")
-                return True
+        class FakeArchiveTask:
+            def __init__(self, bot, *, days=None, guild_id=None, in_depth=False, logger=None, **kwargs):
+                self.bot = bot
+                self.days = days
+                self.guild_id = guild_id
+                self.in_depth = in_depth
 
-        import src.common.archive_runner as archive_runner_module
+            async def run(self):
+                self.bot.events.append(f"archive:{self.days}:{self.guild_id}:{self.in_depth}")
+                return SimpleNamespace(success=True)
 
-        monkeypatch.setattr(archive_runner_module, "ArchiveRunner", FakeArchiveRunner)
+        import src.features.archiving.archive_task as archive_task_module
+
+        monkeypatch.setattr(archive_task_module, "ArchiveTask", FakeArchiveTask)
         bot = FakeBot(summary_now=True, archive_days=2, events=events)
         bot.server_config = FakeServerConfig(guilds=[{"guild_id": 10}, {"guild_id": 20}])
         bot.db_handler.server_config = bot.server_config

@@ -201,10 +201,8 @@ class SummarizerCog(commands.Cog):
     async def _run_startup_archive(self, archive_days: int) -> None:
         logger.info(f"Archive days specified ({archive_days}). Running archive process before live editor.")
         try:
-            from src.common.archive_runner import ArchiveRunner
+            from src.features.archiving.archive_task import ArchiveTask
 
-            dev_mode = getattr(self.bot, 'dev_mode', False)
-            archive_runner = ArchiveRunner()
             sc = getattr(self.bot, 'server_config', None)
             guilds_to_archive = sc.get_guilds_to_archive() if sc and hasattr(sc, "get_guilds_to_archive") else []
             if not guilds_to_archive and sc and getattr(sc, "bndc_guild_id", None):
@@ -213,13 +211,15 @@ class SummarizerCog(commands.Cog):
             success = True
             for guild_cfg in guilds_to_archive:
                 guild_id = guild_cfg.get("guild_id") if isinstance(guild_cfg, dict) else guild_cfg
-                guild_success = await archive_runner.run_archive(
-                    archive_days,
-                    dev_mode,
-                    in_depth=True,
+                task = ArchiveTask(
+                    self.bot,
+                    days=archive_days,
                     guild_id=guild_id,
+                    in_depth=True,
+                    logger=logger,
                 )
-                success = success and guild_success
+                result = await task.run()
+                success = success and result.success
 
             if not guilds_to_archive:
                 logger.warning("No writable guilds available for startup archive before live editor.")

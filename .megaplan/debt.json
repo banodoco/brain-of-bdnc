@@ -849,6 +849,210 @@
       "resolved": false,
       "resolved_by": null,
       "resolved_at": null
+    },
+    {
+      "id": "DEBT-051",
+      "subsystem": "completeness",
+      "concern": "completeness: plan deletes src/common/archive_runner.py but only rewires main.py's hourly loop. three additional production callers (archive_cog.py startup path, archive_cog.py !archive owner command, summariser_cog._run_startup_archive) plus one test (tests/test_live_runtime_wiring.py) import archiverunner and will break at import/runtime after step 4. step 4's 'grep and remove stragglers' is not a migration plan.",
+      "flag_ids": [
+        "FLAG-101"
+      ],
+      "plan_ids": [
+        "refactor-the-hourly-discord-20260518-1813"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T16:25:03Z",
+      "updated_at": "2026-05-18T16:25:03Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-052",
+      "subsystem": "correctness",
+      "concern": "correctness: _db_worker lifecycle changes from one-shot-process to one-per-hourly-invocation. plan acknowledges 'joining' the thread but specifies no shutdown sentinel, no bounded join timeout, and no behavior for in-flight writes if the run errors. a blocked worker would stall the hourly loop indefinitely.",
+      "flag_ids": [
+        "FLAG-102"
+      ],
+      "plan_ids": [
+        "refactor-the-hourly-discord-20260518-1813"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T16:25:03Z",
+      "updated_at": "2026-05-18T16:25:03Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-053",
+      "subsystem": "correctness",
+      "concern": "correctness: messagearchiver currently reads bot_user_id, guild_id/dev_guild_id, and discord_channel_ids from env in __init__ (scripts/archive_discord.py:92,101). when ported into archivetask running inside the main bot with an explicit guild_id ctor arg, precedence is unspecified \u2014 env-var guild_id may shadow the hourly loop's per-guild target.",
+      "flag_ids": [
+        "FLAG-104"
+      ],
+      "plan_ids": [
+        "refactor-the-hourly-discord-20260518-1813"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T16:25:03Z",
+      "updated_at": "2026-05-18T16:25:03Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-054",
+      "subsystem": "did-the-work-fully-address-the-issue-hints-user-notes-and-approved-plan-requirements",
+      "concern": "did the work fully address the issue hints, user notes, and approved plan requirements?: the plan addresses the brief's locked decisions ld-1..ld-5 (in-process, plain async class, cli preserved, _db_worker retained, archive_runner.py deleted not flagged) and most dc items. however, dc-5 (richer log line) maps to archiveresult.success but the plan never defines when success is true vs false \u2014 e.g. if per_channel_errors is non-empty, is success still true? ambiguity will surface during implementation and impacts the hourly log line semantics.",
+      "flag_ids": [
+        "issue_hints-1"
+      ],
+      "plan_ids": [
+        "refactor-the-hourly-discord-20260518-1813"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T16:25:03Z",
+      "updated_at": "2026-05-18T16:25:03Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-055",
+      "subsystem": "did-the-work-fully-address-the-issue-hints-user-notes-and-approved-plan-requirements",
+      "concern": "did the work fully address the issue hints, user notes, and approved plan requirements?: brief scope in #6 (drop `[archive]` prefix) is covered in step 6 with a note that downstream grep on `[archive]` will break, but oq-4 (any downstream alert/dashboard filters on that prefix) is left as an open question without a concrete decision or owner. plan proceeds with deletion regardless, which may surprise consumers.",
+      "flag_ids": [
+        "issue_hints-2"
+      ],
+      "plan_ids": [
+        "refactor-the-hourly-discord-20260518-1813"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T16:25:03Z",
+      "updated_at": "2026-05-18T16:25:03Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-056",
+      "subsystem": "are-the-proposed-changes-technically-correct",
+      "concern": "are the proposed changes technically correct?: assumption #1 says the _db_worker thread + queue is safe to start and stop within archivetask.run() once per invocation. the existing implementation (scripts/archive_discord.py:203) lives for the lifetime of a one-shot subprocess; switching to start/stop every hour requires a shutdown sentinel pushed onto the queue, a bounded join with timeout, and handling of in-flight inserts on failure. the plan's step 2.5 says only 'joins the db worker thread and returns' \u2014 no sentinel/drain protocol specified. without it, a hang in the worker would block the hourly loop indefinitely.",
+      "flag_ids": [
+        "correctness-1"
+      ],
+      "plan_ids": [
+        "refactor-the-hourly-discord-20260518-1813"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T16:25:03Z",
+      "updated_at": "2026-05-18T16:25:03Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-057",
+      "subsystem": "are-the-proposed-changes-technically-correct",
+      "concern": "are the proposed changes technically correct?: step 5 has the cli's short-lived client awaiting `task.run()` from inside an `on_ready` handler and then calling `await client.close()`. discord.py's `on_ready` can fire more than once on reconnects; if `run()` is long enough to span a reconnect, a second invocation would start a second _db_worker thread and a second target-resolution. plan should guard with a once-flag (e.g. an asyncio.event or a boolean) to ensure single execution.",
+      "flag_ids": [
+        "correctness-2"
+      ],
+      "plan_ids": [
+        "refactor-the-hourly-discord-20260518-1813"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T16:25:03Z",
+      "updated_at": "2026-05-18T16:25:03Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-058",
+      "subsystem": "search-for-related-code-that-handles-the-same-concept-is-the-reported-issue-a-symptom-of-something-broader",
+      "concern": "search for related code that handles the same concept. is the reported issue a symptom of something broader?: grep shows archiverunner is used in four places besides main.py: src/features/archive/archive_cog.py:39 (standalone --archive-days startup path), src/features/archive/archive_cog.py:75 (manual !archive owner command), src/features/summarising/summariser_cog.py:204 (_run_startup_archive before live editor), and tests/test_live_runtime_wiring.py:198 (fakearchiverunner monkeypatch). all four use in_depth=true, multi-guild loops, and aggregate a bool success. the plan's step 3 only rewires main.py's hourly loop and step 4 hand-waves 'remove stragglers' \u2014 it does not specify how these three production callers will be migrated to archivetask, nor whether their semantics (in_depth=true, multi-guild aggregation) are preserved. deleting archive_runner.py per step 4 will break all three at import time.",
+      "flag_ids": [
+        "scope-1"
+      ],
+      "plan_ids": [
+        "refactor-the-hourly-discord-20260518-1813"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T16:25:03Z",
+      "updated_at": "2026-05-18T16:25:03Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-059",
+      "subsystem": "search-for-related-code-that-handles-the-same-concept-is-the-reported-issue-a-symptom-of-something-broader",
+      "concern": "search for related code that handles the same concept. is the reported issue a symptom of something broader?: the test at tests/test_live_runtime_wiring.py:198-205 monkeypatches `src.common.archive_runner.archiverunner`. if the module is deleted per ld-5, the test setattr will fail at collection. plan does not mention updating this test.",
+      "flag_ids": [
+        "scope-2"
+      ],
+      "plan_ids": [
+        "refactor-the-hourly-discord-20260518-1813"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T16:25:03Z",
+      "updated_at": "2026-05-18T16:25:03Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-060",
+      "subsystem": "does-the-change-touch-all-locations-and-supporting-infrastructure",
+      "concern": "does the change touch all locations and supporting infrastructure?: plan step 1 catalogues `self.get_guild/get_channel/fetch_*/wait_until_ready` sites inside scripts/archive_discord.py but does not enumerate env-var reads done by messagearchiver.__init__ (bot_user_id at :92, dev_guild_id/guild_id at :101, discord_channel_ids, dotenv override). when ported into archivetask running inside the main bot, the guild_id env-var path conflicts with the explicit `guild_id` ctor arg used by the hourly loop. plan should specify ctor-args take precedence over env vars (or drop env reads in-class). risk: live bot env may differ from intended per-guild target.",
+      "flag_ids": [
+        "all_locations-1"
+      ],
+      "plan_ids": [
+        "refactor-the-hourly-discord-20260518-1813"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T16:25:03Z",
+      "updated_at": "2026-05-18T16:25:03Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-061",
+      "subsystem": "find-the-callers-of-the-changed-function-what-arguments-do-they-actually-pass-does-the-fix-handle-all-of-them",
+      "concern": "find the callers of the changed function. what arguments do they actually pass? does the fix handle all of them?: callers of archiverunner.run_archive enumerated: (1) main.py:103 \u2014 days, dev_mode, in_depth=false (default), guild_id; returns bool. (2) src/features/archive/archive_cog.py:47 \u2014 archive_days, dev_mode, in_depth=true, guild_id per guild_cfg; aggregates `success = success and guild_success`. (3) src/features/archive/archive_cog.py:81 \u2014 manual command, in_depth=true, single guild. (4) src/features/summarising/summariser_cog.py:216 \u2014 startup archive, in_depth=true, multi-guild aggregation. plan only migrates caller #1. callers #2-#4 will break when archive_runner.py is deleted.",
+      "flag_ids": [
+        "callers-1"
+      ],
+      "plan_ids": [
+        "refactor-the-hourly-discord-20260518-1813"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T16:25:03Z",
+      "updated_at": "2026-05-18T16:25:03Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
+    },
+    {
+      "id": "DEBT-062",
+      "subsystem": "find-the-callers-of-the-changed-function-what-arguments-do-they-actually-pass-does-the-fix-handle-all-of-them",
+      "concern": "find the callers of the changed function. what arguments do they actually pass? does the fix handle all of them?: archivetask.run() returns an archiveresult dataclass, but the existing cog callers consume a plain bool and aggregate with `success = success and guild_success`. migration must define how `archiveresult.success` maps to the cog's aggregate-bool flow and what happens with per_channel_errors at the cog layer \u2014 plan is silent.",
+      "flag_ids": [
+        "callers-2"
+      ],
+      "plan_ids": [
+        "refactor-the-hourly-discord-20260518-1813"
+      ],
+      "occurrence_count": 1,
+      "created_at": "2026-05-18T16:25:03Z",
+      "updated_at": "2026-05-18T16:25:03Z",
+      "resolved": false,
+      "resolved_by": null,
+      "resolved_at": null
     }
   ]
 }
