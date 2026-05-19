@@ -1260,6 +1260,19 @@ class TopicEditor:
         (f) Budget exceeded → return ``{outcome: budget_exceeded}``.
         (g) Call vision_clients.describe_image / describe_video.
         (h) Persist result, return compact JSON.
+
+        .. note::
+
+            **URL truncation investigation (2025-05):** A user-reported 404 error
+            (``Not Found for url: LTX-23-i2v_00416-audio.mp4``) showed a bare
+            filename rather than a full CDN URL.  Investigation found that archive
+            data may store bare filenames in the ``url`` field of attachment dicts
+            (e.g. when the upstream source doesn't preserve the full
+            ``cdn.discordapp.com`` path).  The guard below prefers ``proxy_url``
+            when ``url`` does not start with ``http`` to mitigate this.  The
+            enriched rejection output (``_build_trace_embed``) also surfaces the
+            actual ``media_url`` on its own line so future occurrences are
+            visible in production.
         """
         import requests
 
@@ -1296,6 +1309,7 @@ class TopicEditor:
                     "tool": name,
                     "outcome": "tool_error",
                     "error": f"message_id={message_id} not found in source window or archive",
+                    "message_id": str(message_id) if message_id is not None else None,
                 }
 
         # (b) resolve attachment URL
@@ -1309,15 +1323,31 @@ class TopicEditor:
                     f"attachment_index={attachment_index} out of range "
                     f"(message has {len(attachments)} attachment(s))"
                 ),
+                "message_id": str(message_id) if message_id is not None else None,
+                "channel_id": source.get("channel_id") if source else None,
+                "guild_id": source.get("guild_id") if source else None,
             }
         attachment = attachments[attachment_index]
-        media_url = attachment.get("url") or attachment.get("proxy_url") or ""
+        # Prefer proxy_url when url is a bare filename (doesn't start with http).
+        # Archive data may store bare filenames in the url field; proxy_url is
+        # always a full CDN URL.  Fall back to whichever is available.
+        _raw_url = attachment.get("url") or ""
+        _proxy_url = attachment.get("proxy_url") or ""
+        if _raw_url.startswith("http"):
+            media_url = _raw_url
+        elif _proxy_url:
+            media_url = _proxy_url
+        else:
+            media_url = _raw_url  # let the download fail with a visible URL
         if not media_url:
             return {
                 "tool_call_id": call["id"],
                 "tool": name,
                 "outcome": "tool_error",
                 "error": f"attachment {attachment_index} has no url field",
+                "message_id": str(message_id) if message_id is not None else None,
+                "channel_id": source.get("channel_id") if source else None,
+                "guild_id": source.get("guild_id") if source else None,
             }
 
         # model preset
@@ -1351,6 +1381,12 @@ class TopicEditor:
                 "tool": name,
                 "outcome": "tool_error",
                 "error": f"failed to download media: {exc}",
+                "message_id": str(message_id) if message_id is not None else None,
+                "channel_id": source.get("channel_id") if source else None,
+                "guild_id": source.get("guild_id") if source else (
+                    context.get("guild_id")
+                ),
+                "media_url": media_url,
             }
 
         # (d) compute sha256
@@ -2846,9 +2882,9 @@ class TopicEditor:
             embed.add_field(name="input context", value="\n".join(input_lines)[:1024], inline=False)
 
         # --- field: tool calls with input snippets ---
+        input_by_id = {call.get("id"): call.get("input") or {} for call in (metadata.get("tool_calls") or [])}
         if outcomes:
             tool_lines: List[str] = []
-            input_by_id = {call.get("id"): call.get("input") or {} for call in (metadata.get("tool_calls") or [])}
             for outcome in outcomes:
                 tool = outcome.get("tool") or "?"
                 action = outcome.get("action")
@@ -2868,8 +2904,38 @@ class TopicEditor:
         for outcome in outcomes or []:
             outcome_name = str(outcome.get("outcome") or "")
             if outcome_name.startswith("rejected") or outcome_name == "tool_error":
+                tool = outcome.get("tool") or "?"
                 err = outcome.get("error") or outcome_name
-                rejection_lines.append(f"`{outcome.get('tool') or '?'}`: {err}")
+
+                # Enriched metadata from _dispatch_understand_media (T3 primary path)
+                msg_id = outcome.get("message_id")
+                ch_id = outcome.get("channel_id")
+                g_id = outcome.get("guild_id")
+                media = outcome.get("media_url")
+
+                # Secondary fallback: try tool input for message_id
+                if not msg_id:
+                    tool_input = input_by_id.get(outcome.get("tool_call_id")) or {}
+                    msg_id = tool_input.get("message_id")
+
+                # Guild fallback from updates context
+                if not g_id:
+                    g_id = updates.get("guild_id")
+
+                # Build line(s): enriched format when metadata present, else legacy
+                has_jump = msg_id and ch_id and g_id
+                if has_jump or media:
+                    lines_for_this = []
+                    if has_jump:
+                        lines_for_this.append(
+                            f"jump: https://discord.com/channels/{g_id}/{ch_id}/{msg_id}"
+                        )
+                    if media:
+                        lines_for_this.append(f"media_url: {media}")
+                    lines_for_this.append(f"`{tool}`: {err}")
+                    rejection_lines.append("\n".join(lines_for_this))
+                else:
+                    rejection_lines.append(f"`{tool}`: {err}")
         if rejection_lines:
             value = "\n".join(rejection_lines)
             if len(value) > 1024:
@@ -4208,7 +4274,7 @@ def render_topic(topic: Dict[str, Any]) -> List[str]:
                 continue
             title = _clean_render_text(section.get("title") or section.get("heading") or "Details")
             section_body = _clean_render_text(section.get("body") or section.get("text") or section.get("summary"))
-            lines.extend(["", f"**{title}**"])
+            lines.extend(["", f"### {title}"])
             if section_body:
                 lines.append(section_body)
         if source_suffix:
@@ -4284,7 +4350,7 @@ def render_topic_publish_units(
         # Build the text content for this block
         lines: List[str] = []
         if block["type"] == "section" and block_title:
-            lines.append(f"**{_clean_render_text(block_title)}**")
+            lines.append(f"### {_clean_render_text(block_title)}")
         elif block["type"] == "intro":
             # Intro block gets the header; subsequent intro blocks are unusual
             # but handled gracefully (no duplicate header).
@@ -4309,7 +4375,7 @@ def render_topic_publish_units(
                         f"{channel_id}/{sid}"
                     )
                 if url:
-                    citation_parts.append(f"[{idx}] {url}")
+                    citation_parts.append(f"[{idx}] <{url}>")
                 else:
                     citation_parts.append(f"[{idx}] {sid}")
             lines.append("Sources: " + " ".join(citation_parts))

@@ -1,0 +1,107 @@
+{
+  "phase": "execute",
+  "invocation_id": "4055be9f82e543e4",
+  "exit_kind": "blocked_by_quality",
+  "blocked_tasks": [],
+  "deviations": [
+    {
+      "kind": "quality_gate",
+      "message": "Baseline test run captured 0 failures. Post-T1, 2 tests fail: runtime.py:3123 and core.py:358 \u2014 both assert on the old non-angle-bracket citation format. These are expected and will be fixed in T5 (next batch). All other 95 tests pass."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory quality: code changes lacked test updates: src/features/summarising/topic_editor.py."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Auto-attributed 18 unclaimed file(s) to task T1 (worker reported empty files_changed): .claude/scheduled_tasks.lock, .megaplan/briefs/archive-inprocess/brief.md, .megaplan/briefs/rejection-and-citation-linkability/brief.md, .megaplan/plans/brief-make-rejection-embed-20260519-1139/.plan.lock, .megaplan/plans/brief-make-rejection-embed-20260519-1139/final.md, .megaplan/plans/brief-make-rejection-embed-20260519-1139/finalize.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/finalize_output.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/finalize_snapshot.json, \u2026"
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Auto-attributed 18 unclaimed file(s) to task T2 (worker reported empty files_changed): .claude/scheduled_tasks.lock, .megaplan/briefs/archive-inprocess/brief.md, .megaplan/briefs/rejection-and-citation-linkability/brief.md, .megaplan/plans/brief-make-rejection-embed-20260519-1139/.plan.lock, .megaplan/plans/brief-make-rejection-embed-20260519-1139/final.md, .megaplan/plans/brief-make-rejection-embed-20260519-1139/finalize.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/finalize_output.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/finalize_snapshot.json, \u2026"
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Auto-attributed 18 unclaimed file(s) to task T3 (worker reported empty files_changed): .claude/scheduled_tasks.lock, .megaplan/briefs/archive-inprocess/brief.md, .megaplan/briefs/rejection-and-citation-linkability/brief.md, .megaplan/plans/brief-make-rejection-embed-20260519-1139/.plan.lock, .megaplan/plans/brief-make-rejection-embed-20260519-1139/final.md, .megaplan/plans/brief-make-rejection-embed-20260519-1139/finalize.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/finalize_output.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/finalize_snapshot.json, \u2026"
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Auto-attribution ambiguous: 3 done tasks shared 18 unclaimed files"
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory observation mismatch: executor claimed files not observed in git status/content hash delta: .claude/scheduled_tasks.lock, tests/test_topic_editor_runtime.py"
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory audit finding: Tasks left pending after execute (executor never started them): T4, T5, T6"
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory quality: code changes lacked test updates: src/features/summarising/topic_editor.py."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "1/1 batch tasks have no executor update \u2014 tracking is incomplete."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "1/1 batch sense checks have no executor acknowledgment \u2014 tracking is incomplete."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory observation mismatch: git status/content hash delta found unclaimed files: src/features/summarising/topic_editor.py"
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory audit finding: Tasks left pending after execute (executor never started them): T4, T5, T6"
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory audit finding: Sense check SC4 is missing an executor acknowledgment."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory audit finding: Sense check SC5 is missing an executor acknowledgment."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory audit finding: Sense check SC6 is missing an executor acknowledgment."
+    },
+    {
+      "kind": "quality_gate",
+      "message": "Advisory audit finding: Tasks left pending after execute (executor never started them): T4, T5, T6"
+    }
+  ],
+  "artifacts_written": [
+    "execution.json",
+    "execution_audit.json",
+    "finalize.json",
+    "final.md"
+  ],
+  "cli_provenance": {}
+}

@@ -1,0 +1,37 @@
+{
+  "output": "T6 completed successfully. Full test suite: 155 passed, 0 failed, 2 warnings in 1.72s. Throwaway smoke script verified all three behaviors: (1) citation URLs wrapped in `<https://...>` with no bare unwrapped form, (2) rejection field enriched with `jump: https://discord.com/channels/1/10/200` and `media_url: https://cdn.example.com/video.mp4` lines, (3) graceful fallback to legacy `` `tool`: {error} `` format when metadata absent. Script deleted after confirmation. All 6 tasks (T1-T6) now complete across 4 batches.",
+  "files_changed": [
+    ".megaplan/plans/brief-make-rejection-embed-20260519-1139/execution_batch_4.json"
+  ],
+  "commands_run": [
+    "pytest tests/test_topic_editor_runtime.py tests/test_topic_editor_core.py -x -q (155 passed, 0 failed)",
+    "python _smoke_test_t6.py (all 3 smoke tests passed)",
+    "rm _smoke_test_t6.py"
+  ],
+  "deviations": [
+    "Auto-attributed 1 unclaimed file(s) to task T6 (worker reported empty files_changed): .megaplan/plans/brief-make-rejection-embed-20260519-1139/execution_batch_4.json",
+    "Advisory observation mismatch: git status/content hash delta found unclaimed files: .megaplan/briefs/archive-inprocess/brief.md, .megaplan/briefs/rejection-and-citation-linkability/brief.md, .megaplan/plans/brief-make-rejection-embed-20260519-1139/.plan.lock, .megaplan/plans/brief-make-rejection-embed-20260519-1139/execution.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/execution_audit.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/execution_batch_1.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/execution_batch_2.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/execution_batch_3.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/final.md, .megaplan/plans/brief-make-rejection-embed-20260519-1139/finalize.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/finalize_output.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/finalize_snapshot.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/finalize_v1_raw.txt, .megaplan/plans/brief-make-rejection-embed-20260519-1139/phase_result.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/plan_v1.md, .megaplan/plans/brief-make-rejection-embed-20260519-1139/plan_v1.meta.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/state.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/step_receipt_execute_v1.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/step_receipt_finalize_v1.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/step_receipt_plan_v1.json, .megaplan/plans/brief-make-rejection-embed-20260519-1139/user_actions.md"
+  ],
+  "task_updates": [
+    {
+      "id": "T6",
+      "status": "done",
+      "executor_notes": "Full test suite: 155 passed, 0 failed, 2 warnings in 1.72s. Smoke script written, run, and deleted. Smoke tests verified: (1) citation URLs wrapped in <https://...> with no bare unwrapped URLs, (2) rejection field enriched with jump URL + media_url lines, (3) graceful fallback to legacy format when no metadata. All assertions passed.",
+      "task_id": "T6",
+      "files_changed": [
+        ".megaplan/plans/brief-make-rejection-embed-20260519-1139/execution_batch_4.json"
+      ],
+      "commands_run": [],
+      "auto_attributed_files": true
+    }
+  ],
+  "sense_check_acknowledgments": [
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "verdict": "PASS. pytest tests/test_topic_editor_runtime.py tests/test_topic_editor_core.py -x -q: 155 passed, 0 failures. Throwaway smoke script exercised rejection field enrichment (jump URL + media_url), citation angle-bracket wrapping, and graceful fallback \u2014 all passed. Script deleted.",
+      "sense_check_id": "SC6",
+      "executor_note": "(not provided)"
+    }
+  ]
+}

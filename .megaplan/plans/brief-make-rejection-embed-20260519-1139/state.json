@@ -1,0 +1,167 @@
+{
+  "name": "brief-make-rejection-embed-20260519-1139",
+  "idea": "# Brief: Make rejection embed media URLs clickable + fix resources self-link collapse\n\n## Outcome\n\nTwo display fixes in `src/features/summarising/topic_editor.py`:\n\n1. **Rejection field links to the source post and surfaces the real media URL.** When the bot logs an admin-embed rejection (`tool_error` outcome from `understand_video` etc.), the rejection line currently shows only the raw exception text (e.g. `understand_video: failed to download media: 404 Client Error: Not Found for url: LTX-23-i2v_00416-audio.mp4`). After the fix, the rejection line additionally renders a clickable Discord jump URL to the source message the tool was acting on, plus the actual `media_url` the tool tried to fetch (so admins can verify what failed).\n2. **Resources-channel citation URLs stay clickable to the specific message** rather than collapsing to a generic `#channel-name` pill. When a topic posted in `#ltx_resources` cites messages from that same channel, Discord auto-collapses the `https://discord.com/channels/G/C/M` URL to a flat channel mention. The fix wraps citation URLs in `<\u2026>` so Discord suppresses the unfurl/collapse but the URL stays clickable as plain text.\n\nAlso: investigate the apparent URL truncation in the rejection 404 \u2014 the server's \"Not Found for url: LTX-23-i2v_00416-audio.mp4\" suggests `media_url` may be degenerating to a bare filename somewhere upstream of `requests.get`. If a real bug is found, fix at the source; if it's just how the upstream server reports the path, document the finding and rely on the new \"surface real media_url\" path to make this visible.\n\n## Why this matters (context)\n\nUser reported two things from the BNDC bot's admin output:\n\n- Rejection line: `understand_video: failed to download media: 404 Client Error: Not Found for url: LTX-23-i2v_00416-audio.mp4` \u2014 no way to navigate to the offending source post, and the URL fragment looks suspiciously like a bare filename rather than a real cdn.discordapp.com URL.\n- Resources post Sources line: `Sources: [1] \u2060ltx_resources\u2060 [2] \u2060ltx_resources\u2060 [3] \u2060ltx_resources\u2060` \u2014 looks like a non-clickable channel pill, in contrast to chatter posts where citations stay as clickable message links. The cause is Discord's renderer collapsing same-channel message URLs to a channel mention; the post is in `#ltx_resources` and the sources are also in `#ltx_resources`.\n\nBoth are display-layer-only and have no impact on archive / persistence / publishing logic.\n\n## Scope (IN)\n\n1. **`src/features/summarising/topic_editor.py:2866-2877` \u2014 rejection field renderer.**\n   - Today: `rejection_lines.append(f\"\\`{tool}\\`: {error}\")` where `error` is the raw exception text from the outcome.\n   - After: for each rejection, additionally compute a clickable Discord jump URL to the source message the tool was operating on (the tool input typically carries `message_id`; combine with the topic's `guild_id` and the source row's `channel_id`). If the tool input contains a `media_url`, surface it on its own line so Discord auto-links the full URL. Format roughly:\n     ```\n     `understand_video` \u00b7 jump: https://discord.com/channels/<g>/<c>/<m>\n     media_url: <full url>\n     error: failed to download media: 404 ...\n     ```\n   - Keep the 1024-char embed-field truncation.\n   - If the tool input doesn't expose `message_id` / `media_url`, fall back gracefully to today's behavior \u2014 don't crash, don't emit empty lines.\n\n2. **`src/features/summarising/topic_editor.py:4307-4314` \u2014 per-block citation URL renderer.**\n   - Today emits `[N] https://discord.com/channels/G/C/M` (auto-collapses to channel pill when self-referential).\n   - After: wrap the URL in `<\u2026>` \u2192 `[N] <https://discord.com/channels/G/C/M>` so Discord suppresses the unfurl/collapse but the URL remains clickable as plain blue link text.\n   - Preserve the existing fallback `[N] {sid}` path for missing metadata.\n\n3. **`src/features/summarising/topic_editor.py:1343-1354` \u2014 investigate URL truncation.**\n   - Read the call sites that build `media_url` and pass it into `requests.get` at `:1345`. The reported 404 says \"Not Found for url: LTX-23-i2v_00416-audio.mp4\" (a bare filename) \u2014 figure out whether that filename is actually what we sent, or whether the destination server just truncates its 404 message that way (some CDNs do).\n   - If it's a real bug \u2014 e.g. attachment-rel URL never got prefixed with `https://cdn.discordapp.com/attachments/...` \u2014 fix at the construction site and add the URL we tried to a structured log so a future repeat is debuggable.\n   - If it's just the upstream server's quirk, write a one-paragraph note in `docs/` (or a top-of-function comment) so the next person doesn't chase it. The new \"surface real media_url\" line in fix #1 will make this visible in production.\n\n4. **Test updates.**\n   - `tests/test_topic_editor_runtime.py`: any test that asserts on the exact rejection-line format or citation-line format needs to be updated to match.\n   - Add at least one test that:\n     - Asserts the rejection field renders a jump URL when `message_id` is present.\n     - Asserts citation URLs are emitted wrapped in `<\u2026>`.\n\n## Anti-scope (OUT)\n\n- **Do NOT** restructure the admin-embed layout. Field order, field names, field count all stay.\n- **Do NOT** touch the publishing pipeline, the curator, the archive runner, or anything outside `topic_editor.py` + its tests.\n- **Do NOT** change `_render_source_suffix` (legacy simple-topic path). That path isn't producing user-visible artifacts in the reported issue; structured blocks are.\n- **Do NOT** add a feature flag \u2014 the change is reversible via git.\n- **Do NOT** broaden the truncation investigation into a refactor of the media-resolution pipeline. If the root cause is multi-hop, document it and fix only the immediate truncation.\n\n## Locked decisions\n\n- **LD-1:** Rejection field is enriched in-line \u2014 no separate embed, no thread-mention chain. Keep it dense.\n- **LD-2:** Citation URLs use `<URL>` wrapping (suppress-unfurl, keep clickable) rather than markdown link syntax `[label](url)` \u2014 that syntax doesn't render in regular Discord messages, only in embed descriptions.\n- **LD-3:** Truncation investigation happens once, in this sprint. If inconclusive, the new \"media_url:\" line is the durable mitigation; we don't open a follow-up sprint for it.\n- **LD-4:** No new dependencies. Use existing helpers (e.g. the same `guild_id` / `channel_id` resolution path `render_topic_publish_units` already uses via `meta_by_id`).\n\n## Open questions (planner should resolve)\n\n- **OQ-1:** What's the right way to get `channel_id` for the rejection's source message inside `_build_admin_embed`? The outcomes don't carry channel_id directly; we'd need to look at `metadata.get(\"tool_calls\")` for the matching call's input, or hydrate from `self.db.get_topic_editor_source_messages` like `render_topic_publish_units` already does.\n- **OQ-2:** Does the citation `<URL>` wrap actually defeat Discord's same-channel collapse? (It's the standard way to suppress embeds, but the collapse-to-channel-pill is a separate rendering quirk.) If `<URL>` doesn't fix it, the fallback is to render each citation as a quoted single-line block with the bare ID + a separate per-citation jump URL on its own line.\n- **OQ-3:** Does the rejection field have access to the tool *input* for the failing call? `_build_admin_embed` already builds `input_by_id = {call.get(\"id\"): call.get(\"input\") or {} for call in (metadata.get(\"tool_calls\") or [])}` at `:2851` for the \"tool calls\" field \u2014 we should reuse the same lookup for rejections.\n\n## Constraints\n\n- **C-1:** No regression in the existing admin-embed field layout. Same field order, same field names, same conditional rendering.\n- **C-2:** No new exceptions raised when tool input is missing `message_id` or `media_url` \u2014 graceful fallback to today's line.\n- **C-3:** Embed-field value still fits in Discord's 1024-char limit. With multiple rejections, truncate as today (`value[:1000] + \"\\n\u2026\"`).\n- **C-4:** Test suite passes (`pytest tests/test_topic_editor_runtime.py`).\n\n## Done criteria\n\n- **DC-1 (must):** Rejection lines in the admin embed include a clickable Discord jump URL to the source message when `message_id` is available, and include the raw `media_url` on its own line when the tool input has one.\n- **DC-2 (must):** Per-block citation URLs in `render_topic_publish_units` are wrapped in `<\u2026>` so Discord doesn't collapse same-channel self-references to a flat channel pill.\n- **DC-3 (must):** All existing tests still pass; new tests cover both behaviors.\n- **DC-4 (should):** One-paragraph note (top of `_handle_understand_video` or a sibling location) capturing the truncation investigation's conclusion.\n\n## Touchpoints\n\nPrimary edits:\n- `src/features/summarising/topic_editor.py` (around `:1340-1360`, `:2851`, `:2866-2877`, `:4307-4314`)\n- `tests/test_topic_editor_runtime.py` (rejection-line + citation-line assertions)\n\nPossibly affected (read but unlikely to edit):\n- `src/features/admin_chat/tools.py` (only if the rejection field's source needs additional metadata that admin_chat already exposes)\n\n## Reference: user-reported evidence\n\nRejection example (verbatim from admin chat):\n```\nrejections (1)\nunderstand_video: failed to download media: 404 Client Error: Not Found for url: LTX-23-i2v_00416-audio.mp4\n```\n\nPublishing line (UUID is a topic_id; the user wants it linkable too \u2014 that's a separate, lower-priority ask, NOT in scope for this sprint):\n```\npublishing (1)\n1dc7e5ff-0bf9-4503-aa4c-229f1b3efd06 \u00b7 failed \u00b7 media_sent 0 \u00b7 source_media 0 \u00b7 messages 3\n```\n\nResources Sources line (verbatim, where \u2060\u2026\u2060 markers are Discord's channel-mention bidi wrap):\n```\nSources: [1] \u2060ltx_resources\u2060 [2] \u2060ltx_resources\u2060 [3] \u2060ltx_resources\u2060\n```",
+  "current_state": "done",
+  "iteration": 1,
+  "created_at": "2026-05-19T09:39:22Z",
+  "config": {
+    "project_dir": "/Users/peteromalley/Documents/banodoco-workspace/brain-of-bndc",
+    "auto_approve": true,
+    "robustness": "bare",
+    "mode": "code",
+    "strict_notes": false,
+    "agent": "",
+    "profile": "solo",
+    "phase_model": [
+      "plan=hermes:deepseek:deepseek-v4-pro",
+      "prep=hermes:deepseek:deepseek-v4-pro",
+      "critique=hermes:deepseek:deepseek-v4-pro",
+      "revise=hermes:deepseek:deepseek-v4-pro",
+      "gate=hermes:deepseek:deepseek-v4-pro",
+      "finalize=hermes:deepseek:deepseek-v4-pro",
+      "execute=hermes:deepseek:deepseek-v4-pro",
+      "loop_plan=hermes:deepseek:deepseek-v4-pro",
+      "loop_execute=hermes:deepseek:deepseek-v4-pro",
+      "review=hermes:deepseek:deepseek-v4-pro",
+      "tiebreaker_researcher=hermes:deepseek:deepseek-v4-pro",
+      "tiebreaker_challenger=hermes:deepseek:deepseek-v4-pro",
+      "feedback=claude:low"
+    ]
+  },
+  "sessions": {
+    "hermes_planner": {
+      "id": "143deef7-cc8e-46f7-ac12-2823ed6fced6",
+      "mode": "persistent",
+      "created_at": "2026-05-19T09:49:57Z",
+      "last_used_at": "2026-05-19T09:49:57Z",
+      "refreshed": false
+    },
+    "hermes_finalizer": {
+      "id": "887686f5-7692-451d-bc0f-13ceb48124a6",
+      "mode": "persistent",
+      "created_at": "2026-05-19T10:52:48Z",
+      "last_used_at": "2026-05-19T10:52:48Z",
+      "refreshed": true
+    },
+    "hermes_executor": {
+      "id": "c4976d93-c778-4c2d-90d7-296bac2756ba",
+      "mode": "persistent",
+      "created_at": "2026-05-19T10:58:41Z",
+      "last_used_at": "2026-05-19T12:39:14Z",
+      "refreshed": true
+    }
+  },
+  "plan_versions": [
+    {
+      "version": 1,
+      "file": "plan_v1.md",
+      "hash": "sha256:6c91961bbf85da0a84d5197de76f0890a8c680a9ffbf7863fc0eb54539efe7f4",
+      "timestamp": "2026-05-19T09:49:57Z"
+    }
+  ],
+  "history": [
+    {
+      "step": "init",
+      "timestamp": "2026-05-19T09:39:22Z",
+      "duration_ms": 0,
+      "cost_usd": 0.0,
+      "result": "success",
+      "environment": {
+        "claude": true,
+        "codex": true
+      }
+    },
+    {
+      "step": "plan",
+      "timestamp": "2026-05-19T09:49:57Z",
+      "duration_ms": 621568,
+      "cost_usd": 0.038618401000000004,
+      "result": "success",
+      "prompt_tokens": 1008449,
+      "completion_tokens": 16101,
+      "total_tokens": 1024550,
+      "session_mode": "persistent",
+      "session_id": "143deef7-cc8e-46f7-ac12-2823ed6fced6",
+      "agent": "hermes",
+      "output_file": "plan_v1.md",
+      "artifact_hash": "sha256:6c91961bbf85da0a84d5197de76f0890a8c680a9ffbf7863fc0eb54539efe7f4"
+    },
+    {
+      "step": "finalize",
+      "timestamp": "2026-05-19T10:45:11Z",
+      "duration_ms": 397234,
+      "cost_usd": 0.0,
+      "result": "error",
+      "raw_output_file": "finalize_v1_raw.txt",
+      "message": "Finalize user_action U1 is sole coverage for a plan step and must include `requires_human_only_reason`."
+    },
+    {
+      "step": "finalize",
+      "timestamp": "2026-05-19T10:52:48Z",
+      "duration_ms": 413508,
+      "cost_usd": 0.027861431,
+      "result": "success",
+      "prompt_tokens": 580767,
+      "completion_tokens": 11311,
+      "total_tokens": 592078,
+      "session_mode": "persistent",
+      "session_id": "887686f5-7692-451d-bc0f-13ceb48124a6",
+      "agent": "hermes",
+      "output_file": "finalize.json",
+      "artifact_hash": "sha256:a6c9c26eda0004cbf182f5629802fe36431b2ea17dc6ca15bc3970dff17e6308"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-05-19T11:04:22Z",
+      "duration_ms": 682781,
+      "cost_usd": 0.046665785,
+      "result": "blocked",
+      "session_mode": "persistent",
+      "session_id": "835a4dcd-16b2-42ba-a510-dd62b4c4fdf3",
+      "agent": "hermes",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:390d60ef91e13b02e239828632126663de8ed7cdaf96643290a927603ab7c78e",
+      "finalize_hash": "sha256:680d9decfa010b077e66c2d6233ea6b1a0abe71b0d59b950c9d23cbb588495af",
+      "approval_mode": "auto_approve"
+    },
+    {
+      "step": "execute",
+      "timestamp": "2026-05-19T12:39:14Z",
+      "duration_ms": 1000586,
+      "cost_usd": 0.08348264799999999,
+      "result": "success",
+      "session_mode": "persistent",
+      "session_id": "c4976d93-c778-4c2d-90d7-296bac2756ba",
+      "agent": "hermes",
+      "output_file": "execution.json",
+      "artifact_hash": "sha256:d6c01703c6d1779f20dff80d7a4edab74640db573a9ffa8206841558e2e7e91c",
+      "finalize_hash": "sha256:fa0cd8d977986e76a716c776bb59279410a4f5d5b0c7456574a6ebc50b910a02",
+      "approval_mode": "auto_approve"
+    }
+  ],
+  "meta": {
+    "significant_counts": [],
+    "weighted_scores": [],
+    "plan_deltas": [],
+    "recurring_critiques": [],
+    "total_cost_usd": 0.196628,
+    "overrides": [
+      {
+        "action": "add-note",
+        "timestamp": "2026-05-19T10:45:25Z",
+        "note": "When finalizing, U1 (post-deploy Discord render verification) MUST include requires_human_only_reason. Suggested value: 'Discord client-side rendering of self-referential message URLs cannot be verified from automated tests \u2014 confirmation requires visually posting a structured topic in #ltx_resources after deploy and checking that citations render as clickable links, not as collapsed channel pills.' This is a legitimate human-only step (we cannot mock Discord's renderer).",
+        "source": "user"
+      }
+    ],
+    "notes": [
+      {
+        "timestamp": "2026-05-19T10:45:25Z",
+        "note": "When finalizing, U1 (post-deploy Discord render verification) MUST include requires_human_only_reason. Suggested value: 'Discord client-side rendering of self-referential message URLs cannot be verified from automated tests \u2014 confirmation requires visually posting a structured topic in #ltx_resources after deploy and checking that citations render as clickable links, not as collapsed channel pills.' This is a legitimate human-only step (we cannot mock Discord's renderer).",
+        "source": "user"
+      }
+    ],
+    "current_invocation_id": "b2554812f4fb41be",
+    "user_approved_gate": true
+  },
+  "last_gate": {}
+}

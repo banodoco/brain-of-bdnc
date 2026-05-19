@@ -1,0 +1,23 @@
+The finalize JSON has been written successfully. Here's a summary of what was produced:
+
+**5 tasks** covering all 5 plan steps:
+
+| Task | Description | Depends On |
+|------|-------------|------------|
+| **T1** | Wrap citation URLs in `<...>` at line 4312 (Step 3) | none |
+| **T2** | Document URL truncation investigation near line 1314 (Step 4) | none |
+| **T3** | Enrich `_dispatch_understand_media` error outcomes with source metadata + URL validation guard (Step 1) | none |
+| **T4** | Update `_build_trace_embed` rejection field to render jump URLs + media_url lines (Step 2) | T3 |
+| **T5** | Update existing test assertions + add 3 new tests + run full suite (Step 5) | T1, T3, T4 |
+
+**1 user action:**
+- **U1**: Post-deployment manual Discord verification that `<URL>` wrapping defeats same-channel collapse (OQ-2)
+
+**Execution order**: T1 → T2 → T3 → T4 → T5 (T1 and T2 are trivially independent, T3→T4 are sequential, T5 gates on all prior).
+
+**Key details captured:**
+- The function is `_build_trace_embed`, not `_build_admin_embed` (brief uses different terminology)
+- `input_by_id` is already built at line 2851 and should be reused for rejection fallback
+- `guild_id` available via both `updates["guild_id"]` and `self._resolve_guild_id()`
+- Citation assertions exist in **two** test files (runtime + core), both need updating
+- Baseline test failures documented (2 expected citation-format assertion breaks)

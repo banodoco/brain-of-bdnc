@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "timestamp": "2026-05-19T09:49:57Z",
+  "hash": "sha256:6c91961bbf85da0a84d5197de76f0890a8c680a9ffbf7863fc0eb54539efe7f4",
+  "questions": [
+    "OQ-2 (from brief): Does `<URL>` wrapping defeat Discord's same-channel collapse to channel-pill? Discord's `<URL>` syntax suppresses rich embeds/unfurling, and the channel-pill collapse is a form of unfurling, so it should work. If it doesn't in practice, the fallback is to render each citation as `[N] <message_id>` on its own line without a clickable URL \u2014 we'd then need to revisit. This can only be verified with a live Discord test after deployment.",
+    "Are there other functions besides `_dispatch_understand_media` that download media via `requests.get` and could produce similar rejection errors? If so, should they also be enriched with source metadata? (The brief scopes to understand_video, but if there's a shared helper it might be worth enriching there too.)"
+  ],
+  "success_criteria": [
+    {
+      "criterion": "Rejection lines in admin embed include a clickable Discord jump URL when message_id/channel_id/guild_id are present in the outcome",
+      "priority": "must",
+      "requires": [
+        "run_tests",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Rejection lines in admin embed include `media_url:` line when media_url is present in the outcome",
+      "priority": "must",
+      "requires": [
+        "run_tests",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "Rejection rendering falls back gracefully to today's single-line format when source metadata fields are missing (no crash, no empty lines)",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Per-block citation URLs in render_topic_publish_units are wrapped in `<...>` so Discord suppresses same-channel collapse",
+      "priority": "must",
+      "requires": [
+        "run_tests",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "All existing tests in tests/test_topic_editor_runtime.py pass",
+      "priority": "must",
+      "requires": [
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "New tests cover rejection field jump URL rendering and citation angle-bracket wrapping",
+      "priority": "must",
+      "requires": [
+        "run_tests",
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "No regression in admin-embed field layout (same field order, names, conditional rendering)",
+      "priority": "must",
+      "requires": [
+        "read_files",
+        "parse_diff"
+      ]
+    },
+    {
+      "criterion": "Documentation note at _dispatch_understand_media captures the URL truncation investigation conclusion",
+      "priority": "should",
+      "requires": [
+        "read_files"
+      ]
+    },
+    {
+      "criterion": "URL validation guard at line 1314 prefers proxy_url when url doesn't start with http",
+      "priority": "should",
+      "requires": [
+        "read_files",
+        "run_tests"
+      ]
+    },
+    {
+      "criterion": "Live Discord test confirms `<URL>` wrapping prevents same-channel collapse to channel-pill (manual verification after deploy)",
+      "priority": "info",
+      "requires": [
+        "verify_physical_device"
+      ]
+    }
+  ],
+  "assumptions": [
+    "Discord's `<URL>` syntax suppresses both rich embed unfurling AND same-channel message-link collapse to `#channel-name`. This is the standard documented behavior (wrapping in angle brackets suppresses all link previews). If it doesn't work for the specific channel-pill collapse, the fallback noted in OQ-2 will be needed.",
+    "The `guild_id` available in `updates` at `_build_trace_embed` (line 2621 \u2014 `\"guild_id\": self._resolve_guild_id()`) is sufficient for constructing jump URLs. Channel-level specificity comes from the enriched outcome.",
+    "`_dispatch_understand_media` is the only code path producing the user-reported rejection. If other tool handlers also download media (e.g., `understand_image` uses the same `_dispatch_understand_media` with `media_kind=\"image\"`), they are covered by the same fix. No other handlers use `requests.get` for media downloads.",
+    "The bare filename `LTX-23-i2v_00416-audio.mp4` in the 404 error is likely an archive data artifact where the stored attachment `url` field is just a filename. The validation guard + `media_url:` surface line is sufficient mitigation without a database migration.",
+    "The 1024-char embed field limit is sufficient for the enriched rejection format (jump URL + media_url + error). Multiple rejections are truncated as today."
+  ],
+  "structure_warnings": []
+}

@@ -355,7 +355,7 @@ class TestRenderTopicPublishUnits:
         assert text_unit["kind"] == "text"
         assert "## Test Topic" in text_unit["content"]
         assert "Hello world." in text_unit["content"]
-        assert "Sources: [1] https://discord.com/channels/123/456/111" in text_unit["content"]
+        assert "Sources: [1] <https://discord.com/channels/123/456/111>" in text_unit["content"]
 
     def test_no_global_source_footer_for_structured_topics(self):
         topic = self._topic_with_blocks([
@@ -407,13 +407,13 @@ class TestRenderTopicPublishUnits:
         }
         units = render_topic_publish_units(topic, source_metadata=source_metadata)
         intro_content = units[0]["content"]
-        assert "[1] https://discord.com/channels/123/456/111" in intro_content
+        assert "[1] <https://discord.com/channels/123/456/111>" in intro_content
         assert "222" not in intro_content  # Section A's source not in intro
         sec_a_content = units[1]["content"]
-        assert "[1] https://discord.com/channels/123/456/222" in sec_a_content
+        assert "[1] <https://discord.com/channels/123/456/222>" in sec_a_content
         assert "111" not in sec_a_content  # Intro's source not in section A
         sec_b_content = units[2]["content"]
-        assert "[1] https://discord.com/channels/123/456/333" in sec_b_content
+        assert "[1] <https://discord.com/channels/123/456/333>" in sec_b_content
 
     def test_citations_deduped_and_ordered_per_block(self):
         topic = self._topic_with_blocks([
@@ -659,6 +659,22 @@ class TestRenderTopicPublishUnits:
         # Only text unit — external ref resolved to None
         assert len(units) == 1
         assert units[0]["kind"] == "text"
+
+    def test_citation_urls_are_angle_bracket_wrapped(self):
+        """Citation URLs are wrapped in <...> to suppress Discord same-channel collapse."""
+        topic = self._topic_with_blocks([
+            {
+                "type": "intro",
+                "text": "Same channel citation.",
+                "source_message_ids": ["111"],
+            }
+        ])
+        source_metadata = {"111": self._source_meta("111")}
+        units = render_topic_publish_units(topic, source_metadata=source_metadata)
+        content = units[0]["content"]
+        assert "<https://discord.com/channels/123/456/111>" in content
+        # Ensure the non-wrapped variant is not present
+        assert "Sources: [1] https://discord.com/channels/123/456/111" not in content
 
 
 class TestResolveMediaUrlFromMetadata:

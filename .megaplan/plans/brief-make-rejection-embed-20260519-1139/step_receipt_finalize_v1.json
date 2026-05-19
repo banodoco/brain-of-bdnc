@@ -1,0 +1,31 @@
+{
+  "receipt_id": "38ca601b-bc70-4d9a-bbf8-46b55d68ace9",
+  "plan_id": "brief-make-rejection-embed-20260519-1139",
+  "phase": "finalize",
+  "iteration": 1,
+  "attempt": 1,
+  "timestamp_utc": "2026-05-19T10:52:48.180012+00:00",
+  "profile_name": "solo",
+  "agent": "hermes",
+  "agent_mode": "persistent",
+  "model_configured": "hermes:deepseek:deepseek-v4-pro",
+  "model_actual": "deepseek-v4-pro",
+  "session_id": "887686f5-7692-451d-bc0f-13ceb48124a6",
+  "megaplan_version": "0.21.0",
+  "schema_version": 1,
+  "prompt_hash_raw": "ad08ec2c922784639b73d5cca0296094ee0f95fe2bb9d06f0c72f89a9f641a58",
+  "prompt_hash_canonical": "87c33fa59542d790abcae9fcb8091a229eb8a9508bee2f04dc95995a2b9a01f3",
+  "canonicalization_version": 1,
+  "upstream_artifact_hashes": [],
+  "cost_usd": 0.027861431,
+  "duration_ms": 413508,
+  "prompt_tokens": 580767,
+  "completion_tokens": 11311,
+  "verdict": null,
+  "metrics": {
+    "tasks_count": 6,
+    "sense_checks_count": 6,
+    "per_task_evidence_file_count": 0
+  },
+  "scope_drift_severity": null
+}

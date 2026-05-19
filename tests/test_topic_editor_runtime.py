@@ -1510,7 +1510,7 @@ def test_render_topic_is_pure_and_handles_simple_sectioned_and_story_update():
     assert render_topic(simple) == [
         "## Alice ships a LoRA\n\nA concise update.\n\nSource: 100"
     ]
-    assert "**Model**" in render_topic(sectioned)[0]
+    assert "### Model" in render_topic(sectioned)[0]
     assert "Sources: 101, 102" in render_topic(sectioned)[0]
     assert render_topic(story_update)[0].startswith("## Alice follows up with results")
 
@@ -3120,11 +3120,11 @@ def test_publishing_enabled_sends_structured_blocks_in_order():
 
     assert channel.sent[0].startswith("## Structured Publish Test")
     assert "Alice released a new LoRA with benchmarks." in channel.sent[0]
-    assert "Sources: [1] https://discord.com/channels/1/10/200" in channel.sent[0]
+    assert "Sources: [1] <https://discord.com/channels/1/10/200>" in channel.sent[0]
 
     assert channel.sent[1] == "https://cdn.example.com/image1.png"
 
-    assert "**Benchmark Details**" in channel.sent[2]
+    assert "### Benchmark Details" in channel.sent[2]
     assert "15% improvement" in channel.sent[2]
 
     assert channel.sent[3] == "https://cdn.example.com/preview.png"
@@ -3914,6 +3914,85 @@ def test_auto_shortlist_watching_no_direct_post(monkeypatch):
             f"Auto-shortlist transition action should be 'watch', got '{action}'. "
             "Direct posting is disabled."
         )
+
+
+def test_rejection_field_renders_jump_url_when_message_id_present():
+    """Rejection field renders jump URL and media_url when outcome metadata is present."""
+    db = FakeDB()
+    editor = TopicEditor(
+        db_handler=db,
+        llm_client=FakeClaude(SimpleNamespace(content=[], usage=None)),
+        guild_id=1,
+        live_channel_id=2,
+        environment="prod",
+    )
+
+    outcomes = [{
+        "outcome": "tool_error",
+        "tool": "understand_video",
+        "error": "failed to download media: 404 ...",
+        "message_id": "200",
+        "channel_id": 10,
+        "guild_id": 1,
+        "media_url": "https://cdn.example.com/video.mp4",
+        "tool_call_id": "tc1",
+    }]
+
+    updates = {
+        "guild_id": 1,
+        "metadata": {
+            "tool_calls": [{
+                "id": "tc1",
+                "input": {"message_id": "200", "media_url": "https://cdn.example.com/video.mp4"},
+            }],
+        },
+    }
+
+    embed = editor._build_trace_embed("run-1", updates, outcomes, [])
+
+    rejection_field = None
+    for field in embed.fields:
+        if field.name and field.name.startswith("rejections"):
+            rejection_field = field
+            break
+
+    assert rejection_field is not None, "Rejection field should be present"
+    assert "jump: https://discord.com/channels/1/10/200" in rejection_field.value
+    assert "media_url: https://cdn.example.com/video.mp4" in rejection_field.value
+    assert "`understand_video`: failed to download media: 404 ..." in rejection_field.value
+
+
+def test_rejection_field_falls_back_gracefully_without_message_id():
+    """Rejection field renders legacy format when no enrichment metadata is present."""
+    db = FakeDB()
+    editor = TopicEditor(
+        db_handler=db,
+        llm_client=FakeClaude(SimpleNamespace(content=[], usage=None)),
+        guild_id=1,
+        live_channel_id=2,
+        environment="prod",
+    )
+
+    outcomes = [{
+        "outcome": "tool_error",
+        "tool": "search_topics",
+        "error": "query too short",
+    }]
+
+    updates = {"guild_id": 1}
+
+    embed = editor._build_trace_embed("run-1", updates, outcomes, [])
+
+    rejection_field = None
+    for field in embed.fields:
+        if field.name and field.name.startswith("rejections"):
+            rejection_field = field
+            break
+
+    assert rejection_field is not None, "Rejection field should be present"
+    assert "`search_topics`: query too short" in rejection_field.value
+    assert "jump:" not in rejection_field.value
+    assert "media_url:" not in rejection_field.value
 
 
 # ---- (7) partial status when mixed text/file units succeed/fail ----
