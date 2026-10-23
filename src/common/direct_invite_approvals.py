@@ -37,8 +37,15 @@ class DirectInviteApprovals:
     a successful approval response or silently discard an approval.
     """
 
-    def __init__(self, supabase):
+    def __init__(self, supabase, write_allowed):
         self.supabase = supabase
+        if not callable(write_allowed):
+            raise TypeError("write_allowed must be the DatabaseHandler guild write gate")
+        self.write_allowed = write_allowed
+
+    def _require_write(self, guild_id: int) -> None:
+        if not self.write_allowed(guild_id):
+            raise PermissionError(f"Writes are not enabled for guild {guild_id}")
 
     def _table(self):
         if self.supabase is None:
@@ -46,6 +53,7 @@ class DirectInviteApprovals:
         return self.supabase.table('direct_invite_approvals')
 
     def save(self, guild_id: int, recipient: InviteRecipient, approved_by: int) -> dict:
+        self._require_write(guild_id)
         row = {
             'id': str(uuid4()),
             'guild_id': guild_id,
@@ -72,6 +80,7 @@ class DirectInviteApprovals:
 
     def bind(self, approval: dict, user_id: int) -> bool:
         """Bind a username approval once so a retry cannot approve another account."""
+        self._require_write(approval['guild_id'])
         if approval.get('user_id') is not None:
             return int(approval['user_id']) == user_id
         result = (self._table().update({'user_id': user_id})
@@ -86,4 +95,5 @@ class DirectInviteApprovals:
 
     def consume(self, approval: dict) -> None:
         # Delete the specific version, never a newer approval for the same user.
+        self._require_write(approval['guild_id'])
         self._table().delete().eq('guild_id', approval['guild_id']).eq('id', approval['id']).execute()

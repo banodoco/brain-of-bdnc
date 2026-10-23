@@ -12,6 +12,7 @@ from tests.test_three_tier_member_model import _make_cog, _make_tier_roles
 
 USER_ID = 123456789012345678
 OTHER_ID = 223456789012345678
+ALLOW_WRITE = lambda guild_id: True
 
 
 class MemoryApprovals:
@@ -48,6 +49,7 @@ class MemoryApprovals:
 def setup_invites():
     cog = _make_cog()
     cog.db_handler.supabase = object()
+    cog.db_handler._gate_check = ALLOW_WRITE
     cog._speaker_invite_uses = {456: 7}
     cog._get_equity_holders_role_id = lambda _: 99
     tier = _make_tier_roles()
@@ -280,13 +282,13 @@ def test_storage_round_trip_survives_new_store_and_binds_before_consume():
         getattr(query, method).return_value = query
     row = dict(id='approval-id', guild_id=456, username='mostaadtech', user_id=None)
     query.execute.return_value = SimpleNamespace(data=[row])
-    store = DirectInviteApprovals(client)
+    store = DirectInviteApprovals(client, ALLOW_WRITE)
     saved = store.save(456, InviteRecipient(username='mostaadtech'), 999)
     payload = query.upsert.call_args.args[0]
     assert payload['recipient_key'] == 'username:mostaadtech'
     assert payload['approved_by'] == 999
     assert query.upsert.call_args.kwargs['on_conflict'] == 'guild_id,recipient_key'
-    recreated = DirectInviteApprovals(client)
+    recreated = DirectInviteApprovals(client, ALLOW_WRITE)
     assert recreated.matching(456, USER_ID, 'MostAadTech') == [row]
     assert query.or_.call_args.args[0] == f'user_id.eq.{USER_ID},and(username.eq.mostaadtech,user_id.is.null)'
     assert recreated.bind(saved, USER_ID) is True
@@ -302,9 +304,9 @@ def test_storage_rejects_unconfirmed_write_and_propagates_failure():
     client = MagicMock()
     client.table.return_value.upsert.return_value.execute.return_value = SimpleNamespace(data=[])
     with pytest.raises(RuntimeError, match='not saved'):
-        DirectInviteApprovals(client).save(456, InviteRecipient(user_id=USER_ID), 999)
+        DirectInviteApprovals(client, ALLOW_WRITE).save(456, InviteRecipient(user_id=USER_ID), 999)
     with pytest.raises(RuntimeError, match='unavailable'):
-        DirectInviteApprovals(None).save(456, InviteRecipient(user_id=USER_ID), 999)
+        DirectInviteApprovals(None, ALLOW_WRITE).save(456, InviteRecipient(user_id=USER_ID), 999)
 
 
 def test_storage_bind_does_not_take_approval_claimed_by_another_account():
@@ -314,4 +316,4 @@ def test_storage_bind_does_not_take_approval_claimed_by_another_account():
         getattr(query, method).return_value = query
     query.execute.side_effect = [SimpleNamespace(data=[]), SimpleNamespace(data=[{'user_id': OTHER_ID}])]
     approval = dict(id='approval-id', guild_id=456, username='mostaadtech', user_id=None)
-    assert DirectInviteApprovals(client).bind(approval, USER_ID) is False
+    assert DirectInviteApprovals(client, ALLOW_WRITE).bind(approval, USER_ID) is False

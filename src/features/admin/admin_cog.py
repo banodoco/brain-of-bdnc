@@ -558,7 +558,20 @@ class AdminCog(commands.Cog):
             await interaction.followup.send(f"Something went wrong creating the invite: {e}", ephemeral=True)
 
     def _approval_store(self) -> DirectInviteApprovals:
-        return DirectInviteApprovals(getattr(self.db_handler, 'supabase', None))
+        return DirectInviteApprovals(
+            getattr(self.db_handler, 'supabase', None), self._write_allowed,
+        )
+
+    def _write_allowed(self, guild_id: int) -> bool:
+        """Use DatabaseHandler's fail-closed server_config write gate."""
+        gate = getattr(self.db_handler, '_gate_check', None)
+        if not callable(gate):
+            return False
+        try:
+            return bool(gate(guild_id))
+        except Exception:
+            logger.exception("Could not check write permission for guild %s", guild_id)
+            return False
 
     async def _resolve_invite_recipient(self, guild, recipient: InviteRecipient):
         if recipient.user_id:
@@ -584,6 +597,9 @@ class AdminCog(commands.Cog):
     async def _direct_invite_recipient(self, interaction, guild, value, max_uses):
         if not self._is_speaker_management_enabled(guild.id):
             await interaction.followup.send("Speaker management is not enabled in this server.", ephemeral=True)
+            return
+        if not self._write_allowed(guild.id):
+            await interaction.followup.send("Speaker management writes are not enabled in this server.", ephemeral=True)
             return
         try:
             recipient = parse_invite_recipient(value)
@@ -655,6 +671,8 @@ class AdminCog(commands.Cog):
         store = self._approval_store()
         try:
             approvals = await asyncio.to_thread(store.matching, member.guild.id, member.id, member.name)
+            if approvals and not self._write_allowed(member.guild.id):
+                return False
             bound = []
             for approval in approvals:
                 if await asyncio.to_thread(store.bind, approval, member.id):
@@ -665,6 +683,9 @@ class AdminCog(commands.Cog):
                 return False
             await self._consume_speaker_approvals(store, bound)
             return True
+        except PermissionError:
+            # The write gate can change after matching but before a bind.
+            return False
         except Exception:
             logger.exception("Could not apply direct invite approval for member %s", member.id)
             return None
@@ -703,7 +724,15 @@ class AdminCog(commands.Cog):
         ):
             logger.warning("Direct invite cannot unmute moderated member %s", member.id)
             return False
-        previous_status = 'speaker' if roles['speaker'] in member.roles else 'newbie'
+        member_row = (
+            self.db_handler.get_guild_member(member.id, member.guild.id)
+            if self.db_handler else None
+        )
+        stored_status = member_row.get('member_status') if isinstance(member_row, dict) else None
+        previous_status = (
+            stored_status if stored_status in {'newbie', 'speaker', 'moderated'}
+            else 'speaker' if roles['speaker'] in member.roles else 'newbie'
+        )
         status_written = False
         try:
             if self.db_handler:
