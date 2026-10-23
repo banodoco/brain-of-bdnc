@@ -128,6 +128,7 @@ async def main_async(args):
 
         # Create a single bot instance
         intents = discord.Intents.all()
+        intents.presences = False  # The bot does not use presence updates.
         bot = BaseDiscordBot(
             command_prefix="!",
             logger=logger,
