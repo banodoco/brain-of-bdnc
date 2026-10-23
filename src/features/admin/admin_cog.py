@@ -14,6 +14,9 @@ import time
 from src.common.db_handler import DatabaseHandler
 from src.common import discord_utils
 from src.common.speaker_perms import apply_perms_to_channel
+from src.common.direct_invite_approvals import (
+    DirectInviteApprovals, InviteRecipient, parse_invite_recipient,
+)
 
 logger = logging.getLogger('DiscordBot')
 
@@ -409,7 +412,12 @@ class AdminCog(commands.Cog):
             return
         if not self._is_speaker_management_enabled(member.guild.id):
             return
-        if await self._is_speaker_invite_join(member.guild):
+        # Always refresh legacy tracking, even when an identity approval wins.
+        legacy_invite_join = await self._is_speaker_invite_join(member.guild)
+        approved = await self._apply_pending_speaker_approval(member)
+        if approved is not None:
+            return  # A failed promotion retains its approval for retry.
+        if legacy_invite_join:
             await self._assign_speaker_on_join(member)
             return
         newbie_role_id = self._get_newbie_role_id(member.guild.id)
@@ -476,9 +484,11 @@ class AdminCog(commands.Cog):
     @app_commands.command(name="direct_invite", description="Create a private invite that auto-grants the Speaker role (max 10 uses)")
     @app_commands.describe(
         max_uses="Max joins before the invite expires (1-10; defaults to 10)",
+        recipient="Optional Discord user ID or exact account username (with or without @)",
     )
     async def direct_invite(self, interaction: discord.Interaction,
-                            max_uses: Optional[int] = None):
+                            max_uses: Optional[int] = None,
+                            recipient: Optional[str] = None):
         """Create a direct Speaker invite in #live_updates (auto-assigns Speaker)."""
         # Defer FIRST — before any DB/role work — so a slow Supabase read can
         # never let the interaction time out ("application did not respond").
@@ -509,6 +519,10 @@ class AdminCog(commands.Cog):
                 await interaction.followup.send("Only Equity Holders can create direct invites.", ephemeral=True)
                 return
 
+            if recipient is not None:
+                await self._direct_invite_recipient(interaction, guild, recipient, max_uses)
+                return
+
             # Invite lands in the default channel (#live_updates), uses capped at 10.
             uses = max(1, min(max_uses or 10, 10))
             target_channel = self._get_default_invite_channel(guild)
@@ -519,6 +533,7 @@ class AdminCog(commands.Cog):
             invite = await target_channel.create_invite(
                 max_uses=uses,   # capped at 10
                 max_age=0,       # 0 = never expires
+                unique=True,    # Do not reuse a recipient-specific invite.
                 reason=f"Direct invite created by {interaction.user.name}",
             )
 
@@ -541,6 +556,139 @@ class AdminCog(commands.Cog):
         except Exception as e:
             logger.error(f"direct_invite failed: {e}", exc_info=True)
             await interaction.followup.send(f"Something went wrong creating the invite: {e}", ephemeral=True)
+
+    def _approval_store(self) -> DirectInviteApprovals:
+        return DirectInviteApprovals(
+            getattr(self.db_handler, 'supabase', None), self._write_allowed,
+        )
+
+    def _write_allowed(self, guild_id: int) -> bool:
+        """Use DatabaseHandler's fail-closed server_config write gate."""
+        gate = getattr(self.db_handler, '_gate_check', None)
+        if not callable(gate):
+            return False
+        try:
+            return bool(gate(guild_id))
+        except Exception:
+            logger.exception("Could not check write permission for guild %s", guild_id)
+            return False
+
+    async def _resolve_invite_recipient(self, guild, recipient: InviteRecipient):
+        if recipient.user_id:
+            member = guild.get_member(recipient.user_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(recipient.user_id)
+                except discord.NotFound:
+                    pass
+            return member
+        # Search results can match nicknames/prefixes; only accept .name exactly.
+        candidates = [m for m in guild.members if m.name.lower() == recipient.username]
+        if not candidates:
+            results = await guild.query_members(query=recipient.username, limit=100)
+            candidates = [m for m in results
+                          if m.name.lower() == recipient.username]
+            if not candidates and len(results) == 100:
+                raise ValueError("Too many username search results; use the Discord user ID.")
+        if len(candidates) > 1:
+            raise ValueError("That username matches multiple accounts; use the Discord user ID.")
+        return candidates[0] if candidates else None
+
+    async def _direct_invite_recipient(self, interaction, guild, value, max_uses):
+        if not self._is_speaker_management_enabled(guild.id):
+            await interaction.followup.send("Speaker management is not enabled in this server.", ephemeral=True)
+            return
+        if not self._write_allowed(guild.id):
+            await interaction.followup.send("Speaker management writes are not enabled in this server.", ephemeral=True)
+            return
+        try:
+            recipient = parse_invite_recipient(value)
+            member = await self._resolve_invite_recipient(guild, recipient)
+        except ValueError as e:
+            await interaction.followup.send(str(e), ephemeral=True)
+            return
+        if member is not None:
+            if member.bot:
+                await interaction.followup.send("Choose a person, not a bot account.", ephemeral=True)
+                return
+            recipient = InviteRecipient(user_id=member.id)
+        store = self._approval_store()
+        invite = None
+        if member is None:
+            target_channel = self._get_default_invite_channel(guild)
+            if target_channel is None or isinstance(target_channel, discord.CategoryChannel):
+                await interaction.followup.send("Could not resolve a valid invite channel.", ephemeral=True)
+                return
+            # Never reuse/replace the generic Speaker invite: a forwarded targeted
+            # link must not grant Speaker to someone without an identity approval.
+            invite = await target_channel.create_invite(
+                max_uses=max(1, min(max_uses or 10, 10)), max_age=0, unique=True,
+                reason=f"Direct invite for {recipient.key} by {interaction.user.id}",
+            )
+        try:
+            await asyncio.to_thread(store.save, guild.id, recipient, interaction.user.id)
+        except Exception:
+            logger.exception("Could not persist direct invite approval for %s", recipient.key)
+            if invite is not None:
+                try:
+                    await invite.delete(reason="Direct invite approval could not be saved")
+                except discord.HTTPException:
+                    logger.exception("Could not remove unissued targeted invite")
+            await interaction.followup.send(
+                "Could not save the Speaker approval. No approval was confirmed; please try again later.",
+                ephemeral=True,
+            )
+            return
+        if member is not None:
+            # Include earlier username approvals (including failed join attempts),
+            # not only the ID approval just written by this command.
+            success = await self._apply_pending_speaker_approval(member)
+            await interaction.followup.send(
+                f"Assigned **Speaker** to {member.mention}." if success else
+                "Saved the approval, but could not assign Speaker. Check role permissions or moderation status, then retry this command.",
+                ephemeral=True,
+            )
+            return
+        label = f"user ID {recipient.user_id}" if recipient.user_id else f"@{recipient.username}"
+        await interaction.followup.send(
+            f"Direct invite for {label}: {invite.url}\n"
+            "Their Speaker approval is saved and will apply when that account joins, using any invite. "
+            "Other people using this link are not approved for Speaker.",
+            ephemeral=True,
+        )
+
+    async def _consume_speaker_approvals(self, store, approvals):
+        for approval in approvals:
+            try:
+                await asyncio.to_thread(store.consume, approval)
+            except Exception:
+                logger.exception("Could not consume direct invite approval %s", approval['id'])
+
+    async def _apply_pending_speaker_approval(self, member) -> Optional[bool]:
+        # Keep legacy joins working when no database is configured.
+        if not getattr(self.db_handler, 'supabase', None):
+            return None
+        store = self._approval_store()
+        try:
+            approvals = await asyncio.to_thread(store.matching, member.guild.id, member.id, member.name)
+            if approvals and not self._write_allowed(member.guild.id):
+                return False
+            bound = []
+            for approval in approvals:
+                if await asyncio.to_thread(store.bind, approval, member.id):
+                    bound.append(approval)
+            if not bound:
+                return None
+            if not await self._assign_speaker_on_join(member):
+                return False
+            await self._consume_speaker_approvals(store, bound)
+            return True
+        except PermissionError:
+            # The write gate can change after matching but before a bind.
+            return False
+        except Exception:
+            logger.exception("Could not apply direct invite approval for member %s", member.id)
+            return None
 
     def _get_default_invite_channel(self, guild: discord.Guild) -> Optional[discord.abc.GuildChannel]:
         """Resolve the default invite channel: server_config, env, then BNDC #live_updates."""
@@ -565,24 +713,45 @@ class AdminCog(commands.Cog):
             return int(env_val)
         return 1328101710488408207  # BNDC Equity Holders (verified)
 
-    async def _assign_speaker_on_join(self, member: discord.Member):
+    async def _assign_speaker_on_join(self, member: discord.Member) -> bool:
         """Assign Speaker instead of Newbie for a join via the Speaker invite."""
         roles = self._resolve_tier_roles(member.guild)
         if roles is None:
             logger.warning(f"Tier roles not configured — cannot grant Speaker on invite join for {member.id}")
-            return
+            return False
+        if roles['moderated'] in member.roles or (
+            self.db_handler and self.db_handler.get_member_status(member.id, member.guild.id) == 'moderated'
+        ):
+            logger.warning("Direct invite cannot unmute moderated member %s", member.id)
+            return False
+        member_row = (
+            self.db_handler.get_guild_member(member.id, member.guild.id)
+            if self.db_handler else None
+        )
+        stored_status = member_row.get('member_status') if isinstance(member_row, dict) else None
+        previous_status = (
+            stored_status if stored_status in {'newbie', 'speaker', 'moderated'}
+            else 'speaker' if roles['speaker'] in member.roles else 'newbie'
+        )
+        status_written = False
         try:
             if self.db_handler:
-                self.db_handler.set_member_status(member.id, member.guild.id, 'speaker')
+                status_written = self.db_handler.set_member_status(member.id, member.guild.id, 'speaker')
+                if not status_written:
+                    return False
             speaker_role = roles['speaker']
             newbie_role = roles['newbie']
-            if newbie_role in member.roles:
-                await member.remove_roles(newbie_role, reason="Speaker invite join")
             if speaker_role not in member.roles:
                 await member.add_roles(speaker_role, reason="Joined via Speaker invite")
+            if newbie_role in member.roles:
+                await member.remove_roles(newbie_role, reason="Speaker invite join")
             logger.info(f"New member joined via Speaker invite: {member.id} ({member.name}) — assigned Speaker role")
+            return True
         except Exception as e:
+            if status_written:
+                self.db_handler.set_member_status(member.id, member.guild.id, previous_status)
             logger.error(f"Failed to assign Speaker role on invite join for {member.id}: {e}", exc_info=True)
+            return False
 
     @commands.Cog.listener()
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
