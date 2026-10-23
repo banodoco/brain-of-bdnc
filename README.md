@@ -82,6 +82,35 @@ Canonical Supabase CLI migrations live in `../supabase/migrations/` (workspace-l
 
 ### Running the Bot
 
+#### Direct Speaker invites
+
+Equity Holders can use `/direct_invite recipient:@username` or
+`/direct_invite recipient:123456789012345678` (a user mention also works).
+An existing member receives Speaker immediately. For someone who has not joined,
+the bot saves an approval and returns an invite; that account receives Speaker
+when joining through **any** link. The approval is consumed after successful
+promotion. Failed assignments retain the approval so the command can be retried.
+This does not unmute a Moderated member.
+
+Use the exact Discord **account username**, not a display name or server nickname.
+An optional leading `@` and case differences are accepted. Prefix a long numeric
+username with `@` to distinguish it from an ID. An unresolved username is matched
+against the account's current username on join, then bound to its user ID; it
+cannot follow a username change made before that first match. Use a user ID when
+available. Existing members' usernames are resolved to IDs immediately.
+
+Recipient-specific links do not grant Speaker to other accounts and do not
+replace the guild's generic Speaker invite. Omitting `recipient` preserves the
+existing invite-use tracking behavior (`max_uses` defaults to 10, capped at 10).
+Invite use limits apply to the link, not the saved identity approval.
+
+Before deploying this feature, apply the paired workspace migration
+[`20261023120000_direct_invite_approvals.sql`](https://github.com/banodoco/banodoco-workspace/pull/1)
+from `banodoco/banodoco-workspace`'s `supabase/migrations/`. The approval table is
+accessible to the service role only. If storage is unavailable, targeted commands
+report failure instead of issuing an unrecorded approval; generic invites still
+work. Restart the bot after deployment so its command sync registers `recipient`.
+
 Basic operation:
 ```bash
 python main.py
